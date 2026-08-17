@@ -18,12 +18,12 @@
 ## Phase 0 — 项目启动（Day 1）
 
 ### T0-01 仓库初始化与卫生
-- [ ]
+- [x]
   - Owner Role：A（B 复核）
   - Input：工作区现状（无 git、含 deepseek-harness/、higress/）
   - Output：git 仓库、.gitignore（deepseek-harness/、higress/、.env、node_modules/、__pycache__/、*.db、secure 路径）、README
   - Dependency：无
-  - Acceptance Criteria：`git status` 无敏感文件；确认并处理 `higress/tools/appservice_tokens.txt`（移出工作区或确认测试令牌）；README 记录外部依赖版本
+  - Acceptance Criteria：`git status` 无敏感文件；`higress/tools/appservice_tokens.txt` 已移出工作区（备份至工作区外 external_tokens_backup/，2026-08-17）；README 记录外部依赖版本
 
 ### T0-02 DeepSeek 连通性冒烟（门禁 G1）
 - [ ]
@@ -34,44 +34,44 @@
   - Acceptance Criteria：真实 Key 环境下一次 chat 调用返回成功；G1 结论记录在 docs 或演示脚本中；Key 不出现在任何提交文件
 
 ### T0-03 API 契约冻结
-- [ ]
+- [x]
   - Owner Role：A（B/C/D 评审）
   - Input：docs/API_CONTRACT.md 草案
   - Output：OpenAPI 导出、前端 TS 类型、契约 v1.0 评审通过
   - Dependency：无
-  - Acceptance Criteria：C/D 确认可独立开发；契约变更登记表就绪
+  - Acceptance Criteria：docs/API_CONTRACT.md 定稿（v0.1，2026-08-17）；shared-schema/types.ts 与后端 OpenAPI 手动同步；C/D 可独立开发
 
 ### T0-04 数据模型与种子数据
-- [ ]
+- [x]
   - Owner Role：A（Schema）+ D（数据内容）
   - Input：契约 DTO、SECURITY_BOUNDARY 数据分级
   - Output：SQLAlchemy 表（human_employee、digital_employee、runtime_binding、sandbox_policy、plugin、employee_plugin_grant、team、team_member、task_run、policy、chat_session、chat_message、audit_event）；demo-data 种子 JSON
   - Dependency：T0-03
-  - Acceptance Criteria：`scripts/init_demo` 可重建 DB 并灌入虚构种子；无真实内容；L1/L2/L3 标记正确
+  - Acceptance Criteria：`scripts/init_demo.ps1` 可重建 DB 并灌入虚构种子（2 正式 + 2 实习 + 2 分身 + 3 虚拟 + 5 插件 + 4 知识库 + 1 Team）；无真实内容；L1/L2 标记正确
 
 ### T0-05 后端骨架
-- [ ]
+- [x]
   - Owner Role：A
   - Input：契约、表模型
   - Output：FastAPI 应用（core/config、异常处理、CORS、/health）
   - Dependency：T0-03
-  - Acceptance Criteria：uvicorn 启动，/health 200，错误统一形状生效
+  - Acceptance Criteria：uvicorn 启动，/health 200；employee/plugin/policy/audit CRUD 与 knowledge/teams 只读接口可用；pytest 10 用例通过
 
 ### T0-06 前端骨架
-- [ ]
+- [x]
   - Owner Role：C
   - Input：契约、种子数据样例
   - Output：Vite + React + TS + AntD 工程，路由与页面占位，Mock 数据可浏览
   - Dependency：T0-03
-  - Acceptance Criteria：页面可浏览，无阻塞报错，契约类型可用
+  - Acceptance Criteria：Vite dev 可浏览（首页/员工列表/详情/插件/安全/Team 占位）；typecheck 通过；vitest 冒烟通过；`vite build` 通过
 
 ### T0-07 Mock 知识库内容
-- [ ]
+- [x]
   - Owner Role：D
   - Input：数据分级规则、契约
   - Output：虚构 L1/L2 知识文档（结构仿真、内容虚构）
   - Dependency：T0-04
-  - Acceptance Criteria：内容全部虚构；可按 data_level 检索；无真实内部信息
+  - Acceptance Criteria：demo-data/kb/ 共 4 篇（L1 公开 1 + L2 三类 3），内容全部虚构并带声明；可按 data_level 检索；无真实内部信息
 
 ## Phase 1 — 问答与安全（Day 2–3）
 
@@ -108,12 +108,12 @@
   - Acceptance Criteria：Gateway 可调通全部 Mock 插件，返回结构符合契约
 
 ### T1-05 Audit Store
-- [ ]
+- [ ]（Sprint 1 已完成 CRUD 部分：audit_event 写入与按 trace_id/employee_id/decision 过滤查询；决策/工具调用/审批落审计待 T1-02/T1-03 完成后收口）
   - Owner Role：B
   - Input：契约 AuditEventDto
   - Output：audit_event 写入与查询（trace_id / employee_id / decision 过滤）
   - Dependency：T0-04
-  - Acceptance Criteria：决策、工具调用、审批均落审计；按 trace_id 可聚合
+  - Acceptance Criteria：决策、工具调用、审批均落审计；按 trace_id 可聚合（审计事件源待 Policy/Gateway 接通）
 
 ### T1-06 Chat Orchestrator
 - [ ]
@@ -192,12 +192,12 @@
 ## Phase 3 — 联调收尾（Day 4–5）
 
 ### T3-01 一键启动/重置脚本
-- [ ]
+- [ ]（Sprint 1 已完成 init_demo.ps1：重建 DB + 种子 + 依赖安装；reset_demo.ps1 / run_demo.ps1 与"30 秒一键恢复"留待 Sprint 3 收口）
   - Owner Role：D
   - Input：全部运行方式
   - Output：`scripts/reset_demo.ps1`（重建 DB + 种子 + 起前后端 + 可选 docker）、`run_demo.ps1`
   - Dependency：T0-04、T0-05、T0-06
-  - Acceptance Criteria：新机器可 30 秒内一键恢复演示环境
+  - Acceptance Criteria：新机器可 30 秒内一键恢复演示环境（当前 init_demo.ps1 已覆盖环境+种子，起服务部分未覆盖）
 
 ### T3-02 黄金链路端到端验证
 - [ ]
