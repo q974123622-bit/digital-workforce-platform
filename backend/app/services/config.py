@@ -6,6 +6,12 @@
 """
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# 加载 backend/.env（gitignored，仅本地受控环境；真实值绝不提交）
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 
 # 预留的环境变量名（真实值只存在于正式员工受控环境，仓库内不得出现）
 INTERNAL_KB_ENDPOINT = "DWP_INTERNAL_KB_ENDPOINT"

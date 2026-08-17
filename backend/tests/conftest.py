@@ -14,7 +14,7 @@ from app.seed import load_seed, seed_data
 
 
 @pytest.fixture()
-def client():
+def db_session():
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -26,12 +26,15 @@ def client():
     with testing_session() as db:
         seed_data(db, load_seed())
 
+    session = testing_session()
+    yield session
+    session.close()
+
+
+@pytest.fixture()
+def client(db_session):
     def override_get_db():
-        db = testing_session()
-        try:
-            yield db
-        finally:
-            db.close()
+        yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:

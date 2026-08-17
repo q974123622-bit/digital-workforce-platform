@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..services.chat import ChatOrchestrator
+from ..services.llm import DeepSeekProvider, LLMUnavailableError
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -118,3 +120,45 @@ def delete_employee(employee_no: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="员工不存在")
     db.delete(emp)
     db.commit()
+
+
+@router.post("/{employee_no}/chat", response_model=schemas.ChatResponse)
+def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(get_db)):
+    """一对一问答（Sprint 4）：User → Employee → LLM → Policy → Gateway → Adapter → LLM → Answer。"""
+    orchestrator = ChatOrchestrator(DeepSeekProvider())
+    try:
+        result = orchestrator.handle_message(
+            db,
+            employee_no=employee_no,
+            message=payload.message,
+            session_id=payload.session_id,
+        )
+    except LLMUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=f"LLM_UNAVAILABLE：{exc}") from exc
+
+    cards = [
+        {
+            "plugin_id": c.plugin_id,
+            "name": c.name,
+            "decision": c.decision,
+            "policy_id": c.policy_id,
+            "reason": c.reason,
+        }
+        for c in result.tool_cards
+    ]
+    denied = None
+    if result.policy_denied is not None:
+        denied = {
+            "plugin_id": result.policy_denied.plugin_id,
+            "name": result.policy_denied.name,
+            "decision": "deny",
+            "policy_id": result.policy_denied.policy_id,
+            "reason": result.policy_denied.reason,
+        }
+    return schemas.ChatResponse(
+        session_id=result.session_id,
+        trace_id=result.trace_id,
+        message=result.message,
+        tool_cards=cards,
+        policy_denied=denied,
+    )

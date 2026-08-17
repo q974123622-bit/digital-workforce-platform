@@ -75,6 +75,7 @@ Employee Identity
 3. **Harness 同规则**：其模型调用经同一环境约束；本周 Harness 输入内容必须为虚构数据。
 4. **Codex 边界**：开发助手（Codex）不读取 Secure Overlay；Secure Overlay 不在共享仓库内，不在本周开发工作区。
 5. **演示话术**：全程声明「全部为虚构数据 + P0-lite 模板化协作」，不得宣称已接入真实系统/真实知识库。
+6. **Key 存放（Sprint 4）**：`DEEPSEEK_API_KEY` 仅存于本地 gitignored `backend/.env` 或进程环境变量，绝不提交 Git；`backend/.env.example` 只含占位名。模型名默认 `v4-flash`，官方接口不支持时以 `DEEPSEEK_MODEL` 覆盖为 deepseek-chat（见交接文档）。
 
 ## 7. Sandbox 边界
 

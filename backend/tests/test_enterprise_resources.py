@@ -22,9 +22,10 @@ def test_registry_three_resources(client):
     resp = client.get("/api/v1/knowledge-bases")
     assert resp.status_code == 200
     kbs = {kb["id"]: kb for kb in resp.json()}
-    assert set(kbs) == {"KB-PUBLIC", "KB-INTERNAL", "KB-FINTECH"}
+    assert set(kbs) == {"KB-PUBLIC", "KB-ONBOARD", "KB-INTERNAL", "KB-FINTECH"}
     assert kbs["KB-PUBLIC"]["data_level"] == "L1"
     assert kbs["KB-PUBLIC"]["allowed_employment_type"] == ["formal", "intern"]
+    assert kbs["KB-ONBOARD"]["name"] == "入职 Demo 知识库"
     assert kbs["KB-INTERNAL"]["data_level"] == "L2"
     assert kbs["KB-INTERNAL"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-FINTECH"]["department_scope"] == ["金融科技部"]
@@ -80,11 +81,18 @@ def test_virtual_employee_unapproved_kb_deny(client):
     assert "未授权插件" in audit["reason"]
 
 
-def test_virtual_employee_approved_kb_allow(client):
-    # VE-0001 有 knowledge-l2 grant（单独授权）→ KB-INTERNAL ALLOW
-    resp = _search(client, "VE-0001", "KB-INTERNAL", "入职流程", "T-S3-VE-OK-001")
+def test_virtual_employee_onboarding_kb_allow(client):
+    # VE-0001 仅授权公共 + 入职 Demo 知识库 → KB-ONBOARD（L1）ALLOW
+    resp = _search(client, "VE-0001", "KB-ONBOARD", "第一天做什么", "T-S3-VE-OK-001")
     assert resp.status_code == 200
     assert resp.json()["decision"] == "allow"
+
+
+def test_virtual_employee_internal_kb_deny(client):
+    # VE-0001 无 knowledge-l2 grant（单独授权移除）→ KB-INTERNAL DENY
+    resp = _search(client, "VE-0001", "KB-INTERNAL", "内部制度", "T-S3-VE-DENY-001")
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "POLICY_DENIED"
 
 
 def test_public_kb_any_employee_allow(client):

@@ -8,8 +8,9 @@
 - 后端：FastAPI + SQLite，提供 `/health`、员工 / 插件 / 策略 / 审计 CRUD，以及只读的知识库与团队接口。
 - Core Control Plane（Sprint 2）：Employee Identity + Policy Engine（四维评估，POLICY-001~005）+ Plugin Gateway + Mock Adapter + 全决策审计，内部接口 `/internal/policy/evaluate`、`/internal/gateway/invoke`。
 - Enterprise Resource & Security Layer（Sprint 3）：Knowledge Adapter（Mock + Stub）、Knowledge Resource Registry（KB-PUBLIC / KB-INTERNAL / KB-FINTECH）、Sandbox Policy + Mock Executor、Secret/Config 环境变量引用，内部接口 `/internal/knowledge/search`、`/internal/sandbox/run`。
-- Mock 数据：正式员工 2、实习生 2、数字分身 2、虚拟员工 3、插件 6、策略 9、虚构知识库资源 3、团队 1。
-- 测试：后端 pytest 44 项（控制链路 18 + 企业资源 16 + 骨架 10）；前端 vitest 冒烟 + `tsc` 类型检查。
+- Chat + DeepSeek Provider（Sprint 4）：LLMProvider（chat/tool_call/structured_output + SAFEMODE）、Session Manager、Chat Orchestrator（≤3 轮工具，Deny 卡片）；接口 `POST /api/v1/employees/{employee_no}/chat`、`GET /api/v1/chat/sessions/{session_id}/messages`。
+- Mock 数据：正式员工 2、实习生 2、数字分身 2、虚拟员工 3、插件 6、策略 9、虚构知识库资源 4（含 KB-ONBOARD）、团队 1。
+- 测试：后端 pytest 51 项；前端 vitest 冒烟 + `tsc` 类型检查。
 - 架构冻结：五层架构、统一资源访问链（Identity → Policy Engine → Plugin Gateway → Adapter → Resource）与七组 API 契约已冻结，见 `docs/`；交接说明见 `docs/DEVELOPMENT_HANDOFF.md`。
 
 尚未实现（后续 Sprint）：LLM 问答、Policy 评估执行、Plugin Gateway、Team 任务协作、Harness / Sandbox。
@@ -43,6 +44,7 @@ logicalNpc/
 cd backend
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+# 如需真实问答：复制 .env.example 为 .env 并填入 DEEPSEEK_API_KEY（.env 已被 gitignore，绝不提交）
 .\.venv\Scripts\python.exe -m app.seed --reset   # 重建 SQLite 并灌入虚构种子
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
 ```

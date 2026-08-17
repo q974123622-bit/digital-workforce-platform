@@ -2,7 +2,22 @@
 
 > 版本：v1.0（2026-08-17）
 > 目的：让两名正式员工（A 架构/总装、B 安全/企业资源）在本基线上串行开发，实习生（C 前端、D Mock/测试）按契约并行。
-> 状态：Sprint 1/1.5/2 已完成；Sprint 3 Enterprise Resource & Security Layer 已完成（2026-08-17）；本文件为稳定基线交接。
+> 状态：Sprint 1/1.5/2/3 已完成；Sprint 4 Chat + DeepSeek Provider 已完成（2026-08-17）；本文件为稳定基线交接。
+
+## 1.9 Sprint 4 完成情况（Digital Employee Chat + DeepSeek Provider，负责人 A）
+
+- **LLM Provider**：`backend/app/services/llm.py` 统一 `chat() / tool_call() / structured_output()`；`DeepSeekProvider`（OpenAI 兼容，httpx）；业务代码不直连 DeepSeek；Key 仅环境变量（本地 gitignored `.env`）。
+- **SAFEMODE**：所有发送消息必须带 `source=demo`，非 demo 段拒发（`LLMUnavailableError`）。
+- **Session Manager**：`backend/app/services/session.py` 保存 employee_id / session_id / message history（chat_session / chat_message 表）。
+- **Chat Orchestrator**：`backend/app/services/chat.py` 严格链路 User → Employee → LLM → Tool Intent → Policy → Gateway → Knowledge Adapter → Result → LLM → Answer；≤3 轮工具；Deny 卡片（policy_id/reason）；工具调用一律经 Gateway。
+- **Demo 场景**（真实 DeepSeek deepseek-chat 验证通过）：
+  - 场景 A：DT-E10281 问"查询一下内部制度" → KB-INTERNAL Allow（POLICY-001）→ 正常回答 ✅
+  - 场景 B：DT-E20999 同样问题 → DENY（POLICY-002）→ "当前身份无权访问该知识库" ✅
+  - VE-0001：仅 KB-PUBLIC + KB-ONBOARD（新增入职 Demo 知识库），问入职流程正常回答；问内部制度被拒 ✅
+- **接口**：`POST /api/v1/employees/{employee_no}/chat`（整段 JSON）、`GET /api/v1/chat/sessions/{session_id}/messages`。
+- **测试**：新增 `backend/tests/test_chat.py`（FakeLLM，7 项），后端共 51 项全绿。
+
+> ⚠️ 模型名说明：官方 DeepSeek API 无 `v4-flash` 模型名（合法为 deepseek-chat / deepseek-reasoner）。代码默认值保留 v4-flash，本地 `backend/.env` 覆盖为 `DEEPSEEK_MODEL=deepseek-chat`；若内部网关支持 v4-flash，把 `DEEPSEEK_BASE_URL` 指向该网关即可。
 
 ## 1.7 Sprint 3 完成情况（Enterprise Resource & Security Layer，负责人 B）
 
@@ -80,7 +95,7 @@ pnpm --filter frontend dev
 
 | 项 | 命令 | 结果 |
 |---|---|---|
-| 后端 API 测试（44 用例：Sprint 2 控制链路 18 + Sprint 3 企业资源 16 + 骨架 10） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 44 passed |
+| 后端 API 测试（51 用例：骨架 10 + 控制链路 18 + 企业资源 16 + Chat 7） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 51 passed |
 | 前端类型检查 | `pnpm --filter frontend typecheck` | ✅ |
 | 前端冒烟测试 | `pnpm --filter frontend test` | ✅ 1 passed |
 | 前端生产构建 | `pnpm --filter frontend build` | ✅（chunk 体积提示非阻塞） |
@@ -101,8 +116,9 @@ pnpm --filter frontend dev
 
 | 方向 | 负责人 | 说明 |
 |---|---|---|
-| Chat Orchestrator（SSE + 工具循环） | A（正式/架构总装） | Sprint 4 主线，依赖 Policy/Gateway/Knowledge Adapter（均已就绪） |
-| TeamTaskOrchestrator + Sandbox / Harness | A/B 串行 | Sprint 4，门禁 G2/G3（Sandbox Mock 已就绪，Docker 真启动待 G3） |
+| TeamTaskOrchestrator（P0-lite 编排） | A（正式/架构总装） | Sprint 5 主线（Chat/Policy/Gateway 均就绪） |
+| Sandbox Docker 真启动 / Harness | B / A-B 串行 | Sprint 5，门禁 G2/G3（Sandbox Mock 已就绪） |
+| 前端聊天页 | C（实习生） | 按 Chat API 契约实现（后端已就绪） |
 | 前端聊天页 / 安全页增强 | C（实习生） | 等契约冻结后按 `API_CONTRACT.md` 实现 |
 | Mock Adapter 内容 + 自动化测试扩展 | D（实习生） | 按契约补 Mock 数据与用例 |
 

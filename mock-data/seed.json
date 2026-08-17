@@ -94,7 +94,6 @@
     {"employee_id": "DT-E20999", "plugin_id": "knowledge-l2", "action": "read", "decision_mode": "deny"},
     {"employee_id": "DT-E20999", "plugin_id": "internet-search", "action": "search", "decision_mode": "allow"},
     {"employee_id": "VE-0001", "plugin_id": "knowledge-l1", "action": "read", "decision_mode": "allow"},
-    {"employee_id": "VE-0001", "plugin_id": "knowledge-l2", "action": "read", "decision_mode": "allow"},
     {"employee_id": "VE-0001", "plugin_id": "adp-onboarding", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "VE-0002", "plugin_id": "hr-employee-mcp", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "VE-0003", "plugin_id": "adp-onboarding", "action": "execute", "decision_mode": "allow"},
@@ -131,6 +130,7 @@
   ],
   "knowledge_bases": [
     {"id": "KB-PUBLIC", "name": "公共知识", "level": "L1", "data_level": "L1", "resource_type": "knowledge", "allowed_employment_type": ["formal", "intern"], "department_scope": ["*"], "domain": "通用", "description": "公开制度、FAQ、培训材料（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l1-pub.md"},
+    {"id": "KB-ONBOARD", "name": "入职 Demo 知识库", "level": "L1", "data_level": "L1", "resource_type": "knowledge", "allowed_employment_type": ["formal", "intern"], "department_scope": ["*"], "domain": "入职", "description": "新员工入职流程与准备事项（虚构，虚拟员工 VE-0001 专用）", "status": "active", "doc_path": "mock-data/kb/kb-onboarding.md"},
     {"id": "KB-INTERNAL", "name": "正式员工内部知识库", "level": "L2", "data_level": "L2", "resource_type": "knowledge", "allowed_employment_type": ["formal"], "department_scope": ["*"], "domain": "综合", "description": "正式员工内部制度与流程（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-hr.md"},
     {"id": "KB-FINTECH", "name": "金融科技部门知识库", "level": "L2", "data_level": "L2", "resource_type": "knowledge", "allowed_employment_type": ["formal"], "department_scope": ["金融科技部"], "domain": "金融科技", "description": "金融科技部门专属流程与材料（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-fin.md"}
   ]

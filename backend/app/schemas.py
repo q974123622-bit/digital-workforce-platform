@@ -234,3 +234,29 @@ class SandboxRunOut(BaseModel):
     mode: str
     status: str
     logs: list[str] = []
+
+
+# ---- Sprint 4：Chat ----
+
+
+class ChatMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    session_id: str
+    role: str
+    content: str
+    tool_cards: list = []
+
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str | None = None
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    trace_id: str
+    message: str
+    tool_cards: list = []
+    policy_denied: dict | None = None

@@ -26,7 +26,7 @@
   - Acceptance Criteria：`git status` 无敏感文件；`higress/tools/appservice_tokens.txt` 已移出工作区（备份至工作区外 external_tokens_backup/，2026-08-17）；README 记录外部依赖版本
 
 ### T0-02 DeepSeek 连通性冒烟（门禁 G1）
-- [ ]
+- [x]（Sprint 4 通过：deepseek-chat 连通成功；官方接口无 v4-flash 模型名，本地 .env 覆盖为 deepseek-chat；Key 仅存本地 gitignored .env）
   - Owner Role：A
   - Input：`DEEPSEEK_API_KEY`、`DEEPSEEK_BASE_URL`（可配置）
   - Output：`.env.example`；冒烟脚本；连通性结论（通过/代理方案/降级预案）
@@ -168,7 +168,7 @@
 ## Phase 1 — 问答与安全（Day 2–3）
 
 ### T1-01 LLM Provider（SAFEMODE）
-- [ ]
+- [x]（Sprint 4 完成：services/llm.py 统一 chat/tool_call/structured_output；DeepSeekProvider；SAFEMODE 非 demo 段拒发；Key 仅环境变量）
   - Owner Role：A
   - Input：G1 结论、契约
   - Output：统一 Provider（DeepSeek backend、`DEEPSEEK_API_KEY` 唯一持有点、prompt 段 source 标签校验）
@@ -208,7 +208,7 @@
   - Acceptance Criteria：决策、工具调用、审批均落审计；按 trace_id 可聚合
 
 ### T1-06 Chat Orchestrator
-- [ ]
+- [x]（Sprint 4 完成：services/chat.py 严格链路 User→Employee→LLM→Tool→Policy→Gateway→Adapter→LLM→Answer；≤3 轮工具；Deny 卡片；Session 历史）
   - Owner Role：A
   - Input：T1-01、T1-03、契约
   - Output：SSE 聊天 + 轻量 Agent 循环（≤3 轮工具，仅经 Gateway）；Policy Denied 卡片事件

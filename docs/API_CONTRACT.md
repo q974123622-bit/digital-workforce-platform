@@ -53,7 +53,7 @@ Employee Identity
 | DELETE | `/employees/{employee_no}` | ✅ | 删除数字员工 | — | 204 |
 | PUT | `/employees/{employee_no}/plugins` | 📋 | 插件授权 | `{grants: [{plugin_id, action, decision_mode}]}` | 200 `{ok: true}` |
 | PUT | `/employees/{employee_no}/security` | 📋 | 安全配置 | `{location, internet, max_data_level, allowed_domains}` | 200 `{ok: true}` |
-| POST | `/employees/{employee_no}/chat` | 📋 | 单聊（SSE） | `{message, session_id?}` | SSE 事件流 |
+| POST | `/employees/{employee_no}/chat` | ✅ | 单聊（Sprint 4，整段 JSON 返回，SSE 为弹性项） | `{message, session_id?}` | `{session_id, trace_id, message, tool_cards[], policy_denied?}` |
 
 ### 3.2 Policy API（✅ 骨架已实现；评估接口走内部 API）
 
@@ -88,11 +88,11 @@ Employee Identity
 | DELETE | `/audit/{event_id}` | ✅ | 删除事件（演示清理用） | — | 204 |
 | GET | `/traces/{trace_id}` | 📋 | Trace 时间线（聚合） | — | `TraceTimelineDto` |
 
-### 3.5 Chat API（📋 冻结，Sprint 2 实现）
+### 3.5 Chat API（✅ Sprint 4 已实现，整段 JSON）
 
 | 方法 | 路径 | 说明 | 关键请求 | 关键响应 |
 |---|---|---|---|---|
-| POST | `/employees/{employee_no}/chat` | 单聊（SSE） | `{message, session_id?}` | SSE 事件流 |
+| POST | `/employees/{employee_no}/chat` | 单聊（整段 JSON 返回；SSE 为 P1 弹性项） | `{message, session_id?}` | `{session_id, trace_id, message, tool_cards, policy_denied}` |
 | GET | `/chat/sessions/{session_id}/messages` | 会话历史 | — | `ChatMessageDto[]` |
 
 SSE 事件类型（固定枚举）：
@@ -312,3 +312,4 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 | 2026-08-17 | v1.1 Sprint 1.5 冻结：EmployeeDto 平铺对齐实现；补 Chat / Runtime Adapter / Knowledge Adapter 三组接口；新增统一资源访问链约束 | A | 本文件 / shared-schema / 后续实现 |
 | 2026-08-17 | v1.1 实现状态更新（Sprint 2）：Policy Evaluate、Gateway Invoke、Knowledge Adapter 由 📋 转 ✅；接口定义无变更 | A | 本文件 |
 | 2026-08-17 | v1.1 兼容扩展（Sprint 3）：KnowledgeBaseDto 增加 data_level/resource_type/allowed_employment_type/department_scope（可选）；AuditEventDto 增加 knowledge_base_id（可选）；新增 POST /internal/knowledge/search；SandboxRunIn 增加可选 execution_location；Sandbox /knowledge/search 转 ✅ | B | 本文件 / shared-schema / models / schemas |
+| 2026-08-17 | v1.1 实现状态更新（Sprint 4）：Chat API 转 ✅（整段 JSON，SSE 弹性）；LLMProvider 统一 chat/tool_call/structured_output 已实现 | A | 本文件 |

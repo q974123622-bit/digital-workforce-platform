@@ -22,7 +22,7 @@ flowchart TB
   subgraph L1[1 产品门户层]
     UI[React + Ant Design 前端]
     API[FastAPI 门户后端]
-    CH[ChatOrchestrator 📋]
+    CH[ChatOrchestrator ✅]
     SE[员工/身份语义 + 种子数据]
   end
   subgraph L2[2 协作编排层]
@@ -45,7 +45,7 @@ flowchart TB
   API --> SE
   API --> CH
   API --> TM
-  CH --> LLM[LLMProvider SAFEMODE 📋]
+  CH --> LLM[LLMProvider SAFEMODE ✅]
   CH --> GW
   TM --> GW
   TM --> RL[RuntimeLauncher 📋]
@@ -63,7 +63,7 @@ flowchart TB
 
 | 层 | 组件 | 职责 | Sprint 1/1.5 状态 |
 |---|---|---|---|
-| 1 产品门户层 | React + FastAPI | 员工/数字分身/虚拟员工语义，聊天编排，团队任务入口，配置与展示 | ✅ 前端骨架 + 后端 CRUD 已实现；Chat/Team 编排 📋 |
+| 1 产品门户层 | React + FastAPI | 员工/数字分身/虚拟员工语义，聊天编排，团队任务入口，配置与展示 | ✅ 前端骨架 + 后端 CRUD + Chat 编排（Sprint 4）；Team 编排 📋 |
 | 2 协作编排层 | TeamTaskOrchestrator（P0-lite）；AgentTeams Adapter（预留） | 模板化任务 + LLM 补全/汇总、子任务分发、审批流转 | 📋 契约预留 |
 | 3 Runtime 执行层 | RuntimeAdapter（harness / demo / openclaw-stub / agentteams-stub） | 虚拟员工的受控执行；外部工具一律经 Plugin Gateway | 📋 契约预留 |
 | 4 治理层 | Policy Engine / Plugin Gateway / Audit Store | 授权、插件执行入口、全链路审计 | ✅ Sprint 2 已实现（评估/执行/审计链路接通） |
@@ -73,8 +73,8 @@ flowchart TB
 
 | 模块 | 职责 | 明确不做 | 状态 |
 |---|---|---|---|
-| LLMProvider | 唯一持有 DeepSeek Key 的代码点；统一 chat 接口；SAFEMODE 校验所有 prompt 段来源 | 不做多模型路由；不持有真实数据 | 📋 Sprint 2 |
-| ChatOrchestrator | 单聊编排；内置轻量 Agent 循环（最多 3 轮工具调用）；SSE 输出 | 不直接评估策略；不直连插件 | 📋 Sprint 2 |
+| LLMProvider | 唯一持有 DeepSeek Key 的代码点；统一 chat/tool_call/structured_output；SAFEMODE 校验所有 prompt 段来源 | 不做多模型路由；不持有真实数据 | ✅ Sprint 4 |
+| ChatOrchestrator | 单聊编排；内置轻量 Agent 循环（最多 3 轮工具调用）；整段 JSON（SSE 弹性） | 不直接评估策略；不直连插件 | ✅ Sprint 4 |
 | TeamTaskOrchestrator | 模板 + LLM 补全/汇总；`task_run` + JSON `subtasks`；审批挂起与续跑 | 不做通用调度器、动态 Worker 招聘 | 📋 Sprint 3 |
 | Policy Engine | `evaluate(subject, resource, action, context) -> allow/deny/approval + reason`；默认拒绝 | 不执行工具；不创建容器；不暴露给前端 | ✅ Sprint 2（内置规则 POLICY-001~005 等） |
 | Plugin Gateway | 唯一插件执行入口：policy → Mock 凭据注入 → Adapter → 审计 | 不做授权决策 | ✅ Sprint 2 |
