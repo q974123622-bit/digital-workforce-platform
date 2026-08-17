@@ -64,7 +64,7 @@ Employee Identity
 | POST | `/policies` | ✅ | 创建策略 | `PolicyCreateDto` | 201 `PolicyDto` |
 | PUT | `/policies/{policy_id}` | ✅ | 更新策略 | `PolicyUpdateDto` | `PolicyDto` |
 | DELETE | `/policies/{policy_id}` | ✅ | 删除策略 | — | 204 |
-| POST | `/internal/policy/evaluate` | 📋 | 策略评估（内部） | 见 §6.1 | `{decision, policy_id?, reason}` |
+| POST | `/internal/policy/evaluate` | ✅ | 策略评估（内部，Sprint 2） | 见 §6.1 | `{decision, policy_id?, reason}` |
 
 ### 3.3 Plugin API（✅ 骨架已实现；调用走 Gateway）
 
@@ -76,7 +76,7 @@ Employee Identity
 | PUT | `/plugins/{plugin_id}` | ✅ | 更新插件 | `PluginUpdateDto` | `PluginDto` |
 | DELETE | `/plugins/{plugin_id}` | ✅ | 删除插件 | — | 204 |
 | POST | `/plugins/{plugin_id}/test` | 📋 | 插件测试调用（经 Gateway） | `{params, actor_no}` | 200 `{ok, result, decision}` |
-| POST | `/internal/gateway/invoke` | 📋 | 插件执行（内部） | 见 §6.2 | `{ok, data, decision, audit_ids[]}` |
+| POST | `/internal/gateway/invoke` | ✅ | 插件执行（内部，Sprint 2） | 见 §6.2 | `{ok, data, decision, audit_ids[]}` |
 
 ### 3.4 Audit API（✅ 骨架已实现；Trace 时间线待实现）
 
@@ -121,7 +121,7 @@ SSE 事件类型（固定枚举）：
 |---|---|---|---|
 | GET | `/knowledge-bases` | ✅ | 知识库登记列表 |
 | GET | `/knowledge-bases/{kb_id}` | ✅ | 知识库登记详情 |
-| POST | `/internal/gateway/invoke` | 📋 | 知识查询（经 Knowledge Adapter） |
+| POST | `/internal/gateway/invoke` | ✅ | 知识查询（经 Knowledge Adapter，Sprint 2） |
 
 ## 4. Runtime Adapter Interface（📋 冻结，Sprint 3 实现）
 
@@ -158,7 +158,7 @@ RuntimeAdapter.run(subject, task, context) -> RuntimeResult
 - `mode=demo` 时 UI 必须标注「Adapter 演示模式」。
 - 失败返回 `RUNTIME_UNAVAILABLE`（503），不吞错误。
 
-## 5. Knowledge Adapter Interface（📋 冻结，Sprint 2 实现）
+## 5. Knowledge Adapter Interface（✅ Mock 已实现，Sprint 2）
 
 知识查询统一经 Plugin Gateway → Knowledge Adapter；前端与 Chat 层不得直读 `mock-data/kb/` 文件。
 
@@ -190,7 +190,7 @@ RuntimeAdapter.run(subject, task, context) -> RuntimeResult
 
 ## 6. 内部接口（服务间，不暴露前端）
 
-### 6.1 Policy Evaluate（📋）
+### 6.1 Policy Evaluate（✅ Sprint 2 已实现）
 
 `POST /internal/policy/evaluate`
 
@@ -205,7 +205,7 @@ RuntimeAdapter.run(subject, task, context) -> RuntimeResult
 
 响应：`{"decision": "allow|deny|approval", "policy_id": "P-DATA-003", "reason": "..."}`
 
-### 6.2 Gateway Invoke（📋）
+### 6.2 Gateway Invoke（✅ Sprint 2 已实现）
 
 `POST /internal/gateway/invoke`
 
@@ -215,7 +215,7 @@ RuntimeAdapter.run(subject, task, context) -> RuntimeResult
 
 响应：`{"ok": true, "data": {...}, "decision": "allow", "audit_ids": [1]}`
 
-### 6.3 Runtime / Sandbox（📋）
+### 6.3 Runtime / Sandbox（📋 冻结，Sprint 3）
 
 `POST /internal/runtime/run`、`POST /internal/sandbox/run`
 
@@ -289,3 +289,4 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network"}`
 |---|---|---|---|
 | 2026-08-17 | v1.0 初始冻结 | A | 本文件 / OpenAPI / 前端 types |
 | 2026-08-17 | v1.1 Sprint 1.5 冻结：EmployeeDto 平铺对齐实现；补 Chat / Runtime Adapter / Knowledge Adapter 三组接口；新增统一资源访问链约束 | A | 本文件 / shared-schema / 后续实现 |
+| 2026-08-17 | v1.1 实现状态更新（Sprint 2）：Policy Evaluate、Gateway Invoke、Knowledge Adapter 由 📋 转 ✅；接口定义无变更 | A | 本文件 |

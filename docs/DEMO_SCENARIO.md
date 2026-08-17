@@ -35,10 +35,10 @@
 
 ### 真实实现（本周）
 
-- 门户后端（CRUD、种子、契约）
-- Policy Engine（有序规则、默认拒绝、Deny/Approval/Allow）
-- Plugin Gateway（唯一插件入口 + 审计）
-- Audit Store 与 Trace 聚合
+- 门户后端（CRUD、种子、契约）✅
+- Policy Engine（有序规则、默认拒绝、Deny/Approval/Allow）✅ Sprint 2
+- Plugin Gateway（唯一插件入口 + 审计）✅ Sprint 2
+- Audit Store（全决策落审计）✅ Sprint 2；Trace 聚合 📋
 - DeepSeek 真实问答（Key 环境变量注入，SAFEMODE）
 - ChatOrchestrator 内置轻量 Agent 循环（≤3 轮工具）
 - TeamTaskOrchestrator（模板 + LLM 补全/汇总，非通用调度器）
@@ -48,8 +48,7 @@
 
 ### Mock / 虚构
 
-- 知识库内容（虚构 L1/L2 文档，结构与真实接口一致）
-- HR 员工查询 MCP、ADP Workflow、RPA 报表机器人（同协议 Mock）
+- 知识库内容（虚构 L1/L2 文档，结构与真实接口一致）+ Knowledge/HR/ADP/RPA/公网搜索 Mock Adapter（Sprint 2 已实现）
 - OpenClaw 执行（仅配置展示 + 脚本化结果）
 - AgentTeams 后端（Adapter 桩，明确返回「预留/未启用」）
 - 凭据（内存级 Mock 令牌，不入 Prompt）

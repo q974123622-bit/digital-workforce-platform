@@ -33,9 +33,9 @@ flowchart TB
     RA[RuntimeAdapter harness/demo/stub 📋]
   end
   subgraph L4[4 治理层]
-    PE[Policy Engine 唯一授权源 📋]
-    GW[Plugin Gateway 📋]
-    AU[Audit Store ✅ CRUD]
+    PE[Policy Engine 唯一授权源 ✅]
+    GW[Plugin Gateway ✅]
+    AU[Audit Store ✅ 全决策落审计]
   end
   subgraph L5[5 隔离与资源层]
     SB[Sandbox Manager Docker/local 📋]
@@ -66,7 +66,7 @@ flowchart TB
 | 1 产品门户层 | React + FastAPI | 员工/数字分身/虚拟员工语义，聊天编排，团队任务入口，配置与展示 | ✅ 前端骨架 + 后端 CRUD 已实现；Chat/Team 编排 📋 |
 | 2 协作编排层 | TeamTaskOrchestrator（P0-lite）；AgentTeams Adapter（预留） | 模板化任务 + LLM 补全/汇总、子任务分发、审批流转 | 📋 契约预留 |
 | 3 Runtime 执行层 | RuntimeAdapter（harness / demo / openclaw-stub / agentteams-stub） | 虚拟员工的受控执行；外部工具一律经 Plugin Gateway | 📋 契约预留 |
-| 4 治理层 | Policy Engine / Plugin Gateway / Audit Store | 授权、插件执行入口、全链路审计 | Audit CRUD ✅；Policy 评估 / Gateway / 审计接入 📋 |
+| 4 治理层 | Policy Engine / Plugin Gateway / Audit Store | 授权、插件执行入口、全链路审计 | ✅ Sprint 2 已实现（评估/执行/审计链路接通） |
 | 5 隔离与资源层 | Sandbox Manager（Docker / local）+ 插件 Mock 资源 | 网络/目录/位置隔离；虚构知识库与 Mock 系统 | Mock 资源数据 ✅；Sandbox 📋 |
 
 ## 3. 模块职责
@@ -76,11 +76,11 @@ flowchart TB
 | LLMProvider | 唯一持有 DeepSeek Key 的代码点；统一 chat 接口；SAFEMODE 校验所有 prompt 段来源 | 不做多模型路由；不持有真实数据 | 📋 Sprint 2 |
 | ChatOrchestrator | 单聊编排；内置轻量 Agent 循环（最多 3 轮工具调用）；SSE 输出 | 不直接评估策略；不直连插件 | 📋 Sprint 2 |
 | TeamTaskOrchestrator | 模板 + LLM 补全/汇总；`task_run` + JSON `subtasks`；审批挂起与续跑 | 不做通用调度器、动态 Worker 招聘 | 📋 Sprint 3 |
-| Policy Engine | `evaluate(subject, resource, action, context) -> allow/deny/approval + reason`；默认拒绝 | 不执行工具；不创建容器；不暴露给前端 | 📋 Sprint 2 |
-| Plugin Gateway | 唯一插件执行入口：policy → Mock 凭据注入 → Adapter → 审计 | 不做授权决策 | 📋 Sprint 2 |
+| Policy Engine | `evaluate(subject, resource, action, context) -> allow/deny/approval + reason`；默认拒绝 | 不执行工具；不创建容器；不暴露给前端 | ✅ Sprint 2（内置规则 POLICY-001~005 等） |
+| Plugin Gateway | 唯一插件执行入口：policy → Mock 凭据注入 → Adapter → 审计 | 不做授权决策 | ✅ Sprint 2 |
 | RuntimeAdapter | 统一 Runtime 接口；`harness` 真接或 `demo` 演示模式；OpenClaw/AgentTeams 为桩 | 不做权限判断 | 📋 Sprint 3 |
 | Sandbox Manager | Docker / local 双后端；network=none、目录挂载、超时控制；记录 Sandbox 决策 | 不产生授权决策 | 📋 Sprint 3 |
-| Audit Store | 追加式写入事件；按 trace_id 聚合为 Trace 时间线 | 不参与执行路径 | ✅ CRUD 已实现；接入 📋 |
+| Audit Store | 追加式写入事件；按 trace_id 聚合为 Trace 时间线 | 不参与执行路径 | ✅ Sprint 2（Gateway 全决策落审计；Trace 时间线接口 📋） |
 | 前端 | 展示与表单收集；渲染工具卡片、Policy Denied、审批卡 | 不解释/不执行权限 | ✅ 骨架已实现；聊天/任务页 📋 |
 
 ## 4. 统一资源访问链（强制）

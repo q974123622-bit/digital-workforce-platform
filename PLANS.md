@@ -130,15 +130,15 @@
   - Acceptance Criteria：单测通过（非 demo 段拒发、缺 Key 返回 LLM_UNAVAILABLE）；真实调用成功一次
 
 ### T1-02 Policy Engine
-- [ ]
+- [x]（Sprint 2 完成：services/policy.py 四维评估，POLICY-001~005 + P-DATA-003/P-PLUGIN-007/P-DEFAULT-001 内置规则，身份以 DB 为准不可伪造）
   - Owner Role：B
   - Input：SECURITY_BOUNDARY 权限模型、种子策略
   - Output：`evaluate()` 实现（有序规则、默认拒绝、Deny>Approval>Allow、reason 与 policy_id）
   - Dependency：T0-04
-  - Acceptance Criteria：单测 ≥8 场景，含 L3 deny、实习生 deny、remote-only、未授权插件 deny
+  - Acceptance Criteria：单测 ≥8 场景（实现 18 项：ALLOW/DENY/APPROVAL/Internet Deny/Local Deny/身份防伪造/默认拒绝）
 
 ### T1-03 Plugin Gateway
-- [ ]
+- [x]（Sprint 2 完成：services/gateway.py + routers/internal.py，Identity → Policy → Gateway → Adapter → Audit）
   - Owner Role：B
   - Input：T1-02、契约内部接口
   - Output：`/internal/gateway/invoke`（policy → Mock 凭据 → adapter → audit）
@@ -146,20 +146,20 @@
   - Acceptance Criteria：allow 路径返回数据；deny 路径返回 POLICY_DENIED；未知插件默认拒绝；每调用一条审计
 
 ### T1-04 插件 Adapter 注册表（Mock）
-- [ ]
+- [x]（Sprint 2 完成：services/adapters.py 六个 Mock Adapter：knowledge-l1/l2、hr-employee-mcp、adp-onboarding、internet-search、rpa-report）
   - Owner Role：B（契约）+ D（Mock 内容）
   - Input：契约、Mock 知识库
-  - Output：knowledge-l1/l2、hr-employee-mcp、adp-onboarding、rpa-report 四个 Adapter
+  - Output：knowledge-l1/l2、hr-employee-mcp、adp-onboarding、rpa-report（+internet-search）Mock Adapter
   - Dependency：T0-07
   - Acceptance Criteria：Gateway 可调通全部 Mock 插件，返回结构符合契约
 
 ### T1-05 Audit Store
-- [ ]（Sprint 1 已完成 CRUD 部分：audit_event 写入与按 trace_id/employee_id/decision 过滤查询；决策/工具调用/审批落审计待 T1-02/T1-03 完成后收口）
+- [x]（Sprint 2 完成：Gateway 每次调用落一条审计，含 allow/deny/approval 全决策；字段齐全 trace_id/employee_id/plugin_id/action/decision/reason/ts/result_summary）
   - Owner Role：B
   - Input：契约 AuditEventDto
   - Output：audit_event 写入与查询（trace_id / employee_id / decision 过滤）
   - Dependency：T0-04
-  - Acceptance Criteria：决策、工具调用、审批均落审计；按 trace_id 可聚合（审计事件源待 Policy/Gateway 接通）
+  - Acceptance Criteria：决策、工具调用、审批均落审计；按 trace_id 可聚合
 
 ### T1-06 Chat Orchestrator
 - [ ]

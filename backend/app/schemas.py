@@ -151,3 +151,48 @@ class KnowledgeBaseOut(BaseModel):
     description: str
     status: str
     doc_path: str | None
+
+
+# ---- Sprint 2：Core Control Plane 内部接口（契约 API_CONTRACT.md §6） ----
+
+
+class SubjectRef(BaseModel):
+    type: str | None = None
+    id: str | None = None
+    employee_no: str
+    employment_type: str | None = None
+
+
+class ResourceRefIn(BaseModel):
+    type: str
+    id: str
+    data_level: str | None = None
+
+
+class PolicyEvaluateIn(BaseModel):
+    subject: SubjectRef
+    resource: ResourceRefIn
+    action: str
+    context: dict | None = None
+
+
+class PolicyEvaluateOut(BaseModel):
+    decision: str
+    policy_id: str | None = None
+    reason: str
+
+
+class GatewayInvokeIn(BaseModel):
+    employee_id: str
+    plugin_id: str
+    action: str
+    params: dict = {}
+    trace_id: str = ""
+
+
+class GatewayInvokeOut(BaseModel):
+    ok: bool
+    data: dict | None = None
+    decision: str
+    audit_ids: list[int] = []
+    policy_id: str | None = None

@@ -6,8 +6,9 @@
 
 - 前端：React + TypeScript + Vite + Ant Design，包含首页 / 数字员工列表与详情 / 插件中心 / 安全中心 / 协作团队占位页。
 - 后端：FastAPI + SQLite，提供 `/health`、员工 / 插件 / 策略 / 审计 CRUD，以及只读的知识库与团队接口。
-- Mock 数据：正式员工 2、实习生 2、数字分身 2、虚拟员工 3、插件 5、虚构知识库 4、团队 1。
-- 测试：后端 pytest（健康检查 + 四组 CRUD + 种子数量断言）；前端 vitest 冒烟 + `tsc` 类型检查。
+- Core Control Plane（Sprint 2）：Employee Identity + Policy Engine（四维评估，POLICY-001~005）+ Plugin Gateway + Mock Adapter + 全决策审计，内部接口 `/internal/policy/evaluate`、`/internal/gateway/invoke`。
+- Mock 数据：正式员工 2、实习生 2、数字分身 2、虚拟员工 3、插件 6、策略 8、虚构知识库 4、团队 1。
+- 测试：后端 pytest 28 项（含控制链路 18 项）；前端 vitest 冒烟 + `tsc` 类型检查。
 - 架构冻结：五层架构、统一资源访问链（Identity → Policy Engine → Plugin Gateway → Adapter → Resource）与七组 API 契约已冻结，见 `docs/`；交接说明见 `docs/DEVELOPMENT_HANDOFF.md`。
 
 尚未实现（后续 Sprint）：LLM 问答、Policy 评估执行、Plugin Gateway、Team 任务协作、Harness / Sandbox。

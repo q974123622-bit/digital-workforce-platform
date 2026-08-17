@@ -2,7 +2,16 @@
 
 > 版本：v1.0（2026-08-17）
 > 目的：让两名正式员工（A 架构/总装、B 安全/企业资源）在本基线上串行开发，实习生（C 前端、D Mock/测试）按契约并行。
-> 状态：Sprint 1 Platform Skeleton 已完成并通过全量验证；本文件为稳定基线交接。
+> 状态：Sprint 1 Platform Skeleton 已完成；Sprint 2 Core Control Plane 已完成（2026-08-17）；本文件为稳定基线交接。
+
+## 1.5 Sprint 2 完成情况（Core Control Plane）
+
+- **Employee Identity**：`backend/app/services/identity.py` 按数据库解析 identity（employee_id / employee_type / employment_type / department / owner_id + 环境绑定配置）；身份不可伪造（以 DB 为准，防越权声明）。
+- **Policy Engine**：`backend/app/services/policy.py` 四维评估（subject/resource/action/environment），内置规则 POLICY-001~005 + P-DATA-003 / P-PLUGIN-007 / P-DEFAULT-001；Deny > Approval > Allow；未授权默认拒绝。
+- **Plugin Gateway**：`backend/app/services/gateway.py` + `routers/internal.py` 实现 `/internal/policy/evaluate`、`/internal/gateway/invoke`；调用链 Identity → Policy → Gateway → Adapter → Result + Audit。
+- **Mock Adapter**：`backend/app/services/adapters.py` 六个虚构 Adapter（knowledge-l1/l2、hr-employee-mcp、adp-onboarding、internet-search、rpa-report），无任何真实系统。
+- **Audit**：Gateway 每次调用落一条审计（allow/deny/approval 全覆盖），字段齐全（trace_id / employee_id / plugin_id / action / decision / reason / timestamp / result_summary）。
+- **测试**：新增 `backend/tests/test_control_plane.py`（18 项），后端共 28 项测试全绿；前端 typecheck / vitest / build 全绿。
 
 ## 1. Sprint 1 已完成什么
 
@@ -61,7 +70,7 @@ pnpm --filter frontend dev
 
 | 项 | 命令 | 结果 |
 |---|---|---|
-| 后端 API 测试（10 用例） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 10 passed |
+| 后端 API 测试（28 用例，含 Sprint 2 控制链路 18 项） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 28 passed |
 | 前端类型检查 | `pnpm --filter frontend typecheck` | ✅ |
 | 前端冒烟测试 | `pnpm --filter frontend test` | ✅ 1 passed |
 | 前端生产构建 | `pnpm --filter frontend build` | ✅（chunk 体积提示非阻塞） |
@@ -72,7 +81,7 @@ pnpm --filter frontend dev
 
 | 内容 | 位置 |
 |---|---|
-| 种子数据（员工/插件/策略/审计/团队/知识库登记） | `mock-data/seed.json` |
+| 种子数据（员工/插件 6/策略 8/授权 13/审计/团队/知识库登记） | `mock-data/seed.json` |
 | 虚构知识库文档（L1 ×1、L2 ×3） | `mock-data/kb/` |
 | 重建命令 | `cd backend; .\.venv\Scripts\python.exe -m app.seed --reset` |
 
@@ -82,13 +91,12 @@ pnpm --filter frontend dev
 
 | 方向 | 负责人 | 说明 |
 |---|---|---|
-| LLM Provider + Chat Orchestrator | A（正式/架构总装） | Sprint 2 主线，依赖 G1 DeepSeek 连通性 |
-| Policy Engine + Plugin Gateway | B（正式/安全） | Sprint 2 主线，与 A 并行 |
+| Chat Orchestrator（SSE + 工具循环） | A（正式/架构总装） | Sprint 3 主线，依赖 Policy/Gateway（已完成） |
+| TeamTaskOrchestrator + Sandbox / Harness | A/B 串行 | Sprint 3，门禁 G2/G3 |
 | 前端聊天页 / 安全页增强 | C（实习生） | 等契约冻结后按 `API_CONTRACT.md` 实现 |
 | Mock Adapter 内容 + 自动化测试扩展 | D（实习生） | 按契约补 Mock 数据与用例 |
-| Sandbox / Harness 集成 | A/B 串行 | Sprint 3，门禁 G2/G3 |
 
-串行建议：A 先完成 LLM Provider（T1-01）→ B 完成 Policy/Gateway（T1-02/03）→ 联调 Chat（T1-06）。
+串行建议：A 完成 Chat Orchestrator（T1-06，调已就绪的 Policy/Gateway）→ TeamTaskOrchestrator（T2-01）→ Sandbox/Harness（T2-02/03）。
 
 ## 6. 下一阶段允许修改哪些目录
 
@@ -103,13 +111,13 @@ pnpm --filter frontend dev
 冻结清单（修改需 A 批准 + 变更登记）：
 
 1. 通用约定：Base Path `/api/v1`、错误形状、错误码枚举、`X-Demo-Actor`、`trace_id`。
-2. Employee API（路径与 DTO 字段：平铺结构）。
-3. Policy API（DTO：`effect/enabled/priority`）。
-4. Plugin API（DTO：`endpoint_ref/data_level/status`）。
-5. Audit API（DTO 字段与过滤参数）。
-6. Chat API（SSE 事件类型枚举）。
-7. Runtime Adapter Interface（`run(subject, task, context) -> RuntimeResult`）。
-8. Knowledge Adapter Interface（search 请求/响应结构）。
+2. Employee API（路径与 DTO 字段：平铺结构）✅ 已实现 CRUD。
+3. Policy API（DTO：`effect/enabled/priority`）✅ CRUD + evaluate 已实现。
+4. Plugin API（DTO：`endpoint_ref/data_level/status`）✅ CRUD + gateway invoke 已实现。
+5. Audit API（DTO 字段与过滤参数）✅ 已实现；Trace 时间线 📋。
+6. Chat API（SSE 事件类型枚举）📋。
+7. Runtime Adapter Interface（`run(subject, task, context) -> RuntimeResult`）📋。
+8. Knowledge Adapter Interface（search 请求/响应结构）✅ Mock 已实现。
 9. 统一资源访问链（Identity → Policy → Gateway → Adapter → Resource）不可绕过。
 
 ## 8. 已知决策记录（Sprint 1.5 冻结）

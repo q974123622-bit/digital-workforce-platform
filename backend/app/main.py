@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .database import Base, engine
-from .routers import audit, employees, knowledge, plugins, policies, teams
+from .routers import audit, employees, internal, knowledge, plugins, policies, teams
 from .seed import seed_if_empty
 
 
@@ -40,13 +40,15 @@ def _error_code(status_code: int) -> str:
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(_: Request, exc: HTTPException):
+    detail = exc.detail if isinstance(exc.detail, dict) else None
+    message = detail.get("message") if isinstance(detail, dict) else str(exc.detail)
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "error": {
                 "code": _error_code(exc.status_code),
-                "message": str(exc.detail),
-                "detail": None,
+                "message": message,
+                "detail": detail,
             }
         },
     )
@@ -78,3 +80,4 @@ app.include_router(policies.router, prefix=API_PREFIX)
 app.include_router(audit.router, prefix=API_PREFIX)
 app.include_router(teams.router, prefix=API_PREFIX)
 app.include_router(knowledge.router, prefix=API_PREFIX)
+app.include_router(internal.router)
