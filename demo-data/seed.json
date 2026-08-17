@@ -1,0 +1,132 @@
+{
+  "human_employees": [
+    {"employee_no": "E10281", "name": "张三", "department": "架构部", "employment_type": "formal", "status": "active"},
+    {"employee_no": "E10021", "name": "王老师", "department": "人力资源部", "employment_type": "formal", "status": "active"},
+    {"employee_no": "E20999", "name": "陈晓萌", "department": "研发部", "employment_type": "intern", "status": "active"},
+    {"employee_no": "E20888", "name": "李思远", "department": "数据组", "employment_type": "intern", "status": "active"}
+  ],
+  "digital_employees": [
+    {
+      "employee_no": "DT-E10281",
+      "name": "张三的数字分身",
+      "type": "twin",
+      "source_human_no": "E10281",
+      "owner_human_no": "E10281",
+      "department": "架构部",
+      "role_prompt": "你是架构部员工张三的数字分身，可回答部门制度与流程问题。",
+      "runtime_type": "demo",
+      "location": "remote",
+      "internet": "deny",
+      "max_data_level": "L2",
+      "allowed_domains": ["PUB", "HR_L2_DEMO"]
+    },
+    {
+      "employee_no": "DT-E20999",
+      "name": "陈晓萌的数字分身",
+      "type": "twin",
+      "source_human_no": "E20999",
+      "owner_human_no": "E20999",
+      "department": "研发部",
+      "role_prompt": "你是实习生陈晓萌的数字分身，仅可访问公开知识。",
+      "runtime_type": "demo",
+      "location": "remote",
+      "internet": "deny",
+      "max_data_level": "L1",
+      "allowed_domains": ["PUB"]
+    },
+    {
+      "employee_no": "VE-0001",
+      "name": "新员工入职助手",
+      "type": "virtual",
+      "owner_human_no": "E10021",
+      "department": "人力资源部",
+      "role_prompt": "你是新员工入职助手，只回答入职、制度与 IT 准备相关问题。",
+      "runtime_type": "harness",
+      "runtime_ref": "headless",
+      "location": "remote",
+      "internet": "deny",
+      "max_data_level": "L2",
+      "allowed_domains": ["PUB", "HR_L2_DEMO"]
+    },
+    {
+      "employee_no": "VE-0002",
+      "name": "HR 助理",
+      "type": "virtual",
+      "owner_human_no": "E10021",
+      "department": "人力资源部",
+      "role_prompt": "你是 HR 助理，负责员工信息查询与入职制度咨询。",
+      "runtime_type": "openclaw",
+      "runtime_ref": "openclaw-worker-hr",
+      "location": "remote",
+      "internet": "deny",
+      "max_data_level": "L2",
+      "allowed_domains": ["PUB", "HR_L2_DEMO"]
+    },
+    {
+      "employee_no": "VE-0003",
+      "name": "IT 助理",
+      "type": "virtual",
+      "owner_human_no": "E10281",
+      "department": "IT 服务部",
+      "role_prompt": "你是 IT 助理，负责账号开通与 IT 流程咨询。",
+      "runtime_type": "openclaw",
+      "runtime_ref": "openclaw-worker-it",
+      "location": "remote",
+      "internet": "deny",
+      "max_data_level": "L2",
+      "allowed_domains": ["PUB", "IT_L2_DEMO"]
+    }
+  ],
+  "plugins": [
+    {"id": "knowledge-l1", "name": "公开制度知识库", "type": "knowledge", "endpoint_ref": "mock://kb/l1", "data_level": "L1", "status": "active", "description": "公开制度与 FAQ（虚构内容）"},
+    {"id": "knowledge-l2", "name": "内部流程知识库", "type": "knowledge", "endpoint_ref": "mock://kb/l2", "data_level": "L2", "status": "active", "description": "部门内部流程文档（虚构内容）"},
+    {"id": "hr-employee-mcp", "name": "员工查询 MCP", "type": "mcp", "endpoint_ref": "mock://mcp/hr-employee", "data_level": "L2", "status": "active", "description": "查询员工基本信息（Mock）"},
+    {"id": "adp-onboarding", "name": "入职流程 Workflow", "type": "workflow", "endpoint_ref": "mock://adp/onboarding", "data_level": "L2", "status": "active", "description": "ADP 入职流程（Mock）"},
+    {"id": "rpa-report", "name": "报表机器人", "type": "rpa", "endpoint_ref": "mock://rpa/report", "data_level": "L3", "status": "active", "description": "自动生成报表（Mock，敏感）"}
+  ],
+  "employee_plugin_grants": [
+    {"employee_id": "DT-E10281", "plugin_id": "knowledge-l1", "action": "read", "decision_mode": "allow"},
+    {"employee_id": "DT-E10281", "plugin_id": "knowledge-l2", "action": "read", "decision_mode": "allow"},
+    {"employee_id": "DT-E10281", "plugin_id": "rpa-report", "action": "execute", "decision_mode": "deny"},
+    {"employee_id": "DT-E20999", "plugin_id": "knowledge-l1", "action": "read", "decision_mode": "allow"},
+    {"employee_id": "DT-E20999", "plugin_id": "knowledge-l2", "action": "read", "decision_mode": "deny"},
+    {"employee_id": "VE-0001", "plugin_id": "knowledge-l1", "action": "read", "decision_mode": "allow"},
+    {"employee_id": "VE-0001", "plugin_id": "knowledge-l2", "action": "read", "decision_mode": "allow"},
+    {"employee_id": "VE-0001", "plugin_id": "adp-onboarding", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0002", "plugin_id": "hr-employee-mcp", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0003", "plugin_id": "adp-onboarding", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0003", "plugin_id": "rpa-report", "action": "execute", "decision_mode": "approval"}
+  ],
+  "policies": [
+    {"id": "P-NET-001", "name": "互联网禁止", "effect": "deny", "description": "subject.internet=deny 时禁止公网访问", "enabled": true, "priority": 100},
+    {"id": "P-DATA-003", "name": "敏感数据禁止", "effect": "deny", "description": "resource.data_level=L3 且 subject.max_data_level<L3 时拒绝", "enabled": true, "priority": 90},
+    {"id": "P-LOCAL-001", "name": "仅远程 Sandbox", "effect": "deny", "description": "subject.location=remote 时禁止本地执行", "enabled": true, "priority": 80},
+    {"id": "P-INTERN-001", "name": "实习生禁止内部知识", "effect": "deny", "description": "subject 来源为实习生且 resource.data_level=L2 时拒绝", "enabled": true, "priority": 70},
+    {"id": "P-PLUGIN-007", "name": "入职助手可用 ADP", "effect": "allow", "description": "VE-0001 可执行 adp-onboarding", "enabled": true, "priority": 10},
+    {"id": "P-DEFAULT-001", "name": "默认 L1 可读", "effect": "allow", "description": "所有数字员工可读取 L1 知识", "enabled": true, "priority": 1}
+  ],
+  "audit_events": [
+    {"trace_id": "T-DEMO-001", "actor": "DT-E10281", "employee_id": "DT-E10281", "plugin_id": "knowledge-l2", "action": "read", "decision": "allow", "reason": "P-PLUGIN-007：正式员工分身 L2 已授权", "result_summary": "返回 2 条制度摘要（虚构）"},
+    {"trace_id": "T-DEMO-001", "actor": "DT-E10281", "employee_id": "DT-E10281", "plugin_id": "rpa-report", "action": "execute", "decision": "deny", "reason": "P-DATA-003：L3 敏感数据默认拒绝", "result_summary": null},
+    {"trace_id": "T-DEMO-002", "actor": "DT-E20999", "employee_id": "DT-E20999", "plugin_id": "knowledge-l2", "action": "read", "decision": "deny", "reason": "P-INTERN-001：实习生不可访问内部知识库", "result_summary": null}
+  ],
+  "teams": [
+    {
+      "id": "TEAM-ONBOARD",
+      "name": "新员工入职团队",
+      "leader_employee_id": "VE-0001",
+      "description": "P0-lite 团队：处理新员工入职准备任务",
+      "members": [
+        {"employee_id": "VE-0001", "role": "leader"},
+        {"employee_id": "VE-0002", "role": "worker"},
+        {"employee_id": "VE-0003", "role": "worker"}
+      ]
+    }
+  ],
+  "knowledge_bases": [
+    {"id": "KB-L1-PUB", "name": "公开制度库", "level": "L1", "domain": "通用", "description": "公开制度、FAQ、培训材料（虚构）", "status": "active", "doc_path": "demo-data/kb/kb-l1-pub.md"},
+    {"id": "KB-L2-HR", "name": "人事流程库", "level": "L2", "domain": "人力资源", "description": "入职、考勤、转正流程（虚构）", "status": "active", "doc_path": "demo-data/kb/kb-l2-hr.md"},
+    {"id": "KB-L2-IT", "name": "IT 服务库", "level": "L2", "domain": "IT", "description": "账号开通与办公设备申请（虚构）", "status": "active", "doc_path": "demo-data/kb/kb-l2-it.md"},
+    {"id": "KB-L2-FIN", "name": "财务报销库", "level": "L2", "domain": "财务", "description": "报销与预算流程（虚构）", "status": "active", "doc_path": "demo-data/kb/kb-l2-fin.md"}
+  ]
+}

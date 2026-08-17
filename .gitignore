@@ -1,0 +1,32 @@
+# 依赖与构建产物
+node_modules/
+dist/
+coverage/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 环境变量与密钥（绝不提交）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# 数据库与本地状态
+*.db
+*.sqlite3
+*.log
+
+# 外部引用（本机依赖，不入库）
+deepseek-harness/
+higress/
+
+# 安全 Overlay（仓库外，正式员工专用）
+secure-overlay/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
