@@ -1,6 +1,6 @@
 # 实施计划与任务清单
 
-> 版本：v0.2（2026-08-17，评审定稿）
+> 版本：v0.3（2026-08-17，Sprint 1.5 Architecture Freeze）
 > 用法：`- [ ]` 未完成，`- [x]` 已完成。每个任务必须满足 Acceptance Criteria 才能勾选。
 > Owner Role：A=正式（架构/总装），B=正式（安全/企业资源），C=实习生（前端），D=实习生（Mock/测试），All=全员。
 > 门禁：G1=DeepSeek 连通性（Day 1），G2=Harness 真接（Day 3），G3=Docker Sandbox（Day 4）。不过门禁即启用对应降级。
@@ -45,7 +45,7 @@
 - [x]
   - Owner Role：A（Schema）+ D（数据内容）
   - Input：契约 DTO、SECURITY_BOUNDARY 数据分级
-  - Output：SQLAlchemy 表（human_employee、digital_employee、runtime_binding、sandbox_policy、plugin、employee_plugin_grant、team、team_member、task_run、policy、chat_session、chat_message、audit_event）；demo-data 种子 JSON
+  - Output：SQLAlchemy 表（human_employee、digital_employee、plugin、employee_plugin_grant、policy、audit_event、team、team_member、knowledge_base、chat_session、chat_message、task_run）；mock-data 种子 JSON
   - Dependency：T0-03
   - Acceptance Criteria：`scripts/init_demo.ps1` 可重建 DB 并灌入虚构种子（2 正式 + 2 实习 + 2 分身 + 3 虚拟 + 5 插件 + 4 知识库 + 1 Team）；无真实内容；L1/L2 标记正确
 
@@ -71,7 +71,53 @@
   - Input：数据分级规则、契约
   - Output：虚构 L1/L2 知识文档（结构仿真、内容虚构）
   - Dependency：T0-04
-  - Acceptance Criteria：demo-data/kb/ 共 4 篇（L1 公开 1 + L2 三类 3），内容全部虚构并带声明；可按 data_level 检索；无真实内部信息
+  - Acceptance Criteria：mock-data/kb/ 共 4 篇（L1 公开 1 + L2 三类 3），内容全部虚构并带声明；可按 data_level 检索；无真实内部信息
+
+## Sprint 1.5 — Architecture Freeze & Handoff（已完成，2026-08-17）
+
+> 里程碑：不新增业务功能，把 Sprint 1 骨架整理为稳定基线并冻结契约，供后续两名正式员工串行开发。
+
+### S1.5-01 目录整理
+- [x]
+  - Owner Role：A（D 复核）
+  - Input：Sprint 1 仓库
+  - Output：`mock-data/`（由 demo-data 更名，同步 seed.py / seed.json / README / docs 引用）；`adapters/README.md`（预留目录说明）；`tests/README.md`（测试布局索引）
+  - Dependency：T0-01~T0-07
+  - Acceptance Criteria：全仓无 `demo-data` 残留引用；seed 重建正常；测试运行不受影响
+
+### S1.5-02 架构与安全文档冻结
+- [x]
+  - Owner Role：A（B 评审）
+  - Input：Sprint 1 实现 + v0.2 文档
+  - Output：docs/ARCHITECTURE.md v0.3（五层架构 + 实现状态 + 统一资源访问链 + 数据模型决策）；docs/SECURITY_BOUNDARY.md v0.3（角色边界 / 数据分级 / 调用链强制 / 仓库卫生）
+  - Dependency：S1.5-01
+  - Acceptance Criteria：文档与代码实现一致；明确「业务模块不得直连知识库/DB/Workflow/RPA」
+
+### S1.5-03 API 契约冻结 v1.1
+- [x]
+  - Owner Role：A（B/C/D 评审）
+  - Input：实际路由实现 + v1.0 契约
+  - Output：docs/API_CONTRACT.md v1.1：Employee / Policy / Plugin / Audit / Chat / Runtime Adapter / Knowledge Adapter 七组接口；已实现与待实现状态标注；EmployeeDto 平铺对齐实现
+  - Dependency：S1.5-02
+  - Acceptance Criteria：C/D 可按契约独立开发；变更登记表更新
+
+### S1.5-04 交接文档
+- [x]
+  - Owner Role：A
+  - Input：S1.5-02 / S1.5-03
+  - Output：docs/DEVELOPMENT_HANDOFF.md（Sprint 1 完成情况、启动方式、测试情况、Mock 数据位置、下一阶段负责人、允许修改目录、冻结接口清单）
+  - Dependency：S1.5-03
+  - Acceptance Criteria：两名正式员工无需追问即可接手
+
+### S1.5-05 全量验证与 Git Checkpoint
+- [x]
+  - Owner Role：A
+  - Input：整理后的仓库
+  - Output：后端 pytest 全绿；前端 typecheck / vitest / build 全绿；单实例后端 + 前端可运行；git 提交 checkpoint
+  - Dependency：S1.5-01~S1.5-04
+  - Acceptance Criteria：`git status` 干净；README 与交接文档命令可复现
+
+---
 
 ## Phase 1 — 问答与安全（Day 2–3）
 

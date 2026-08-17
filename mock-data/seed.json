@@ -124,9 +124,9 @@
     }
   ],
   "knowledge_bases": [
-    {"id": "KB-L1-PUB", "name": "公开制度库", "level": "L1", "domain": "通用", "description": "公开制度、FAQ、培训材料（虚构）", "status": "active", "doc_path": "demo-data/kb/kb-l1-pub.md"},
-    {"id": "KB-L2-HR", "name": "人事流程库", "level": "L2", "domain": "人力资源", "description": "入职、考勤、转正流程（虚构）", "status": "active", "doc_path": "demo-data/kb/kb-l2-hr.md"},
-    {"id": "KB-L2-IT", "name": "IT 服务库", "level": "L2", "domain": "IT", "description": "账号开通与办公设备申请（虚构）", "status": "active", "doc_path": "demo-data/kb/kb-l2-it.md"},
-    {"id": "KB-L2-FIN", "name": "财务报销库", "level": "L2", "domain": "财务", "description": "报销与预算流程（虚构）", "status": "active", "doc_path": "demo-data/kb/kb-l2-fin.md"}
+    {"id": "KB-L1-PUB", "name": "公开制度库", "level": "L1", "domain": "通用", "description": "公开制度、FAQ、培训材料（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l1-pub.md"},
+    {"id": "KB-L2-HR", "name": "人事流程库", "level": "L2", "domain": "人力资源", "description": "入职、考勤、转正流程（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-hr.md"},
+    {"id": "KB-L2-IT", "name": "IT 服务库", "level": "L2", "domain": "IT", "description": "账号开通与办公设备申请（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-it.md"},
+    {"id": "KB-L2-FIN", "name": "财务报销库", "level": "L2", "domain": "财务", "description": "报销与预算流程（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-fin.md"}
   ]
 }

@@ -5,7 +5,7 @@ from pathlib import Path
 from . import models
 from .database import DATABASE_URL, Base, SessionLocal, engine
 
-SEED_PATH = Path(__file__).resolve().parents[2] / "demo-data" / "seed.json"
+SEED_PATH = Path(__file__).resolve().parents[2] / "mock-data" / "seed.json"
 
 
 def load_seed() -> dict:

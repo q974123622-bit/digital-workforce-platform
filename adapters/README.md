@@ -1,0 +1,25 @@
+# adapters/ — Adapter 预留目录
+
+> 状态：Sprint 1.5 冻结（2026-08-17）。本目录只放接口契约与注册说明，**不包含任何实现代码**。
+> 约束：不允许直接访问知识库、数据库、Workflow 或 RPA；所有资源调用必须走统一链路：
+> `Employee Identity → Policy Engine → Plugin Gateway → Adapter → Enterprise Resource`。
+
+## 目录用途
+
+| 子目录/文件（规划） | 用途 | 契约位置 |
+|---|---|---|
+| `runtime/`（规划） | Runtime Adapter（harness / demo / openclaw-stub / agentteams-stub） | `docs/API_CONTRACT.md §6 Runtime Adapter Interface` |
+| `knowledge/`（规划） | Knowledge Adapter（L1/L2 虚构知识库查询） | `docs/API_CONTRACT.md §7 Knowledge Adapter Interface` |
+| `workflow/`（规划） | ADP Workflow / 审批流程 Adapter（Mock） | `docs/API_CONTRACT.md §7` |
+| `rpa/`（规划） | RPA 报表机器人 Adapter（Mock） | `docs/API_CONTRACT.md §7` |
+
+## 本周（Sprint 1 / 1.5）不实现
+
+- DeepSeek API 调用（LLMProvider 属 `backend/app/services/`，后续 Sprint 实现）
+- 内部知识库接入（真实内容仅存在于工作区外 Secure Overlay，绝不入库）
+- AgentTeams / DeepSeek Harness 真实调用（只预留 Adapter 桩位）
+
+任何新增 Adapter 必须：
+1. 实现冻结契约中的接口签名（`docs/API_CONTRACT.md`）；
+2. 只通过 Plugin Gateway 被调用，不做权限判断；
+3. 调用结果（允许/拒绝/审批）自动落审计（由 Gateway 负责）。
