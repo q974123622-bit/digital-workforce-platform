@@ -115,13 +115,14 @@ SSE 事件类型（固定枚举）：
 | GET | `/teams/{team_id}/tasks/{task_id}` | 任务详情（轮询） |
 | POST | `/tasks/{task_id}/approve` | 审批 `{approve: bool, actor_no}` |
 
-### 3.7 Knowledge API（✅ 骨架已实现，只读；查询走 Adapter）
+### 3.7 Knowledge API（✅ 已实现；查询走 Knowledge Adapter）
 
 | 方法 | 路径 | 状态 | 说明 |
 |---|---|---|---|
-| GET | `/knowledge-bases` | ✅ | 知识库登记列表 |
-| GET | `/knowledge-bases/{kb_id}` | ✅ | 知识库登记详情 |
-| POST | `/internal/gateway/invoke` | ✅ | 知识查询（经 Knowledge Adapter，Sprint 2） |
+| GET | `/knowledge-bases` | ✅ | 知识库资源登记列表（Resource Registry） |
+| GET | `/knowledge-bases/{kb_id}` | ✅ | 知识库资源登记详情 |
+| POST | `/internal/gateway/invoke` | ✅ | 通用插件执行（含知识查询） |
+| POST | `/internal/knowledge/search` | ✅ | 知识库专用入口（Sprint 3）：`{employee_id, knowledge_base_id, query, trace_id}` |
 
 ## 4. Runtime Adapter Interface（📋 冻结，Sprint 3 实现）
 
@@ -158,17 +159,23 @@ RuntimeAdapter.run(subject, task, context) -> RuntimeResult
 - `mode=demo` 时 UI 必须标注「Adapter 演示模式」。
 - 失败返回 `RUNTIME_UNAVAILABLE`（503），不吞错误。
 
-## 5. Knowledge Adapter Interface（✅ Mock 已实现，Sprint 2）
+## 5. Knowledge Adapter Interface（✅ Sprint 3 已实现）
 
 知识查询统一经 Plugin Gateway → Knowledge Adapter；前端与 Chat 层不得直读 `mock-data/kb/` 文件。
 
-### 请求（Gateway 内部调用）
+统一签名：`search(employee_id, knowledge_base_id, query, trace_id) -> KnowledgeSearchResult`
+
+实现（`backend/app/services/knowledge_adapter.py`）：
+- `MockKnowledgeAdapter`：读取 `mock-data/kb/` 虚构文档返回片段（source=demo）
+- `InternalKnowledgeAdapterStub`：只保留接口与配置结构（endpoint/credential 走环境变量引用），不接入真实内容（source=stub）
+
+### 请求（`POST /internal/knowledge/search`）
 
 ```json
 {
-  "plugin_id": "knowledge-l1",
-  "action": "search",
-  "params": {"query": "新员工入职流程", "level": "L2", "domain": "HR"},
+  "employee_id": "DT-E10281",
+  "knowledge_base_id": "KB-INTERNAL",
+  "query": "入职流程",
   "trace_id": "T-20260817-001"
 }
 ```
@@ -178,15 +185,17 @@ RuntimeAdapter.run(subject, task, context) -> RuntimeResult
 ```json
 {
   "ok": true,
-  "data": {"hits": [{"kb_id": "KB-L2-HR", "level": "L2", "title": "入职流程", "snippet": "..."}]},
+  "data": {"source": "demo", "knowledge_base_id": "KB-INTERNAL", "query": "...", "hits": [{"title": "入职流程", "snippet": "..."}]},
   "decision": "allow",
-  "audit_ids": [1]
+  "audit_ids": [1],
+  "policy_id": "POLICY-001"
 }
 ```
 
 约束：
 - 仅返回已授权数据等级（`data.level ≤ subject.max_data_level` 且 grant 允许）；越级查询由 Policy Engine 拒绝。
 - 内容全部来自 `mock-data/kb/`（虚构），不得引入真实文档。
+- 审计必须记录 `knowledge_base_id`。
 
 ## 6. 内部接口（服务间，不暴露前端）
 
@@ -215,11 +224,13 @@ RuntimeAdapter.run(subject, task, context) -> RuntimeResult
 
 响应：`{"ok": true, "data": {...}, "decision": "allow", "audit_ids": [1]}`
 
-### 6.3 Runtime / Sandbox（📋 冻结，Sprint 3）
+### 6.3 Runtime / Sandbox（Sandbox ✅ Mock Executor，Sprint 3；Runtime 📋）
 
 `POST /internal/runtime/run`、`POST /internal/sandbox/run`
 
-Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network"}` → `{"mode": "docker|local", "status", "logs"}`
+Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", "execution_location": "remote|local"}` → `{"mode": "docker|local", "status", "logs"}`
+
+约束：先 Policy 后执行；remote_only 请求 local → 403 POLICY_DENIED（POLICY-004）；internet=deny 请求非 none 网络 → 403（POLICY-003）；被拒请求不启动执行器。
 
 ## 7. 核心 DTO 字段
 
@@ -260,9 +271,19 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network"}`
 
 ```json
 {"id": 1, "trace_id": "T-...", "ts": "...", "actor": "DT-E10281", "employee_id": "DT-E10281",
- "team_id": null, "plugin_id": "knowledge-l2", "action": "read", "decision": "allow",
+ "team_id": null, "plugin_id": "knowledge-l2", "knowledge_base_id": "KB-INTERNAL", "action": "read", "decision": "allow",
  "reason": null, "result_summary": "..."}
 ```
+
+### KnowledgeBaseDto（✅ Sprint 3 资源模型）
+
+```json
+{"id": "KB-INTERNAL", "name": "正式员工内部知识库", "level": "L2", "data_level": "L2",
+ "resource_type": "knowledge", "allowed_employment_type": ["formal"],
+ "department_scope": ["*"], "domain": "综合", "description": "...", "status": "active", "doc_path": "mock-data/kb/..."}
+```
+
+登记资源：KB-PUBLIC（L1 公共）、KB-INTERNAL（L2 正式员工内部）、KB-FINTECH（L2 金融科技部门）。
 
 ### TaskRunDto（📋）
 
@@ -290,3 +311,4 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network"}`
 | 2026-08-17 | v1.0 初始冻结 | A | 本文件 / OpenAPI / 前端 types |
 | 2026-08-17 | v1.1 Sprint 1.5 冻结：EmployeeDto 平铺对齐实现；补 Chat / Runtime Adapter / Knowledge Adapter 三组接口；新增统一资源访问链约束 | A | 本文件 / shared-schema / 后续实现 |
 | 2026-08-17 | v1.1 实现状态更新（Sprint 2）：Policy Evaluate、Gateway Invoke、Knowledge Adapter 由 📋 转 ✅；接口定义无变更 | A | 本文件 |
+| 2026-08-17 | v1.1 兼容扩展（Sprint 3）：KnowledgeBaseDto 增加 data_level/resource_type/allowed_employment_type/department_scope（可选）；AuditEventDto 增加 knowledge_base_id（可选）；新增 POST /internal/knowledge/search；SandboxRunIn 增加可选 execution_location；Sandbox /knowledge/search 转 ✅ | B | 本文件 / shared-schema / models / schemas |

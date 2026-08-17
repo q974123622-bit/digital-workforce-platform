@@ -77,6 +77,12 @@ RULES: list[Rule] = [
         "仅远程 Sandbox 禁止本地执行",
         lambda s, r, a: s.location == "remote" and r.type == "sandbox" and r.id == "local",
     ),
+    # SANDBOX-POLICY-001 远程 Sandbox 允许远程执行
+    Rule(
+        "SANDBOX-POLICY-001", DECISION_ALLOW, 75,
+        "远程 Sandbox 允许远程执行",
+        lambda s, r, a: r.type == "sandbox" and r.id == "remote" and s.location == "remote",
+    ),
     # POLICY-002 实习生分身禁止内部知识
     Rule(
         "POLICY-002", DECISION_DENY, 70,

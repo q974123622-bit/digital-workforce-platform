@@ -115,6 +115,7 @@ class AuditCreate(BaseModel):
     employee_id: str | None = None
     team_id: str | None = None
     plugin_id: str | None = None
+    knowledge_base_id: str | None = None
     action: str = ""
     decision: str = "deny"
     reason: str | None = None
@@ -147,6 +148,10 @@ class KnowledgeBaseOut(BaseModel):
     id: str
     name: str
     level: str
+    data_level: str = "L1"
+    resource_type: str = "knowledge"
+    allowed_employment_type: list[str] = []
+    department_scope: list[str] = []
     domain: str
     description: str
     status: str
@@ -196,3 +201,36 @@ class GatewayInvokeOut(BaseModel):
     decision: str
     audit_ids: list[int] = []
     policy_id: str | None = None
+
+
+# ---- Sprint 3：Enterprise Resource & Security Layer ----
+
+
+class KnowledgeSearchIn(BaseModel):
+    employee_id: str
+    knowledge_base_id: str
+    query: str
+    trace_id: str = ""
+
+
+class KnowledgeSearchOut(BaseModel):
+    ok: bool
+    data: dict | None = None
+    decision: str
+    audit_ids: list[int] = []
+    policy_id: str | None = None
+
+
+class SandboxRunIn(BaseModel):
+    employee_id: str
+    task_id: str = ""
+    command: str = ""
+    mount_dir: str = ""
+    network: str = "none"
+    execution_location: str = "remote"  # remote | local（兼容扩展字段，默认 remote）
+
+
+class SandboxRunOut(BaseModel):
+    mode: str
+    status: str
+    logs: list[str] = []

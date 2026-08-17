@@ -104,6 +104,7 @@
     {"id": "POLICY-003", "name": "禁网员工禁止公网插件", "effect": "deny", "description": "subject.internet=deny 且 resource.type=http 时拒绝（公网插件）", "enabled": true, "priority": 100},
     {"id": "P-DATA-003", "name": "敏感数据禁止", "effect": "deny", "description": "resource.data_level=L3 且 action=read 时拒绝", "enabled": true, "priority": 90},
     {"id": "POLICY-004", "name": "仅远程 Sandbox", "effect": "deny", "description": "subject.location=remote 且请求本地执行（sandbox/local）时拒绝", "enabled": true, "priority": 80},
+    {"id": "SANDBOX-POLICY-001", "name": "远程 Sandbox 允许远程执行", "effect": "allow", "description": "remote_only 员工可在远程 sandbox（sandbox/remote）执行", "enabled": true, "priority": 75},
     {"id": "POLICY-002", "name": "实习生禁止内部知识", "effect": "deny", "description": "实习生数字分身（twin + intern）访问内部知识库（knowledge/L2）时拒绝", "enabled": true, "priority": 70},
     {"id": "POLICY-001", "name": "正式分身可读内部知识", "effect": "allow", "description": "正式员工数字分身（twin + formal）可访问内部知识库（knowledge/L2）", "enabled": true, "priority": 60},
     {"id": "POLICY-005", "name": "敏感操作需审批", "effect": "approval", "description": "resource.data_level=L3 且动作属 execute/export/delete/approve 时需人工审批", "enabled": true, "priority": 50},
@@ -111,9 +112,9 @@
     {"id": "P-DEFAULT-001", "name": "默认 L1 可读", "effect": "allow", "description": "所有数字员工可读取 L1 知识", "enabled": true, "priority": 1}
   ],
   "audit_events": [
-    {"trace_id": "T-DEMO-001", "actor": "DT-E10281", "employee_id": "DT-E10281", "plugin_id": "knowledge-l2", "action": "read", "decision": "allow", "reason": "POLICY-001：正式员工分身 L2 已授权", "result_summary": "返回 2 条制度摘要（虚构）"},
+    {"trace_id": "T-DEMO-001", "actor": "DT-E10281", "employee_id": "DT-E10281", "plugin_id": "knowledge-l2", "knowledge_base_id": "KB-INTERNAL", "action": "read", "decision": "allow", "reason": "POLICY-001：正式员工分身 L2 已授权", "result_summary": "返回 2 条制度摘要（虚构）"},
     {"trace_id": "T-DEMO-001", "actor": "DT-E10281", "employee_id": "DT-E10281", "plugin_id": "rpa-report", "action": "execute", "decision": "deny", "reason": "插件授权为 deny：rpa-report", "result_summary": null},
-    {"trace_id": "T-DEMO-002", "actor": "DT-E20999", "employee_id": "DT-E20999", "plugin_id": "knowledge-l2", "action": "read", "decision": "deny", "reason": "POLICY-002：实习生不可访问内部知识库", "result_summary": null}
+    {"trace_id": "T-DEMO-002", "actor": "DT-E20999", "employee_id": "DT-E20999", "plugin_id": "knowledge-l2", "knowledge_base_id": "KB-INTERNAL", "action": "read", "decision": "deny", "reason": "POLICY-002：实习生不可访问内部知识库", "result_summary": null}
   ],
   "teams": [
     {
@@ -129,9 +130,8 @@
     }
   ],
   "knowledge_bases": [
-    {"id": "KB-L1-PUB", "name": "公开制度库", "level": "L1", "domain": "通用", "description": "公开制度、FAQ、培训材料（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l1-pub.md"},
-    {"id": "KB-L2-HR", "name": "人事流程库", "level": "L2", "domain": "人力资源", "description": "入职、考勤、转正流程（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-hr.md"},
-    {"id": "KB-L2-IT", "name": "IT 服务库", "level": "L2", "domain": "IT", "description": "账号开通与办公设备申请（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-it.md"},
-    {"id": "KB-L2-FIN", "name": "财务报销库", "level": "L2", "domain": "财务", "description": "报销与预算流程（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-fin.md"}
+    {"id": "KB-PUBLIC", "name": "公共知识", "level": "L1", "data_level": "L1", "resource_type": "knowledge", "allowed_employment_type": ["formal", "intern"], "department_scope": ["*"], "domain": "通用", "description": "公开制度、FAQ、培训材料（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l1-pub.md"},
+    {"id": "KB-INTERNAL", "name": "正式员工内部知识库", "level": "L2", "data_level": "L2", "resource_type": "knowledge", "allowed_employment_type": ["formal"], "department_scope": ["*"], "domain": "综合", "description": "正式员工内部制度与流程（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-hr.md"},
+    {"id": "KB-FINTECH", "name": "金融科技部门知识库", "level": "L2", "data_level": "L2", "resource_type": "knowledge", "allowed_employment_type": ["formal"], "department_scope": ["金融科技部"], "domain": "金融科技", "description": "金融科技部门专属流程与材料（虚构）", "status": "active", "doc_path": "mock-data/kb/kb-l2-fin.md"}
   ]
 }

@@ -39,6 +39,7 @@
 - Policy Engine（有序规则、默认拒绝、Deny/Approval/Allow）✅ Sprint 2
 - Plugin Gateway（唯一插件入口 + 审计）✅ Sprint 2
 - Audit Store（全决策落审计）✅ Sprint 2；Trace 聚合 📋
+- Knowledge Adapter + Resource Registry + Sandbox Policy / Mock Executor ✅ Sprint 3（KB-PUBLIC / KB-INTERNAL / KB-FINTECH）
 - DeepSeek 真实问答（Key 环境变量注入，SAFEMODE）
 - ChatOrchestrator 内置轻量 Agent 循环（≤3 轮工具）
 - TeamTaskOrchestrator（模板 + LLM 补全/汇总，非通用调度器）

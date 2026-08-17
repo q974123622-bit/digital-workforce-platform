@@ -2,7 +2,17 @@
 
 > 版本：v1.0（2026-08-17）
 > 目的：让两名正式员工（A 架构/总装、B 安全/企业资源）在本基线上串行开发，实习生（C 前端、D Mock/测试）按契约并行。
-> 状态：Sprint 1 Platform Skeleton 已完成；Sprint 2 Core Control Plane 已完成（2026-08-17）；本文件为稳定基线交接。
+> 状态：Sprint 1/1.5/2 已完成；Sprint 3 Enterprise Resource & Security Layer 已完成（2026-08-17）；本文件为稳定基线交接。
+
+## 1.7 Sprint 3 完成情况（Enterprise Resource & Security Layer，负责人 B）
+
+- **Knowledge Adapter**：`backend/app/services/knowledge_adapter.py` 统一接口 `search(employee_id, knowledge_base_id, query, trace_id)`；`MockKnowledgeAdapter`（读 mock-data/kb/ 虚构文档）+ `InternalKnowledgeAdapterStub`（仅接口与配置结构，不接真实内容）。
+- **Knowledge Resource Registry**：knowledge_base 表扩展 resource_type / data_level / allowed_employment_type / department_scope；登记 KB-PUBLIC（L1 公共）、KB-INTERNAL（L2 正式内部）、KB-FINTECH（L2 金融科技部门）。
+- **安全资源边界**：`POST /internal/knowledge/search` 统一经 Policy → Gateway → Adapter；正式分身 KB-INTERNAL Allow（POLICY-001）、实习生 DENY（POLICY-002）、虚拟员工仅按单独授权。
+- **Sandbox Policy**：`backend/app/services/sandbox_policy.py`（runtime_location / internet_access / filesystem_scope）+ MockExecutor + `POST /internal/sandbox/run`（先 Policy 后执行；remote_only 拒绝 local → POLICY-004；internet deny 拒绝非 none 网络 → POLICY-003）。
+- **Secret/Config**：`backend/app/services/config.py` 环境变量引用（DWP_*）；禁止入 Git/Prompt/日志。
+- **Audit**：AuditEvent 增加 `knowledge_base_id`，知识库访问完整记录 employee_id / knowledge_base_id / decision / trace_id。
+- **测试**：新增 `backend/tests/test_enterprise_resources.py`（16 项），后端共 44 项全绿；前端 typecheck 通过。
 
 ## 1.5 Sprint 2 完成情况（Core Control Plane）
 
@@ -70,7 +80,7 @@ pnpm --filter frontend dev
 
 | 项 | 命令 | 结果 |
 |---|---|---|
-| 后端 API 测试（28 用例，含 Sprint 2 控制链路 18 项） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 28 passed |
+| 后端 API 测试（44 用例：Sprint 2 控制链路 18 + Sprint 3 企业资源 16 + 骨架 10） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 44 passed |
 | 前端类型检查 | `pnpm --filter frontend typecheck` | ✅ |
 | 前端冒烟测试 | `pnpm --filter frontend test` | ✅ 1 passed |
 | 前端生产构建 | `pnpm --filter frontend build` | ✅（chunk 体积提示非阻塞） |
@@ -81,7 +91,7 @@ pnpm --filter frontend dev
 
 | 内容 | 位置 |
 |---|---|
-| 种子数据（员工/插件 6/策略 8/授权 13/审计/团队/知识库登记） | `mock-data/seed.json` |
+| 种子数据（员工/插件 6/策略 9/授权 13/审计/团队/知识库资源 3） | `mock-data/seed.json` |
 | 虚构知识库文档（L1 ×1、L2 ×3） | `mock-data/kb/` |
 | 重建命令 | `cd backend; .\.venv\Scripts\python.exe -m app.seed --reset` |
 
@@ -91,8 +101,8 @@ pnpm --filter frontend dev
 
 | 方向 | 负责人 | 说明 |
 |---|---|---|
-| Chat Orchestrator（SSE + 工具循环） | A（正式/架构总装） | Sprint 3 主线，依赖 Policy/Gateway（已完成） |
-| TeamTaskOrchestrator + Sandbox / Harness | A/B 串行 | Sprint 3，门禁 G2/G3 |
+| Chat Orchestrator（SSE + 工具循环） | A（正式/架构总装） | Sprint 4 主线，依赖 Policy/Gateway/Knowledge Adapter（均已就绪） |
+| TeamTaskOrchestrator + Sandbox / Harness | A/B 串行 | Sprint 4，门禁 G2/G3（Sandbox Mock 已就绪，Docker 真启动待 G3） |
 | 前端聊天页 / 安全页增强 | C（实习生） | 等契约冻结后按 `API_CONTRACT.md` 实现 |
 | Mock Adapter 内容 + 自动化测试扩展 | D（实习生） | 按契约补 Mock 数据与用例 |
 
@@ -117,7 +127,42 @@ pnpm --filter frontend dev
 5. Audit API（DTO 字段与过滤参数）✅ 已实现；Trace 时间线 📋。
 6. Chat API（SSE 事件类型枚举）📋。
 7. Runtime Adapter Interface（`run(subject, task, context) -> RuntimeResult`）📋。
-8. Knowledge Adapter Interface（search 请求/响应结构）✅ Mock 已实现。
+8. Knowledge Adapter Interface（search 请求/响应结构）✅ Mock + Stub 已实现。
+9. 统一资源访问链（Identity → Policy → Gateway → Adapter → Resource）不可绕过。
+
+## 8.5 正式员工 A 下一阶段可直接使用的接口（Sprint 3 交付）
+
+### Knowledge Adapter Interface
+
+```python
+# backend/app/services/knowledge_adapter.py
+search(employee_id: str, knowledge_base_id: str, query: str, trace_id: str) -> dict
+# → {"source": "demo|stub", "knowledge_base_id": "...", "hits": [{"title", "snippet"}], ...}
+```
+
+HTTP：`POST /internal/knowledge/search` `{employee_id, knowledge_base_id, query, trace_id}` → `{ok, data, decision, audit_ids[], policy_id}`；DENY → 403 `POLICY_DENIED`（detail.policy_id/reason/audit_id）。
+
+### Knowledge Resource Registry
+
+```python
+# backend/app/services/knowledge_registry.py
+list_resources(db) -> list[KnowledgeBase]      # GET /api/v1/knowledge-bases
+resolve(db, knowledge_base_id) -> KnowledgeBase | None
+plugin_id_for_level(data_level) -> str          # L1→knowledge-l1，L2→knowledge-l2
+```
+
+资源字段：`id / name / resource_type / data_level / allowed_employment_type / department_scope / status`。
+
+### Sandbox Policy Interface
+
+```python
+# backend/app/services/sandbox_policy.py
+from_identity(identity) -> SandboxPolicy
+# SandboxPolicy: runtime_location("remote_only"|"local") / internet_access("deny"|"allow") / filesystem_scope
+MockExecutor().execute(policy, *, command, mount_dir, network, execution_location) -> {"mode", "status", "logs"}
+```
+
+HTTP：`POST /internal/sandbox/run` `{employee_id, task_id, command, mount_dir, network, execution_location}` → `{mode, status, logs}`；被拒（POLICY-003/004）→ 403。
 9. 统一资源访问链（Identity → Policy → Gateway → Adapter → Resource）不可绕过。
 
 ## 8. 已知决策记录（Sprint 1.5 冻结）
@@ -125,6 +170,7 @@ pnpm --filter frontend dev
 - DigitalTwin / VirtualEmployee 用 `digital_employee.type` 区分，不建独立表。
 - RuntimeBinding 不建独立表：`runtime_type` / `runtime_ref` 内嵌于 `digital_employee`；Sandbox 配置（`location` / `internet` / `max_data_level` / `allowed_domains`）同样内嵌。P0-lite 场景足够；需多 Runtime 时再建模。
 - EmployeeDto 采用平铺结构（v1.0 嵌套草案作废）。
+- Sprint 3（B）：知识库资源模型扩展 knowledge_base 表（resource_type/data_level/allowed_employment_type/department_scope）；审计增加 knowledge_base_id；均为兼容扩展，已登记 API_CONTRACT 变更。
 - 测试就近存放（`backend/tests`、`frontend/src`），不迁移到顶层 `tests/`（避免破坏 pytest/vitest 配置）；顶层 `tests/README.md` 作为索引。
 - pnpm 11 构建脚本需在 `pnpm-workspace.yaml` 配 `allowBuilds.esbuild: true`。
 

@@ -81,6 +81,13 @@ Employee Identity
 - Sandbox 只做执行隔离：位置（remote-only / local）、网络（internet deny）、目录挂载（/workspace/{employee_id}）、资源与超时限制。
 - **Sandbox 是执行隔离，不是权限定义来源**：授权顺序固定为先 Policy（读取 subject 绑定的 sandbox 配置，当前内嵌于 `digital_employee`：`location` / `internet` / `max_data_level` / `allowed_domains`），后启动 Sandbox；被拒请求不启动。
 - 降级：Docker 不可用 → local 模式，仍写入 Sandbox 决策审计，UI 展示一致。
+- Sprint 3 落地：`SandboxPolicy`（runtime_location / internet_access / filesystem_scope）+ MockExecutor + `POST /internal/sandbox/run`；remote_only 请求 local → POLICY-004 DENY；internet=deny 请求非 none 网络 → POLICY-003 DENY。
+
+## 7.5 Secret / Config 边界（Sprint 3）
+
+- 所有内部 endpoint / Token / Credential 只能通过环境变量或 secure config 引用（`backend/app/services/config.py`，`DWP_*` 命名）。
+- 禁止：写入 Git、写入 Prompt、写入日志。
+- InternalKnowledgeAdapterStub 仅保留接口与配置结构；真实接入由正式员工在 Secure Overlay 受控环境完成。
 
 ## 8. 仓库卫生规则
 

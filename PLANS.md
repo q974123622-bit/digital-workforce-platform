@@ -119,6 +119,52 @@
 
 ---
 
+## Sprint 3 — Enterprise Resource & Security Layer（已完成，2026-08-17）
+
+> 里程碑：正式员工 B 接棒，企业资源与安全层落地（不接真实系统/AgentTeams/Harness）。
+
+### S3-01 Knowledge Adapter
+- [x]
+  - Owner Role：B
+  - Input：契约 Knowledge Adapter Interface、虚构知识库
+  - Output：`backend/app/services/knowledge_adapter.py`：统一 `search(employee_id, knowledge_base_id, query, trace_id)`；MockKnowledgeAdapter（读 mock-data/kb/）+ InternalKnowledgeAdapterStub（仅接口与配置结构）
+  - Dependency：T1-04
+  - Acceptance Criteria：Mock 返回虚构片段；Stub 不接真实内容；调用经 Gateway 不绕过
+
+### S3-02 Knowledge Resource Registry
+- [x]
+  - Owner Role：B
+  - Input：知识库资源模型
+  - Output：knowledge_base 表扩展（resource_type/data_level/allowed_employment_type/department_scope）；登记 KB-PUBLIC / KB-INTERNAL / KB-FINTECH
+  - Dependency：S3-01
+  - Acceptance Criteria：GET /api/v1/knowledge-bases 返回 3 个登记资源及资源字段
+
+### S3-03 安全资源边界
+- [x]
+  - Owner Role：B（Policy 复用 A 的 Sprint 2 实现）
+  - Input：SECURITY_BOUNDARY 权限模型
+  - Output：`/internal/knowledge/search` 链路：正式分身 KB-INTERNAL Allow；实习生 DENY；虚拟员工仅授权库
+  - Dependency：S3-02、T1-02
+  - Acceptance Criteria：测试覆盖 正式 ALLOW / 实习 DENY / 虚拟未授权 DENY
+
+### S3-04 Sandbox Policy（Mock Executor）
+- [x]
+  - Owner Role：B
+  - Input：Sandbox 规则
+  - Output：`backend/app/services/sandbox_policy.py`（runtime_location/internet_access/filesystem_scope）+ MockExecutor + `/internal/sandbox/run`（先 Policy 后执行）
+  - Dependency：T1-02
+  - Acceptance Criteria：remote_only 拒绝 local（POLICY-004）；internet deny 拒绝非 none 网络（POLICY-003）；远程执行 allow；被拒不启动
+
+### S3-05 Secret / Config 与 Audit
+- [x]
+  - Owner Role：B
+  - Input：安全边界规则
+  - Output：`backend/app/services/config.py`（环境变量引用，禁止入 Git/Prompt/日志）；AuditEvent 增加 knowledge_base_id
+  - Dependency：S3-01
+  - Acceptance Criteria：仓库无真实凭据；知识库访问审计含 employee_id/knowledge_base_id/decision/trace_id
+
+---
+
 ## Phase 1 — 问答与安全（Day 2–3）
 
 ### T1-01 LLM Provider（SAFEMODE）
@@ -204,7 +250,7 @@
   - Acceptance Criteria：G2 通过 → VE-0001 真实 Harness 一轮回答；不通过 → demo 模式可用且 UI 标注，不阻塞主链路
 
 ### T2-03 Sandbox Manager（门禁 G3）
-- [ ]
+- [ ]（Sprint 3 已完成 Sandbox Policy + Mock Executor + /internal/sandbox/run；Docker 真启动留待 G3 门禁通过后）
   - Owner Role：B
   - Input：SECURITY_BOUNDARY Sandbox 规则、docker/ 目录
   - Output：Docker 后端（network=none、挂载 /workspace/{employee_id}、超时）+ local 后端；Sandbox 决策审计

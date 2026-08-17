@@ -5,9 +5,10 @@ from sqlalchemy.orm import Session
 
 from .. import schemas
 from ..database import get_db
-from ..services.gateway import invoke_plugin
+from ..services.gateway import invoke_plugin, search_knowledge, write_audit
 from ..services.identity import resolve_identity
-from ..services.policy import ResourceRef, evaluate
+from ..services.policy import DECISION_ALLOW, DECISION_DENY, ResourceRef, evaluate
+from ..services.sandbox_policy import MockExecutor, from_identity
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -42,3 +43,80 @@ def gateway_invoke(payload: schemas.GatewayInvokeIn, db: Session = Depends(get_d
         params=payload.params or {},
         trace_id=payload.trace_id,
     )
+
+
+@router.post("/knowledge/search", response_model=schemas.KnowledgeSearchOut)
+def knowledge_search(payload: schemas.KnowledgeSearchIn, db: Session = Depends(get_db)):
+    """知识库专用入口（Sprint 3）：统一经过 Policy → Gateway → KnowledgeAdapter → Audit。"""
+    return search_knowledge(
+        db,
+        employee_id=payload.employee_id,
+        knowledge_base_id=payload.knowledge_base_id,
+        query=payload.query,
+        trace_id=payload.trace_id,
+    )
+
+
+@router.post("/sandbox/run", response_model=schemas.SandboxRunOut)
+def sandbox_run(payload: schemas.SandboxRunIn, db: Session = Depends(get_db)):
+    """Sandbox 执行（Sprint 3，Mock Executor）：先 Policy 后启动，被拒不执行。"""
+    subject = resolve_identity(db, payload.employee_id)
+    if subject is None:
+        raise HTTPException(status_code=404, detail="数字员工不存在")
+    policy = from_identity(subject)
+    trace_id = f"SBX-{payload.task_id or subject.employee_id}"
+    resource_id = "local" if payload.execution_location == "local" else "remote"
+
+    # 1) 位置策略（remote_only 禁止 local）：经 Policy Engine 判定
+    result = evaluate(db, subject, ResourceRef(type="sandbox", id=resource_id, data_level="L1"), "execute")
+    if result.decision == DECISION_DENY:
+        reason = f"{result.policy_id}: {result.reason}" if result.policy_id else result.reason
+        audit_id = write_audit(
+            db,
+            trace_id=trace_id,
+            employee_id=subject.employee_id,
+            plugin_id=f"sandbox:{resource_id}",
+            action="execute",
+            decision=DECISION_DENY,
+            reason=reason,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={"message": "策略拒绝", "policy_id": result.policy_id, "reason": reason, "audit_id": audit_id},
+        )
+
+    # 2) 网络策略（internet deny 禁止非 none 网络）
+    if payload.network != "none" and policy.internet_access == "deny":
+        reason = "POLICY-003: 禁网员工禁止公网访问"
+        audit_id = write_audit(
+            db,
+            trace_id=trace_id,
+            employee_id=subject.employee_id,
+            plugin_id=f"sandbox:{resource_id}",
+            action="execute",
+            decision=DECISION_DENY,
+            reason=reason,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={"message": "策略拒绝", "policy_id": "POLICY-003", "reason": reason, "audit_id": audit_id},
+        )
+
+    # 3) 允许：Mock Executor 执行
+    executed = MockExecutor().execute(
+        policy,
+        command=payload.command,
+        mount_dir=payload.mount_dir or policy.filesystem_scope,
+        network=payload.network,
+        execution_location=payload.execution_location,
+    )
+    write_audit(
+        db,
+        trace_id=trace_id,
+        employee_id=subject.employee_id,
+        plugin_id=f"sandbox:{resource_id}",
+        action="execute",
+        decision=DECISION_ALLOW,
+        result_summary=f"mode={executed['mode']} status={executed['status']}",
+    )
+    return schemas.SandboxRunOut(mode=executed["mode"], status=executed["status"], logs=executed["logs"])

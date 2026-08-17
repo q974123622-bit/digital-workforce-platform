@@ -10,8 +10,8 @@ def test_seed_counts(client):
     assert len([e for e in employees if e["type"] == "twin"]) == 2
     assert len([e for e in employees if e["type"] == "virtual"]) == 3
     assert len(client.get("/api/v1/plugins").json()) == 6
-    assert len(client.get("/api/v1/policies").json()) == 8
-    assert len(client.get("/api/v1/knowledge-bases").json()) == 4
+    assert len(client.get("/api/v1/policies").json()) == 9
+    assert len(client.get("/api/v1/knowledge-bases").json()) == 3
     teams = client.get("/api/v1/teams").json()
     assert len(teams) == 1
     assert len(teams[0]["members"]) == 3
@@ -107,7 +107,7 @@ def test_teams_and_knowledge(client):
     assert team["leader_employee_id"] == "VE-0001"
     assert {m["employee_id"] for m in team["members"]} == {"VE-0001", "VE-0002", "VE-0003"}
 
-    kb = client.get("/api/v1/knowledge-bases/KB-L1-PUB").json()
+    kb = client.get("/api/v1/knowledge-bases/KB-PUBLIC").json()
     assert kb["level"] == "L1"
     assert client.get("/api/v1/knowledge-bases/NOT-EXIST").status_code == 404
 

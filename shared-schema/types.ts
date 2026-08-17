@@ -66,6 +66,7 @@ export interface AuditEvent {
   employee_id: string | null;
   team_id: string | null;
   plugin_id: string | null;
+  knowledge_base_id?: string | null;
   action: string;
   decision: string;
   reason: string | null;
@@ -92,6 +93,10 @@ export interface KnowledgeBase {
   id: string;
   name: string;
   level: string;
+  data_level?: string;
+  resource_type?: string;
+  allowed_employment_type?: string[];
+  department_scope?: string[];
   domain: string;
   description: string;
   status: string;

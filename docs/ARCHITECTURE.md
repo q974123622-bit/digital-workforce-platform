@@ -67,7 +67,7 @@ flowchart TB
 | 2 协作编排层 | TeamTaskOrchestrator（P0-lite）；AgentTeams Adapter（预留） | 模板化任务 + LLM 补全/汇总、子任务分发、审批流转 | 📋 契约预留 |
 | 3 Runtime 执行层 | RuntimeAdapter（harness / demo / openclaw-stub / agentteams-stub） | 虚拟员工的受控执行；外部工具一律经 Plugin Gateway | 📋 契约预留 |
 | 4 治理层 | Policy Engine / Plugin Gateway / Audit Store | 授权、插件执行入口、全链路审计 | ✅ Sprint 2 已实现（评估/执行/审计链路接通） |
-| 5 隔离与资源层 | Sandbox Manager（Docker / local）+ 插件 Mock 资源 | 网络/目录/位置隔离；虚构知识库与 Mock 系统 | Mock 资源数据 ✅；Sandbox 📋 |
+| 5 隔离与资源层 | Sandbox Policy + Mock Executor（Sprint 3）+ 插件 Mock 资源 | 网络/目录/位置隔离；虚构知识库与 Mock 系统 | Mock 资源 ✅；Sandbox Policy + Mock Executor ✅；Docker 真启动 📋 |
 
 ## 3. 模块职责
 
@@ -79,7 +79,7 @@ flowchart TB
 | Policy Engine | `evaluate(subject, resource, action, context) -> allow/deny/approval + reason`；默认拒绝 | 不执行工具；不创建容器；不暴露给前端 | ✅ Sprint 2（内置规则 POLICY-001~005 等） |
 | Plugin Gateway | 唯一插件执行入口：policy → Mock 凭据注入 → Adapter → 审计 | 不做授权决策 | ✅ Sprint 2 |
 | RuntimeAdapter | 统一 Runtime 接口；`harness` 真接或 `demo` 演示模式；OpenClaw/AgentTeams 为桩 | 不做权限判断 | 📋 Sprint 3 |
-| Sandbox Manager | Docker / local 双后端；network=none、目录挂载、超时控制；记录 Sandbox 决策 | 不产生授权决策 | 📋 Sprint 3 |
+| Sandbox Policy + MockExecutor | SandboxPolicy 模型（runtime_location/internet_access/filesystem_scope）+ Mock 执行；先 Policy 后执行 | 不产生授权决策 | ✅ Sprint 3（Docker 真启动 📋） |
 | Audit Store | 追加式写入事件；按 trace_id 聚合为 Trace 时间线 | 不参与执行路径 | ✅ Sprint 2（Gateway 全决策落审计；Trace 时间线接口 📋） |
 | 前端 | 展示与表单收集；渲染工具卡片、Policy Denied、审批卡 | 不解释/不执行权限 | ✅ 骨架已实现；聊天/任务页 📋 |
 
