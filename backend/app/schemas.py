@@ -260,3 +260,22 @@ class ChatResponse(BaseModel):
     message: str
     tool_cards: list = []
     policy_denied: dict | None = None
+
+
+# ---- 记忆插件（Personal Memory）----
+
+
+class MemoryCreate(BaseModel):
+    human_no: str
+    employee_no: str = ""
+    content: str
+
+
+class MemoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    human_no: str
+    employee_no: str
+    content: str
+    created_at: datetime

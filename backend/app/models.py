@@ -150,3 +150,15 @@ class TaskRun(Base):
     subtasks: Mapped[list] = mapped_column(JSON, default=list)
     summary: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class PersonalMemory(Base):
+    """个人记忆：某真人与数字员工对话产生的、需要长期保留的记忆（记忆插件）。"""
+
+    __tablename__ = "personal_memory"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    human_no: Mapped[str] = mapped_column(String, index=True)  # 这是哪个真人的记忆（如 E10281）
+    employee_no: Mapped[str] = mapped_column(String, default="")  # 和哪个数字员工对话产生的
+    content: Mapped[str] = mapped_column(String, default="")  # 记忆内容
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
