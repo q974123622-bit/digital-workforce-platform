@@ -17,11 +17,11 @@ import { api } from '../api/client';
 
 const { Text, Paragraph } = Typography;
 
-const ROLE_META: Record<string, { label: string; grad: string; emoji: string }> = {
-  formal_twin: { label: '正式员工 · 数字分身', grad: 'linear-gradient(135deg,#2f54eb 0%,#1d39c4 100%)', emoji: '⭐' },
-  intern_twin: { label: '实习生 · 数字分身', grad: 'linear-gradient(135deg,#13a8a8 0%,#0e7a7a 100%)', emoji: '🌱' },
-  virtual: { label: '虚拟员工', grad: 'linear-gradient(135deg,#722ed1 0%,#531dab 100%)', emoji: '🤖' },
-  rpa: { label: 'RPA 自动化', grad: 'linear-gradient(135deg,#fa8c16 0%,#d46b08 100%)', emoji: '⚙️' },
+const ROLE_META: Record<string, { label: string; grad: string; color: string; emoji: string }> = {
+  formal_twin: { label: '正式员工 · 数字分身', grad: 'linear-gradient(135deg,#2f54eb 0%,#1d39c4 100%)', color: '#2f54eb', emoji: '⭐' },
+  intern_twin: { label: '实习生 · 数字分身', grad: 'linear-gradient(135deg,#13a8a8 0%,#0e7a7a 100%)', color: '#13a8a8', emoji: '🌱' },
+  virtual: { label: '虚拟员工', grad: 'linear-gradient(135deg,#722ed1 0%,#531dab 100%)', color: '#722ed1', emoji: '🤖' },
+  rpa: { label: 'RPA 自动化', grad: 'linear-gradient(135deg,#fa8c16 0%,#d46b08 100%)', color: '#fa8c16', emoji: '⚙️' },
 };
 
 function roleKey(w: Workspace): string {
@@ -183,7 +183,7 @@ export default function ChatPage() {
           <Link to={`/employees/${emp.employee_no}`}>
             <Button type="text" icon={<ArrowLeftOutlined />} aria-label="返回详情" />
           </Link>
-          <Avatar size={36} icon={<RobotOutlined />} style={{ background: meta.grad.split(' ')[0].replace('linear-gradient(', '').split(',')[0] }} />
+          <Avatar size={36} icon={<RobotOutlined />} style={{ background: meta.color }} />
           <div>
             <div className="chat-title">{emp.name} · 智能助手</div>
             <Text type="secondary" style={{ fontSize: 12 }}>会话 ID：{sessionId ?? '新会话'}</Text>
@@ -201,7 +201,7 @@ export default function ChatPage() {
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
               {m.role === 'assistant' && (
-                <Avatar size={30} icon={<RobotOutlined />} style={{ background: meta.grad.split(' ')[0].replace('linear-gradient(', '').split(',')[0], flexShrink: 0 }} />
+                <Avatar size={30} icon={<RobotOutlined />} style={{ background: meta.color, flexShrink: 0 }} />
               )}
               <div className="msg-col">
                 <div className={`bubble ${m.error ? 'bubble-error' : ''}`}>{m.content}</div>
@@ -232,7 +232,7 @@ export default function ChatPage() {
           ))}
           {sending && (
             <div className="msg assistant">
-              <Avatar size={30} icon={<RobotOutlined />} style={{ background: meta.grad.split(' ')[0].replace('linear-gradient(', '').split(',')[0] }} />
+              <Avatar size={30} icon={<RobotOutlined />} style={{ background: meta.color }} />
               <div className="typing"><span /><span /><span /></div>
             </div>
           )}

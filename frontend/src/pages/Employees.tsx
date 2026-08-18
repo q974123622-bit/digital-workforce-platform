@@ -80,9 +80,11 @@ export default function Employees() {
         title: '操作',
         key: 'actions',
         render: (_: unknown, record: Employee) => (
-          <Button type="link" size="small" icon={<CommentOutlined />} href={`#/employees/${record.employee_no}/chat`}>
-            对话
-          </Button>
+          <Link to={`/employees/${record.employee_no}/chat`}>
+            <Button type="link" size="small" icon={<CommentOutlined />}>
+              对话
+            </Button>
+          </Link>
         ),
       },
     ],
