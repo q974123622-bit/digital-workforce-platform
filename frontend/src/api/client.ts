@@ -2,10 +2,14 @@ import type { AuditEvent, Employee, KnowledgeBase, Plugin, Policy, Team, TeamDet
 
 const BASE = '/api/v1';
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
+type RequestOptions = RequestInit & { absolute?: boolean };
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+  const url = init?.absolute ? path : `${BASE}${path}`;
+  const { absolute: _absolute, ...fetchInit } = init ?? {};
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json', ...(fetchInit.headers ?? {}) },
+    ...fetchInit,
   });
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
@@ -28,7 +32,7 @@ function qs(params?: Record<string, string | undefined>): string {
 }
 
 export const api = {
-  health: () => request<{ status: string }>('/health', { headers: {} }),
+  health: () => request<{ status: string }>('/health', { absolute: true }),
   listEmployees: (params?: { type?: string }) => request<Employee[]>(`/employees${qs(params)}`),
   getEmployee: (employeeNo: string) => request<Employee>(`/employees/${encodeURIComponent(employeeNo)}`),
   listPlugins: () => request<Plugin[]>('/plugins'),
