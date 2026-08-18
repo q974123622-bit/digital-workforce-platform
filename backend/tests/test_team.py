@@ -127,3 +127,18 @@ def test_harness_fallback_to_gateway(client, db_session):
     assert run.subtasks[0].status == "completed"
     assert "[Harness 执行]" not in run.subtasks[0].result
     assert "source" in run.subtasks[0].result
+
+
+def test_docker_harness_requires_key():
+    import os
+
+    from app.services.runtime_adapter import DockerHarnessRuntimeAdapter
+
+    old = os.environ.pop("DEEPSEEK_API_KEY", None)
+    try:
+        r = DockerHarnessRuntimeAdapter().run(employee_id="X", task_prompt="t", trace_id="t")
+        assert r.mode == "demo"
+        assert not r.ok
+    finally:
+        if old is not None:
+            os.environ["DEEPSEEK_API_KEY"] = old

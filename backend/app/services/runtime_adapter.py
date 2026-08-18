@@ -100,3 +100,63 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
                     os.remove(p)
                 except OSError:
                     pass
+
+
+class DockerHarnessRuntimeAdapter(RuntimeAdapter):
+    """DeepSeek Harness 容器后端（推荐）：`docker run --rm dwp-dsh <task>`。
+
+    Linux 容器环境绕开 Windows 无控制台导致的 headless 挂起（见 PLANS S5-02）。
+    Key 通过临时 env 文件注入（--env-file），不出现在命令行/日志。
+    """
+
+    def __init__(self, image: str = "dwp-dsh:rc6", timeout: int = 120):
+        self.image = image
+        self.timeout = timeout
+
+    def run(self, *, employee_id: str, task_prompt: str, trace_id: str) -> RuntimeResult:
+        api_key = config.get("DEEPSEEK_API_KEY")
+        docker_bin = shutil.which("docker")
+        if not api_key:
+            return RuntimeResult(mode="demo", ok=False, result="DEEPSEEK_API_KEY 未配置")
+        if not docker_bin:
+            return RuntimeResult(mode="demo", ok=False, result="docker 不可用")
+
+        env_path = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False, encoding="utf-8") as f:
+                f.write(f"DEEPSEEK_API_KEY={api_key}\nDSH_PERMISSION_MODE=danger-full-access\n")
+                env_path = f.name
+            proc = subprocess.run(
+                [
+                    docker_bin,
+                    "run",
+                    "--rm",
+                    "--env-file",
+                    env_path,
+                    self.image,
+                    "--profile",
+                    "headless",
+                    task_prompt,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return RuntimeResult(mode="demo", ok=False, result=f"Harness 容器不可用：{exc.__class__.__name__}")
+        finally:
+            if env_path:
+                try:
+                    os.remove(env_path)
+                except OSError:
+                    pass
+
+        if proc.returncode != 0:
+            return RuntimeResult(mode="demo", ok=False, result=(proc.stderr or proc.stdout or "").strip()[:200])
+        output = proc.stdout.strip()
+        if not output:
+            return RuntimeResult(mode="demo", ok=False)
+        return RuntimeResult(mode="harness", ok=True, result=output)

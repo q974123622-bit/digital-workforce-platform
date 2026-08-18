@@ -254,7 +254,7 @@
   - Acceptance Criteria：发起 -> approval 挂起 -> 批准 -> completed（LLM 汇总，失败降级）；审计 trace 贯穿 6 条；测试 7 项
 
 ### S5-02 DeepSeek Harness 尝试（门禁 G2）
-- [x]（结论：RuntimeAdapter.harness backend 已实现并验证（dsh headless 真实调用 DeepSeek 成功，交互终端 6s）；但 Windows 后台进程（uvicorn/Start-Process）内 dsh headless 挂起——已尝试 npx/全局 dsh/danger-full-access/CI+TERM/stdin DEVNULL/Normal 窗口/禁用 sandbox 插件均失败；服务内默认 DWP_HARNESS_ENABLED 关闭走 demo 模式；Harness 需 Linux/容器或交互终端环境）
+- [x]（结论：Docker 方案接入成功——`docker/Dockerfile.dsh` 构建 dwp-dsh:rc6 镜像，容器内 dsh headless 真实调用 DeepSeek（直连 4-6s）；Windows 无控制台进程（uvicorn Hidden）内直接调 dsh 或 docker CLI 均慢/不稳定，故服务内默认 demo 模式（0.7s），`DWP_HARNESS_ENABLED=1` 启用 Docker Harness；交互终端/受控环境已验证真实执行）
   - Owner Role：A
   - Input：deepseek-harness 源码（本机外部依赖）
   - Output：dsh headless/API 可调用则接入 RuntimeAdapter harness backend；否则记录降级
