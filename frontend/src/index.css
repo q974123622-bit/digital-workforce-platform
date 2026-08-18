@@ -1,0 +1,135 @@
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #f5f7fa;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 页面切换过渡 */
+@keyframes page-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.page-enter {
+  animation: page-fade-in 0.25s ease;
+}
+
+/* 跳过导航链接：默认不可见，键盘聚焦时显示 */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 2000;
+}
+
+.skip-link:focus {
+  left: 12px;
+  top: 12px;
+  background: #fff;
+  color: #2f54eb;
+  padding: 8px 16px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(16, 24, 40, 0.15);
+}
+
+/* 可点击区域的键盘焦点提示 */
+.clickable-card:focus-visible,
+[role='button'][tabindex]:focus-visible {
+  outline: 2px solid #2f54eb;
+  outline-offset: 2px;
+}
+
+/* 尊重系统"减少动效"偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .page-enter {
+    animation: none;
+  }
+
+  .clickable-card,
+  .hover-card {
+    transition: none;
+  }
+}
+
+/* 细滚动条，贴合深色侧栏与浅色内容区 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c6cfdc;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a9b6c9;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 可点击卡片：hover 轻抬升 */
+.clickable-card {
+  cursor: pointer;
+  transition:
+    box-shadow 0.2s ease,
+    transform 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.clickable-card:hover {
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.1);
+  transform: translateY(-2px);
+}
+
+/* 不可点击卡片：仅 hover 轻抬升 */
+.hover-card {
+  transition:
+    box-shadow 0.2s ease,
+    transform 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.hover-card:hover {
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.1);
+  transform: translateY(-2px);
+}
+
+/* 表格行 hover 用品牌浅色 */
+.ant-table-tbody > tr:hover > td {
+  background: #f0f5ff !important;
+}
+
+/* 等宽文本：工号 / trace / endpoint */
+.mono {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+/* 能力入口卡 hover 时箭头右移 */
+.clickable-card .anticon-arrow-right {
+  transition: transform 0.2s ease;
+}
+
+.clickable-card:hover .anticon-arrow-right {
+  transform: translateX(3px);
+}
+
+/* 数字统计使用等宽数字，对齐更专业 */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

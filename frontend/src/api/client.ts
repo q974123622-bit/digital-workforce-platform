@@ -41,12 +41,16 @@ export interface ChatResponse {
   policy_denied?: { policy_id: string; reason: string; plugin_id: string } | null;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type RequestOptions = RequestInit & { absolute?: boolean };
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+  const url = init?.absolute ? path : `${BASE}${path}`;
+  const { absolute: _absolute, ...fetchInit } = init ?? {};
   let res: Response;
   try {
-    res = await fetch(`${BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-      ...init,
+    res = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', ...(fetchInit.headers ?? {}) },
+      ...fetchInit,
     });
   } catch {
     // 后端未启动：回退到前端 Mock
@@ -78,7 +82,7 @@ function qs(params?: Record<string, string | undefined>): string {
 }
 
 export const api = {
-  health: () => request<{ status: string }>('/health', { headers: {} }),
+  health: () => request<{ status: string }>('/health', { absolute: true }),
   listEmployees: (params?: { type?: string }) => request<Employee[]>(`/employees${qs(params)}`),
   getEmployee: (employeeNo: string) => request<Employee>(`/employees/${encodeURIComponent(employeeNo)}`),
   listPlugins: () => request<Plugin[]>('/plugins'),
