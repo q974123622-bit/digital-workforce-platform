@@ -26,6 +26,18 @@ higress/
 # 安全 Overlay（仓库外，正式员工专用）
 secure-overlay/
 
+# 内部文档（不上传 GitHub）
+/数字员工平台原型_PRD与技术路线_v0.1_20260817(1).docx
+/数字员工平台Demo_四人开发分工_20260817(1).docx
+/数字员工平台Demo_项目计划与完成度交接_20260818.pdf
+
+# 模拟知识库（按真实库结构仿真，内部交付，不随仓库分发）
+mock-data/kb/it-service/
+mock-data/kb/securities/
+mock-data/kb/internal-reg/
+mock-data/kb/external-reg/
+mock-data/kb/*.zip
+
 # 编辑器
 .vscode/
 .idea/

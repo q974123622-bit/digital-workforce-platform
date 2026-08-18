@@ -18,11 +18,20 @@ def _search(client, employee_id, kb_id, query, trace_id):
 # ---- Knowledge Resource Registry ----
 
 
-def test_registry_three_resources(client):
+def test_registry_eight_resources(client):
     resp = client.get("/api/v1/knowledge-bases")
     assert resp.status_code == 200
     kbs = {kb["id"]: kb for kb in resp.json()}
-    assert set(kbs) == {"KB-PUBLIC", "KB-ONBOARD", "KB-INTERNAL", "KB-FINTECH"}
+    assert set(kbs) == {
+        "KB-PUBLIC",
+        "KB-ONBOARD",
+        "KB-INTERNAL",
+        "KB-FINTECH",
+        "KB-IT-SERVICE",
+        "KB-SECURITIES",
+        "KB-REG-INTERNAL",
+        "KB-REG-EXTERNAL",
+    }
     assert kbs["KB-PUBLIC"]["data_level"] == "L1"
     assert kbs["KB-PUBLIC"]["allowed_employment_type"] == ["formal", "intern"]
     assert kbs["KB-ONBOARD"]["name"] == "入职 Demo 知识库"
@@ -30,6 +39,16 @@ def test_registry_three_resources(client):
     assert kbs["KB-INTERNAL"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-FINTECH"]["department_scope"] == ["金融科技部"]
     assert kbs["KB-INTERNAL"]["resource_type"] == "knowledge"
+    assert kbs["KB-IT-SERVICE"]["data_level"] == "L1"
+    assert kbs["KB-IT-SERVICE"]["allowed_employment_type"] == ["formal", "intern"]
+    assert kbs["KB-IT-SERVICE"]["doc_path"] == "mock-data/kb/it-service"
+    assert kbs["KB-SECURITIES"]["data_level"] == "L2"
+    assert kbs["KB-SECURITIES"]["allowed_employment_type"] == ["formal"]
+    assert kbs["KB-SECURITIES"]["doc_path"] == "mock-data/kb/securities"
+    assert kbs["KB-REG-INTERNAL"]["data_level"] == "L2"
+    assert kbs["KB-REG-INTERNAL"]["allowed_employment_type"] == ["formal"]
+    assert kbs["KB-REG-EXTERNAL"]["data_level"] == "L1"
+    assert kbs["KB-REG-EXTERNAL"]["allowed_employment_type"] == ["formal", "intern"]
 
 
 def test_registry_kb_not_found(client):
@@ -118,6 +137,63 @@ def test_search_missing_employee(client):
 def test_search_missing_kb(client):
     resp = _search(client, "DT-E10281", "KB-NOPE", "x", "T-S3-NOKB-001")
     assert resp.status_code == 404
+
+
+# ---- P17：新增模拟知识库（多格式虚构目录） ----
+
+
+def test_new_it_service_kb_l1_any_employee_allow(client):
+    for emp in ("DT-E10281", "DT-E20999"):
+        resp = _search(client, emp, "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-001")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["decision"] == "allow"
+        assert body["policy_id"] == "P-DEFAULT-001"
+        assert body["data"]["source"] == "demo"
+        assert len(body["data"]["hits"]) >= 1
+
+
+def test_new_securities_kb_l2_formal_allow(client):
+    resp = _search(client, "DT-E10281", "KB-SECURITIES", "融资融券流程", "T-P17-SEC-001")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["decision"] == "allow"
+    assert body["policy_id"] == "POLICY-001"
+    assert len(body["data"]["hits"]) >= 1
+
+
+def test_new_securities_kb_l2_intern_deny(client):
+    resp = _search(client, "DT-E20999", "KB-SECURITIES", "融资融券流程", "T-P17-SEC-002")
+    assert resp.status_code == 403
+    assert resp.json()["error"]["detail"]["policy_id"] == "POLICY-002"
+
+
+def test_new_internal_reg_kb_l2_formal_allow(client):
+    resp = _search(client, "DT-E10281", "KB-REG-INTERNAL", "反洗钱", "T-P17-REG-001")
+    assert resp.status_code == 200
+    assert resp.json()["decision"] == "allow"
+    assert len(resp.json()["data"]["hits"]) >= 1
+
+
+def test_new_external_reg_kb_l1_any_employee_allow(client):
+    resp = _search(client, "DT-E20999", "KB-REG-EXTERNAL", "反垄断", "T-P17-EXT-001")
+    assert resp.status_code == 200
+    assert resp.json()["decision"] == "allow"
+    assert len(resp.json()["data"]["hits"]) >= 1
+
+
+def test_multiformat_directory_search_returns_nonempty_hits(client):
+    # 目录内 .xlsx 与 .docx 均可被解析并返回片段
+    cases = [
+        ("DT-E10281", "KB-IT-SERVICE", "企业邮箱"),
+        ("DT-E10281", "KB-SECURITIES", "股票期权"),
+        ("DT-E10281", "KB-REG-INTERNAL", "适当性"),
+        ("DT-E10281", "KB-REG-EXTERNAL", "尽职调查"),
+    ]
+    for i, (emp, kb_id, query) in enumerate(cases):
+        resp = _search(client, emp, kb_id, query, f"T-P17-MF-{i}")
+        assert resp.status_code == 200
+        assert len(resp.json()["data"]["hits"]) >= 1
 
 
 # ---- Sandbox Policy：remote_only / internet_deny / local_deny ----
