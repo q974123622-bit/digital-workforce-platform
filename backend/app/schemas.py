@@ -260,3 +260,36 @@ class ChatResponse(BaseModel):
     message: str
     tool_cards: list = []
     policy_denied: dict | None = None
+
+
+# ---- Sprint 5：Team Task（契约 §3.6 TaskRunDto）----
+
+
+class SubtaskOut(BaseModel):
+    worker_id: str
+    worker_no: str
+    summary: str
+    plugin_ids: list[str] = []
+    status: str = "pending"  # pending | running | completed | approval | denied | failed
+    result: str | None = None
+    approval: dict | None = None
+
+
+class TaskRunOut(BaseModel):
+    id: str
+    team_id: str
+    trace_id: str
+    request: str
+    status: str = "pending"  # parsing | running | approval | completed | denied | failed
+    subtasks: list[SubtaskOut] = []
+    summary: str = ""
+    created_at: datetime
+
+
+class TaskCreateIn(BaseModel):
+    request: str
+
+
+class TaskApproveIn(BaseModel):
+    approve: bool
+    actor_no: str

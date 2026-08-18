@@ -2,7 +2,18 @@
 
 > 版本：v1.0（2026-08-17）
 > 目的：让两名正式员工（A 架构/总装、B 安全/企业资源）在本基线上串行开发，实习生（C 前端、D Mock/测试）按契约并行。
-> 状态：Sprint 1/1.5/2/3 已完成；Sprint 4 Chat + DeepSeek Provider 已完成（2026-08-17）；本文件为稳定基线交接。
+> 状态：Sprint 1-4 已完成；Sprint 5 TeamTaskOrchestrator 已完成（2026-08-18）；Harness 尝试进行中（G2 止损中）；本文件为稳定基线交接。
+
+## 1.11 Sprint 5 完成情况（TeamTaskOrchestrator，负责人 A）
+
+- **TeamTaskOrchestrator**：`backend/app/services/team_orchestrator.py`，TEAM-ONBOARD 模板 3 子任务（VE-0002 HR 制度 -> VE-0003 IT 账号 -> VE-0003 敏感报表审批）；子任务执行一律经 Plugin Gateway；状态机 parsing/running/approval/completed/denied/failed。
+- **接口**：`POST /api/v1/teams/{id}/tasks`、`GET /api/v1/teams/{id}/tasks/{id}`、`POST /api/v1/tasks/{id}/approve`（非挂起态审批 409）。
+- **汇总**：LLM（DeepSeek）生成 Leader 汇总，失败自动降级模板拼接。
+- **端到端验证**（真实链路）：发起"帮王小明完成入职准备" -> 3 子任务（2 completed + 1 approval）-> 审批通过 -> completed + 真实汇总文本；审计 6 条按 trace 贯穿（create/execute×3/approve/summarize）。
+- **测试**：`backend/tests/test_team.py` 7 项，后端共 58 项全绿。
+- **Harness（G2）**：依赖安装完成，build:lib 进行中；结论见 PLANS S5-02（跑通则接 RuntimeAdapter，否则演示模式）。
+- **AgentTeams**：保持 Adapter 桩（需 K8s/Docker + Matrix 形态，本周不接入，Demo 口播"已预留"）。
+- **运维注意**：本机 venv python 启动 uvicorn 时会派生一个 Anaconda 解释器进程（conda launcher 行为），以实际加载的 venv site-packages 为准；`database.py` 已设 `expire_on_commit=False`（避免 Team 编排 JSON 字段在 commit 后过期报错）。
 
 ## 1.9 Sprint 4 完成情况（Digital Employee Chat + DeepSeek Provider，负责人 A）
 
@@ -95,7 +106,7 @@ pnpm --filter frontend dev
 
 | 项 | 命令 | 结果 |
 |---|---|---|
-| 后端 API 测试（51 用例：骨架 10 + 控制链路 18 + 企业资源 16 + Chat 7） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 51 passed |
+| 后端 API 测试（58 用例：骨架 10 + 控制链路 18 + 企业资源 16 + Chat 7 + Team 7） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 58 passed |
 | 前端类型检查 | `pnpm --filter frontend typecheck` | ✅ |
 | 前端冒烟测试 | `pnpm --filter frontend test` | ✅ 1 passed |
 | 前端生产构建 | `pnpm --filter frontend build` | ✅（chunk 体积提示非阻塞） |

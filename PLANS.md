@@ -234,12 +234,40 @@
 ## Phase 2 — 团队协作与隔离（Day 3–4）
 
 ### T2-01 TeamTaskOrchestrator
-- [ ]
+- [x]（Sprint 5 完成：services/team_orchestrator.py 模板拆解 + Worker 执行（走 Gateway）+ 审批挂起/续跑 + LLM 汇总（失败降级模板）；端到端真实验证通过）
   - Owner Role：A
   - Input：契约 TaskRunDto、预置模板
   - Output：task_run + JSON subtasks；模板 + LLM 补全/汇总；状态流转；审批端点
   - Dependency：T1-01、T1-03
   - Acceptance Criteria：发起任务 → 3 子任务 → Approval 挂起 → 批准续跑 → 完成；失败态可返回
+
+## Sprint 5 — TeamTaskOrchestrator（已完成，2026-08-18）
+
+> 里程碑：团队协作主链路（方案 A：门户自研编排 + Harness 并行尝试 + AgentTeams 留桩）。
+
+### S5-01 TeamTaskOrchestrator
+- [x]
+  - Owner Role：A
+  - Input：契约 §3.6、Policy/Gateway/Audit（Sprint 2 就绪）
+  - Output：`backend/app/services/team_orchestrator.py`（TEAM-ONBOARD 模板 3 子任务：HR 制度 -> IT 账号 -> 敏感报表审批）；`POST /teams/{id}/tasks`、`GET /teams/{id}/tasks/{id}`、`POST /tasks/{id}/approve`
+  - Dependency：T1-02、T1-03
+  - Acceptance Criteria：发起 -> approval 挂起 -> 批准 -> completed（LLM 汇总，失败降级）；审计 trace 贯穿 6 条；测试 7 项
+
+### S5-02 DeepSeek Harness 尝试（门禁 G2）
+- [ ]（进行中：依赖安装完成，build:lib 进行中；止损后记录结论，不通过则 RuntimeAdapter 演示模式）
+  - Owner Role：A
+  - Input：deepseek-harness 源码（本机外部依赖）
+  - Output：dsh headless/API 可调用则接入 RuntimeAdapter harness backend；否则记录降级
+  - Dependency：S5-01
+  - Acceptance Criteria：可跑则 Worker 执行接 dsh 一轮；不可跑则 UI 标注 Adapter 演示模式，不阻塞
+
+### S5-03 AgentTeams Adapter 桩
+- [x]
+  - Owner Role：A
+  - Input：higress/AgentTeams（外部依赖，K8s/Docker 形态）
+  - Output：adapters/ 契约注明预留接入位；Demo 口播"已预留 AgentTeams 协作平台接入"
+  - Dependency：无
+  - Acceptance Criteria：文档明确本周不接入原因（需 K8s/Docker + Matrix 形态不适配门户），不阻塞主链路
 
 ### T2-02 Harness 集成尝试（门禁 G2）
 - [ ]

@@ -21,7 +21,7 @@ def db_session():
         poolclass=StaticPool,
     )
     Base.metadata.create_all(bind=engine)
-    testing_session = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    testing_session = sessionmaker(bind=engine, autocommit=False, autoflush=False, expire_on_commit=False)
 
     with testing_session() as db:
         seed_data(db, load_seed())

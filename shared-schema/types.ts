@@ -123,7 +123,17 @@ export interface TaskRun {
   trace_id: string;
   request: string;
   status: string;
-  subtasks: unknown[];
+  subtasks: TaskSubtask[];
   summary: string;
   created_at: string;
+}
+
+export interface TaskSubtask {
+  worker_id: string;
+  worker_no: string;
+  summary: string;
+  plugin_ids: string[];
+  status: "pending" | "running" | "completed" | "approval" | "denied" | "failed";
+  result: string | null;
+  approval: { policy_id?: string; reason?: string } | null;
 }
