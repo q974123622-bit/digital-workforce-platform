@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models
-from .gateway import search_knowledge
+from .gateway import invoke_plugin, search_knowledge
 from .identity import resolve_identity
 from .llm import LLMProvider, LLMUnavailableError
 from .session import add_message, get_or_create, history
@@ -36,7 +36,51 @@ TOOLS = [
                 "required": ["knowledge_base_id", "query"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "collaborate_employee",
+            "description": "向目标数字员工发起协作：询问信息、委托子任务或转交任务（调用前会经过策略授权）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_employee_id": {"type": "string", "description": "目标数字员工工号"},
+                    "action": {"type": "string", "enum": ["ask", "delegate", "handoff"], "description": "协作方式"},
+                    "request": {"type": "string", "description": "协作请求内容"},
+                },
+                "required": ["target_employee_id", "action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_document",
+            "description": "读取虚构文档内容（调用前会经过策略授权）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "document_name": {"type": "string", "description": "文档文件名，如 normal-document.md"},
+                },
+                "required": ["document_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_work_records",
+            "description": "查询当前数字员工的工作记录（可选按状态过滤）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "可选状态过滤：completed / in_progress / not_done / research / review / issue_resolved"},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -115,7 +159,7 @@ class ChatOrchestrator:
             }
             messages.append(assistant_msg)
             for tc in resp.tool_calls:
-                card, tool_message = self._execute_tool(db, subject, tc.arguments)
+                card, tool_message = self._execute_tool(db, subject, tc.name, tc.arguments)
                 tool_cards.append(card)
                 if card.decision == "deny" and policy_denied is None:
                     policy_denied = card
@@ -142,7 +186,20 @@ class ChatOrchestrator:
             "reason": card.reason,
         }
 
-    def _execute_tool(self, db: Session, subject, arguments: dict) -> tuple[ToolCard, str]:
+    def _execute_tool(self, db: Session, subject, name: str, arguments: dict) -> tuple[ToolCard, str]:
+        if name == "search_knowledge":
+            return self._execute_knowledge(db, subject, arguments)
+        if name == "collaborate_employee":
+            return self._invoke_demo_tool(db, subject, "employee-collaboration", "execute", arguments, "collaboration")
+        if name == "read_document":
+            return self._invoke_demo_tool(db, subject, "document-read", "read", arguments, "document")
+        if name == "query_work_records":
+            merged = dict(arguments)
+            merged["employee_id"] = subject.employee_id
+            return self._invoke_demo_tool(db, subject, "work-record-query", "read", merged, "work-records")
+        return ToolCard(plugin_id=name, name=name, decision="error", reason="未知工具"), "未知工具调用"
+
+    def _execute_knowledge(self, db: Session, subject, arguments: dict) -> tuple[ToolCard, str]:
         kb_id = str(arguments.get("knowledge_base_id", ""))
         query = str(arguments.get("query", ""))
         try:
@@ -173,12 +230,42 @@ class ChatOrchestrator:
                 return card, "POLICY_DENIED（source=demo）：当前身份无权访问该知识库，请如实告知用户。"
             raise
 
+    def _invoke_demo_tool(self, db: Session, subject, plugin_id: str, action: str, params: dict, label: str) -> tuple[ToolCard, str]:
+        try:
+            result = invoke_plugin(
+                db,
+                employee_id=subject.employee_id,
+                plugin_id=plugin_id,
+                action=action,
+                params=params,
+                trace_id=f"T-CHAT-{subject.employee_id}",
+            )
+            card = ToolCard(
+                plugin_id=plugin_id,
+                name=label,
+                decision="allow",
+                policy_id=result.get("policy_id"),
+            )
+            return card, f"工具结果（source=demo）：{json.dumps(result.get('data', {}), ensure_ascii=False)}"
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                card = ToolCard(
+                    plugin_id=plugin_id,
+                    name=label,
+                    decision="deny",
+                    policy_id=detail.get("policy_id"),
+                    reason=detail.get("reason"),
+                )
+                return card, "POLICY_DENIED（source=demo）：当前身份无权执行该操作，请如实告知用户。"
+            raise
+
     def _system_prompt(self, subject) -> str:
         role_label = "正式员工" if subject.employment_type == "formal" else "实习生"
         return (
             "你是数字员工平台的演示助手。所有内容均为虚构演示数据（source=demo）。"
             f"当前数字员工：{subject.employee_id}（类型 {subject.employee_type}，身份 {role_label}，"
             f"部门 {subject.department}，Owner {subject.owner_id}）。"
-            "只能通过 search_knowledge 工具查询知识库，禁止编造知识库内容；"
+            "只使用当前可用的工具查询知识库、进行员工协作、读取文档或查询工作记录，禁止编造内容；"
             "工具返回拒绝时如实告知用户无权访问，不得尝试绕过。"
         )

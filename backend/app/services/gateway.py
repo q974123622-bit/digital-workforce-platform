@@ -107,7 +107,10 @@ def invoke_plugin(
             trace_id=trace_id,
         )
     else:
-        data = run_adapter(plugin, params)
+        adapter_params = dict(params)
+        adapter_params["source_employee_id"] = employee_id
+        adapter_params["trace_id"] = trace_id
+        data = run_adapter(plugin, adapter_params)
     summary = json.dumps(data, ensure_ascii=False)[:200]
     audit_id = write_audit(
         db,
