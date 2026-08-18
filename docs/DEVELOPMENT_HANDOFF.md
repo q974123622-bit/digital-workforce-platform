@@ -15,6 +15,11 @@
 - **页面**：`frontend/src/pages/Teams.tsx` 新增「任务协作」标签：发起任务（TextArea + 按钮）、任务状态徽章、子任务进度卡（左侧色条 + 状态 Tag + 结果摘要）、敏感操作审批 Alert、审批通过/拒绝按钮（默认审批人 E10281）、Leader 汇总卡；任务在 pending/running/approval 状态每 3 秒轮询刷新。
 - **接口**：`api.createTask / getTask / approveTask` 已封装；端到端验证：create→approval（3 子任务）→ getTask→approval → approve→completed + LLM 汇总。
 
+## 1.15 一键启动/重置脚本（T3-01，2026-08-18）
+
+- **脚本**：`scripts/run_demo.ps1`（推荐演示用）：依赖检查 → 种子重置（`-NoReset` 跳过）→ 启动后端（8000，日志 backend/uvicorn-*.log）→ 启动前端（5173，日志 frontend/vite-dev*.log）→ 健康检查确认；`-Docker` 可选：构建 dwp-dsh 镜像并启用 Harness 模式（`DWP_HARNESS_ENABLED=1`）。
+- **注意**：脚本含中文，文件带 UTF-8 BOM（Windows PowerShell 5.1 需 BOM 才能正确解析）。
+
 ## 1.11 Sprint 5 完成情况（TeamTaskOrchestrator，负责人 A）
 
 - **TeamTaskOrchestrator**：`backend/app/services/team_orchestrator.py`，TEAM-ONBOARD 模板 3 子任务（VE-0002 HR 制度 -> VE-0003 IT 账号 -> VE-0003 敏感报表审批）；子任务执行一律经 Plugin Gateway；状态机 parsing/running/approval/completed/denied/failed。

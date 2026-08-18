@@ -312,7 +312,7 @@
 ## Phase 3 — 联调收尾（Day 4–5）
 
 ### T3-01 一键启动/重置脚本
-- [ ]（Sprint 1 已完成 init_demo.ps1：重建 DB + 种子 + 依赖安装；reset_demo.ps1 / run_demo.ps1 与"30 秒一键恢复"留待 Sprint 3 收口）
+- [x]（2026-08-18 完成：scripts/run_demo.ps1 一键启动——依赖检查、种子重置、启动前后端、可选 -Docker（构建 dwp-dsh 镜像 + 启用 Harness）、-NoReset 跳过；实测 8000/5173 就绪 + 健康检查通过）
   - Owner Role：D
   - Input：全部运行方式
   - Output：`scripts/reset_demo.ps1`（重建 DB + 种子 + 起前后端 + 可选 docker）、`run_demo.ps1`
