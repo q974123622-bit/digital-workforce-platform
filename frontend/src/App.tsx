@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
+import Chat from './pages/Chat';
 import Dashboard from './pages/Dashboard';
 import EmployeeDetail from './pages/EmployeeDetail';
 import Employees from './pages/Employees';
@@ -14,6 +15,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/employees" element={<Employees />} />
         <Route path="/employees/:employeeNo" element={<EmployeeDetail />} />
+        <Route path="/employees/:employeeNo/chat" element={<Chat />} />
         <Route path="/plugins" element={<Plugins />} />
         <Route path="/security" element={<Security />} />
         <Route path="/teams" element={<Teams />} />

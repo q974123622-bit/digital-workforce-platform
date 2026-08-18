@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { Card, Descriptions, Spin, Table, Tag, Typography } from 'antd';
+import { Link, useParams } from 'react-router-dom';
+import { Button, Card, Descriptions, Space, Spin, Table, Tag, Typography } from 'antd';
 import type { Grant } from '@dwp/shared-schema';
 import { api } from '../api/client';
 import type { Employee } from '@dwp/shared-schema';
@@ -17,9 +17,14 @@ export default function EmployeeDetail() {
 
   return (
     <div>
-      <Typography.Title level={3}>
-        {emp.name}（{emp.employee_no}）
-      </Typography.Title>
+      <Space align="center" style={{ marginBottom: 16 }}>
+        <Typography.Title level={3} style={{ margin: 0 }}>
+          {emp.name}（{emp.employee_no}）
+        </Typography.Title>
+        <Link to={`/employees/${emp.employee_no}/chat`}>
+          <Button type="primary">开始对话</Button>
+        </Link>
+      </Space>
       <Card title="身份信息" style={{ marginBottom: 16 }}>
         <Descriptions column={2} size="small">
           <Descriptions.Item label="类型">{emp.type}</Descriptions.Item>
