@@ -10,6 +10,11 @@
 - **结果**：8/8 通过——健康检查；正式分身问内部制度 Allow；实习生同问 POLICY-002 Deny；RAG 向量检索命中 KB-IT-SERVICE；团队任务 3 子任务审批挂起；审批完成 + Leader 汇总；审计 trace 贯穿（create/execute×3/approve/summarize）；会话历史持久化。
 - **注意**：内部接口（`/internal/knowledge/search` 等）不带 `/api/v1` 前缀，契约 §6 定义于 `/internal/`。
 
+## 1.14 前端 Team 任务页（T2-04，2026-08-18）
+
+- **页面**：`frontend/src/pages/Teams.tsx` 新增「任务协作」标签：发起任务（TextArea + 按钮）、任务状态徽章、子任务进度卡（左侧色条 + 状态 Tag + 结果摘要）、敏感操作审批 Alert、审批通过/拒绝按钮（默认审批人 E10281）、Leader 汇总卡；任务在 pending/running/approval 状态每 3 秒轮询刷新。
+- **接口**：`api.createTask / getTask / approveTask` 已封装；端到端验证：create→approval（3 子任务）→ getTask→approval → approve→completed + LLM 汇总。
+
 ## 1.11 Sprint 5 完成情况（TeamTaskOrchestrator，负责人 A）
 
 - **TeamTaskOrchestrator**：`backend/app/services/team_orchestrator.py`，TEAM-ONBOARD 模板 3 子任务（VE-0002 HR 制度 -> VE-0003 IT 账号 -> VE-0003 敏感报表审批）；子任务执行一律经 Plugin Gateway；状态机 parsing/running/approval/completed/denied/failed。

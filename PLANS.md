@@ -286,7 +286,7 @@
   - Acceptance Criteria：Docker 可用时真实启动并返回 mode=docker；不可用自动 local 且审计记录；被拒请求不启动
 
 ### T2-04 前端：Team 群聊/任务页
-- [ ]
+- [x]（2026-08-18 完成：Teams 页新增「任务协作」标签——发起任务表单、状态徽章、子任务进度（完成/待审批/执行中）、审批通过/拒绝按钮、Leader 汇总卡、运行中自动轮询 3s）
   - Owner Role：C
   - Input：契约 TaskRunDto、T2-01
   - Output：团队列表、任务发起、子任务状态、审批卡、汇总展示

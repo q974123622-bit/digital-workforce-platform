@@ -6,6 +6,7 @@ import type {
   KnowledgeBase,
   Plugin,
   Policy,
+  TaskRun,
   Team,
   TeamDetail,
   Workspace,
@@ -51,6 +52,18 @@ export const api = {
   listAudit: (params?: { decision?: string }) => request<AuditEvent[]>(`/audit${qs(params)}`),
   listTeams: () => request<Team[]>('/teams'),
   getTeam: (teamId: string) => request<TeamDetail>(`/teams/${encodeURIComponent(teamId)}`),
+  createTask: (teamId: string, requestText: string) =>
+    request<TaskRun>(`/teams/${encodeURIComponent(teamId)}/tasks`, {
+      method: 'POST',
+      body: JSON.stringify({ request: requestText }),
+    }),
+  getTask: (teamId: string, taskId: string) =>
+    request<TaskRun>(`/teams/${encodeURIComponent(teamId)}/tasks/${encodeURIComponent(taskId)}`),
+  approveTask: (taskId: string, approve: boolean, actorNo: string) =>
+    request<TaskRun>(`/tasks/${encodeURIComponent(taskId)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ approve, actor_no: actorNo }),
+    }),
   listKnowledgeBases: () => request<KnowledgeBase[]>('/knowledge-bases'),
   getWorkspace: (employeeNo: string) => request<Workspace>(`/employees/${encodeURIComponent(employeeNo)}/workspace`),
   chat: (employeeNo: string, message: string, sessionId?: string) =>

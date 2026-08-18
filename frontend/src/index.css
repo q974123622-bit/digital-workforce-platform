@@ -512,3 +512,95 @@ body {
     height: 70vh;
   }
 }
+
+/* ==================== Team 任务协作页（T2-04） ==================== */
+.task-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.task-create {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.task-create .ant-input {
+  border-radius: 12px;
+}
+
+.task-create .ant-btn {
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.task-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f0f5ff 0%, #ffffff 100%);
+  border: 1px solid #e6efff;
+}
+
+.subtask-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.subtask {
+  border-radius: 12px;
+  padding: 12px 14px;
+  border: 1px solid #eef1f6;
+  background: #fafbfd;
+  border-left: 4px solid #d9d9d9;
+}
+
+.subtask.completed {
+  border-left-color: #52c41a;
+}
+
+.subtask.approval {
+  border-left-color: #faad14;
+  background: #fffbe6;
+}
+
+.subtask.running {
+  border-left-color: #2f54eb;
+}
+
+.subtask.denied,
+.subtask.failed {
+  border-left-color: #ff4d4f;
+}
+
+.subtask-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.approval-zone {
+  display: flex;
+  align-items: center;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #fffbe6 0%, #fffdf5 100%);
+  border: 1px solid #ffe58f;
+  margin-bottom: 14px;
+}
+
+.summary-card {
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #f6ffed 0%, #fcfff8 100%);
+  border: 1px solid #b7eb8f;
+}
