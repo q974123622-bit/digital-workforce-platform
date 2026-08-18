@@ -829,6 +829,75 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 
 ---
 
+## P19. 企业知识库 RAG 检索改造（Qwen Embedding，Owner B，P0，依赖 P17）
+
+```text
+你是数字员工平台 PoC 仓库的后端/检索工程师（负责人 B 正式员工）。开始前先读：
+- docs/API_CONTRACT.md §5（Knowledge Adapter Interface：search 统一签名与 hits 结构）
+- docs/SECURITY_BOUNDARY.md（Secret/Config 边界：API Key 只走环境变量；统一资源访问链）
+- docs/ARCHITECTURE.md（L5 隔离与资源层；业务模块禁止绕过 Gateway）
+- backend/app/services/knowledge_adapter.py、config.py、gateway.py
+- backend/requirements.txt、mock-data/seed.json、mock-data/kb/（P17 生成的原格式模拟库）
+
+任务：把企业知识库接口（Knowledge Adapter）从"读文件抽片段"升级为 RAG 检索形式，
+嵌入使用 Qwen Embedding（DashScope OpenAI 兼容 API）。
+范围：仅 Adapter 层与索引管线；不得修改业务代码（chat.py、routers/、gateway.py 编排、schemas、契约、前端）。
+
+目标架构（接口与调用链不变）：
+查询 → /internal/knowledge/search（不变）→ Policy（不变）→ Gateway（不变）
+     → KnowledgeAdapter（RAG 实现）
+          query 嵌入 → 向量余弦 top-k → hits[{title, snippet, score}]
+     → Audit（不变）
+
+交付物：
+1. backend/app/services/embedding.py：QwenEmbeddingClient（httpx 调
+   POST {base_url}/embeddings，模型 qwen3.7-text-embedding，dimensions=1024，encoding_format=float，
+   支持批量 input，超时与错误统一映射 EmbeddingUnavailableError；响应取 data[i].embedding）。
+   配置（.env.example 只放占位名，真实 Key 仅本地 gitignored .env）：
+   DWP_EMBED_BASE_URL（默认 https://dashscope.aliyuncs.com/compatible-mode/v1；
+     若使用百炼 MaaS 工作空间端点，填 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1，
+     把 {WorkspaceId} 换成真实业务空间 ID）
+   DWP_EMBED_API_KEY（兼容读取 DASHSCOPE_API_KEY）
+   DWP_EMBED_MODEL（默认 qwen3.7-text-embedding）
+   DWP_EMBED_DIMENSIONS（默认 1024）
+2. backend/app/services/kb_index.py：索引构建
+   - 切块：xlsx → 每行一个问题+回答 chunk；docx → 按标题分段；pdf → 按页；md → 按现有 # 标题；
+   - 嵌入 mock-data/kb/ 四分类全部文件，写入 SQLite 表 kb_chunk
+     （id/kb_id/source_file/title/content/embedding BLOB(float32)/dims/created_at）；
+   - CLI：python -m app.kb_index --rebuild；app.seed --reset 时顺带重建。
+3. backend/app/services/rag_knowledge_adapter.py：RAGKnowledgeAdapter 实现同一 search() 接口：
+   - query 嵌入 → numpy 余弦相似度 → top-k（默认 5）→ hits[{title, snippet, score}]，source=rag；
+   - 嵌入不可用（无 Key/超时/网络失败）时抛 EmbeddingUnavailableError。
+4. 模式开关（config.py）：DWP_KB_MODE=mock|rag|internal，默认 mock；
+   select_adapter() 按模式路由：rag → RAGKnowledgeAdapter（嵌入失败自动降级 MockKnowledgeAdapter，
+   降级写审计并保持 Demo 可用）；internal → 受控内部端点；mock → 原 Mock。
+5. 测试 backend/tests/test_rag_adapter.py（用 FakeEmbedding 固定向量，不依赖真实 API）：
+   - 索引构建：四分类全部文件均产生 chunk；
+   - 检索：top-k 排序与 score 正确；hits 结构与契约一致（新增 score 可选字段，向后兼容）；
+   - 链路：DT-E10281 + KB-IT-SERVICE allow；DT-E20999 + KB-SECURITIES 403 POLICY_DENIED 且审计存在；
+   - 降级：嵌入不可用 → 返回 mock hits，不抛 5xx。
+
+约束：
+- API Key 只存在于本地环境变量，绝不入 Git/Prompt/日志；嵌入内容全部为 mock-data 虚构数据。
+- 不修改冻结契约；hits 增加 score 为可选字段，不破坏现有字段。
+- 演示与测试一律以 mock-data 模拟库为准；不接真实知识库。
+- 本期检索仅 Embed + 余弦 top-k，不做 Rerank（语料规模小，rerank 收益低且增加延迟/成本）；
+  RAGKnowledgeAdapter 中预留 rerank 扩展点即可，本期不实现。
+- 完成后停止，不开始 AgentTeams。
+
+验收标准：
+- DWP_KB_MODE=rag 下：kb_index --rebuild 成功；/internal/knowledge/search 对 KB-IT-SERVICE 问
+  「VPN 怎么连」返回 allow + 带 score 的 hits；DT-E20999 问 KB-SECURITIES 仍 403；
+- 无 Key 或无网络时自动降级 mock，链路不中断；
+- 后端 pytest 全绿；git status 无 Key/真实数据。
+
+验证命令：
+cd backend; .\.venv\Scripts\python.exe -m app.kb_index --rebuild
+cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+---
+
 ## 附：常用验证命令速查
 
 ```powershell

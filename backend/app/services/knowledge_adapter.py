@@ -17,10 +17,15 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from .. import models
+from ..database import SessionLocal
 from . import config
+from .embedding import EmbeddingUnavailableError
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 logger = logging.getLogger(__name__)
+
+# 会话工厂：生产环境默认 SessionLocal；测试可替换为 fixture 会话以隔离数据库。
+session_factory = SessionLocal
 
 SUPPORTED_SUFFIXES = {".md", ".docx", ".xlsx", ".pdf"}
 _XLSX_SKIP_TITLES = {"问题", "服务类别", "服务项", "部门", "岗位", "项目"}
@@ -221,8 +226,70 @@ class InternalKnowledgeAdapterStub(KnowledgeAdapter):
         }
 
 
+class _RagWithFallback(KnowledgeAdapter):
+    """rag 模式兜底：嵌入不可用（缺 Key/超时/网络失败）→ 降级 Mock 检索，
+    写降级审计并保持 Demo 可用，不向调用方抛 5xx。"""
+
+    def __init__(self, primary: KnowledgeAdapter, fallback: KnowledgeAdapter, kb: models.KnowledgeBase | None):
+        self._primary = primary
+        self._fallback = fallback
+        self._kb = kb
+
+    def search(
+        self,
+        *,
+        employee_id: str,
+        knowledge_base_id: str,
+        query: str,
+        trace_id: str,
+    ) -> dict:
+        try:
+            return self._primary.search(
+                employee_id=employee_id,
+                knowledge_base_id=knowledge_base_id,
+                query=query,
+                trace_id=trace_id,
+            )
+        except EmbeddingUnavailableError:
+            db = session_factory()
+            try:
+                db.add(
+                    models.AuditEvent(
+                        trace_id=trace_id or "NO-TRACE",
+                        actor=employee_id,
+                        employee_id=employee_id,
+                        knowledge_base_id=knowledge_base_id,
+                        action="read",
+                        decision="allow",
+                        reason="RAG 嵌入不可用，降级 Mock 检索（DWP_KB_MODE=rag）",
+                        result_summary="degraded_to_mock",
+                    )
+                )
+                db.commit()
+            finally:
+                db.close()
+            return self._fallback.search(
+                employee_id=employee_id,
+                knowledge_base_id=knowledge_base_id,
+                query=query,
+                trace_id=trace_id,
+            )
+
+
 def select_adapter(plugin: models.Plugin, kb: models.KnowledgeBase | None) -> KnowledgeAdapter:
-    """按插件/资源类型选择 Adapter；internal:// 或 resource_type=internal 走 Stub。"""
+    """按 DWP_KB_MODE 路由 Knowledge Adapter：
+    - mock（默认）：原 MockKnowledgeAdapter；
+    - rag：RAGKnowledgeAdapter（嵌入失败自动降级 Mock，写降级审计）；
+    - internal：受控内部端点 Stub（真实端点仅在 Secure Overlay 正式环境配置，仓库内不接入）。
+    internal:// 插件或 resource_type=internal 的资源始终走 Stub，防止绕过安全边界。
+    """
+    mode = config.kb_mode()
     if plugin.endpoint_ref.startswith("internal://") or (kb and kb.resource_type == "internal"):
+        return InternalKnowledgeAdapterStub()
+    if mode == "rag":
+        from .rag_knowledge_adapter import RAGKnowledgeAdapter
+
+        return _RagWithFallback(RAGKnowledgeAdapter(), MockKnowledgeAdapter(kb=kb), kb)
+    if mode == "internal":
         return InternalKnowledgeAdapterStub()
     return MockKnowledgeAdapter(kb=kb)

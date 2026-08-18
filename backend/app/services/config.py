@@ -21,6 +21,13 @@ ADP_CREDENTIAL_REF = "DWP_ADP_CREDENTIAL_REF"
 RPA_ENDPOINT = "DWP_RPA_ENDPOINT"
 RPA_CREDENTIAL_REF = "DWP_RPA_CREDENTIAL_REF"
 
+# 知识库检索模式（mock | rag | internal，默认 mock）与嵌入服务配置
+KB_MODE = "DWP_KB_MODE"
+EMBED_BASE_URL = "DWP_EMBED_BASE_URL"
+EMBED_API_KEY = "DWP_EMBED_API_KEY"
+EMBED_MODEL = "DWP_EMBED_MODEL"
+EMBED_DIMENSIONS = "DWP_EMBED_DIMENSIONS"
+
 
 def get(name: str, default: str | None = None) -> str | None:
     """读取环境变量；未设置返回 default。值不落日志。"""
@@ -30,3 +37,21 @@ def get(name: str, default: str | None = None) -> str | None:
 def credential_ref(name: str) -> str | None:
     """返回凭据引用名（环境变量名或 secure config key），不返回凭据本身。"""
     return os.environ.get(name)
+
+
+def kb_mode() -> str:
+    """知识库检索模式：mock | rag | internal；未配置默认 mock。"""
+    return (os.environ.get(KB_MODE) or "mock").strip().lower()
+
+
+def embedding_api_key() -> str | None:
+    """嵌入服务 Key：DWP_EMBED_API_KEY，兼容读取 DASHSCOPE_API_KEY。"""
+    return os.environ.get(EMBED_API_KEY) or os.environ.get("DASHSCOPE_API_KEY")
+
+
+def embedding_dimensions() -> int:
+    """嵌入维度，默认 1024。"""
+    try:
+        return int(os.environ.get(EMBED_DIMENSIONS) or "1024")
+    except (TypeError, ValueError):
+        return 1024

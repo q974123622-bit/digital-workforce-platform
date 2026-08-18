@@ -51,6 +51,10 @@ def main() -> None:
             db_file.unlink()
     Base.metadata.create_all(bind=engine)
     seed_if_empty()
+    # RAG 索引：seed 重建时顺带重建 kb_chunk（离线无 Key 时使用本地演示向量）
+    from .services import kb_index
+
+    kb_index.rebuild_index()
     print("seed ok")
 
 

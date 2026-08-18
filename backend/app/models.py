@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, String
+from sqlalchemy import JSON, DateTime, LargeBinary, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -117,6 +117,21 @@ class KnowledgeBase(Base):
     description: Mapped[str] = mapped_column(String, default="")
     status: Mapped[str] = mapped_column(String, default="active")
     doc_path: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class KnowledgeChunk(Base):
+    """RAG 索引块：kb_chunk 表（id / kb_id / source_file / title / content / embedding BLOB / dims / created_at）。"""
+
+    __tablename__ = "kb_chunk"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kb_id: Mapped[str] = mapped_column(String, index=True)
+    source_file: Mapped[str] = mapped_column(String, default="")
+    title: Mapped[str] = mapped_column(String, default="")
+    content: Mapped[str] = mapped_column(String, default="")
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    dims: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class ChatSession(Base):
