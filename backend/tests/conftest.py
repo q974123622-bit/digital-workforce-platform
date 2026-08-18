@@ -1,6 +1,8 @@
 import os
 
 os.environ["DATABASE_URL"] = "sqlite://"
+# 测试默认 mock 检索模式：避免 RAG 路径访问生产 DB/真实 embedding 服务
+os.environ["DWP_KB_MODE"] = "mock"
 
 import pytest
 from fastapi.testclient import TestClient

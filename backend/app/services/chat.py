@@ -30,7 +30,17 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "knowledge_base_id": {"type": "string", "description": "知识库资源 ID，如 KB-PUBLIC / KB-INTERNAL / KB-ONBOARD"},
+                    "knowledge_base_id": {
+                        "type": "string",
+                        "description": (
+                            "知识库资源 ID（按问题领域选择）："
+                            "KB-PUBLIC 公共制度/FAQ；KB-ONBOARD 新员工入职；"
+                            "KB-INTERNAL 正式员工内部制度；KB-FINTECH 金融科技；"
+                            "KB-IT-SERVICE IT/办公软件（企业微信/邮箱/VPN 等）；"
+                            "KB-SECURITIES 证券业务（融资融券/期权/科创板等）；"
+                            "KB-REG-INTERNAL 内部合规制度；KB-REG-EXTERNAL 外部监管法规"
+                        ),
+                    },
                     "query": {"type": "string", "description": "检索关键词/问题"},
                 },
                 "required": ["knowledge_base_id", "query"],
