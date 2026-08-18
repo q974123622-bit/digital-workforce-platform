@@ -254,7 +254,7 @@
   - Acceptance Criteria：发起 -> approval 挂起 -> 批准 -> completed（LLM 汇总，失败降级）；审计 trace 贯穿 6 条；测试 7 项
 
 ### S5-02 DeepSeek Harness 尝试（门禁 G2）
-- [ ]（进行中：依赖安装完成，build:lib 进行中；止损后记录结论，不通过则 RuntimeAdapter 演示模式）
+- [x]（结论：依赖安装 5m 完成；build:lib 运行 20m+ 最后一个进程零 CPU 疑似挂起，dsh CLI 未生成；按止损规则判定 G2 不通过 -> RuntimeAdapter 使用 demo 模式，不阻塞主链路；Harness 留待受控环境重试）
   - Owner Role：A
   - Input：deepseek-harness 源码（本机外部依赖）
   - Output：dsh headless/API 可调用则接入 RuntimeAdapter harness backend；否则记录降级
