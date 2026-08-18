@@ -4,6 +4,12 @@
 > 目的：让两名正式员工（A 架构/总装、B 安全/企业资源）在本基线上串行开发，实习生（C 前端、D Mock/测试）按契约并行。
 > 状态：Sprint 1-4 已完成；Sprint 5 TeamTaskOrchestrator 已完成（2026-08-18）；Harness 尝试进行中（G2 止损中）；本文件为稳定基线交接。
 
+## 1.13 黄金链路联调（T3-02，2026-08-18）
+
+- **脚本**：`scripts/golden_chain.py`（`cd backend; .\.venv\Scripts\python.exe ..\scripts\golden_chain.py`），8 步全链路可重复验证。
+- **结果**：8/8 通过——健康检查；正式分身问内部制度 Allow；实习生同问 POLICY-002 Deny；RAG 向量检索命中 KB-IT-SERVICE；团队任务 3 子任务审批挂起；审批完成 + Leader 汇总；审计 trace 贯穿（create/execute×3/approve/summarize）；会话历史持久化。
+- **注意**：内部接口（`/internal/knowledge/search` 等）不带 `/api/v1` 前缀，契约 §6 定义于 `/internal/`。
+
 ## 1.11 Sprint 5 完成情况（TeamTaskOrchestrator，负责人 A）
 
 - **TeamTaskOrchestrator**：`backend/app/services/team_orchestrator.py`，TEAM-ONBOARD 模板 3 子任务（VE-0002 HR 制度 -> VE-0003 IT 账号 -> VE-0003 敏感报表审批）；子任务执行一律经 Plugin Gateway；状态机 parsing/running/approval/completed/denied/failed。

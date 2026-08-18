@@ -320,7 +320,7 @@
   - Acceptance Criteria：新机器可 30 秒内一键恢复演示环境（当前 init_demo.ps1 已覆盖环境+种子，起服务部分未覆盖）
 
 ### T3-02 黄金链路端到端验证
-- [ ]
+- [x]（2026-08-18 完成：scripts/golden_chain.py 可重复联调脚本，8/8 通过——健康检查 / 正式分身问答 Allow / 实习生 Deny(POLICY-002) / RAG 向量检索命中 / 团队任务 3 子任务审批挂起 / 审批完成+LLM 汇总 / 审计 trace 贯穿 / 会话历史持久化）
   - Owner Role：A（B/C/D 参与）
   - Input：docs/DEMO_SCENARIO.md 10 步
   - Output：AC-01~08 全通过记录
