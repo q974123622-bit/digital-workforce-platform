@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..services.chat import ChatOrchestrator
+from ..services.identity import resolve_identity
 from ..services.llm import DeepSeekProvider, LLMUnavailableError
+from ..services.policy import ResourceRef, evaluate
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -161,4 +163,53 @@ def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(g
         message=result.message,
         tool_cards=cards,
         policy_denied=denied,
+    )
+
+
+@router.get("/{employee_no}/workspace", response_model=schemas.WorkspaceOut)
+def get_workspace(employee_no: str, db: Session = Depends(get_db)):
+    """员工工作台（Sprint 6）：身份 + 人设 + 可用插件 + 知识库权限 + 安全配置。"""
+    emp = db.get(models.DigitalEmployee, employee_no)
+    if emp is None:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    subject = resolve_identity(db, employee_no)
+
+    plugins = [
+        schemas.WorkspacePluginOut(
+            plugin_id=g.plugin_id,
+            name=g.name,
+            type=g.type,
+            action=g.action,
+            decision_mode=g.decision_mode,
+            data_level=g.data_level,
+        )
+        for g in _grants_for(db, employee_no)
+    ]
+
+    kbs: list[schemas.WorkspaceKbOut] = []
+    for kb in db.scalars(select(models.KnowledgeBase).order_by(models.KnowledgeBase.id)).all():
+        plugin_id = "knowledge-l1" if kb.data_level == "L1" else "knowledge-l2"
+        result = evaluate(db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read")
+        kbs.append(
+            schemas.WorkspaceKbOut(
+                knowledge_base_id=kb.id,
+                name=kb.name,
+                data_level=kb.data_level,
+                description=kb.description,
+                accessible=result.decision in ("allow", "approval"),
+                decision=result.decision,
+            )
+        )
+
+    return schemas.WorkspaceOut(
+        employee=_to_out(db, emp),
+        role_prompt=emp.role_prompt or "",
+        plugins=plugins,
+        knowledge_bases=kbs,
+        security=schemas.WorkspaceSecurityOut(
+            location=emp.location,
+            internet=emp.internet,
+            max_data_level=emp.max_data_level,
+            allowed_domains=emp.allowed_domains or [],
+        ),
     )

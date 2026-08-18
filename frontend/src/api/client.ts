@@ -1,4 +1,15 @@
-import type { AuditEvent, Employee, KnowledgeBase, Plugin, Policy, Team, TeamDetail } from '@dwp/shared-schema';
+import type {
+  AuditEvent,
+  ChatMessage,
+  ChatReply,
+  Employee,
+  KnowledgeBase,
+  Plugin,
+  Policy,
+  Team,
+  TeamDetail,
+  Workspace,
+} from '@dwp/shared-schema';
 
 const BASE = '/api/v1';
 
@@ -41,4 +52,11 @@ export const api = {
   listTeams: () => request<Team[]>('/teams'),
   getTeam: (teamId: string) => request<TeamDetail>(`/teams/${encodeURIComponent(teamId)}`),
   listKnowledgeBases: () => request<KnowledgeBase[]>('/knowledge-bases'),
+  getWorkspace: (employeeNo: string) => request<Workspace>(`/employees/${encodeURIComponent(employeeNo)}/workspace`),
+  chat: (employeeNo: string, message: string, sessionId?: string) =>
+    request<ChatReply>(`/employees/${encodeURIComponent(employeeNo)}/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ message, session_id: sessionId ?? null }),
+    }),
+  listMessages: (sessionId: string) => request<ChatMessage[]>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`),
 };

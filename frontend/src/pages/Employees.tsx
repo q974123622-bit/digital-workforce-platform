@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Avatar, Input, Select, Space, Table, Typography } from 'antd';
+import { Avatar, Button, Input, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { Employee } from '@dwp/shared-schema';
+import { CommentOutlined } from '@ant-design/icons';
 import { api } from '../api/client';
 import { LevelTag, StatusBadge, TypeTag, TYPE_META } from '../components/tags';
 import { ErrorState } from '../components/PageState';
@@ -75,6 +76,15 @@ export default function Employees() {
         render: (_: unknown, record: Employee) => `${record.location} / Internet ${record.internet}`,
       },
       { title: '状态', dataIndex: 'status', render: (value: string) => <StatusBadge value={value} /> },
+      {
+        title: '操作',
+        key: 'actions',
+        render: (_: unknown, record: Employee) => (
+          <Button type="link" size="small" icon={<CommentOutlined />} href={`#/employees/${record.employee_no}/chat`}>
+            对话
+          </Button>
+        ),
+      },
     ],
     [],
   );

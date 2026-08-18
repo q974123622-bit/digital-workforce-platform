@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from .gateway import search_knowledge
 from .identity import resolve_identity
+from .knowledge_registry import list_resources
 from .llm import LLMProvider, LLMUnavailableError
 from .session import add_message, get_or_create, history
 
@@ -88,7 +89,7 @@ class ChatOrchestrator:
         add_message(db, session_id=session.session_id, role="user", content=message)
 
         messages: list[dict] = [
-            {"role": "system", "content": self._system_prompt(subject), "source": "demo"},
+            {"role": "system", "content": self._system_prompt(db, subject), "source": "demo"},
         ]
         for msg in history(db, session.session_id)[:-1]:
             messages.append({"role": msg.role, "content": msg.content, "source": "demo"})
@@ -183,12 +184,16 @@ class ChatOrchestrator:
                 return card, "POLICY_DENIED（source=demo）：当前身份无权访问该知识库，请如实告知用户。"
             raise
 
-    def _system_prompt(self, subject) -> str:
+    def _system_prompt(self, db: Session, subject) -> str:
         role_label = "正式员工" if subject.employment_type == "formal" else "实习生"
+        kb_names = ", ".join(kb.name for kb in list_resources(db))
+        persona = subject.role_prompt or "你是数字员工平台的演示助手。"
         return (
-            "你是数字员工平台的演示助手。所有内容均为虚构演示数据（source=demo）。"
+            f"【人设】{persona}\n"
+            "【身份】所有内容均为虚构演示数据（source=demo）。"
             f"当前数字员工：{subject.employee_id}（类型 {subject.employee_type}，身份 {role_label}，"
             f"部门 {subject.department}，Owner {subject.owner_id}）。"
-            "只能通过 search_knowledge 工具查询知识库，禁止编造知识库内容；"
+            f"【知识库】平台登记的知识库：{kb_names}。"
+            "【规则】只能通过 search_knowledge 工具查询知识库，禁止编造知识库内容；"
             "工具返回拒绝时如实告知用户无权访问，不得尝试绕过。"
         )
