@@ -11,7 +11,7 @@
 - **汇总**：LLM（DeepSeek）生成 Leader 汇总，失败自动降级模板拼接。
 - **端到端验证**（真实链路）：发起"帮王小明完成入职准备" -> 3 子任务（2 completed + 1 approval）-> 审批通过 -> completed + 真实汇总文本；审计 6 条按 trace 贯穿（create/execute×3/approve/summarize）。
 - **测试**：`backend/tests/test_team.py` 7 项，后端共 58 项全绿。
-- **Harness（G2，止损结论）**：依赖安装 5 分钟完成；build:lib 运行 20 分钟以上且最后一个进程零 CPU 疑似挂起，dsh CLI 未生成；判定本周不接入，RuntimeAdapter 使用 demo 模式（架构既定降级），Harness 留待受控环境重试。
+- **Harness（G2，最终结论）**：`backend/app/services/runtime_adapter.py` 已实现 `HarnessRuntimeAdapter`（调 `dsh --profile headless`，真实调用 DeepSeek，交互终端验证 6 秒成功）；但 Windows 后台进程（uvicorn/Start-Process，无控制台）内 dsh headless 会挂起——已尝试 npx、全局 dsh、`DSH_PERMISSION_MODE=danger-full-access`、`CI/TERM`、`stdin=DEVNULL`、Normal 窗口、`--patch` 禁用 sandbox 插件均失败。服务内默认 `DWP_HARNESS_ENABLED=0` 走 demo 模式（架构既定降级）；如需真实 Harness，需 Linux/容器环境或交互终端手动演示 `dsh --profile headless "<任务>"`。
 - **AgentTeams**：保持 Adapter 桩（需 K8s/Docker + Matrix 形态，本周不接入，Demo 口播"已预留"）。
 - **运维注意**：本机 venv python 启动 uvicorn 时会派生一个 Anaconda 解释器进程（conda launcher 行为），以实际加载的 venv site-packages 为准；`database.py` 已设 `expire_on_commit=False`（避免 Team 编排 JSON 字段在 commit 后过期报错）。
 

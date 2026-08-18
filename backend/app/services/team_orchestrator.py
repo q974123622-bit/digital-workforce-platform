@@ -16,6 +16,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from .. import models, schemas
 from .gateway import invoke_plugin, write_audit
 from .llm import LLMProvider, LLMUnavailableError
+from .runtime_adapter import NoopRuntimeAdapter, RuntimeAdapter
 
 # TEAM-ONBOARD 预置模板：HR 确认制度 -> IT 开通账号 -> 敏感报表（触发审批）
 ONBOARD_TEMPLATE = [
@@ -54,8 +55,9 @@ def _fallback_summary(run: models.TaskRun) -> str:
 
 
 class TeamTaskOrchestrator:
-    def __init__(self, provider: LLMProvider):
+    def __init__(self, provider: LLMProvider, runtime: RuntimeAdapter | None = None):
         self.provider = provider
+        self.runtime = runtime or NoopRuntimeAdapter()
 
     # ---------- 创建与执行 ----------
 
@@ -152,7 +154,16 @@ class TeamTaskOrchestrator:
                 return self._to_out(run)
 
             sub["status"] = "completed"
-            sub["result"] = json.dumps(result.get("data"), ensure_ascii=False)[:500]
+            gateway_summary = json.dumps(result.get("data"), ensure_ascii=False)[:500]
+            runtime_res = self.runtime.run(
+                employee_id=sub["worker_id"],
+                task_prompt=f"{run.request}：{sub['summary']}",
+                trace_id=run.trace_id,
+            )
+            if runtime_res.ok:
+                sub["result"] = f"[Harness 执行] {runtime_res.result[:400]}\n[Gateway] {gateway_summary}"
+            else:
+                sub["result"] = gateway_summary
             self._save(db, run)
 
         return self._finish(db, run)

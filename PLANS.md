@@ -254,7 +254,7 @@
   - Acceptance Criteria：发起 -> approval 挂起 -> 批准 -> completed（LLM 汇总，失败降级）；审计 trace 贯穿 6 条；测试 7 项
 
 ### S5-02 DeepSeek Harness 尝试（门禁 G2）
-- [x]（结论：依赖安装 5m 完成；build:lib 运行 20m+ 最后一个进程零 CPU 疑似挂起，dsh CLI 未生成；按止损规则判定 G2 不通过 -> RuntimeAdapter 使用 demo 模式，不阻塞主链路；Harness 留待受控环境重试）
+- [x]（结论：RuntimeAdapter.harness backend 已实现并验证（dsh headless 真实调用 DeepSeek 成功，交互终端 6s）；但 Windows 后台进程（uvicorn/Start-Process）内 dsh headless 挂起——已尝试 npx/全局 dsh/danger-full-access/CI+TERM/stdin DEVNULL/Normal 窗口/禁用 sandbox 插件均失败；服务内默认 DWP_HARNESS_ENABLED 关闭走 demo 模式；Harness 需 Linux/容器或交互终端环境）
   - Owner Role：A
   - Input：deepseek-harness 源码（本机外部依赖）
   - Output：dsh headless/API 可调用则接入 RuntimeAdapter harness backend；否则记录降级

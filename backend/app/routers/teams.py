@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..services.llm import DeepSeekProvider
+from ..services.runtime_adapter import HarnessRuntimeAdapter
 from ..services.team_orchestrator import TeamTaskOrchestrator
 
 router = APIRouter(prefix="/teams", tags=["teams"])
@@ -41,7 +42,7 @@ def get_team(team_id: str, db: Session = Depends(get_db)):
 @router.post("/{team_id}/tasks", response_model=schemas.TaskRunOut, status_code=201)
 def create_task(team_id: str, payload: schemas.TaskCreateIn, db: Session = Depends(get_db)):
     """发起任务（Sprint 5）：模板拆解 + Worker 执行（走 Gateway） + 审批挂起 + Leader 汇总。"""
-    orchestrator = TeamTaskOrchestrator(DeepSeekProvider())
+    orchestrator = TeamTaskOrchestrator(DeepSeekProvider(), runtime=HarnessRuntimeAdapter())
     return orchestrator.create_task(db, team_id=team_id, request=payload.request)
 
 
@@ -56,5 +57,5 @@ def get_task(team_id: str, task_id: str, db: Session = Depends(get_db)):
 @tasks_router.post("/tasks/{task_id}/approve", response_model=schemas.TaskRunOut)
 def approve_task(task_id: str, payload: schemas.TaskApproveIn, db: Session = Depends(get_db)):
     """审批（Sprint 5）：仅 approval 挂起态可审批，否则 409。"""
-    orchestrator = TeamTaskOrchestrator(DeepSeekProvider())
+    orchestrator = TeamTaskOrchestrator(DeepSeekProvider(), runtime=HarnessRuntimeAdapter())
     return orchestrator.approve(db, task_id=task_id, approve=payload.approve, actor_no=payload.actor_no)

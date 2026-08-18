@@ -1,6 +1,7 @@
 """Sprint 5 TeamTaskOrchestrator 测试（FakeLLM，不依赖真实 DeepSeek）。"""
 
 from app.services.llm import LLMProvider, LLMResponse, LLMUnavailableError
+from app.services.runtime_adapter import RuntimeResult
 from app.services.team_orchestrator import TeamTaskOrchestrator
 
 
@@ -21,8 +22,17 @@ class FakeLLM(LLMProvider):
         return {}
 
 
-def _orchestrator(summary="Leader 汇总：入职准备已完成。"):
-    return TeamTaskOrchestrator(FakeLLM(summary=summary))
+class FakeRuntime:
+    def __init__(self, ok=True, text="Harness 执行摘要：已完成该子任务。"):
+        self.ok = ok
+        self.text = text
+
+    def run(self, **kwargs):
+        return RuntimeResult(mode="harness" if self.ok else "demo", ok=self.ok, result=self.text)
+
+
+def _orchestrator(summary="Leader 汇总：入职准备已完成。", runtime=None):
+    return TeamTaskOrchestrator(FakeLLM(summary=summary), runtime=runtime or FakeRuntime())
 
 
 def _create(client, orch, request="帮王小明完成入职准备"):
@@ -100,3 +110,20 @@ def test_summary_fallback_when_llm_unavailable(client, db_session):
     completed = orch.approve(db_session, task_id=run.id, approve=True, actor_no="E10281")
     assert completed.status == "completed"
     assert "协作完成" in completed.summary
+
+
+def test_harness_result_included_in_subtask(client, db_session):
+    orch = _orchestrator(runtime=FakeRuntime(ok=True, text="已核对入职材料清单。"))
+    run = _create(db_session, orch)
+    assert run.subtasks[0].status == "completed"
+    assert "[Harness 执行]" in run.subtasks[0].result
+    assert "已核对入职材料清单" in run.subtasks[0].result
+    assert "[Gateway]" in run.subtasks[0].result
+
+
+def test_harness_fallback_to_gateway(client, db_session):
+    orch = _orchestrator(runtime=FakeRuntime(ok=False))
+    run = _create(db_session, orch)
+    assert run.subtasks[0].status == "completed"
+    assert "[Harness 执行]" not in run.subtasks[0].result
+    assert "source" in run.subtasks[0].result
