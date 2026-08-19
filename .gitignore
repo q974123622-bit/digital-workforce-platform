@@ -41,6 +41,11 @@ mock-data/kb/internal-reg/
 mock-data/kb/external-reg/
 mock-data/kb/*.zip
 
+# 本地个人答辩文档（不上传 GitHub）
+/数字员工平台_Demo答辩准备文档_20260819.docx
+~$*.docx
+/~$数字员工平台_Demo答辩准备文档_20260819.docx
+
 # 编辑器
 .vscode/
 .idea/
