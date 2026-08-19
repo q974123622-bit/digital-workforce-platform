@@ -1,167 +1,185 @@
-# 记忆插件（Memory Plugin）设计文档
+# 记忆插件（Memory Plugin）设计文档 v0.2
 
-> 版本：v0.1（草案，供讨论）
+> 版本：v0.2（全面版）
 > 作者：C（前端负责人）
 > 日期：2026-08-18
-> 状态：待与 A 老师对齐后定稿
+> 状态：待与 A/B 老师对齐后定稿
+> 变更：v0.1 → v0.2 补全「4 维度模型、三大原材料、权限分级、虚拟员工全流程、DSH 兼容、分步计划」
 
 ---
 
-## 1. 背景
+## 1. 一句话定位
 
-数字员工平台把"能力"统一抽象为**插件**，由「身份 → Policy Engine → Plugin Gateway → Adapter → 资源」这一条治理链统一管控。
+**记忆插件 = 让数字员工平台"记住发生过的事"，并且每条记忆都有"是谁的、是什么、谁能看、多敏感"四个属性，读写都走统一治理链。**
 
-老师把插件分为三类，目前进度如下：
+---
 
-| 插件类别 | 本质 | 机制 | 现状 |
+## 2. 现状盘点（基于当前代码）
+
+项目里其实已经有"记忆的原材料"，只是散落在三个地方、没被统一当"记忆"管理：
+
+| 原材料 | 存储表 | 记了什么 | 现状 |
 |---|---|---|---|
-| 技能插件（skill） | 流程/方法 | SKILL.md + 工具注册，运行时热插拔 | 🟡 进行中（`feature/common-skills-mock` 分支） |
-| 知识库插件（knowledge） | 事实/资料 | 统一 ctx.kb 接口，多源异构融合 | 🟡 进行中（`codex/sprint5-mock-kb` 分支） |
-| 记忆插件（memory） | 状态/历史 | **待设计** | 🔴 未启动（本档重点） |
+| 对话记录 | `ChatMessage` | 每次聊了啥（用户/助手/工具） | ✅ 有，未按"谁"聚合 |
+| 操作 + 决策 + 结果 | `AuditEvent` | 谁、何时、调了啥、允许/拒绝/审批、原因、结果摘要 | ✅ 有（就是"操作记忆+决策记忆"） |
+| 个人记忆 | `PersonalMemory`（本次新建） | 提炼后的长期记忆 | ✅ 刚建，最简陋 |
 
-本文档聚焦**记忆插件**的设计：它是什么、与另外两类的区别、数据模型、前端方案，以及需要老师拍板的开放问题。
-
----
-
-## 2. 现状盘点（基于 master 当前代码）
-
-- 当前 `Plugin.type` 已有 5 种：`knowledge / mcp / workflow / rpa / http`（见 `mock-data/seed.json`）。
-- 授权模型 `employee_plugin_grant`：`employee_id + plugin_id + action + decision_mode`，动作目前是 `read / execute / search` 等，决策是 `allow / deny / approval`。
-- 已存在但未被当作"记忆"使用的数据：
-  - **短期会话**：`ChatSession` / `ChatMessage`（有）
-  - **审批/审计**：`AuditEvent`（有，含 decision / reason / trace_id）
-- 尚未建模的：长期事实、客户交互历史、跨员工协作记忆。
+**结论**：操作记忆、决策记忆、决策结果记忆，`AuditEvent` 已经全记着了（`decision` 字段 + `result_summary` 字段），我们**不必重造**，只需把它们当"记忆"统一查询 + 加权限。真正要新做的是"长期记忆"的建模与分级。
 
 ---
 
-## 3. 核心认知：记忆与技能、知识库的本质区别
+## 3. 核心模型：一条记忆的 4 个维度
 
-| 维度 | 技能（skill） | 知识库（knowledge） | 记忆（memory） |
+任何一条记忆，都同时打上 4 个标签（回答 4 个问题）：
+
+| 维度 | 字段 | 取值 | 回答 |
 |---|---|---|---|
-| 本质 | 流程/方法 | 事实/资料 | 状态/历史 |
-| 读写 | 只读 | 只读为主 | **读写，随时间累积** |
-| 生命周期 | 静态 | 静态 | **动态增长** |
-| 类比 | 菜谱（怎么做） | 词典（是什么） | 脑子里的记忆（经历过什么） |
+| **主体** | `subject_type` + `subject_no` | `human`(真人) / `virtual`(虚拟员工) / `team`(团队) | 这是**谁**的记忆 |
+| **类型** | `kind` | `basic_info` / `conversation` / `operation` / `decision` / `fact` / `customer_history` | 记的是**什么** |
+| **可见性** | `visibility` | `public`(公开) / `personal`(本人可查) / `confidential`(涉密，仅管理员) | **谁能看** |
+| **数据等级** | `data_level` | `L1` / `L2` / `L3` | 内容**多敏感** |
 
-**关键结论**：记忆的难点不在"存"，而在"**按身份安全地读写**"。记忆涉及隐私（客户历史）与权限（审批决策），必须走「身份 → Policy → Gateway」治理链，读和写都要鉴权。
-
----
-
-## 4. 五种记忆类型
-
-| 记忆类型 | 记什么 | 作用域 | 现状 |
-|---|---|---|---|
-| ① 短期会话记忆 short_term | 当前对话上下文 | 单次会话 | ✅ 已有（ChatSession/ChatMessage） |
-| ② 长期事实记忆 long_term_fact | 用户偏好、稳定事实 | 单个员工 | ❌ 无 |
-| ③ 客户交互历史 customer_history | 与某客户的历史往来 | 按客户 | ❌ 无 |
-| ④ 审批决策记忆 approval_decision | 过去的允许/拒绝/审批 | 员工/全局 | ⚠️ AuditEvent 已存，未当记忆检索 |
-| ⑤ 跨员工协作记忆 collaboration | 员工间共享上下文 | 团队/跨员工 | ❌ 无 |
+> **关键设计**：`visibility`（谁能看）和 `data_level`（多敏感）是两个**独立**维度，要分开。比如"客户历史"既是 `confidential`（仅管理员）又是 `L3`（敏感）。
 
 ---
 
-## 5. 数据模型草案（前端类型，待与后端对齐）
+## 4. 记忆分级（对应"用户记忆分级"需求）
 
-> 注意：`shared-schema/types.ts` 属于"需 A 批准"的冻结文件，以下类型只是草案，最终以 A 定稿为准。
+| 记忆内容 | kind | visibility | data_level | 谁能看 |
+|---|---|---|---|---|
+| 基本信息（姓名、部门） | basic_info | public | L1 | 所有人 |
+| 对话记录 | conversation | personal | L2 | 本人 |
+| 操作记录（AI 帮做了什么） | operation | personal | L2 | 本人 + Owner |
+| 决策及结果 | decision | confidential | L3 | 管理员 |
+| 事实/偏好（长期提炼） | fact | personal | L2 | 本人 |
+| 客户交互历史 | customer_history | confidential | L3 | 管理员 |
+
+**"干活时调用更高级记忆辅助"**：虚拟员工帮用户干活时，按当前任务授权，可临时调取该用户的 `fact`/`decision` 记忆辅助，但 `confidential` 级仍需 Policy 放行。
+
+---
+
+## 5. 虚拟员工的全流程记忆
+
+虚拟员工的记忆，主体是 `virtual`，覆盖它的一生：
+
+| 虚拟员工要记的 | kind | 举例 |
+|---|---|---|
+| 和谁对过话 | conversation | VE-0001 和王老师聊过入职 |
+| 帮谁做过什么 | operation | VE-0001 帮王小明查了员工信息 |
+| 决策及结果 | decision | VE-0001 调 RPA 被要求审批 → 批准 → 结果 |
+| 这些记忆分权限 | visibility | 公开 / 本人 / 涉密 |
+
+**好消息**：上述"和谁对话、帮谁做什么、决策结果"`AuditEvent` 已经记录（`trace_id` + `employee_id` + `action` + `decision` + `result_summary`）。要做的是把它们**按 `employee_id` 聚合、加 visibility 分级**，而不是重造。
+
+---
+
+## 6. DeepSeek Harness 兼容性设计
+
+**结论：可兼容，因为记忆插件是平台层的 HTTP 接口，不绑定任何对话引擎。**
+
+- 现在的记忆接口是 `POST/GET /memory`（平台 FastAPI 后端），运行时无关；
+- 未来用户通过 DeepSeek Harness 对话时，Harness 内部会话记忆（存在 `.dsh/sessions`）负责"短期、单次对话"；
+- 平台的记忆（`PersonalMemory`/`MemoryEntry`）负责"长期、跨对话、带权限"；
+- 桥接方式：给 Harness 加一个"记忆工具"（类似项目里已有的 `search_knowledge` 知识库工具），背后调用平台 `/memory` 接口；
+- 这正符合技术路线里的"Runtime Adapter"思路：Harness 通过 Adapter 调用平台能力，平台记忆独立于任何 Runtime。
+
+**兼容性保障**：记忆读写统一走「身份 → Policy → Gateway → Memory Adapter → Memory Store」，无论前端、FastAPI 后端、还是 Harness/OpenClaw 调用，都走同一条链，天然一致。
+
+---
+
+## 7. 目标数据模型
+
+### 7.1 后端表（目标，由当前 `PersonalMemory` 演进而来）
+
+```python
+class MemoryEntry(Base):
+    __tablename__ = "memory_entry"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # 主体：这是谁的记忆
+    subject_type: Mapped[str]          # human | virtual | team
+    subject_no: Mapped[str]            # E10281 / VE-0001 / TEAM-ONBOARD
+    # 类型
+    kind: Mapped[str]                  # basic_info | conversation | operation | decision | fact | customer_history
+    # 可见性 + 数据等级
+    visibility: Mapped[str]            # public | personal | confidential
+    data_level: Mapped[str]            # L1 | L2 | L3
+    # 关联与溯源
+    related_subject_no: Mapped[str | None]  # 和谁对话/操作产生的（可选）
+    trace_id: Mapped[str | None]       # 关联的审计/操作
+    # 内容
+    content: Mapped[str]
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+```
+
+### 7.2 前端类型（草案，需 A 批准后进 shared-schema）
 
 ```typescript
-// 记忆子类型
-type MemoryKind =
-  | 'short_term'        // 短期会话
-  | 'long_term_fact'    // 长期事实
-  | 'customer_history'  // 客户交互历史
-  | 'approval_decision' // 审批决策
-  | 'collaboration';    // 跨员工协作
+type MemorySubjectType = 'human' | 'virtual' | 'team';
+type MemoryKind = 'basic_info' | 'conversation' | 'operation' | 'decision' | 'fact' | 'customer_history';
+type MemoryVisibility = 'public' | 'personal' | 'confidential';
 
-// 记忆插件：在 Plugin 基础上，type = 'memory'，并声明支持哪些子类型
-interface MemoryPlugin extends Plugin {
-  type: 'memory';
-  memory_kinds: MemoryKind[];
-}
-
-// 一条记忆记录
 interface MemoryEntry {
-  id: string;
+  id: number;
+  subject_type: MemorySubjectType;
+  subject_no: string;
   kind: MemoryKind;
-  scope: 'employee' | 'customer' | 'team' | 'global'; // 作用域
-  subject_id: string;   // 关联对象：员工号 / 客户号 / 团队号
-  content: string;      // 内容
+  visibility: MemoryVisibility;
+  data_level: 'L1' | 'L2' | 'L3';
+  related_subject_no: string | null;
+  trace_id: string | null;
+  content: string;
   created_at: string;
   updated_at: string;
 }
-
-// 记忆的读写动作（与普通插件的 read/execute 不同，记忆有"写"）
-type MemoryAction = 'read' | 'write' | 'delete';
 ```
 
-**设计要点**：
+---
 
-1. 记忆动作需要**读/写分离**：知识库只读，但记忆要写入，所以授权模型要多一个 `write` 动作（并默认走审批）。
-2. 记忆按 `scope + subject_id` 隔离：客户历史只能按客户查，员工长期事实只能按员工查，防止串读。
-3. 记忆的内容要分级（data_level），与现有 `L1/L2/L3` 对齐——客户历史、审批决策大概率属于敏感级。
+## 8. 权限模型
+
+记忆读写走统一治理链：`Identity → Policy → Gateway → Memory Adapter → Memory Store`。
+
+| 操作 | 规则 |
+|---|---|
+| 读 `public` | 任何人允许 |
+| 读 `personal` | 仅本人（subject 本人）或 Owner |
+| 读 `confidential` | 仅管理员（Policy 放行） |
+| 写 `fact`（偏好） | 本人写入，默认 allow |
+| 写 `operation`/`decision` | 系统自动写（来自 AuditEvent），不开放人工写 |
+| 每次读写 | 落一条 `AuditEvent`（trace_id + decision + reason） |
 
 ---
 
-## 6. 治理链（与现有体系保持一致）
+## 9. 分步演进计划（每步都有测试，能快）
 
-记忆的读写也必须走统一治理链，不能绕过：
+| 步骤 | 做什么 | 测试验证 |
+|---|---|---|
+| **Step 1** ✅ | PersonalMemory 表 + 写/读接口 | 已完成：seed / 写读 / 隔离（3 测试） |
+| **Step 2** | 升级为 MemoryEntry：加 `subject_type/subject_no/kind/visibility/data_level/trace_id` 字段 | 写不同主体/类型/可见性的记忆 |
+| **Step 3** | 读记忆按 `visibility` 鉴权（public/personal/confidential） | 不同身份读，验证隔离 |
+| **Step 4** | 统一记忆查询：聚合 conversation(ChatMessage) + operation/decision(AuditEvent) + fact(MemoryEntry) | 查 VE-0001 完整记忆链 |
+| **Step 5** | 前端：员工/虚拟员工详情页加「记忆」标签页 | 页面渲染 |
+| **Step 6** | 封装 Runtime Adapter（供 Harness 调用记忆） | 模拟 Harness 调用记忆 |
 
-```text
-Employee Identity
-  → Policy Engine（读/写分别鉴权，默认拒绝）
-  → Plugin Gateway（唯一执行入口）
-  → Memory Adapter（读写记忆存储）
-  → Memory Store（数据落盘/检索）
-```
-
-- 读记忆：`action=read`，按 scope + data_level 鉴权；
-- 写记忆：`action=write`，默认 `approval`（敏感记忆写入需审批）；
-- 每次读写落一条 `AuditEvent`（trace_id + employee_id + decision + reason）。
+**建议节奏**：Step 2、3 是地基（数据模型 + 权限），优先做扎实；Step 4 开始有"看得见"的价值；Step 5 回到前端主场；Step 6 与 A/B 的 Harness 集成对齐后做。
 
 ---
 
-## 7. 前端页面方案（C 的交付范围）
+## 10. 待与老师对齐的问题
 
-### 7.1 插件中心（`Plugins.tsx`）
-- 在 `components/tags.tsx` 的 `PLUGIN_TYPE_META` 中新增 `memory` 类型（图标 + 颜色 + 中文名"记忆"）；
-- 记忆插件的卡片上额外展示它支持的**子类型标签**（短期/长期/客户/审批/协作）。
-
-### 7.2 员工详情页（`EmployeeDetail.tsx`）
-- 在现有 Tabs 中新增一个「**记忆**」标签页，展示该员工的相关记忆：
-  - 长期事实（偏好等）；
-  - 审批决策历史（从 AuditEvent 聚合）；
-  - 客户交互历史（按客户分组）；
-  - （短期会话已在聊天页体现，可只放摘要）。
-
-### 7.3 插件授权（对应 T1-08 的"插件配置"难点）
-- 授权表单支持记忆的**读/写分离**：`read` 可勾选 allow/deny，`write` 默认 approval；
-- 安全配置页补充记忆相关的数据范围（哪些 scope 可读写）。
+1. **表命名与演进**：是否把 `PersonalMemory` 正式升级为 `MemoryEntry`？还是保留原名只加字段？
+2. **操作/决策记忆**：`AuditEvent` 已记录操作+决策，是"统一查询时聚合读取"，还是要"复制一份到 MemoryEntry"？（建议聚合读取，避免双写）
+3. **visibility 鉴权**：`confidential`（涉密）到底谁能看？"管理员"在 PoC 里如何表达（一个固定 admin 身份？）？
+4. **数据分级**：`data_level` 与现有 L1/L2/L3 对齐，记忆是否需要独立的 L3 敏感记忆演示场景？
+5. **检索方式**：Step 4 的"统一记忆查询"先做精确查询（按 subject + kind + 时间），语义检索后续再说？
+6. **Harness 集成**：Step 6 的 Runtime Adapter 由谁做（C 做接口封装，A/B 做 Harness 侧工具）？
 
 ---
 
-## 8. 本周 PoC 范围建议
+## 11. 备注
 
-短期会话、审批决策已有数据底座，建议本周**新增演示**优先做价值最直观的两类：
-
-1. **长期事实记忆**：虚拟员工"记住"用户偏好（如"王老师偏好周五开会"），下次回答时主动使用；
-2. **客户交互历史**：演示"查询某客户的历史往来"，并体现权限隔离（实习生查客户历史 → Deny）。
-
-其余（跨员工协作记忆等）列为 P1，后续 Sprint 再做。
-
----
-
-## 9. 待与 A 老师对齐的问题清单
-
-1. **建模方式**：记忆是往 `Plugin.type` 里加一个 `memory`（与 knowledge 平级），还是像 skill 一样独立建模（单独的表/概念）？
-2. **存储归属**：记忆的"存/取"后端（数据库 + 检索）由谁负责——B 老师做，还是 A 老师做，还是先由前端用 Mock 顶？
-3. **本周范围**：PoC 先做哪几种子记忆？是否按第 8 节建议（长期事实 + 客户历史）？
-4. **读写权限**：记忆的 `write` 动作是否默认走 approval？`delete` 是否本周需要？
-5. **检索方式**：记忆按 `scope + subject_id` 精确查（简单、够 Demo），还是需要语义检索（复杂、后续）？
-6. **冻结文件**：本方案涉及修改 `shared-schema/types.ts`（需 A 批准），是否等 A 定稿数据模型后再动？
-7. **与 skill 的关系**：common-skills 分支里有 `work-summary`（工作总结）技能，它需要读"工作记录"，这和记忆插件的"审批决策/协作记忆"是否重叠？如何避免重复建模？
-
----
-
-## 10. 备注
-
-- 本方案只涉及前端展示/配置 + 概念建模，不接真实记忆存储；真实数据/权限由正式员工（A/B）在受控环境实现。
-- 所有演示数据必须虚构，符合 `docs/SECURITY_BOUNDARY.md` 的边界要求。
+- 本方案只涉及概念建模 + 平台层接口 + 前端展示，不接真实敏感数据；
+- 所有演示数据虚构，符合 `docs/SECURITY_BOUNDARY.md` 边界；
+- 记忆写操作默认最小权限，敏感记忆读写需审批。
