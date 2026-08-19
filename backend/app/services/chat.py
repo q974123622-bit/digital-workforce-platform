@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models
-from .gateway import search_knowledge
+from .gateway import invoke_plugin, search_knowledge
 from .identity import resolve_identity
 from .knowledge_registry import list_resources
 from .llm import LLMProvider, LLMUnavailableError
@@ -47,8 +47,183 @@ TOOLS = [
                 "required": ["knowledge_base_id", "query"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "collaborate_employee",
+            "description": "向目标数字员工发起协作：询问信息、委托子任务或转交任务（调用前会经过策略授权）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_employee_id": {"type": "string", "description": "目标数字员工工号"},
+                    "action": {"type": "string", "enum": ["ask", "delegate", "handoff"], "description": "协作方式"},
+                    "request": {"type": "string", "description": "协作请求内容"},
+                },
+                "required": ["target_employee_id", "action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_document",
+            "description": "读取虚构文档内容（调用前会经过策略授权）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "document_name": {"type": "string", "description": "文档文件名，如 normal-document.md"},
+                },
+                "required": ["document_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_work_records",
+            "description": "查询当前数字员工的工作记录（可选按状态过滤）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "可选状态过滤：completed / in_progress / not_done / research / review / issue_resolved"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_knowledge_bases",
+            "description": "列出当前 Demo 项目可用的知识库目录（可选按 level / domain 过滤）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "level": {"type": "string", "description": "可选：L1 / L2"},
+                    "domain": {"type": "string", "description": "可选：知识库领域"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_employee",
+            "description": "搜索 Mock 员工目录（可选 keyword / department / type / digital_only）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string", "description": "可选：匹配工号/姓名/部门"},
+                    "department": {"type": "string", "description": "可选：部门"},
+                    "type": {"type": "string", "description": "可选：twin / virtual / rpa"},
+                    "digital_only": {"type": "boolean", "description": "可选：只返回数字员工"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_documents",
+            "description": "列出 Demo 文档 Fixture 目录（只返回名称，不返回正文）",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_regulations",
+            "description": "同时查询外部监管与内部制度，形成监管对比材料",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "监管对比查询关键词"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "review_document_compliance",
+            "description": "读取文档并收集外部监管与内部制度依据（最终分析由本技能完成）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "document_name": {"type": "string", "description": "文档文件名"},
+                    "query": {"type": "string", "description": "合规依据查询关键词"},
+                },
+                "required": ["document_name", "query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "handle_it_support",
+            "description": "查询 IT 知识库，可选升级协作（escalate=true 时尝试联系 IT 数字员工）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "IT 问题"},
+                    "escalate": {"type": "boolean", "description": "可选：是否升级协作"},
+                    "target_employee_id": {"type": "string", "description": "可选：目标 IT 数字员工工号"},
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assist_with_employee",
+            "description": "查找数字员工并发起协作询问",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string", "description": "可选：搜索关键词"},
+                    "department": {"type": "string", "description": "可选：部门"},
+                    "target_employee_id": {"type": "string", "description": "可选：直接指定目标数字员工"},
+                    "request": {"type": "string", "description": "协作请求内容"},
+                },
+                "required": ["request"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "prepare_work_report",
+            "description": "汇总工作记录并触发 RPA 报表（可能返回 approval_required，不得自动通过审批）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "可选：工作记录状态过滤"},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
+
+
+DEMO_TOOL_PLUGIN_MAP: dict[str, tuple[str, str, str]] = {
+    "collaborate_employee": ("employee-collaboration", "execute", "collaboration"),
+    "read_document": ("document-read", "read", "document"),
+    "query_work_records": ("work-record-query", "read", "work-records"),
+    "list_knowledge_bases": ("knowledge-catalog", "read", "knowledge-catalog"),
+    "search_employee": ("employee-search", "read", "employee-search"),
+    "list_documents": ("document-catalog", "read", "document-catalog"),
+    "compare_regulations": ("regulation-compare-workflow", "execute", "regulation-compare-workflow"),
+    "review_document_compliance": ("document-compliance-workflow", "execute", "document-compliance-workflow"),
+    "handle_it_support": ("it-support-workflow", "execute", "it-support-workflow"),
+    "assist_with_employee": ("employee-assist-workflow", "execute", "employee-assist-workflow"),
+    "prepare_work_report": ("report-export-workflow", "execute", "report-export-workflow"),
+}
 
 
 @dataclass
@@ -126,7 +301,7 @@ class ChatOrchestrator:
             }
             messages.append(assistant_msg)
             for tc in resp.tool_calls:
-                card, tool_message = self._execute_tool(db, subject, tc.arguments)
+                card, tool_message = self._execute_tool(db, subject, tc.name, tc.arguments)
                 tool_cards.append(card)
                 if card.decision == "deny" and policy_denied is None:
                     policy_denied = card
@@ -153,7 +328,19 @@ class ChatOrchestrator:
             "reason": card.reason,
         }
 
-    def _execute_tool(self, db: Session, subject, arguments: dict) -> tuple[ToolCard, str]:
+    def _execute_tool(self, db: Session, subject, name: str, arguments: dict) -> tuple[ToolCard, str]:
+        if name == "search_knowledge":
+            return self._execute_knowledge(db, subject, arguments)
+        entry = DEMO_TOOL_PLUGIN_MAP.get(name)
+        if entry is None:
+            return ToolCard(plugin_id=name, name=name, decision="error", reason="未知工具"), "未知工具调用"
+        plugin_id, action, label = entry
+        params = dict(arguments)
+        if name == "query_work_records":
+            params["employee_id"] = subject.employee_id
+        return self._invoke_demo_tool(db, subject, plugin_id, action, params, label)
+
+    def _execute_knowledge(self, db: Session, subject, arguments: dict) -> tuple[ToolCard, str]:
         kb_id = str(arguments.get("knowledge_base_id", ""))
         query = str(arguments.get("query", ""))
         try:
@@ -182,6 +369,36 @@ class ChatOrchestrator:
                     reason=detail.get("reason"),
                 )
                 return card, "POLICY_DENIED（source=demo）：当前身份无权访问该知识库，请如实告知用户。"
+            raise
+
+    def _invoke_demo_tool(self, db: Session, subject, plugin_id: str, action: str, params: dict, label: str) -> tuple[ToolCard, str]:
+        try:
+            result = invoke_plugin(
+                db,
+                employee_id=subject.employee_id,
+                plugin_id=plugin_id,
+                action=action,
+                params=params,
+                trace_id=f"T-CHAT-{subject.employee_id}",
+            )
+            card = ToolCard(
+                plugin_id=plugin_id,
+                name=label,
+                decision="allow",
+                policy_id=result.get("policy_id"),
+            )
+            return card, f"工具结果（source=demo）：{json.dumps(result.get('data', {}), ensure_ascii=False)}"
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                card = ToolCard(
+                    plugin_id=plugin_id,
+                    name=label,
+                    decision="deny",
+                    policy_id=detail.get("policy_id"),
+                    reason=detail.get("reason"),
+                )
+                return card, "POLICY_DENIED（source=demo）：当前身份无权执行该操作，请如实告知用户。"
             raise
 
     def _system_prompt(self, db: Session, subject) -> str:

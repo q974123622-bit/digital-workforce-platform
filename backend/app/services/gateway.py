@@ -55,6 +55,7 @@ def invoke_plugin(
     params: dict,
     trace_id: str,
     knowledge_base_id: str | None = None,
+    _workflow_ctx=None,
 ) -> dict:
     subject = resolve_identity(db, employee_id)
     if subject is None:
@@ -97,8 +98,39 @@ def invoke_plugin(
         )
         return {"ok": False, "data": None, "decision": DECISION_APPROVAL, "audit_ids": [audit_id], "policy_id": result.policy_id}
 
-    # ALLOW：执行 Mock Adapter
-    if knowledge_base_id is not None:
+    # ALLOW：Workflow 插件走 WorkflowEngine，子调用必须再次经过 Gateway
+    if plugin.type == "workflow" and plugin.endpoint_ref.startswith("workflow://"):
+        from .workflow_engine import WorkflowExecutionContext, run_workflow
+
+        if _workflow_ctx is None:
+            def invoke_child(*, employee_id, plugin_id, action, params, trace_id, workflow_ctx=None):
+                return invoke_plugin(
+                    db,
+                    employee_id=employee_id,
+                    plugin_id=plugin_id,
+                    action=action,
+                    params=params,
+                    trace_id=trace_id,
+                    _workflow_ctx=workflow_ctx,
+                )
+
+            def search_knowledge_child(*, employee_id, knowledge_base_id, query, trace_id):
+                return search_knowledge(
+                    db,
+                    employee_id=employee_id,
+                    knowledge_base_id=knowledge_base_id,
+                    query=query,
+                    trace_id=trace_id,
+                )
+
+            _workflow_ctx = WorkflowExecutionContext(
+                employee_id=employee_id,
+                trace_id=trace_id,
+                invoke_child=invoke_child,
+                search_knowledge_child=search_knowledge_child,
+            )
+        data = run_workflow(plugin, params, _workflow_ctx)
+    elif knowledge_base_id is not None:
         kb = resolve_knowledge_base(db, knowledge_base_id)
         data = select_adapter(plugin, kb).search(
             employee_id=employee_id,
@@ -107,7 +139,10 @@ def invoke_plugin(
             trace_id=trace_id,
         )
     else:
-        data = run_adapter(plugin, params)
+        adapter_params = dict(params)
+        adapter_params["source_employee_id"] = employee_id
+        adapter_params["trace_id"] = trace_id
+        data = run_adapter(plugin, adapter_params)
     summary = json.dumps(data, ensure_ascii=False)[:200]
     audit_id = write_audit(
         db,

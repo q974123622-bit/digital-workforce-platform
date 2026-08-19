@@ -1,0 +1,86 @@
+{
+  "records": [
+    {
+      "record_id": "WR-001",
+      "employee_id": "DT-E10281",
+      "date": "2026-08-12",
+      "status": "completed",
+      "category": "development",
+      "summary": "完成企业知识库检索接口的 mock 测试用例。"
+    },
+    {
+      "record_id": "WR-002",
+      "employee_id": "DT-E10281",
+      "date": "2026-08-13",
+      "status": "research",
+      "category": "research",
+      "summary": "调研 DeepSeek Harness 的 Skill 目录结构与发现机制。"
+    },
+    {
+      "record_id": "WR-003",
+      "employee_id": "DT-E10281",
+      "date": "2026-08-14",
+      "status": "in_progress",
+      "category": "development",
+      "summary": "正在实现通用 Skill 的 Mock Fixture 生成。"
+    },
+    {
+      "record_id": "WR-004",
+      "employee_id": "DT-E10281",
+      "date": "2026-08-15",
+      "status": "not_done",
+      "category": "development",
+      "summary": "计划实现文档解析服务，尚未开始。"
+    },
+    {
+      "record_id": "WR-005",
+      "employee_id": "DT-E10281",
+      "date": "2026-08-15",
+      "status": "review",
+      "category": "review",
+      "summary": "审阅文档分析 Skill 的冲突处理规则。"
+    },
+    {
+      "record_id": "WR-006",
+      "employee_id": "DT-E10281",
+      "date": "2026-08-16",
+      "status": "issue_resolved",
+      "category": "issue",
+      "summary": "修复后端 pytest 依赖缺失问题，已解决并全部通过。"
+    },
+    {
+      "record_id": "WR-007",
+      "employee_id": "DT-E10281",
+      "date": "2026-08-16",
+      "status": "duplicate",
+      "category": "development",
+      "summary": "完成企业知识库检索接口的 mock 测试用例。",
+      "duplicate_of": "WR-001"
+    },
+    {
+      "record_id": "WR-008",
+      "employee_id": "DT-E10281",
+      "date": "2026-08-16",
+      "status": "duplicate",
+      "category": "development",
+      "summary": "完成企业知识库检索接口的 mock 测试用例。",
+      "duplicate_of": "WR-001"
+    },
+    {
+      "record_id": "WR-009",
+      "employee_id": "VE-0003",
+      "date": "2026-08-17",
+      "status": "completed",
+      "category": "it_support",
+      "summary": "处理 VPN 账号开通工单并交付。"
+    },
+    {
+      "record_id": "WR-010",
+      "employee_id": "VE-0003",
+      "date": "2026-08-18",
+      "status": "in_progress",
+      "category": "it_support",
+      "summary": "跟进企业邮箱迁移问题。"
+    }
+  ]
+}
