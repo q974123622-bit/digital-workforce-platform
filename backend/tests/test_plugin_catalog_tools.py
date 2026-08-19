@@ -72,6 +72,13 @@ def test_employee_search_no_match(db_session):
     assert result["data"]["employees"] == []
 
 
+def test_employee_search_keyword_without_space_matches_space_name(db_session):
+    # 关键词“HR助理”（无空格）应命中姓名“HR 助理”的 VE-0002
+    result = _invoke(db_session, "employee-search", {"keyword": "HR助理", "digital_only": True})
+    employees = result["data"]["employees"]
+    assert any(e["employee_no"] == "VE-0002" for e in employees)
+
+
 # ---- document-catalog ----
 
 

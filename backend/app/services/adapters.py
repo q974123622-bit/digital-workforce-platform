@@ -5,6 +5,7 @@
 """
 
 import json
+import re
 from pathlib import Path
 
 from .. import models
@@ -218,7 +219,10 @@ def _mock_employee_search(_plugin: models.Plugin, params: dict) -> dict:
             continue
         if keyword:
             haystack = " ".join(str(e.get(k) or "") for k in ("employee_no", "name", "department")).lower()
-            if keyword not in haystack:
+            # 去掉全部空白后匹配，避免“HR助理”无法命中姓名“HR 助理”这类措辞差异
+            normalized_haystack = re.sub(r"\s+", "", haystack)
+            normalized_keyword = re.sub(r"\s+", "", keyword)
+            if normalized_keyword not in normalized_haystack:
                 continue
         matched.append(e)
     return {"source": "demo", "status": "success", "employees": matched}
