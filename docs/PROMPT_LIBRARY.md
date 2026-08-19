@@ -188,39 +188,62 @@ pnpm --filter frontend build
 ## P4. T2-03 Sandbox Docker 真启动（P1，Owner B）
 
 ```text
-你是数字员工平台 PoC 仓库的安全/后端工程师（负责人角色：B 正式员工/安全与企业资源）。开始前先通读：
-- docs/SECURITY_BOUNDARY.md §7（Sandbox 边界：先 Policy 后执行；Docker 不可用自动 local 降级）
-- docs/API_CONTRACT.md §6.3（/internal/sandbox/run 请求响应）
-- docs/ARCHITECTURE.md（L5 隔离与资源层）
-- backend/app/services/sandbox_policy.py、backend/app/routers/internal.py、backend/app/services/config.py
+你是数字员工平台 PoC 仓库的安全/后端工程师（负责人角色：B 正式员工/安全与企业资源）。
+注意：负责人 B 对 Sandbox 概念较新，交付必须自解释、可逐步验收；不要引入超出本任务的设计。
+开始前先通读：
+- docs/SECURITY_BOUNDARY.md §7（Sandbox 边界：先 Policy 后执行；Docker 不可用自动 local 降级；Sandbox 不是权限来源）
+- docs/API_CONTRACT.md §6.3（/internal/sandbox/run 请求响应：{employee_id, task_id, command, mount_dir, network, execution_location} → {mode, status, logs}）
+- docs/ARCHITECTURE.md（L5 隔离与资源层；统一资源访问链）
+- backend/app/services/sandbox_policy.py、backend/app/routers/internal.py、backend/app/services/gateway.py（write_audit 可复用）
 
-背景与现状：SandboxPolicy + MockExecutor + POST /internal/sandbox/run 已实现；
-POLICY-003（internet=deny 请求非 none 网络）/ POLICY-004（remote_only 请求 local）拒绝已生效。
-需要补 Docker backend：可用时真实启动容器，不可用时自动 local 降级，降级也要审计。
+背景与现状：
+- SandboxPolicy（runtime_location / internet_access / filesystem_scope）+ MockExecutor（仅打印日志，返回 mode=local）
+  + POST /internal/sandbox/run 已实现；
+- 路由层已做 POLICY-004（remote_only 请求 local → 403）与 POLICY-003（internet=deny 请求非 none 网络 → 403）检查，
+  这两段授权逻辑不要动；
+- 本机：Docker CLI 已装（28.3.2）但 daemon 未运行（docker info 连不上引擎）——本机验收默认走 local 降级路径；
+- 需求：把 MockExecutor 替换为"真容器优先、local 兜底"的 SandboxManager，接口与契约不变。
 
-目标：实现 SandboxManager：Docker 优先、local 降级，降级与拒绝均入审计。
+目标：实现 SandboxManager：Docker 可用 → 真容器执行；不可用/失败 → local 降级；两种情况都写审计；
+被拒请求不启动任何容器。
 
 交付物：
-1. backend/app/services/sandbox_manager.py：检测 Docker 可用性；
-   Docker 模式：python:3.11-slim、--network none（或按策略仅内部网桥）、
-   挂载 /workspace/{employee_id}、执行超时；失败自动 fallback local。
-2. /internal/sandbox/run 集成 SandboxManager，返回 {mode: docker|local, status, logs}。
-3. 审计：每次执行（含降级）写 audit_event（action=sandbox.run，decision=allow/deny，result_summary 含 mode）；
-   被 POLICY-003/004 拒绝时不得启动任何容器。
-4. backend/tests/test_sandbox.py：docker 可用→mode=docker；不可用→mode=local 且审计；拒绝路径不启动。
+1. backend/app/services/sandbox_manager.py：
+   - docker_available()：探测 daemon（subprocess 调 `docker info` 或 `docker version --format ...`，超时 3 秒，
+     任何异常返回 False）；函数独立、可被测试 monkeypatch；
+   - execute()：组装并执行 docker run，参数固定为：
+     docker run --rm --network none -v <宿主工作区>:/workspace/{employee_id} python:3.11-slim <command>
+     - 宿主工作区默认 backend/sandbox-workspaces/{employee_id}（自动创建；.gitignore 增加 backend/sandbox-workspaces/）；
+     - 执行超时（30 秒）：超时后 docker kill + docker rm，返回超时状态并写审计，不挂起请求；
+     - daemon 探测失败 / docker run 失败 / 镜像缺失 → 自动降级 local（复用 MockExecutor 行为），mode=local；
+   - 不产出授权决策；写入审计时命令与结果只放摘要（前 200 字符），不记录真实凭据。
+2. backend/app/routers/internal.py：sandbox_run 的"执行"部分改用 SandboxManager；
+   Policy 检查、审计写入、返回结构 {mode, status, logs} 保持现状。
+3. backend/tests/test_sandbox.py（mock 检测器，不依赖本机 daemon）：
+   - docker 可用（monkeypatch docker_available=True 并 mock subprocess）→ mode=docker；
+   - docker 不可用（monkeypatch False）→ mode=local，且审计 result_summary 含 mode=local；
+   - 拒绝路径：remote_only+local → 403 POLICY-004；internet=deny+非 none → 403 POLICY-003，
+     并断言 docker 启动函数未被调用；
+   - 超时路径：subprocess 超时 → 返回失败/降级且不挂起。
 
 约束：
-- Sandbox 只做隔离，不产出授权决策；授权顺序固定为 Policy 先行。
-- 凭据/Key 只经 config.py 环境变量引用，禁止写入容器镜像或仓库。
-- 不能因为 Docker 检测失败而让请求失败（演示可降级）。
+- Sandbox 只做隔离，不做授权；Policy 检查顺序与逻辑一律不动。
+- 不得修改 /internal/sandbox/run 的请求响应契约与错误码。
+- 凭据/Key 只经 config.py 环境变量引用，禁止写入镜像、命令或日志。
+- 不能因为 Docker 不可用让请求返回 5xx（演示可降级）。
+- 不要做生产级能力（K8s、seccomp、资源配额、镜像签名），PoC 只到单容器隔离 + 降级 + 审计。
 
-验收标准：
-- 本机 Docker 可用时真实启动并返回 mode=docker；停掉 Docker 后同请求返回 mode=local。
-- 拒绝请求（remote_only+local / deny+非 none 网络）返回 403 POLICY_DENIED 且无容器创建。
-- 后端全量 pytest 全绿。
+验收标准（B 可逐步自查）：
+1. cd backend; .\.venv\Scripts\python.exe -m pytest tests -q → 全绿（现有 63 + 新增沙箱用例）。
+2. 后端启动后（Docker daemon 停着）调用允许场景 → mode=local、审计存在；调用拒绝场景 → 403。
+3. 可选：启动 Docker Desktop 后重测允许场景 → mode=docker（daemon 起来了才验这条）。
 
 验证命令：
 cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
+# 手动冒烟（后端 8000 跑着时）：
+# 允许：POST /internal/sandbox/run {"employee_id":"VE-0001","task_id":"T1","command":"echo hi","mount_dir":"","network":"none","execution_location":"remote"}
+# 拒绝1：execution_location 改 local → 期望 403 POLICY-004
+# 拒绝2：network 改 bridge → 期望 403 POLICY-003
 ```
 
 ---
