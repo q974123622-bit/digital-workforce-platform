@@ -5,6 +5,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { Employee, Grant } from '@dwp/shared-schema';
 import { CommentOutlined } from '@ant-design/icons';
 import { api } from '../api/client';
+import MemoryList from '../components/MemoryList';
 import { DecisionTag, LevelTag, StatusBadge, TypeTag } from '../components/tags';
 import { ErrorState, LoadingState } from '../components/PageState';
 import { useAsyncData } from '../hooks/useAsyncData';
@@ -145,6 +146,15 @@ export default function EmployeeDetail() {
                   dataSource={emp.grants}
                   columns={grantColumns}
                 />
+              </Card>
+            ),
+          },
+          {
+            key: 'sessions',
+            label: '会话记录',
+            children: (
+              <Card>
+                <MemoryList employeeNo={emp.employee_no} />
               </Card>
             ),
           },

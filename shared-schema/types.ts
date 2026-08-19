@@ -190,3 +190,22 @@ export interface ChatReply {
     reason: string | null;
   } | null;
 }
+
+// ---- 记忆插件 ----
+
+export interface MemoryEntry {
+  id: number;
+  subject_type: string;
+  subject_no: string;
+  kind: string;
+  content: string;
+  content_type: string;
+  related_subject_no: string | null;
+  trace_id: string | null;
+  file_ref: string | null;
+  visibility: string;
+  data_level: string;
+  lifecycle: string;
+  created_at: string;
+  updated_at: string;
+}

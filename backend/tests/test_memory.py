@@ -118,37 +118,6 @@ def test_memory_confidential_only_admin(client):
 # ---- Step 4：互通检索 ----
 
 
-def test_chat_writes_conversation_memory(db_session):
-    """聊天时自动把对话写入记忆（subject=human，关联对方=数字员工）。"""
-    from sqlalchemy import select
-
-    from app import models
-    from app.services.chat import ChatOrchestrator
-    from app.services.llm import LLMResponse
-
-    class FakeLLM:
-        def chat(self, messages, tools=None):
-            return LLMResponse(content="你好，我是入职助手。")
-
-    orchestrator = ChatOrchestrator(FakeLLM())
-    orchestrator.handle_message(
-        db_session,
-        employee_no="VE-0001",
-        message="第一天要做什么？",
-        session_id=None,
-        human_no="E10021",
-    )
-    rows = db_session.scalars(
-        select(models.MemoryEntry).where(
-            models.MemoryEntry.subject_no == "E10021",
-            models.MemoryEntry.kind == "conversation",
-        )
-    ).all()
-    assert len(rows) == 1
-    assert rows[0].related_subject_no == "VE-0001"
-    assert rows[0].content == "第一天要做什么？"
-
-
 def test_memory_interoperability(client):
     """互通：同一用户的记忆，跨不同 AI 都能查到。"""
     # 王老师 E10021 和 VE-0001 的对话

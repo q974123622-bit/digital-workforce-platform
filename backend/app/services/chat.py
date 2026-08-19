@@ -18,8 +18,7 @@ from .gateway import search_knowledge
 from .identity import resolve_identity
 from .knowledge_registry import list_resources
 from .llm import LLMProvider, LLMUnavailableError
-from .memory_service import record_conversation
-from .session import add_message, get_or_create, history
+from .session import add_message, get_or_create, history, set_title_if_empty
 
 MAX_TOOL_ROUNDS = 3
 
@@ -89,16 +88,8 @@ class ChatOrchestrator:
 
         session, _ = get_or_create(db, session_id, employee_no)
         add_message(db, session_id=session.session_id, role="user", content=message)
-
-        # 记忆插件：把对话自动写入记忆（subject=human，关联对方=employee_no），供跨 AI 互通检索
-        if human_no:
-            record_conversation(
-                db,
-                human_no=human_no,
-                employee_no=employee_no,
-                content=message,
-                trace_id=session.trace_id,
-            )
+        # 会话标题：第一条用户消息（前 20 字）作为标题，方便在会话列表里识别
+        set_title_if_empty(db, session.session_id, message)
 
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt(db, subject), "source": "demo"},
@@ -110,50 +101,62 @@ class ChatOrchestrator:
         tool_cards: list[ToolCard] = []
         policy_denied: ToolCard | None = None
 
-        for _round in range(MAX_TOOL_ROUNDS):
-            resp = self.provider.chat(messages, tools=TOOLS)
-            if not resp.tool_calls:
-                # 最终回答
-                add_message(db, session_id=session.session_id, role="assistant", content=resp.content, tool_cards=[self._card_dict(c) for c in tool_cards])
-                return ChatResult(
-                    session_id=session.session_id,
-                    trace_id=session.trace_id,
-                    message=resp.content,
-                    tool_cards=tool_cards,
-                    policy_denied=policy_denied,
-                )
-            # 组装 assistant 工具意图消息（保留 tool_calls，供模型多轮继续）
-            assistant_msg: dict = {
-                "role": "assistant",
-                "content": resp.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.name, "arguments": json.dumps(tc.arguments, ensure_ascii=False)},
-                    }
-                    for tc in resp.tool_calls
-                ],
-                "source": "demo",
-            }
-            messages.append(assistant_msg)
-            for tc in resp.tool_calls:
-                card, tool_message = self._execute_tool(db, subject, tc.arguments)
-                tool_cards.append(card)
-                if card.decision == "deny" and policy_denied is None:
-                    policy_denied = card
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": tool_message, "source": "demo"})
+        try:
+            for _round in range(MAX_TOOL_ROUNDS):
+                resp = self.provider.chat(messages, tools=TOOLS)
+                if not resp.tool_calls:
+                    # 最终回答
+                    add_message(db, session_id=session.session_id, role="assistant", content=resp.content, tool_cards=[self._card_dict(c) for c in tool_cards])
+                    return ChatResult(
+                        session_id=session.session_id,
+                        trace_id=session.trace_id,
+                        message=resp.content,
+                        tool_cards=tool_cards,
+                        policy_denied=policy_denied,
+                    )
+                # 组装 assistant 工具意图消息（保留 tool_calls，供模型多轮继续）
+                assistant_msg: dict = {
+                    "role": "assistant",
+                    "content": resp.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {"name": tc.name, "arguments": json.dumps(tc.arguments, ensure_ascii=False)},
+                        }
+                        for tc in resp.tool_calls
+                    ],
+                    "source": "demo",
+                }
+                messages.append(assistant_msg)
+                for tc in resp.tool_calls:
+                    card, tool_message = self._execute_tool(db, subject, tc.arguments)
+                    tool_cards.append(card)
+                    if card.decision == "deny" and policy_denied is None:
+                        policy_denied = card
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": tool_message, "source": "demo"})
 
-        # 超过工具轮数：直接返回最后一次工具结果描述
-        final_text = "工具调用次数过多，请重试。"
-        add_message(db, session_id=session.session_id, role="assistant", content=final_text, tool_cards=[self._card_dict(c) for c in tool_cards])
-        return ChatResult(
-            session_id=session.session_id,
-            trace_id=session.trace_id,
-            message=final_text,
-            tool_cards=tool_cards,
-            policy_denied=policy_denied,
-        )
+            # 超过工具轮数：直接返回最后一次工具结果描述
+            final_text = "工具调用次数过多，请重试。"
+            add_message(db, session_id=session.session_id, role="assistant", content=final_text, tool_cards=[self._card_dict(c) for c in tool_cards])
+            return ChatResult(
+                session_id=session.session_id,
+                trace_id=session.trace_id,
+                message=final_text,
+                tool_cards=tool_cards,
+                policy_denied=policy_denied,
+            )
+        except LLMUnavailableError as exc:
+            # LLM 不可用（如未配置密钥）：保留会话与 session_id，返回降级结果，前端可继续对话
+            final_text = f"LLM 暂不可用：{exc}"
+            add_message(db, session_id=session.session_id, role="assistant", content=final_text, tool_cards=[])
+            return ChatResult(
+                session_id=session.session_id,
+                trace_id=session.trace_id,
+                message=final_text,
+                tool_cards=tool_cards,
+                policy_denied=policy_denied,
+            )
 
     @staticmethod
     def _card_dict(card: ToolCard) -> dict:

@@ -141,6 +141,8 @@ class ChatSession(Base):
     session_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     employee_id: Mapped[str] = mapped_column(String)
     trace_id: Mapped[str] = mapped_column(String, default="")
+    title: Mapped[str] = mapped_column(String, default="")  # 会话标题（自动总结主题）
+    deleted: Mapped[bool] = mapped_column(default=False)  # 软删除：前端隐藏，后台保留供管理回查
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 

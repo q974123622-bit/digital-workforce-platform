@@ -249,6 +249,15 @@ class ChatMessageOut(BaseModel):
     tool_cards: list = []
 
 
+class ChatSessionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    session_id: str
+    employee_id: str
+    title: str
+    created_at: datetime
+
+
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None

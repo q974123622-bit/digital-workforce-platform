@@ -4,6 +4,7 @@ import type {
   ChatReply,
   Employee,
   KnowledgeBase,
+  MemoryEntry,
   Plugin,
   Policy,
   TaskRun,
@@ -16,12 +17,20 @@ const BASE = '/api/v1';
 
 type RequestOptions = RequestInit & { absolute?: boolean };
 
+// 会话摘要（会话列表用）
+export interface SessionSummary {
+  session_id: string;
+  employee_id: string;
+  title: string;
+  created_at: string;
+}
+
 async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   const url = init?.absolute ? path : `${BASE}${path}`;
   const { absolute: _absolute, ...fetchInit } = init ?? {};
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...(fetchInit.headers ?? {}) },
     ...fetchInit,
+    headers: { 'Content-Type': 'application/json', ...(fetchInit.headers ?? {}) },
   });
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
@@ -69,7 +78,25 @@ export const api = {
   chat: (employeeNo: string, message: string, sessionId?: string) =>
     request<ChatReply>(`/employees/${encodeURIComponent(employeeNo)}/chat`, {
       method: 'POST',
+      // 演示用：当前用户固定为王老师 E10021（记忆插件据此归属记忆）。TODO: 接入真实登录后替换
+      headers: { 'X-Demo-Actor': 'E10021' },
       body: JSON.stringify({ message, session_id: sessionId ?? null }),
     }),
   listMessages: (sessionId: string) => request<ChatMessage[]>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`),
+  getLatestSession: (employeeNo: string) =>
+    request<{ session_id: string | null; messages: ChatMessage[] }>(
+      `/chat/employees/${encodeURIComponent(employeeNo)}/latest`,
+    ),
+  listSessions: (employeeNo: string) =>
+    request<SessionSummary[]>(`/chat/employees/${encodeURIComponent(employeeNo)}/sessions`),
+  deleteSession: (sessionId: string) =>
+    request<void>(`/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+  listMemory: (params?: {
+    subject_type?: string;
+    subject_no?: string;
+    kind?: string;
+    related_subject_no?: string;
+    visibility?: string;
+    data_level?: string;
+  }) => request<MemoryEntry[]>(`/memory${qs(params)}`),
 };

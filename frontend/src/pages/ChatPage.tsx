@@ -1,19 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   AppstoreOutlined,
   ArrowLeftOutlined,
   BookOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
+  DeleteOutlined,
+  HistoryOutlined,
+  PlusOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   SendOutlined,
   StopOutlined,
 } from '@ant-design/icons';
-import { Avatar, Badge, Button, Card, Empty, Input, Space, Spin, Tag, Typography } from 'antd';
+import { Avatar, Badge, Button, Card, Empty, Input, List, Space, Spin, Tag, Typography } from 'antd';
 import type { ChatReply, Workspace } from '@dwp/shared-schema';
 import { api } from '../api/client';
+import type { SessionSummary } from '../api/client';
 
 const { Text, Paragraph } = Typography;
 
@@ -46,9 +50,12 @@ interface Msg {
 
 export default function ChatPage() {
   const { employeeNo = '' } = useParams();
+  const [searchParams] = useSearchParams();
+  const sessionParam = searchParams.get('session');
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [loadingWs, setLoadingWs] = useState(true);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -61,9 +68,76 @@ export default function ChatPage() {
       .finally(() => setLoadingWs(false));
   }, [employeeNo]);
 
+  // 加载会话列表 + 恢复会话（指定 session 参数优先，否则恢复最近一次）
+  useEffect(() => {
+    if (!employeeNo) return;
+    api.listSessions(employeeNo).then(setSessions).catch(() => {});
+    const applyMessages = (msgs: { role: string; content: string; tool_cards: unknown[] }[]) =>
+      setMessages(
+        msgs
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => ({
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            cards: m.role === 'assistant' ? (m.tool_cards as Msg['cards']) : undefined,
+          })),
+      );
+    if (sessionParam) {
+      // 从记忆页跳转过来，加载指定会话
+      setSessionId(sessionParam);
+      api.listMessages(sessionParam).then(applyMessages).catch(() => setMessages([]));
+    } else {
+      // 恢复最近一次会话
+      api
+        .getLatestSession(employeeNo)
+        .then((res) => {
+          if (!res.session_id) return;
+          setSessionId(res.session_id);
+          applyMessages(res.messages);
+        })
+        .catch(() => {});
+    }
+  }, [employeeNo, sessionParam]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sending]);
+
+  const selectSession = async (sid: string) => {
+    setSessionId(sid);
+    try {
+      const msgs = await api.listMessages(sid);
+      setMessages(
+        msgs
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => ({
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            cards: m.role === 'assistant' ? (m.tool_cards as Msg['cards']) : undefined,
+          })),
+      );
+    } catch {
+      setMessages([]);
+    }
+  };
+
+  const startNew = () => {
+    setSessionId(null);
+    setMessages([]);
+  };
+
+  const removeSession = async (sid: string) => {
+    try {
+      await api.deleteSession(sid);
+      setSessions((prev) => prev.filter((s) => s.session_id !== sid));
+      if (sessionId === sid) {
+        setSessionId(null);
+        setMessages([]);
+      }
+    } catch {
+      // 删除失败静默
+    }
+  };
 
   const send = async () => {
     const text = input.trim();
@@ -76,16 +150,13 @@ export default function ChatPage() {
       setSessionId(reply.session_id);
       setMessages((prev) => [
         ...prev,
-        {
-          role: 'assistant',
-          content: reply.message,
-          cards: reply.tool_cards,
-          denied: reply.policy_denied,
-        },
+        { role: 'assistant', content: reply.message, cards: reply.tool_cards, denied: reply.policy_denied },
       ]);
     } catch (err) {
       setMessages((prev) => [...prev, { role: 'assistant', content: `（请求失败：${(err as Error).message}）`, error: true }]);
     } finally {
+      // 刷新会话列表（新会话可能刚创建、标题已生成）
+      api.listSessions(employeeNo).then(setSessions).catch(() => {});
       setSending(false);
     }
   };
@@ -114,10 +185,7 @@ export default function ChatPage() {
     <div className="chat-page">
       {/* 左栏：工作台面板 */}
       <aside className="ws-panel">
-        <Card
-          className="ws-identity"
-          styles={{ body: { padding: 0 } }}
-        >
+        <Card className="ws-identity" styles={{ body: { padding: 0 } }}>
           <div className="ws-banner" style={{ background: meta.grad }}>
             <Avatar size={54} icon={<RobotOutlined />} style={{ background: 'rgba(255,255,255,0.22)', border: '1.5px solid rgba(255,255,255,0.7)' }} />
             <div className="ws-banner-text">
@@ -137,6 +205,41 @@ export default function ChatPage() {
           <Paragraph className="ws-persona">{workspace.role_prompt || '（未配置人设）'}</Paragraph>
         </Card>
 
+        <Card className="ws-card" title={<Space><HistoryOutlined />会话记录</Space>} size="small">
+          <Button type="dashed" block icon={<PlusOutlined />} onClick={startNew} size="small" style={{ marginBottom: 8 }}>
+            新建会话
+          </Button>
+          {sessions.length === 0 ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无会话记录</Text>
+          ) : (
+            <List
+              size="small"
+              dataSource={sessions}
+              renderItem={(s) => (
+                <List.Item
+                  onClick={() => selectSession(s.session_id)}
+                  style={{ cursor: 'pointer', padding: '6px 8px', borderRadius: 6, background: s.session_id === sessionId ? '#f0f5ff' : undefined }}
+                  actions={[
+                    <DeleteOutlined
+                      key="del"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void removeSession(s.session_id);
+                      }}
+                      style={{ color: '#999' }}
+                    />,
+                  ]}
+                >
+                  <List.Item.Meta
+                    title={<Text ellipsis style={{ fontSize: 13 }}>{s.title || '（新会话）'}</Text>}
+                    description={<Text type="secondary" style={{ fontSize: 11 }}>{new Date(s.created_at).toLocaleString()}</Text>}
+                  />
+                </List.Item>
+              )}
+            />
+          )}
+        </Card>
+
         <Card className="ws-card" title={<Space><AppstoreOutlined />插件授权（{workspace.plugins.length}）</Space>} size="small">
           <div className="ws-list">
             {workspace.plugins.map((p) => (
@@ -154,11 +257,7 @@ export default function ChatPage() {
           <div className="ws-list">
             {workspace.knowledge_bases.map((kb) => (
               <div className="ws-kb" key={kb.knowledge_base_id}>
-                {kb.accessible ? (
-                  <CheckCircleOutlined className="kb-ok" />
-                ) : (
-                  <CloseCircleOutlined className="kb-no" />
-                )}
+                {kb.accessible ? <CheckCircleOutlined className="kb-ok" /> : <CloseCircleOutlined className="kb-no" />}
                 <div className="ws-kb-text">
                   <div className="ws-plugin-name">{kb.name}</div>
                   <Text type="secondary" className="ws-plugin-meta">{kb.data_level} · {kb.accessible ? '可访问' : `${kb.decision}`}</Text>
@@ -200,9 +299,7 @@ export default function ChatPage() {
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              {m.role === 'assistant' && (
-                <Avatar size={30} icon={<RobotOutlined />} style={{ background: meta.color, flexShrink: 0 }} />
-              )}
+              {m.role === 'assistant' && <Avatar size={30} icon={<RobotOutlined />} style={{ background: meta.color, flexShrink: 0 }} />}
               <div className="msg-col">
                 <div className={`bubble ${m.error ? 'bubble-error' : ''}`}>{m.content}</div>
                 {m.cards && m.cards.length > 0 && (

@@ -96,6 +96,74 @@ def test_chat_saves_session_history(client, db_session):
     assert [m["role"] for m in msgs] == ["user", "assistant", "user", "assistant"]
 
 
+def test_latest_session_resume(client, db_session):
+    """退出后恢复：取某员工最近一次会话及消息。"""
+    fake = FakeLLM([LLMResponse(content="回答1"), LLMResponse(content="回答2")])
+    orchestrator = ChatOrchestrator(fake)
+    first = orchestrator.handle_message(db_session, employee_no="VE-0001", message="你好", session_id=None)
+    orchestrator.handle_message(db_session, employee_no="VE-0001", message="继续", session_id=first.session_id)
+
+    latest = client.get("/api/v1/chat/employees/VE-0001/latest").json()
+    assert latest["session_id"] == first.session_id
+    assert [m["role"] for m in latest["messages"]] == ["user", "assistant", "user", "assistant"]
+    assert latest["messages"][0]["content"] == "你好"
+
+
+def test_session_title_and_list(client, db_session):
+    """会话自动生成标题，且能列出会话列表。"""
+    fake = FakeLLM([LLMResponse(content="回答")])
+    orchestrator = ChatOrchestrator(fake)
+    first = orchestrator.handle_message(db_session, employee_no="VE-0001", message="入职第一天要做什么", session_id=None)
+
+    sessions = client.get("/api/v1/chat/employees/VE-0001/sessions").json()
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == first.session_id
+    assert sessions[0]["title"] == "入职第一天要做什么"
+
+
+def test_session_soft_delete(client, db_session):
+    """软删除会话：删除后列表不再显示，但消息仍保留（后台可回查）。"""
+    fake = FakeLLM([LLMResponse(content="回答")])
+    orchestrator = ChatOrchestrator(fake)
+    first = orchestrator.handle_message(db_session, employee_no="VE-0001", message="测试删除会话", session_id=None)
+
+    # 删除会话
+    assert client.delete(f"/api/v1/chat/sessions/{first.session_id}").status_code == 204
+    # 列表不再显示
+    sessions = client.get("/api/v1/chat/employees/VE-0001/sessions").json()
+    assert len(sessions) == 0
+    # 但消息仍保留（软删除，后台可回查）
+    msgs = client.get(f"/api/v1/chat/sessions/{first.session_id}/messages").json()
+    assert len(msgs) >= 1
+
+
+def test_chat_llm_failure_keeps_session(client, db_session):
+    """LLM 不可用时仍保留会话（返回 session_id），前端可继续对话，不会每句新建会话。"""
+    from app.services.llm import LLMUnavailableError
+
+    class FailingLLM(LLMProvider):
+        def chat(self, messages, tools=None):
+            raise LLMUnavailableError("未配置密钥")
+
+        def tool_call(self, messages, tools):
+            raise LLMUnavailableError("未配置密钥")
+
+        def structured_output(self, messages, schema):
+            raise LLMUnavailableError("未配置密钥")
+
+    orchestrator = ChatOrchestrator(FailingLLM())
+    first = orchestrator.handle_message(db_session, employee_no="VE-0001", message="你好", session_id=None)
+    assert first.session_id is not None
+    assert "LLM 暂不可用" in first.message
+
+    # 第二次用同一 session_id → 仍是同一个会话（不会新建）
+    second = orchestrator.handle_message(db_session, employee_no="VE-0001", message="继续", session_id=first.session_id)
+    assert second.session_id == first.session_id
+    # 会话列表只有 1 条
+    sessions = client.get("/api/v1/chat/employees/VE-0001/sessions").json()
+    assert len(sessions) == 1
+
+
 def test_llm_safemode_rejects_non_demo():
     from app.services.llm import _assert_safemode
 
