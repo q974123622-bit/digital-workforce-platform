@@ -83,7 +83,12 @@
     {"id": "hr-employee-mcp", "name": "员工查询 MCP", "type": "mcp", "endpoint_ref": "mock://mcp/hr-employee", "data_level": "L2", "status": "active", "description": "查询员工基本信息（Mock）"},
     {"id": "adp-onboarding", "name": "入职流程 Workflow", "type": "workflow", "endpoint_ref": "mock://adp/onboarding", "data_level": "L2", "status": "active", "description": "ADP 入职流程（Mock）"},
     {"id": "internet-search", "name": "公网搜索", "type": "http", "endpoint_ref": "mock://http/internet-search", "data_level": "L1", "status": "active", "description": "公网搜索插件（Mock，演示互联网禁止策略）"},
-    {"id": "rpa-report", "name": "报表机器人", "type": "rpa", "endpoint_ref": "mock://rpa/report", "data_level": "L3", "status": "active", "description": "自动生成报表（Mock，敏感）"}
+    {"id": "rpa-report", "name": "报表机器人", "type": "rpa", "endpoint_ref": "mock://rpa/report", "data_level": "L3", "status": "active", "description": "自动生成报表（Mock，敏感）"},
+    {"id": "expense-claim", "name": "差旅报销流程", "type": "workflow", "endpoint_ref": "mock://workflow/expense-claim", "data_level": "L2", "status": "active", "description": "差旅报销申请与审批打款流程（Mock）"},
+    {"id": "leave-request", "name": "请假审批流程", "type": "workflow", "endpoint_ref": "mock://workflow/leave-request", "data_level": "L2", "status": "active", "description": "请假申请与考勤同步流程（Mock）"},
+    {"id": "meeting-notes", "name": "会议纪要整理", "type": "workflow", "endpoint_ref": "mock://workflow/meeting-notes", "data_level": "L1", "status": "active", "description": "会议记录结构化纪要流程（Mock）"},
+    {"id": "weekly-report", "name": "周报生成机器人", "type": "rpa", "endpoint_ref": "mock://rpa/weekly-report", "data_level": "L2", "status": "active", "description": "自动生成周报（Mock）"},
+    {"id": "purchase-request", "name": "采购申请流程", "type": "workflow", "endpoint_ref": "mock://workflow/purchase-request", "data_level": "L3", "status": "active", "description": "采购申请与比价下单流程（Mock，敏感）"}
   ],
   "employee_plugin_grants": [
     {"employee_id": "DT-E10281", "plugin_id": "knowledge-l1", "action": "read", "decision_mode": "allow"},
@@ -95,9 +100,14 @@
     {"employee_id": "DT-E20999", "plugin_id": "internet-search", "action": "search", "decision_mode": "allow"},
     {"employee_id": "VE-0001", "plugin_id": "knowledge-l1", "action": "read", "decision_mode": "allow"},
     {"employee_id": "VE-0001", "plugin_id": "adp-onboarding", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0001", "plugin_id": "meeting-notes", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "VE-0002", "plugin_id": "hr-employee-mcp", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0002", "plugin_id": "expense-claim", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0002", "plugin_id": "leave-request", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "VE-0003", "plugin_id": "adp-onboarding", "action": "execute", "decision_mode": "allow"},
-    {"employee_id": "VE-0003", "plugin_id": "rpa-report", "action": "execute", "decision_mode": "approval"}
+    {"employee_id": "VE-0003", "plugin_id": "rpa-report", "action": "execute", "decision_mode": "approval"},
+    {"employee_id": "VE-0003", "plugin_id": "weekly-report", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0003", "plugin_id": "purchase-request", "action": "execute", "decision_mode": "allow"}
   ],
   "policies": [
     {"id": "POLICY-003", "name": "禁网员工禁止公网插件", "effect": "deny", "description": "subject.internet=deny 且 resource.type=http 时拒绝（公网插件）", "enabled": true, "priority": 100},
@@ -137,5 +147,165 @@
     {"id": "KB-SECURITIES", "name": "证券业务知识库", "level": "L2", "data_level": "L2", "resource_type": "knowledge", "allowed_employment_type": ["formal"], "department_scope": ["*"], "domain": "证券业务", "description": "证券业务规则与操作问答（虚构演示）", "status": "active", "doc_path": "mock-data/kb/securities"},
     {"id": "KB-REG-INTERNAL", "name": "内部制度知识库", "level": "L2", "data_level": "L2", "resource_type": "knowledge", "allowed_employment_type": ["formal"], "department_scope": ["*"], "domain": "内部制度", "description": "公司内部制度与细则（虚构演示）", "status": "active", "doc_path": "mock-data/kb/internal-reg"},
     {"id": "KB-REG-EXTERNAL", "name": "外部监管知识库", "level": "L1", "data_level": "L1", "resource_type": "knowledge", "allowed_employment_type": ["formal", "intern"], "department_scope": ["*"], "domain": "外部监管", "description": "外部监管规则与指引学习资料（虚构演示）", "status": "active", "doc_path": "mock-data/kb/external-reg"}
+  ],
+  "skills": [
+    {
+      "id": "SK-0001",
+      "owner_human_no": "E10281",
+      "name": "报销制度速答",
+      "description": "掌握差旅报销标准、提交流程和常见驳回原因。",
+      "content": "1. 差旅住宿标准：一线城市每晚不超过 600 元，凭发票实报。\n2. 报销流程：系统提交 → 直属上级审批 → 财务复核 → 打款（3 个工作日内）。\n3. 常见驳回原因：发票抬头错误、超过预算未事前申请、缺少行程单。",
+      "status": "active"
+    },
+    {
+      "id": "SK-0002",
+      "owner_human_no": "E10281",
+      "name": "券商术语速查",
+      "description": "快速解释融资融券、期权、科创板等业务术语。",
+      "content": "融资融券：向券商借资金买入或借证券卖出的信用交易。\n期权：约定在未来以特定价格买卖标的资产的权利。\n科创板：上交所为科技创新企业设立的板块，实行注册制。",
+      "status": "active"
+    },
+    {
+      "id": "SK-0004",
+      "owner_human_no": "E10281",
+      "name": "会议纪要规范",
+      "description": "掌握架构部周会纪要的四段式输出与时限要求。",
+      "content": "1. 周会时间：每周二下午 14:00。\n2. 纪要四段式：结论、决议、行动项（含负责人与截止时间）、遗留问题。\n3. 会后 2 小时内由轮值同学输出并同步到共享盘。",
+      "status": "active"
+    },
+    {
+      "id": "SK-0005",
+      "owner_human_no": "E10281",
+      "name": "IT 办公技巧",
+      "description": "企业微信、邮箱与 VPN 的常用配置技巧。",
+      "content": "1. 邮箱客户端：使用 IMAP/SMTP，服务器地址以公司帮助页为准，密码用应用专用密码。\n2. VPN：需直属领导审批，次日生效，首次连接用内网即可。\n3. 企业微信：入职当天开通，找不到入口时找 IT 助理。",
+      "status": "active"
+    },
+    {
+      "id": "SK-0003",
+      "owner_human_no": "E20999",
+      "name": "入职准备清单",
+      "description": "新员工入职第一天要准备的材料和注意事项。",
+      "content": "1. 身份证原件及复印件。\n2. 学历学位证书复印件。\n3. 银行卡复印件（用于工资发放）。\n4. 入职当天先到 HR 报到，再领工牌和电脑。",
+      "status": "active"
+    }
+  ],
+  "conversations": [
+    {
+      "id": "CONV-0001",
+      "kind": "direct",
+      "title": "我的分身",
+      "owner_human_no": "E10281",
+      "participants": [{"employee_no": "DT-E10281", "role": "member"}],
+      "messages": [
+        {"participant_no": "E10281", "participant_name": "张三", "role": "user", "content": "早呀，帮我看看今天有什么安排", "seq": 1},
+        {"participant_no": "DT-E10281", "participant_name": "张三的数字分身", "role": "assistant", "content": "早上好！今天帮你梳理了三件事：1）下午 2 点架构部周会；2）报销单记得在 5 点前提交；3）新员工入职协作空间里 HR 和 IT 助理在等你确认。需要我帮你做哪件？", "seq": 2}
+      ]
+    },
+    {
+      "id": "CONV-0002",
+      "kind": "group",
+      "title": "新员工入职协作",
+      "owner_human_no": "E10281",
+      "participants": [
+        {"employee_no": "DT-E10281", "role": "organizer"},
+        {"employee_no": "VE-0001", "role": "member"},
+        {"employee_no": "VE-0002", "role": "member"},
+        {"employee_no": "VE-0003", "role": "member"}
+      ],
+      "messages": [
+        {"participant_no": "E10281", "participant_name": "张三", "role": "user", "content": "帮我整理一份新员工入职准备清单，IT 账号部分一起确认", "seq": 1}
+      ]
+    }
+  ],
+  "task_runs": [
+    {
+      "id": "T-20260819-DEMO1",
+      "team_id": "CONV-0002",
+      "conversation_id": "CONV-0002",
+      "trigger_message_seq": 1,
+      "trace_id": "T-20260819-DEMO1",
+      "request": "帮我整理一份新员工入职准备清单，IT 账号部分一起确认",
+      "status": "approval",
+      "subtasks": [
+        {
+          "worker_id": "VE-0001",
+          "worker_no": "VE-0001",
+          "summary": "确认入职制度与材料清单",
+          "plugin_ids": ["adp-onboarding"],
+          "status": "completed",
+          "result": "材料清单已确认：身份证原件及复印件、学历学位证书复印件、银行卡复印件；入职当天上午到 HR 报到。",
+          "approval": null
+        },
+        {
+          "worker_id": "VE-0003",
+          "worker_no": "VE-0003",
+          "summary": "开通企业微信与邮箱账号",
+          "plugin_ids": ["adp-onboarding"],
+          "status": "completed",
+          "result": "企业微信与邮箱当天开通；VPN 账号需直属领导审批，次日生效。",
+          "approval": null
+        },
+        {
+          "worker_id": "VE-0003",
+          "worker_no": "VE-0003",
+          "summary": "生成入职权限报表（敏感操作）",
+          "plugin_ids": ["rpa-report"],
+          "status": "approval",
+          "result": null,
+          "approval": {"policy_id": "POLICY-005", "reason": "敏感操作需人工审批"}
+        }
+      ],
+      "summary": ""
+    },
+    {
+      "id": "T-20260819-DEMO2",
+      "team_id": "CONV-0002",
+      "conversation_id": "CONV-0002",
+      "trace_id": "T-20260819-DEMO2",
+      "request": "张三月度差旅报销整理",
+      "status": "completed",
+      "subtasks": [
+        {
+          "worker_id": "VE-0002",
+          "worker_no": "VE-0002",
+          "summary": "提交差旅报销申请",
+          "plugin_ids": ["expense-claim"],
+          "status": "completed",
+          "result": "报销申请已提交：一线城市住宿 600 元/晚、附行程单；领导已审批，财务复核后 3 个工作日内打款。",
+          "approval": null
+        },
+        {
+          "worker_id": "VE-0003",
+          "worker_no": "VE-0003",
+          "summary": "生成月度费用周报",
+          "plugin_ids": ["weekly-report"],
+          "status": "completed",
+          "result": "周报已生成（2026-W34）：本周完成 5 项、下周计划 3 项、风险项 1 条。",
+          "approval": null
+        }
+      ],
+      "summary": "差旅报销已进入财务打款，费用周报已归档，两项流程全部完成。"
+    },
+    {
+      "id": "T-20260819-DEMO3",
+      "team_id": "CONV-0002",
+      "conversation_id": "CONV-0002",
+      "trace_id": "T-20260819-DEMO3",
+      "request": "整理上周架构部周会纪要",
+      "status": "completed",
+      "subtasks": [
+        {
+          "worker_id": "VE-0001",
+          "worker_no": "VE-0001",
+          "summary": "结构化整理周会纪要",
+          "plugin_ids": ["meeting-notes"],
+          "status": "completed",
+          "result": "纪要已按「结论/决议/行动项（含负责人与截止时间）/遗留问题」四段整理并分发。",
+          "approval": null
+        }
+      ],
+      "summary": "架构部周会纪要已整理完成并同步到共享盘。"
+    }
   ]
 }

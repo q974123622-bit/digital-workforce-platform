@@ -278,6 +278,8 @@ class SubtaskOut(BaseModel):
 class TaskRunOut(BaseModel):
     id: str
     team_id: str
+    conversation_id: str | None = None
+    trigger_message_seq: int | None = None
     trace_id: str
     request: str
     status: str = "pending"  # parsing | running | approval | completed | denied | failed
@@ -329,3 +331,125 @@ class WorkspaceOut(BaseModel):
     plugins: list[WorkspacePluginOut] = []
     knowledge_bases: list[WorkspaceKbOut] = []
     security: WorkspaceSecurityOut
+
+
+# ---- Sprint 7：个人工作中心（职场）----
+
+
+class SkillCreate(BaseModel):
+    actor_no: str
+    name: str
+    description: str = ""
+    content: str = ""
+
+
+class SkillUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    content: str | None = None
+    status: str | None = None  # active | disabled
+
+
+class SkillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    owner_human_no: str
+    name: str
+    description: str
+    content: str
+    status: str
+    created_at: datetime
+
+
+class ActorOut(BaseModel):
+    employee_no: str
+    name: str
+    department: str
+    employment_type: str
+
+
+class ConversationParticipantOut(BaseModel):
+    employee_no: str
+    name: str = ""
+    role: str = "member"  # organizer | member
+    employee_type: str = ""
+
+
+class ConversationCreate(BaseModel):
+    actor_no: str
+    kind: str = "direct"  # direct | group
+    title: str = ""
+    participant_employee_nos: list[str] = []
+
+
+class ConversationMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    conversation_id: str
+    participant_no: str
+    participant_name: str
+    role: str
+    content: str
+    tool_cards: list = []
+    seq: int
+
+
+class ConversationOut(BaseModel):
+    id: str
+    kind: str
+    title: str
+    owner_human_no: str
+    participants: list[ConversationParticipantOut] = []
+    messages: list[ConversationMessageOut] = []
+    tasks: list[TaskRunOut] = []
+    updated_at: datetime
+
+
+class ConversationSummaryOut(BaseModel):
+    id: str
+    kind: str
+    title: str
+    owner_human_no: str
+    participants: list[ConversationParticipantOut] = []
+    last_message: str = ""
+    updated_at: datetime
+
+
+class ConversationSendIn(BaseModel):
+    actor_no: str
+    content: str
+
+
+class ConversationAddParticipantIn(BaseModel):
+    employee_no: str
+
+
+class WorkplaceHomeOut(BaseModel):
+    actor: ActorOut
+    twin: EmployeeOut
+    available_employees: list[EmployeeOut] = []
+    skills: list[SkillOut] = []
+    recent_conversations: list[ConversationSummaryOut] = []
+
+
+class WorkflowEmployeeOut(BaseModel):
+    employee_no: str
+    name: str
+    type: str
+
+
+class WorkflowOut(BaseModel):
+    plugin_id: str
+    name: str
+    type: str
+    data_level: str
+    description: str
+    steps: list[str] = []
+    demo_prompt: str = ""
+    authorized_employees: list[WorkflowEmployeeOut] = []
+
+
+class ClearConversationOut(BaseModel):
+    ok: bool

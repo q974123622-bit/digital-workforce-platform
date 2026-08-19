@@ -14,6 +14,7 @@ import {
 import { Avatar, Badge, Button, Card, Empty, Input, Space, Spin, Tag, Typography } from 'antd';
 import type { ChatReply, Workspace } from '@dwp/shared-schema';
 import { api } from '../api/client';
+import MarkdownText from '../components/MarkdownText';
 
 const { Text, Paragraph } = Typography;
 
@@ -204,7 +205,9 @@ export default function ChatPage() {
                 <Avatar size={30} icon={<RobotOutlined />} style={{ background: meta.color, flexShrink: 0 }} />
               )}
               <div className="msg-col">
-                <div className={`bubble ${m.error ? 'bubble-error' : ''}`}>{m.content}</div>
+                <div className={`bubble ${m.error ? 'bubble-error' : ''}`}>
+                  <MarkdownText text={m.content} />
+                </div>
                 {m.cards && m.cards.length > 0 && (
                   <div className="tool-cards">
                     {m.cards.map((c, j) => (
