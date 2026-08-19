@@ -5,12 +5,14 @@
 - GET  /memory        查询记忆（支持按主体/类型/对方/可见性/等级 多条件过滤，时间倒序）
 """
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..services.memory_attachment import save_attachment
+from ..services.memory_compress import compress_expired_sessions
 from ..services.memory_permission import can_read_memory
 
 router = APIRouter(prefix="/memory", tags=["memory"])
@@ -24,6 +26,25 @@ def add_memory(payload: schemas.MemoryCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(mem)
     return mem
+
+
+@router.post("/summarize")
+def summarize(db: Session = Depends(get_db)):
+    """压缩过期会话成摘要（Step 6），返回压缩的会话数。"""
+    count = compress_expired_sessions(db)
+    return {"summarized": count}
+
+
+@router.post("/attachments", response_model=schemas.MemoryOut, status_code=201)
+def upload_attachment(
+    subject_no: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """上传附件（文本文件）：存文件 + 提取摘要，返回附件记忆。"""
+    content = file.file.read().decode("utf-8", errors="ignore")
+    filename = file.filename or "unnamed.txt"
+    return save_attachment(db, subject_no=subject_no, filename=filename, content=content)
 
 
 @router.get("", response_model=list[schemas.MemoryOut])

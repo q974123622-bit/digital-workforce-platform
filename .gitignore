@@ -19,6 +19,9 @@ venv/
 *.sqlite3
 *.log
 
+# 附件存储（本地上传文件，不入库）
+backend/storage/
+
 # PDF 生成中间文件（最终产物在 output/pdf/）
 tmp/
 

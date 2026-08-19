@@ -143,6 +143,7 @@ class ChatSession(Base):
     trace_id: Mapped[str] = mapped_column(String, default="")
     title: Mapped[str] = mapped_column(String, default="")  # 会话标题（自动总结主题）
     deleted: Mapped[bool] = mapped_column(default=False)  # 软删除：前端隐藏，后台保留供管理回查
+    summarized: Mapped[bool] = mapped_column(default=False)  # 是否已压缩成摘要（Step 6）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 

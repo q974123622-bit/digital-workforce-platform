@@ -137,3 +137,65 @@ def test_memory_interoperability(client):
     related = {m["related_subject_no"] for m in memories}
     assert "VE-0001" in related
     assert "DT-E10281" in related
+
+
+# ---- Step 6：对话压缩 ----
+
+
+def test_summarize_expired_sessions(client, db_session):
+    """压缩过期会话：超过 30 天的会话被提炼成摘要，并标记已压缩。"""
+    from datetime import datetime, timedelta
+
+    from app import models
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+
+    class FakeLLM:
+        def chat(self, messages, tools=None):
+            return LLMResponse(content="回答")
+
+    from sqlalchemy import select
+
+    orchestrator = ChatOrchestrator(FakeLLM())
+    first = orchestrator.handle_message(db_session, employee_no="VE-0001", message="入职流程咨询", session_id=None)
+
+    # 把会话时间改成 31 天前（模拟过期）
+    session = db_session.scalar(select(models.ChatSession).where(models.ChatSession.session_id == first.session_id))
+    session.created_at = datetime.now() - timedelta(days=31)
+    db_session.commit()
+
+    # 触发压缩
+    resp = client.post("/api/v1/memory/summarize").json()
+    assert resp["summarized"] == 1
+
+    # 生成了 summary 记忆
+    summaries = client.get("/api/v1/memory", params={"kind": "summary"}).json()
+    assert len(summaries) == 1
+    assert summaries[0]["subject_no"] == "VE-0001"
+    assert summaries[0]["kind"] == "summary"
+
+    # 会话已标记压缩
+    session = db_session.scalar(select(models.ChatSession).where(models.ChatSession.session_id == first.session_id))
+    assert session.summarized is True
+
+
+# ---- Step 7：附件记忆 ----
+
+
+def test_upload_attachment(client):
+    """上传文本附件：存文件 + 存摘要记忆（kind=attachment）。"""
+    resp = client.post(
+        "/api/v1/memory/attachments",
+        data={"subject_no": "E10021"},
+        files={"file": ("note.txt", "这是一段测试文本，用于验证附件记忆的摘要提取功能。", "text/plain")},
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["kind"] == "attachment"
+    assert body["subject_no"] == "E10021"
+    assert body["file_ref"]  # 文件路径非空
+
+    # 能查到附件记忆
+    attachments = client.get("/api/v1/memory", params={"kind": "attachment"}).json()
+    assert len(attachments) == 1
+    assert attachments[0]["kind"] == "attachment"
