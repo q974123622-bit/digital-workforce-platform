@@ -10,15 +10,20 @@
 单成员失败降级为提示消息并继续，全部失败才返回 503。
 """
 
+import time
 from datetime import datetime, timedelta
 from typing import Callable
+from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
+from . import config
+from .agentteams_gateway import AgentTeamsGateway, AgentTeamsUnavailableError
 from .chat import ChatOrchestrator
+from .gateway import write_audit
 from .identity import resolve_identity
 from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
 from .team_orchestrator import TeamTaskOrchestrator
@@ -325,6 +330,22 @@ def send_conversation_message(
                         seq=_next_seq(db, conversation.id),
                     )
             else:
+                # AgentTeams 优先（auto），失败自动降级内置编排
+                if config.team_backend_mode() != "builtin":
+                    at_task = _try_agentteams_task(
+                        db,
+                        conversation=conversation,
+                        leader=leader,
+                        actor_no=actor_no,
+                        request=content,
+                        trigger_seq=user_msg.seq,
+                    )
+                    if at_task is not None:
+                        conversation.updated_at = datetime.now()
+                        db.add(conversation)
+                        db.commit()
+                        db.refresh(conversation)
+                        return conversation
                 orch = orchestrator or TeamTaskOrchestrator(provider or DeepSeekProvider())
                 orch.create_conversation_task(
                     db,
@@ -352,6 +373,96 @@ def send_conversation_message(
     db.commit()
     db.refresh(conversation)
     return conversation
+
+
+def _try_agentteams_task(
+    db: Session,
+    *,
+    conversation: models.Conversation,
+    leader: models.DigitalEmployee | None,
+    actor_no: str,
+    request: str,
+    trigger_seq: int | None,
+) -> models.TaskRun | None:
+    """尝试经 AgentTeams 团队房间执行任务；任何失败返回 None（上层降级内置编排）。"""
+    room_id = config.get(config.AGENTTEAMS_ROOM_ID)
+    if not room_id:
+        return None
+    gateway = AgentTeamsGateway()
+    try:
+        gateway.send_message(room_id, f"[平台任务] {request}（请求者 {actor_no}）")
+        write_audit(
+            db,
+            trace_id=f"AT-{int(time.time() * 1000)}",
+            employee_id=leader.employee_no if leader else actor_no,
+            plugin_id="agentteams:send",
+            action="send",
+            decision="allow",
+            reason="任务已发送至 AgentTeams 团队房间",
+            result_summary=request[:200],
+        )
+        # 限时轮询回收完成汇报（最多 90 秒，每 5 秒一次）
+        report: str | None = None
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            msgs = gateway.poll_messages(room_id)
+            report = gateway.parse_completion(msgs, request[:12])
+            if report:
+                break
+            time.sleep(5)
+        if not report:
+            return None
+        task_id = f"T-{datetime.now():%Y%m%d}-{uuid4().hex[:6].upper()}"
+        run = models.TaskRun(
+            id=task_id,
+            team_id=conversation.id,
+            conversation_id=conversation.id,
+            trigger_message_seq=trigger_seq,
+            trace_id=task_id,
+            request=request,
+            status="completed",
+            subtasks=[
+                {
+                    "worker_id": leader.employee_no if leader else "agentteams",
+                    "worker_no": leader.employee_no if leader else "agentteams",
+                    "summary": request,
+                    "plugin_ids": [],
+                    "status": "completed",
+                    "result": report,
+                    "approval": None,
+                }
+            ],
+            summary=report,
+            source="agentteams",
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        if leader is not None:
+            _append(
+                db,
+                conversation_id=conversation.id,
+                participant_no=leader.employee_no,
+                participant_name=leader.name,
+                role="assistant",
+                content=report,
+                seq=_next_seq(db, conversation.id),
+            )
+        write_audit(
+            db,
+            trace_id=task_id,
+            employee_id=leader.employee_no if leader else actor_no,
+            plugin_id="agentteams:receive",
+            action="receive",
+            decision="allow",
+            reason="已回收 AgentTeams 团队执行汇报",
+            result_summary=report[:200],
+        )
+        return run
+    except (AgentTeamsUnavailableError, Exception):  # noqa: BLE001
+        return None
+    finally:
+        gateway.close()
 
 
 def _find_recent_task(

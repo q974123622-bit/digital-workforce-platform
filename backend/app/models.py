@@ -166,6 +166,7 @@ class TaskRun(Base):
     status: Mapped[str] = mapped_column(String, default="pending")
     subtasks: Mapped[list] = mapped_column(JSON, default=list)
     summary: Mapped[str] = mapped_column(String, default="")
+    source: Mapped[str] = mapped_column(String, default="builtin")  # builtin | agentteams
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 

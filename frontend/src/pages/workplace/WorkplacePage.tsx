@@ -121,7 +121,7 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: TaskCardProps
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="wp-task-title">{task.request}</div>
           <Text type="secondary" style={{ fontSize: 11 }}>
-            {task.id} · 由我的分身拆解安排
+            {task.id} · {task.source === 'agentteams' ? 'AgentTeams 团队协作' : '由我的分身拆解安排'}
           </Text>
         </div>
         <Space size={4}>

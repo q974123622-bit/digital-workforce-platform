@@ -285,6 +285,7 @@ class TaskRunOut(BaseModel):
     status: str = "pending"  # parsing | running | approval | completed | denied | failed
     subtasks: list[SubtaskOut] = []
     summary: str = ""
+    source: str = "builtin"  # builtin | agentteams
     created_at: datetime
 
 

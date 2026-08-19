@@ -28,6 +28,19 @@ EMBED_API_KEY = "DWP_EMBED_API_KEY"
 EMBED_MODEL = "DWP_EMBED_MODEL"
 EMBED_DIMENSIONS = "DWP_EMBED_DIMENSIONS"
 
+# AgentTeams 接入（Matrix 通道）
+AGENTTEAMS_MATRIX_URL = "AGENTTEAMS_MATRIX_URL"
+AGENTTEAMS_ADMIN_USER = "AGENTTEAMS_ADMIN_USER"
+AGENTTEAMS_ADMIN_PASSWORD = "AGENTTEAMS_ADMIN_PASSWORD"
+AGENTTEAMS_MATRIX_TOKEN = "AGENTTEAMS_MATRIX_TOKEN"
+AGENTTEAMS_ROOM_ID = "AGENTTEAMS_ROOM_ID"
+TEAM_BACKEND = "DWP_TEAM_BACKEND"  # auto | builtin（默认 auto）
+
+
+def team_backend_mode() -> str:
+    """团队协作后端：auto（AgentTeams 优先，失败降级内置）或 builtin。"""
+    return os.environ.get(TEAM_BACKEND, "auto")
+
 
 def get(name: str, default: str | None = None) -> str | None:
     """读取环境变量；未设置返回 default。值不落日志。"""

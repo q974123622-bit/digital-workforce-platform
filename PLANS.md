@@ -243,6 +243,34 @@
 
 ## Sprint 5 — TeamTaskOrchestrator（已完成，2026-08-18）
 
+## Sprint 8 — AgentTeams 最小接入（2026-08-19）
+
+> 里程碑：增量接入，保留自研兜底；Harness 作为我方执行引擎。
+
+### S8-01 AgentTeamsGateway（Matrix 客户端）
+- [x]
+  - Owner Role：A
+  - Input：AgentTeams 容器（Docker 恢复）、Matrix 凭据（容器 env）
+  - Output：`backend/app/services/agentteams_gateway.py`：login / joined_rooms / send_message / poll_messages / parse_completion；失败统一 AgentTeamsUnavailableError
+  - Dependency：容器恢复
+  - Acceptance Criteria：Matrix 登录成功、房间可枚举；测试 4 项（Fake Matrix）
+
+### S8-02 群聊任务接入（auto 降级）
+- [x]
+  - Owner Role：A
+  - Input：S8-01、group_chat 任务路径
+  - Output：`DWP_TEAM_BACKEND=auto`：任务优先发 AgentTeams 房间并回收汇报回填 TaskRun（source=agentteams）；失败自动降级内置编排（source=builtin）；审计 agentteams:send/receive；TaskRun 增加 source 字段；前端任务卡标注来源
+  - Dependency：S8-01
+  - Acceptance Criteria：单元测试 121 项全绿（含 agentteams 路径与降级路径）
+
+### S8-03 环境接入验证与降级结论
+- [x]
+  - Owner Role：A
+  - Input：真实 AgentTeams 环境
+  - Output：容器恢复、凭据找回（admin/manager/worker/platform-bot）、房间枚举；**结论：团队房间为私有且所有可用用户为 guest/未加入，自动发送通道被 Matrix 权限阻塞 → 运行时自动降级内置编排（演示安全）；半自动演示（Element Web 手动发任务 + 平台回填）作为演示兜底**
+  - Dependency：S8-02
+  - Acceptance Criteria：降级路径实测通过（121 测试全绿）；结论记录于交接文档
+
 > 里程碑：团队协作主链路（方案 A：门户自研编排 + Harness 并行尝试 + AgentTeams 留桩）。
 
 ### S5-01 TeamTaskOrchestrator

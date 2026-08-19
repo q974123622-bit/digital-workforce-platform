@@ -20,6 +20,13 @@
 - **脚本**：`scripts/run_demo.ps1`（推荐演示用）：依赖检查 → 种子重置（`-NoReset` 跳过）→ 启动后端（8000，日志 backend/uvicorn-*.log）→ 启动前端（5173，日志 frontend/vite-dev*.log）→ 健康检查确认；`-Docker` 可选：构建 dwp-dsh 镜像并启用 Harness 模式（`DWP_HARNESS_ENABLED=1`）。
 - **注意**：脚本含中文，文件带 UTF-8 BOM（Windows PowerShell 5.1 需 BOM 才能正确解析）。
 
+## 1.16 AgentTeams 最小接入（Sprint 8，2026-08-19）
+
+- **代码接入已完成**：`backend/app/services/agentteams_gateway.py`（Matrix Client-Server API：login/joined_rooms/send/poll/parse）；`group_chat` 任务路径 `DWP_TEAM_BACKEND=auto`——任务优先发 AgentTeams 房间并回收汇报（TaskRun.source=agentteams），失败自动降级内置编排（source=builtin）；审计 `agentteams:send/receive`；前端任务卡标注来源。
+- **环境验证结论**：AgentTeams 容器已恢复；凭据（admin/manager/worker/platform-bot）均已找回并配置于本地 `.env`（gitignored）；**但团队房间为私有且所有可用 Matrix 用户为 guest/未加入该房间，自动发送通道被权限阻塞（HTTP 403 membership leave）**。按计划假设，自动通道留待后续修复 AgentTeams 房间成员关系；演示默认走内置编排（稳定），可配 `DWP_TEAM_BACKEND=auto` 后由 AgentTeams 可用时自动切换。
+- **半自动演示兜底**：演示现场可用 Element Web（http://127.0.0.1:18088）手动把任务发到团队房间展示 Manager/Workers 协作，平台侧任务与审计仍由内置链路记录。
+- **测试**：后端 121 项（新增 5 项：网关单元 3 + agentteams 路径 + 降级路径）、前端 20 项全绿。
+
 ## 1.11 Sprint 5 完成情况（TeamTaskOrchestrator，负责人 A）
 
 - **TeamTaskOrchestrator**：`backend/app/services/team_orchestrator.py`，TEAM-ONBOARD 模板 3 子任务（VE-0002 HR 制度 -> VE-0003 IT 账号 -> VE-0003 敏感报表审批）；子任务执行一律经 Plugin Gateway；状态机 parsing/running/approval/completed/denied/failed。

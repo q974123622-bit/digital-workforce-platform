@@ -124,9 +124,10 @@ export interface TaskRun {
   trace_id: string;
   request: string;
   status: string;
-  subtasks: TaskSubtask[];
-  summary: string;
-  created_at: string;
+    subtasks: TaskSubtask[];
+    summary: string;
+    source?: 'builtin' | 'agentteams';
+    created_at: string;
 }
 
 export interface TaskSubtask {
