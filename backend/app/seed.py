@@ -33,7 +33,7 @@ def seed_data(db, data: dict) -> None:
     for row in data.get("knowledge_bases", []):
         db.add(models.KnowledgeBase(**row))
     for row in data.get("personal_memories", []):
-        db.add(models.PersonalMemory(**row))
+        db.add(models.MemoryEntry(**row))
     db.commit()
 
 

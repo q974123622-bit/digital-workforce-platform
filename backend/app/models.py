@@ -167,13 +167,36 @@ class TaskRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
-class PersonalMemory(Base):
-    """个人记忆：某真人与数字员工对话产生的、需要长期保留的记忆（记忆插件）。"""
+class MemoryEntry(Base):
+    """记忆插件：一条长期记忆，带 7 组维度标签。
 
-    __tablename__ = "personal_memory"
+    - 主体（subject_type/subject_no）：这是谁的记忆
+    - 类型（kind）：记的是什么
+    - 内容（content/content_type）：文字还是结构化
+    - 关联（related_subject_no/trace_id/file_ref）：和谁交互、溯源、附件
+    - 可见性（visibility）：谁能看
+    - 敏感等级（data_level）：多敏感
+    - 生命周期（lifecycle）：近期完整还是已压缩摘要
+    """
+
+    __tablename__ = "memory_entry"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    human_no: Mapped[str] = mapped_column(String, index=True)  # 这是哪个真人的记忆（如 E10281）
-    employee_no: Mapped[str] = mapped_column(String, default="")  # 和哪个数字员工对话产生的
-    content: Mapped[str] = mapped_column(String, default="")  # 记忆内容
+    # 主体
+    subject_type: Mapped[str] = mapped_column(String, index=True)  # human | twin | virtual | team
+    subject_no: Mapped[str] = mapped_column(String, index=True)  # E10281 / DT-E10281 / VE-0001 / TEAM-ONBOARD
+    # 类型 + 内容
+    kind: Mapped[str] = mapped_column(String, default="fact")  # conversation|decision|fact|attachment|summary|profile|basic_info
+    content: Mapped[str] = mapped_column(String, default="")  # 文字 / 摘要 / structured JSON
+    content_type: Mapped[str] = mapped_column(String, default="text")  # text | structured
+    # 关联
+    related_subject_no: Mapped[str | None] = mapped_column(String, nullable=True)  # 和谁交互产生
+    trace_id: Mapped[str | None] = mapped_column(String, nullable=True)  # 关联审计/操作
+    file_ref: Mapped[str | None] = mapped_column(String, nullable=True)  # 附件路径（kind=attachment）
+    # 控制
+    visibility: Mapped[str] = mapped_column(String, default="personal")  # public | personal | shared | confidential
+    data_level: Mapped[str] = mapped_column(String, default="L1")  # L1 | L2 | L3
+    lifecycle: Mapped[str] = mapped_column(String, default="active")  # active | summarized
+    # 时间
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)

@@ -141,7 +141,7 @@
     {"id": "KB-REG-EXTERNAL", "name": "外部监管知识库", "level": "L1", "data_level": "L1", "resource_type": "knowledge", "allowed_employment_type": ["formal", "intern"], "department_scope": ["*"], "domain": "外部监管", "description": "外部监管规则与指引学习资料（虚构演示）", "status": "active", "doc_path": "mock-data/kb/external-reg"}
   ],
   "personal_memories": [
-    {"human_no": "E10021", "employee_no": "VE-0001", "content": "王老师询问过新员工入职第一天的报到流程"},
-    {"human_no": "E10281", "employee_no": "DT-E10281", "content": "张三的分身记录：偏好周五下午不开会"}
+    {"subject_type": "human", "subject_no": "E10021", "kind": "fact", "content": "王老师询问过新员工入职第一天的报到流程", "content_type": "text", "related_subject_no": "VE-0001", "visibility": "personal", "data_level": "L1", "lifecycle": "active"},
+    {"subject_type": "human", "subject_no": "E10281", "kind": "fact", "content": "张三的分身记录：偏好周五下午不开会", "content_type": "text", "related_subject_no": "DT-E10281", "visibility": "personal", "data_level": "L1", "lifecycle": "active"}
   ]
 }
