@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -125,8 +125,16 @@ def delete_employee(employee_no: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{employee_no}/chat", response_model=schemas.ChatResponse)
-def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(get_db)):
-    """一对一问答（Sprint 4）：User → Employee → LLM → Policy → Gateway → Adapter → LLM → Answer。"""
+def chat(
+    employee_no: str,
+    payload: schemas.ChatRequest,
+    x_demo_actor: str | None = Header(default=None, alias="X-Demo-Actor"),
+    db: Session = Depends(get_db),
+):
+    """一对一问答（Sprint 4）：User → Employee → LLM → Policy → Gateway → Adapter → LLM → Answer。
+
+    X-Demo-Actor 请求头携带"当前真人用户"工号，用于把对话自动写入记忆（记忆插件）。
+    """
     orchestrator = ChatOrchestrator(DeepSeekProvider())
     try:
         result = orchestrator.handle_message(
@@ -134,6 +142,7 @@ def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(g
             employee_no=employee_no,
             message=payload.message,
             session_id=payload.session_id,
+            human_no=x_demo_actor,
         )
     except LLMUnavailableError as exc:
         raise HTTPException(status_code=503, detail=f"LLM_UNAVAILABLE：{exc}") from exc

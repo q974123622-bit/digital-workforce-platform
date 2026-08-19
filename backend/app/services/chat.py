@@ -18,6 +18,7 @@ from .gateway import search_knowledge
 from .identity import resolve_identity
 from .knowledge_registry import list_resources
 from .llm import LLMProvider, LLMUnavailableError
+from .memory_service import record_conversation
 from .session import add_message, get_or_create, history
 
 MAX_TOOL_ROUNDS = 3
@@ -80,6 +81,7 @@ class ChatOrchestrator:
         employee_no: str,
         message: str,
         session_id: str | None,
+        human_no: str | None = None,
     ) -> ChatResult:
         subject = resolve_identity(db, employee_no)
         if subject is None:
@@ -87,6 +89,16 @@ class ChatOrchestrator:
 
         session, _ = get_or_create(db, session_id, employee_no)
         add_message(db, session_id=session.session_id, role="user", content=message)
+
+        # 记忆插件：把对话自动写入记忆（subject=human，关联对方=employee_no），供跨 AI 互通检索
+        if human_no:
+            record_conversation(
+                db,
+                human_no=human_no,
+                employee_no=employee_no,
+                content=message,
+                trace_id=session.trace_id,
+            )
 
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt(db, subject), "source": "demo"},
