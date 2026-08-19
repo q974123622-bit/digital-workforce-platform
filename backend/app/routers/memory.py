@@ -5,12 +5,13 @@
 - GET  /memory        查询记忆（支持按主体/类型/对方/可见性/等级 多条件过滤，时间倒序）
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..services.memory_permission import can_read_memory
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -33,9 +34,10 @@ def list_memory(
     related_subject_no: str | None = Query(default=None),
     visibility: str | None = Query(default=None),
     data_level: str | None = Query(default=None),
+    x_demo_actor: str | None = Header(default=None, alias="X-Demo-Actor"),
     db: Session = Depends(get_db),
 ):
-    """按条件查询记忆，时间从新到旧排列。所有过滤条件可选，缺省表示不过滤。"""
+    """按条件查询记忆，时间从新到旧排列；并按读者身份（X-Demo-Actor）过滤权限。"""
     q = select(models.MemoryEntry).order_by(models.MemoryEntry.created_at.desc())
     if subject_type:
         q = q.where(models.MemoryEntry.subject_type == subject_type)
@@ -49,4 +51,6 @@ def list_memory(
         q = q.where(models.MemoryEntry.visibility == visibility)
     if data_level:
         q = q.where(models.MemoryEntry.data_level == data_level)
-    return db.scalars(q).all()
+    rows = db.scalars(q).all()
+    # 按权限过滤：只返回读者能看的记忆
+    return [r for r in rows if can_read_memory(x_demo_actor, r, db)]

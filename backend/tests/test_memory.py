@@ -71,3 +71,45 @@ def test_memory_filter_by_related(client):
     ).json()
     assert len(memories) == 1
     assert memories[0]["related_subject_no"] == "VE-0001"
+
+
+# ---- Step 3：权限鉴权 ----
+
+
+def test_memory_public_visible_to_anyone(client):
+    """public 记忆：任何人（含实习生）都能读。"""
+    client.post(
+        "/api/v1/memory",
+        json={"subject_type": "human", "subject_no": "E10021", "kind": "basic_info", "content": "王老师，HR 部门", "visibility": "public"},
+    )
+    memories = client.get(
+        "/api/v1/memory", params={"subject_no": "E10021"}, headers={"X-Demo-Actor": "E20888"}
+    ).json()
+    assert any(m["visibility"] == "public" for m in memories)
+
+
+def test_memory_personal_hidden_from_others(client):
+    """personal 记忆：非本人、非 owner 读不到。"""
+    # 种子数据里 E10021 有 1 条 personal 记忆；E10281 不是其 owner
+    memories = client.get(
+        "/api/v1/memory", params={"subject_no": "E10021"}, headers={"X-Demo-Actor": "E10281"}
+    ).json()
+    assert all(m["visibility"] != "personal" for m in memories)
+
+
+def test_memory_confidential_only_admin(client):
+    """confidential 记忆：仅管理员能读。"""
+    client.post(
+        "/api/v1/memory",
+        json={"subject_type": "virtual", "subject_no": "VE-0001", "kind": "decision", "content": "涉密决策", "visibility": "confidential", "data_level": "L3"},
+    )
+    # 非管理员读不到 confidential
+    non_admin = client.get(
+        "/api/v1/memory", params={"kind": "decision"}, headers={"X-Demo-Actor": "E10281"}
+    ).json()
+    assert all(m["visibility"] != "confidential" for m in non_admin)
+    # 管理员（E10021）能读到
+    admin = client.get(
+        "/api/v1/memory", params={"kind": "decision"}, headers={"X-Demo-Actor": "E10021"}
+    ).json()
+    assert any(m["visibility"] == "confidential" for m in admin)
