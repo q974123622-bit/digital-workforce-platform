@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .database import Base, engine
-from .routers import audit, chat, employees, internal, knowledge, plugins, policies, teams
+from .routers import access, audit, chat, employees, internal, knowledge, plugins, policies, teams
 from .seed import seed_if_empty
 
 
@@ -81,5 +81,6 @@ app.include_router(audit.router, prefix=API_PREFIX)
 app.include_router(teams.router, prefix=API_PREFIX)
 app.include_router(teams.tasks_router, prefix=API_PREFIX)
 app.include_router(knowledge.router, prefix=API_PREFIX)
+app.include_router(access.router, prefix=API_PREFIX)
 app.include_router(chat.router, prefix=API_PREFIX)
 app.include_router(internal.router)

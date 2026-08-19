@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -247,6 +248,35 @@ class ChatMessageOut(BaseModel):
     role: str
     content: str
     tool_cards: list = []
+
+
+# ---- P20：Access Request API（L3 敏感资源白名单申请/审批） ----
+
+
+class AccessRequestCreate(BaseModel):
+    resource_type: Literal["knowledge", "plugin", "data"]
+    resource_id: str
+    reason: str = ""
+
+
+class AccessRequestApproveIn(BaseModel):
+    approve: bool
+    actor_no: str
+
+
+class AccessRequestOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    applicant_no: str
+    resource_type: str
+    resource_id: str
+    reason: str = ""
+    status: str = "pending"
+    approval_chain: list = []
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    created_at: datetime
 
 
 class ChatRequest(BaseModel):

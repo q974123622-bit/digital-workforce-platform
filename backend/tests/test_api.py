@@ -9,9 +9,9 @@ def test_seed_counts(client):
     assert len(employees) == 5
     assert len([e for e in employees if e["type"] == "twin"]) == 2
     assert len([e for e in employees if e["type"] == "virtual"]) == 3
-    assert len(client.get("/api/v1/plugins").json()) == 6
+    assert len(client.get("/api/v1/plugins").json()) == 7
     assert len(client.get("/api/v1/policies").json()) == 9
-    assert len(client.get("/api/v1/knowledge-bases").json()) == 8
+    assert len(client.get("/api/v1/knowledge-bases").json()) == 9
     teams = client.get("/api/v1/teams").json()
     assert len(teams) == 1
     assert len(teams[0]["members"]) == 3

@@ -39,8 +39,8 @@ ONBOARD_TEMPLATE = [
     {
         "worker_id": "VE-0003",
         "worker_no": "VE-0003",
-        "summary": "生成入职权限报表（敏感操作，需审批）",
-        "plugin_ids": ["rpa-report"],
+        "summary": "确认员工权限归属（敏感操作，需审批）",
+        "plugin_ids": ["hr-employee-mcp"],
         "action": "execute",
         "params": {},
     },

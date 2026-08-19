@@ -31,6 +31,7 @@ def test_registry_eight_resources(client):
         "KB-SECURITIES",
         "KB-REG-INTERNAL",
         "KB-REG-EXTERNAL",
+        "KB-CUSTOMER-SENSITIVE",
     }
     assert kbs["KB-PUBLIC"]["data_level"] == "L1"
     assert kbs["KB-PUBLIC"]["allowed_employment_type"] == ["formal", "intern"]
@@ -49,6 +50,10 @@ def test_registry_eight_resources(client):
     assert kbs["KB-REG-INTERNAL"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-REG-EXTERNAL"]["data_level"] == "L1"
     assert kbs["KB-REG-EXTERNAL"]["allowed_employment_type"] == ["formal", "intern"]
+    assert kbs["KB-CUSTOMER-SENSITIVE"]["data_level"] == "L3"
+    assert kbs["KB-CUSTOMER-SENSITIVE"]["allowed_employment_type"] == ["formal"]
+    assert kbs["KB-CUSTOMER-SENSITIVE"]["resource_type"] == "knowledge"
+    assert kbs["KB-CUSTOMER-SENSITIVE"]["doc_path"] == "mock-data/kb/customer-sensitive"
 
 
 def test_registry_kb_not_found(client):
@@ -194,6 +199,21 @@ def test_multiformat_directory_search_returns_nonempty_hits(client):
         resp = _search(client, emp, kb_id, query, f"T-P17-MF-{i}")
         assert resp.status_code == 200
         assert len(resp.json()["data"]["hits"]) >= 1
+
+
+# ---- P20：L3 内部敏感演示库（未授权默认拒绝） ----
+
+
+def test_l3_customer_sensitive_kb_denied_for_all(client):
+    for emp in ("DT-E10281", "DT-E20999"):
+        resp = _search(client, emp, "KB-CUSTOMER-SENSITIVE", "客户 KYC 信息", f"T-P20-{emp}")
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["error"]["code"] == "POLICY_DENIED"
+        assert body["error"]["detail"]["policy_id"] == "P-DATA-003"
+        audit = client.get(f"/api/v1/audit/{body['error']['detail']['audit_id']}").json()
+        assert audit["decision"] == "deny"
+        assert audit["knowledge_base_id"] == "KB-CUSTOMER-SENSITIVE"
 
 
 # ---- Sandbox Policy：remote_only / internet_deny / local_deny ----

@@ -22,5 +22,7 @@ def resolve(db: Session, knowledge_base_id: str) -> models.KnowledgeBase | None:
 
 
 def plugin_id_for_level(data_level: str) -> str:
-    """知识库访问经统一知识插件入口（L1→knowledge-l1，L2→knowledge-l2）。"""
-    return "knowledge-l1" if data_level == "L1" else "knowledge-l2"
+    """知识库访问经统一知识插件入口（L1→knowledge-l1，L2→knowledge-l2，L3→knowledge-l3）。"""
+    return {"L1": "knowledge-l1", "L2": "knowledge-l2", "L3": "knowledge-l3"}.get(
+        data_level, "knowledge-l2"
+    )

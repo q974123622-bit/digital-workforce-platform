@@ -124,6 +124,37 @@ SSE 事件类型（固定枚举）：
 | POST | `/internal/gateway/invoke` | ✅ | 通用插件执行（含知识查询） |
 | POST | `/internal/knowledge/search` | ✅ | 知识库专用入口（Sprint 3）：`{employee_id, knowledge_base_id, query, trace_id}` |
 
+### 3.8 Access Request API（✅ P20 已实现：L3 敏感资源白名单申请/审批）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/access-requests?applicant_no={employee_no}` | 发起敏感资源申请；仅 employment_type=formal 可申请，实习生返回 403 POLICY_DENIED（不落申请单） |
+| POST | `/access-requests/{request_id}/approve` | 管理员一键通过/拒绝；终态再审批返回 409 STATE_CONFLICT |
+| GET | `/access-requests?applicant_no=&status=` | 查询申请单（含待审批列表），按申请人/状态过滤 |
+
+请求（创建）：
+
+```json
+{"resource_type": "knowledge|plugin|data", "resource_id": "KB-CUSTOMER-SENSITIVE", "reason": "演示申请"}
+```
+
+请求（审批）：`{"approve": true, "actor_no": "DT-E10281"}`
+
+响应（AccessRequestDto）：
+
+```json
+{"id": 1, "applicant_no": "DT-E10281", "resource_type": "knowledge", "resource_id": "KB-CUSTOMER-SENSITIVE",
+ "reason": "演示申请", "status": "pending|approved|rejected|granted", "approval_chain": [],
+ "decided_by": null, "decided_at": null, "created_at": "2026-08-19T..."}
+```
+
+状态码：`201`（创建成功）/ `200`（审批、列表）/ `403 POLICY_DENIED`（非正式员工）/ `404`（资源或申请单不存在）/ `409 STATE_CONFLICT`（终态重复审批）/ `422`（参数不合法）。
+
+说明：
+- 通过审批时后端写入 `employee_plugin_grant`（action=read，decision_mode=allow，grant_source=whitelist）并置状态 granted；拒绝置 rejected；
+- 策略 P-DATA-003：L3 资源访问（知识读 / 插件执行与读取）无白名单授权默认 DENY，有白名单授权 ALLOW；L3 一律走白名单申请；
+- 审计：access_apply / access_approve / access_grant / read 四类事件按 trace_id（默认 `ARQ-{id}`，访问调用方传入同值）可聚合追溯。
+
 ## 4. Runtime Adapter Interface（📋 冻结，Sprint 3 实现）
 
 统一 Runtime 调用形态，由 RuntimeLauncher 调用；**不区分 harness/openclaw/agentteams 的差异，由 adapter 内部翻译**。
@@ -314,3 +345,4 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 | 2026-08-17 | v1.1 兼容扩展（Sprint 3）：KnowledgeBaseDto 增加 data_level/resource_type/allowed_employment_type/department_scope（可选）；AuditEventDto 增加 knowledge_base_id（可选）；新增 POST /internal/knowledge/search；SandboxRunIn 增加可选 execution_location；Sandbox /knowledge/search 转 ✅ | B | 本文件 / shared-schema / models / schemas |
 | 2026-08-17 | v1.1 实现状态更新（Sprint 4）：Chat API 转 ✅（整段 JSON，SSE 弹性）；LLMProvider 统一 chat/tool_call/structured_output 已实现 | A | 本文件 |
 | 2026-08-18 | v1.1 实现状态更新（Sprint 5）：Team API 任务/审批转 ✅（TeamTaskOrchestrator，模板拆解 + Gateway 执行 + 审批 + LLM 汇总）；接口定义无变更 | A | 本文件 |
+| 2026-08-19 | v1.1 兼容扩展（P20）：新增 §3.8 Access Request API 与 AccessRequestDto（申请/审批/列表）；L3 白名单策略（P-DATA-003 改为白名单控制，POLICY-005 审批语义被取代）；新增 knowledge-l3 插件与 KB-CUSTOMER-SENSITIVE（L3）；审计新增 access_apply/access_approve/access_grant 事件 | 待 A 确认 | 本文件 / shared-schema/types.ts / routers/access.py / models / schemas / services/policy.py |

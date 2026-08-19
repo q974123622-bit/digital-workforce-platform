@@ -190,3 +190,32 @@ export interface ChatReply {
     reason: string | null;
   } | null;
 }
+
+// ---- P20：Access Request（L3 敏感资源白名单申请/审批） ----
+
+export type AccessResourceType = "knowledge" | "plugin" | "data";
+export type AccessRequestStatus = "pending" | "approved" | "rejected" | "granted";
+
+export interface AccessRequestCreate {
+  resource_type: AccessResourceType;
+  resource_id: string;
+  reason: string;
+}
+
+export interface AccessRequestApproveIn {
+  approve: boolean;
+  actor_no: string;
+}
+
+export interface AccessRequest {
+  id: number;
+  applicant_no: string;
+  resource_type: AccessResourceType;
+  resource_id: string;
+  reason: string;
+  status: AccessRequestStatus;
+  approval_chain: unknown[];
+  decided_by: string | null;
+  decided_at: string | null;
+  created_at: string;
+}

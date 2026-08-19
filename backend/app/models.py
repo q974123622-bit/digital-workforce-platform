@@ -55,6 +55,7 @@ class EmployeePluginGrant(Base):
     plugin_id: Mapped[str] = mapped_column(String, index=True)
     action: Mapped[str] = mapped_column(String, default="read")
     decision_mode: Mapped[str] = mapped_column(String, default="allow")  # allow | deny | approval
+    grant_source: Mapped[str] = mapped_column(String, default="")  # 空=种子/普通授权；whitelist=L3 白名单授权
 
 
 class Policy(Base):
@@ -131,6 +132,23 @@ class KnowledgeChunk(Base):
     content: Mapped[str] = mapped_column(String, default="")
     embedding: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     dims: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AccessRequest(Base):
+    """L3 敏感资源白名单申请单（P20）：pending → granted/rejected；approved 为多级审批预留。"""
+
+    __tablename__ = "access_request"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    applicant_no: Mapped[str] = mapped_column(String, index=True)
+    resource_type: Mapped[str] = mapped_column(String)  # knowledge | plugin | data
+    resource_id: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending|approved|rejected|granted
+    approval_chain: Mapped[list] = mapped_column(JSON, default=list)  # 预留多级审批，本期不实现
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
