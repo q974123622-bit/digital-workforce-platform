@@ -177,9 +177,56 @@ class TaskRun(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     team_id: Mapped[str] = mapped_column(String)
+    conversation_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    trigger_message_seq: Mapped[int | None] = mapped_column(nullable=True)
     trace_id: Mapped[str] = mapped_column(String, default="")
     request: Mapped[str] = mapped_column(String, default="")
     status: Mapped[str] = mapped_column(String, default="pending")
     subtasks: Mapped[list] = mapped_column(JSON, default=list)
     summary: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+# ---- Sprint 7：个人工作中心（职场）----
+
+
+class Skill(Base):
+    """员工上传给数字分身的技能（文本/Markdown，注入分身人设）。"""
+
+    __tablename__ = "skill"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_human_no: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(String, default="")
+    content: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="active")  # active | disabled
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class Conversation(Base):
+    """职场会话：私聊（direct）与协作群聊（group）统一承载。"""
+
+    __tablename__ = "conversation"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, default="direct")  # direct | group
+    title: Mapped[str] = mapped_column(String, default="")
+    owner_human_no: Mapped[str] = mapped_column(String, index=True)
+    participants: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class ConversationMessage(Base):
+    """职场会话消息：user 为员工本人，assistant 为数字成员回复。"""
+
+    __tablename__ = "conversation_message"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True)
+    participant_no: Mapped[str] = mapped_column(String, default="")
+    participant_name: Mapped[str] = mapped_column(String, default="")
+    role: Mapped[str] = mapped_column(String, default="user")  # user | assistant
+    content: Mapped[str] = mapped_column(String, default="")
+    tool_cards: Mapped[list] = mapped_column(JSON, default=list)
+    seq: Mapped[int] = mapped_column(default=0)

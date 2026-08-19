@@ -269,6 +269,50 @@
   - Dependency：无
   - Acceptance Criteria：文档明确本周不接入原因（需 K8s/Docker + Matrix 形态不适配门户），不阻塞主链路
 
+## Sprint 7 — 个人工作中心（职场）（已完成，2026-08-19）
+
+> 里程碑：会议纪要「本周重点」落地——企业微信式个人工作中心 + 技能上传 + 插件/协作能力展示；管理功能收进「管理后台」，职场页面拟人化文案。
+
+### S7-01 职场后端：模型 / 种子 / 接口
+- [x]
+  - Owner Role：A
+  - Input：会议纪要（个人工作中心 / 数字分身 / 技能上传 / 数字员工目录）
+  - Output：`Skill`（文本/Markdown，owner_human_no）、`Conversation`（kind=direct|group，participants JSON）、`ConversationMessage`（seq 有序）；`backend/app/routers/workplace.py`：职场聚合 + 技能 CRUD + 会话接口；种子 3 技能 + 2 会话（分身私聊欢迎语 + 入职协作群聊）
+  - Dependency：T0-04（模型/种子基线）
+  - Acceptance Criteria：direct 幂等复用、group 自动带头分身且拒绝重复/未知成员；聚合仅含 virtual/rpa；越权发消息 403
+
+### S7-02 技能注入与群聊编排
+- [x]
+  - Owner Role：A
+  - Input：ChatOrchestrator（Sprint 4）
+  - Output：`handle_message` 向后兼容扩展（system_context / history_override / persist / trace_id）；分身 system prompt 注入启用技能（上限 4000 字符）；`services/group_chat.py` 顺序编排（成员依次独立走 Policy→Gateway→审计，单成员失败降级，全败 503）
+  - Dependency：T1-01、T1-03
+  - Acceptance Criteria：Fake LLM 断言技能注入与回复顺序；单成员失败继续、全部失败 503；trace 前缀 T-GRP-
+
+### S7-03 前端：企业微信式会话台
+- [x]
+  - Owner Role：C（A 复核）
+  - Input：S7-01/S7-02 接口、共享类型
+  - Output：`/workplace` 主入口（`/` 重定向）；侧栏「我的职场 + 管理后台」分组；CurrentUserProvider 身份切换（张三/陈晓萌）；会话列表（我的分身置顶）/ 通讯录（分组+搜索+私聊/群聊）/ 微信气泡对话窗口 / 分身资料抽屉（技能启停+上传 .md/.txt）；Dashboard 移至 `/admin`
+  - Dependency：S7-01
+  - Acceptance Criteria：会话列表预览与时间；发送消息后成员具名回复与工具卡片；上传技能即时生效；typecheck/build 通过
+
+### S7-04 测试与回归
+- [x]
+  - Owner Role：D
+  - Input：S7-01~S7-03
+  - Output：`backend/tests/test_workplace.py` 16 项（技能 CRUD/注入/聚合/幂等/群聊顺序/降级）；前端 WorkplacePage.test 4 项 + App/AppLayout 路由改造
+  - Dependency：S7-01~S7-03
+  - Acceptance Criteria：后端 pytest 100 全绿；前端 vitest 16 全绿；typecheck/build 通过；golden_chain.py 8/8 回归
+
+### S7-05 协作空间接入团队任务编排（C 档）
+- [x]
+  - Owner Role：A
+  - Input：TeamTaskOrchestrator（Sprint 5）、职场群聊（S7-01~S7-03）
+  - Output：`POST /conversations/{id}/messages` 群聊分发——分身 LLM 判断「任务/闲聊」（失败默认闲聊）；任务型追加分身受理消息并调 `create_conversation_task`（拆解 1-3 子任务指派成员 → Gateway 执行 → 审批 → Leader 汇总；请求关键词兜底指派对应 workflow）；闲聊仅单成员回复（点名命中则那位回，否则分身回）；`ConversationOut.tasks` 返回任务列表；`SubtaskExecutor` 接口（默认 GatewaySubtaskExecutor，真实 RPA/Workflow/Harness 后续接入）；新增 5 个虚构 workflow/RPA 插件（报销/请假/纪要/周报/采购）+ 种子任务 3 条（待审批 1 + 已完成 2）
+  - Dependency：S7-01、S7-02
+  - Acceptance Criteria：任务消息 → TaskRun 落库并完成/挂起审批；闲聊单回复；点名路由；审批通过→completed+汇总、拒绝→denied；前端任务卡片（子任务/审批按钮/汇总）+ running/approval 轮询；后端 109 项、前端 18 项、build 全绿
+
 ### T2-02 Harness 集成尝试（门禁 G2）
 - [ ]
   - Owner Role：A

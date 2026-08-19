@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
 import ErrorBoundary from './components/ErrorBoundary';
 import ChatPage from './pages/ChatPage';
@@ -8,13 +8,16 @@ import Employees from './pages/Employees';
 import Plugins from './pages/Plugins';
 import Security from './pages/Security';
 import Teams from './pages/Teams';
+import WorkplacePage from './pages/workplace/WorkplacePage';
 
 export default function App() {
   return (
     <ErrorBoundary>
       <Routes>
         <Route element={<AppLayout />}>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<Navigate to="/workplace" replace />} />
+          <Route path="/workplace" element={<WorkplacePage />} />
+          <Route path="/admin" element={<Dashboard />} />
           <Route path="/employees" element={<Employees />} />
           <Route path="/employees/:employeeNo" element={<EmployeeDetail />} />
           <Route path="/employees/:employeeNo/chat" element={<ChatPage />} />

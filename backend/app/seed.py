@@ -13,6 +13,28 @@ def load_seed() -> dict:
 
 
 def seed_data(db, data: dict) -> None:
+    # 幂等：先清空旧数据再灌种子（演示环境专用，SQLite 无外键约束）
+    for model in (
+        models.ConversationMessage,
+        models.Conversation,
+        models.Skill,
+        models.TaskRun,
+        models.AuditEvent,
+        models.TeamMember,
+        models.Team,
+        models.KnowledgeChunk,
+        models.KnowledgeBase,
+        models.ChatMessage,
+        models.ChatSession,
+        models.EmployeePluginGrant,
+        models.Policy,
+        models.Plugin,
+        models.DigitalEmployee,
+        models.HumanEmployee,
+    ):
+        db.query(model).delete()
+    db.commit()
+
     for row in data.get("human_employees", []):
         db.add(models.HumanEmployee(**row))
     for row in data.get("digital_employees", []):
@@ -32,13 +54,21 @@ def seed_data(db, data: dict) -> None:
             db.add(models.TeamMember(team_id=team["id"], **m))
     for row in data.get("knowledge_bases", []):
         db.add(models.KnowledgeBase(**row))
+    for row in data.get("skills", []):
+        db.add(models.Skill(**row))
+    for conv in data.get("conversations", []):
+        db.add(models.Conversation(**{k: v for k, v in conv.items() if k != "messages"}))
+        for msg in conv.get("messages", []):
+            db.add(models.ConversationMessage(conversation_id=conv["id"], **msg))
+    for row in data.get("task_runs", []):
+        db.add(models.TaskRun(**row))
     db.commit()
 
 
 def seed_if_empty() -> None:
     db = SessionLocal()
     try:
-        if db.query(models.DigitalEmployee).count() == 0:
+        if db.query(models.DigitalEmployee).count() == 0 or db.query(models.Skill).count() == 0:
             seed_data(db, load_seed())
     finally:
         db.close()

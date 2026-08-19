@@ -128,7 +128,8 @@ def test_harness_fallback_to_gateway(client, db_session):
     run = _create(db_session, orch)
     assert run.subtasks[0].status == "completed"
     assert "[Harness 执行]" not in run.subtasks[0].result
-    assert "source" in run.subtasks[0].result
+    assert "流程：员工查询 MCP" in run.subtasks[0].result
+    assert "王老师" in run.subtasks[0].result
 
 
 def test_docker_harness_requires_key():

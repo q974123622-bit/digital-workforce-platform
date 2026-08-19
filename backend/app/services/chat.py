@@ -9,8 +9,10 @@
 
 import json
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -21,6 +23,7 @@ from .llm import LLMProvider, LLMUnavailableError
 from .session import add_message, get_or_create, history
 
 MAX_TOOL_ROUNDS = 3
+MAX_SKILL_CHARS = 4000
 
 TOOLS = [
     {
@@ -80,20 +83,38 @@ class ChatOrchestrator:
         employee_no: str,
         message: str,
         session_id: str | None,
+        system_context: str = "",
+        history_override: list[dict] | None = None,
+        persist: bool = True,
+        trace_id: str | None = None,
     ) -> ChatResult:
         subject = resolve_identity(db, employee_no)
         if subject is None:
             raise HTTPException(status_code=404, detail="数字员工不存在")
 
-        session, _ = get_or_create(db, session_id, employee_no)
-        add_message(db, session_id=session.session_id, role="user", content=message)
+        if persist:
+            session, _ = get_or_create(db, session_id, employee_no)
+            add_message(db, session_id=session.session_id, role="user", content=message)
+            active_session_id = session.session_id
+            active_trace_id = session.trace_id
+        else:
+            # 协作空间会话：不落 ChatSession/ChatMessage，由调用方负责消息持久化
+            active_session_id = session_id or f"G-{uuid4().hex[:12]}"
+            active_trace_id = trace_id or f"T-GRP-{uuid4().hex[:12]}"
 
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt(db, subject), "source": "demo"},
         ]
-        for msg in history(db, session.session_id)[:-1]:
-            messages.append({"role": msg.role, "content": msg.content, "source": "demo"})
-        messages.append({"role": "user", "content": message, "source": "demo"})
+        if system_context:
+            messages.append({"role": "system", "content": system_context, "source": "demo"})
+        if history_override is not None:
+            messages.extend(history_override)
+            if not messages or messages[-1].get("role") != "user":
+                messages.append({"role": "user", "content": message, "source": "demo"})
+        else:
+            for msg in history(db, active_session_id)[:-1]:
+                messages.append({"role": msg.role, "content": msg.content, "source": "demo"})
+            messages.append({"role": "user", "content": message, "source": "demo"})
 
         tool_cards: list[ToolCard] = []
         policy_denied: ToolCard | None = None
@@ -102,10 +123,17 @@ class ChatOrchestrator:
             resp = self.provider.chat(messages, tools=TOOLS)
             if not resp.tool_calls:
                 # 最终回答
-                add_message(db, session_id=session.session_id, role="assistant", content=resp.content, tool_cards=[self._card_dict(c) for c in tool_cards])
+                if persist:
+                    add_message(
+                        db,
+                        session_id=active_session_id,
+                        role="assistant",
+                        content=resp.content,
+                        tool_cards=[self._card_dict(c) for c in tool_cards],
+                    )
                 return ChatResult(
-                    session_id=session.session_id,
-                    trace_id=session.trace_id,
+                    session_id=active_session_id,
+                    trace_id=active_trace_id,
                     message=resp.content,
                     tool_cards=tool_cards,
                     policy_denied=policy_denied,
@@ -126,7 +154,7 @@ class ChatOrchestrator:
             }
             messages.append(assistant_msg)
             for tc in resp.tool_calls:
-                card, tool_message = self._execute_tool(db, subject, tc.arguments)
+                card, tool_message = self._execute_tool(db, subject, tc.arguments, active_trace_id)
                 tool_cards.append(card)
                 if card.decision == "deny" and policy_denied is None:
                     policy_denied = card
@@ -134,10 +162,17 @@ class ChatOrchestrator:
 
         # 超过工具轮数：直接返回最后一次工具结果描述
         final_text = "工具调用次数过多，请重试。"
-        add_message(db, session_id=session.session_id, role="assistant", content=final_text, tool_cards=[self._card_dict(c) for c in tool_cards])
+        if persist:
+            add_message(
+                db,
+                session_id=active_session_id,
+                role="assistant",
+                content=final_text,
+                tool_cards=[self._card_dict(c) for c in tool_cards],
+            )
         return ChatResult(
-            session_id=session.session_id,
-            trace_id=session.trace_id,
+            session_id=active_session_id,
+            trace_id=active_trace_id,
             message=final_text,
             tool_cards=tool_cards,
             policy_denied=policy_denied,
@@ -153,7 +188,7 @@ class ChatOrchestrator:
             "reason": card.reason,
         }
 
-    def _execute_tool(self, db: Session, subject, arguments: dict) -> tuple[ToolCard, str]:
+    def _execute_tool(self, db: Session, subject, arguments: dict, trace_id: str) -> tuple[ToolCard, str]:
         kb_id = str(arguments.get("knowledge_base_id", ""))
         query = str(arguments.get("query", ""))
         try:
@@ -162,7 +197,7 @@ class ChatOrchestrator:
                 employee_id=subject.employee_id,
                 knowledge_base_id=kb_id,
                 query=query,
-                trace_id=f"T-CHAT-{subject.employee_id}",
+                trace_id=trace_id,
             )
             card = ToolCard(
                 plugin_id=f"knowledge:{kb_id}",
@@ -188,7 +223,7 @@ class ChatOrchestrator:
         role_label = "正式员工" if subject.employment_type == "formal" else "实习生"
         kb_names = ", ".join(kb.name for kb in list_resources(db))
         persona = subject.role_prompt or "你是数字员工平台的演示助手。"
-        return (
+        prompt = (
             f"【人设】{persona}\n"
             "【身份】所有内容均为虚构演示数据（source=demo）。"
             f"当前数字员工：{subject.employee_id}（类型 {subject.employee_type}，身份 {role_label}，"
@@ -196,4 +231,31 @@ class ChatOrchestrator:
             f"【知识库】平台登记的知识库：{kb_names}。"
             "【规则】只能通过 search_knowledge 工具查询知识库，禁止编造知识库内容；"
             "工具返回拒绝时如实告知用户无权访问，不得尝试绕过。"
+            "【语气】像真人同事用微信聊天一样自然、亲切、口语化，用「你」称呼用户；"
+            "回答简洁有温度，多用短句，不要机械罗列；绝对不要使用任何 Markdown 符号（**、*、-、#、数字编号点等），"
+            "不要以【名字】或任何前缀开头，直接说内容；需要分点时用自然段或「第一、第二」之类的口语表达。"
         )
+        # 数字分身：注入本人上传的已启用技能（仅员工本人可见）
+        if subject.employee_type == "twin":
+            skills = db.scalars(
+                select(models.Skill)
+                .where(
+                    models.Skill.owner_human_no == subject.owner_id,
+                    models.Skill.status == "active",
+                )
+                .order_by(models.Skill.created_at)
+            ).all()
+            parts: list[str] = []
+            total = 0
+            for skill in skills:
+                block = f"{skill.name}：{skill.description}\n使用说明：{skill.content}"
+                if parts:
+                    total += len(block)
+                else:
+                    total = len(block)
+                if total > MAX_SKILL_CHARS:
+                    break
+                parts.append(f"{len(parts) + 1}. {block}")
+            if parts:
+                prompt += "\n【你掌握的技能】\n" + "\n".join(parts)
+        return prompt

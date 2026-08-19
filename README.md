@@ -10,10 +10,11 @@
 - **Sprint 4（Chat + DeepSeek）**：LLMProvider（chat/tool_call/structured_output + SAFEMODE）、Session Manager、Chat Orchestrator（≤3 轮工具，Deny 卡片）。
 - **Sprint 5（Team）**：TeamTaskOrchestrator（模板拆解 + Worker 执行 + 审批 + LLM 汇总）、DeepSeek Harness Docker 接入（`DWP_HARNESS_ENABLED=1` 启用）、AgentTeams Adapter 桩。
 - **Sprint 6（工作台）**：前端聊天页 + 员工工作台面板（角色配色 / 插件授权 / 知识库权限 / 安全策略）+ 人设注入（role_prompt 进 system prompt）+ 前端 Team 任务页。
+- **Sprint 7（我的职场）**：企业微信式个人工作中心——会话列表（我的分身置顶）/ 通讯录 / 微信气泡对话 / 技能上传（文本/Markdown 注入分身人设）/ 工作流目录卡片（点击查看步骤与授权成员）；私聊与群聊统一由 Conversation 承载。群聊消息由分身判断「任务/闲聊」：任务型接入 TeamTaskOrchestrator（拆解→指派→Gateway 执行→审批→Leader 汇总，任务卡片内联到触发消息之后，子任务结果可读化，同请求自动去重，支持一键清空会话），闲聊仅一位成员回复；执行器为 SubtaskExecutor 接口（默认 Gateway，真实 RPA/Workflow 后续接入）。
 - **RAG 检索**：Qwen Embedding（qwen3.7-text-embedding）+ kb_chunk 向量索引 + 余弦 top-k，`DWP_KB_MODE=rag` 时启用，失败自动降级 Mock。
 - **黄金链路联调（T3-02）**：`scripts/golden_chain.py` 8/8 通过——问答 → RAG → 团队任务 → 审批 → 审计。
 
-Mock 数据：正式员工 2、实习生 2、数字分身 2、虚拟员工 3、插件 6、策略 9、虚构知识库资源 8、团队 1。
+Mock 数据：正式员工 2、实习生 2、数字分身 2、虚拟员工 3、插件 11（含报销/请假/纪要/周报/采购 5 个虚构 workflow/RPA）、策略 9、虚构知识库资源 8、团队 1、技能 5（张三 4 + 陈晓萌 1）、职场会话 2（入职协作群含 HR/IT/入职 3 名员工）、协作任务 3（待审批 1 + 已完成 2）。
 
 ## 目录结构
 
