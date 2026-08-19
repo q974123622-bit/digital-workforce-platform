@@ -12,6 +12,7 @@
 | `knowledge/`（规划） | Knowledge Adapter（L1/L2 虚构知识库查询） | `docs/API_CONTRACT.md §7 Knowledge Adapter Interface` |
 | `workflow/`（规划） | ADP Workflow / 审批流程 Adapter（Mock） | `docs/API_CONTRACT.md §7` |
 | `rpa/`（规划） | RPA 报表机器人 Adapter（Mock） | `docs/API_CONTRACT.md §7` |
+| `agentteams/`（规划） | AgentTeams 协作平台 Adapter 桩：本周不接入（需 K8s/Docker + Matrix 形态），Demo 口播「已预留接入位」 | `docs/ARCHITECTURE.md §2` |
 
 ## 本周（Sprint 1 / 1.5）不实现
 

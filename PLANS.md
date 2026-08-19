@@ -234,12 +234,40 @@
 ## Phase 2 — 团队协作与隔离（Day 3–4）
 
 ### T2-01 TeamTaskOrchestrator
-- [ ]
+- [x]（Sprint 5 完成：services/team_orchestrator.py 模板拆解 + Worker 执行（走 Gateway）+ 审批挂起/续跑 + LLM 汇总（失败降级模板）；端到端真实验证通过）
   - Owner Role：A
   - Input：契约 TaskRunDto、预置模板
   - Output：task_run + JSON subtasks；模板 + LLM 补全/汇总；状态流转；审批端点
   - Dependency：T1-01、T1-03
   - Acceptance Criteria：发起任务 → 3 子任务 → Approval 挂起 → 批准续跑 → 完成；失败态可返回
+
+## Sprint 5 — TeamTaskOrchestrator（已完成，2026-08-18）
+
+> 里程碑：团队协作主链路（方案 A：门户自研编排 + Harness 并行尝试 + AgentTeams 留桩）。
+
+### S5-01 TeamTaskOrchestrator
+- [x]
+  - Owner Role：A
+  - Input：契约 §3.6、Policy/Gateway/Audit（Sprint 2 就绪）
+  - Output：`backend/app/services/team_orchestrator.py`（TEAM-ONBOARD 模板 3 子任务：HR 制度 -> IT 账号 -> 敏感报表审批）；`POST /teams/{id}/tasks`、`GET /teams/{id}/tasks/{id}`、`POST /tasks/{id}/approve`
+  - Dependency：T1-02、T1-03
+  - Acceptance Criteria：发起 -> approval 挂起 -> 批准 -> completed（LLM 汇总，失败降级）；审计 trace 贯穿 6 条；测试 7 项
+
+### S5-02 DeepSeek Harness 尝试（门禁 G2）
+- [x]（结论：Docker 方案接入成功——`docker/Dockerfile.dsh` 构建 dwp-dsh:rc6 镜像，容器内 dsh headless 真实调用 DeepSeek（直连 4-6s）；Windows 无控制台进程（uvicorn Hidden）内直接调 dsh 或 docker CLI 均慢/不稳定，故服务内默认 demo 模式（0.7s），`DWP_HARNESS_ENABLED=1` 启用 Docker Harness；交互终端/受控环境已验证真实执行）
+  - Owner Role：A
+  - Input：deepseek-harness 源码（本机外部依赖）
+  - Output：dsh headless/API 可调用则接入 RuntimeAdapter harness backend；否则记录降级
+  - Dependency：S5-01
+  - Acceptance Criteria：可跑则 Worker 执行接 dsh 一轮；不可跑则 UI 标注 Adapter 演示模式，不阻塞
+
+### S5-03 AgentTeams Adapter 桩
+- [x]
+  - Owner Role：A
+  - Input：higress/AgentTeams（外部依赖，K8s/Docker 形态）
+  - Output：adapters/ 契约注明预留接入位；Demo 口播"已预留 AgentTeams 协作平台接入"
+  - Dependency：无
+  - Acceptance Criteria：文档明确本周不接入原因（需 K8s/Docker + Matrix 形态不适配门户），不阻塞主链路
 
 ### T2-02 Harness 集成尝试（门禁 G2）
 - [ ]
@@ -258,7 +286,7 @@
   - Acceptance Criteria：Docker 可用时真实启动并返回 mode=docker；不可用自动 local 且审计记录；被拒请求不启动
 
 ### T2-04 前端：Team 群聊/任务页
-- [ ]
+- [x]（2026-08-18 完成：Teams 页新增「任务协作」标签——发起任务表单、状态徽章、子任务进度（完成/待审批/执行中）、审批通过/拒绝按钮、Leader 汇总卡、运行中自动轮询 3s）
   - Owner Role：C
   - Input：契约 TaskRunDto、T2-01
   - Output：团队列表、任务发起、子任务状态、审批卡、汇总展示
@@ -284,7 +312,7 @@
 ## Phase 3 — 联调收尾（Day 4–5）
 
 ### T3-01 一键启动/重置脚本
-- [ ]（Sprint 1 已完成 init_demo.ps1：重建 DB + 种子 + 依赖安装；reset_demo.ps1 / run_demo.ps1 与"30 秒一键恢复"留待 Sprint 3 收口）
+- [x]（2026-08-18 完成：scripts/run_demo.ps1 一键启动——依赖检查、种子重置、启动前后端、可选 -Docker（构建 dwp-dsh 镜像 + 启用 Harness）、-NoReset 跳过；实测 8000/5173 就绪 + 健康检查通过）
   - Owner Role：D
   - Input：全部运行方式
   - Output：`scripts/reset_demo.ps1`（重建 DB + 种子 + 起前后端 + 可选 docker）、`run_demo.ps1`
@@ -292,7 +320,7 @@
   - Acceptance Criteria：新机器可 30 秒内一键恢复演示环境（当前 init_demo.ps1 已覆盖环境+种子，起服务部分未覆盖）
 
 ### T3-02 黄金链路端到端验证
-- [ ]
+- [x]（2026-08-18 完成：scripts/golden_chain.py 可重复联调脚本，8/8 通过——健康检查 / 正式分身问答 Allow / 实习生 Deny(POLICY-002) / RAG 向量检索命中 / 团队任务 3 子任务审批挂起 / 审批完成+LLM 汇总 / 审计 trace 贯穿 / 会话历史持久化）
   - Owner Role：A（B/C/D 参与）
   - Input：docs/DEMO_SCENARIO.md 10 步
   - Output：AC-01~08 全通过记录

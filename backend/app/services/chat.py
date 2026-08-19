@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from .gateway import search_knowledge
 from .identity import resolve_identity
+from .knowledge_registry import list_resources
 from .llm import LLMProvider, LLMUnavailableError
 from .session import add_message, get_or_create, history
 
@@ -30,7 +31,17 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "knowledge_base_id": {"type": "string", "description": "知识库资源 ID，如 KB-PUBLIC / KB-INTERNAL / KB-ONBOARD"},
+                    "knowledge_base_id": {
+                        "type": "string",
+                        "description": (
+                            "知识库资源 ID（按问题领域选择）："
+                            "KB-PUBLIC 公共制度/FAQ；KB-ONBOARD 新员工入职；"
+                            "KB-INTERNAL 正式员工内部制度；KB-FINTECH 金融科技；"
+                            "KB-IT-SERVICE IT/办公软件（企业微信/邮箱/VPN 等）；"
+                            "KB-SECURITIES 证券业务（融资融券/期权/科创板等）；"
+                            "KB-REG-INTERNAL 内部合规制度；KB-REG-EXTERNAL 外部监管法规"
+                        ),
+                    },
                     "query": {"type": "string", "description": "检索关键词/问题"},
                 },
                 "required": ["knowledge_base_id", "query"],
@@ -78,7 +89,7 @@ class ChatOrchestrator:
         add_message(db, session_id=session.session_id, role="user", content=message)
 
         messages: list[dict] = [
-            {"role": "system", "content": self._system_prompt(subject), "source": "demo"},
+            {"role": "system", "content": self._system_prompt(db, subject), "source": "demo"},
         ]
         for msg in history(db, session.session_id)[:-1]:
             messages.append({"role": msg.role, "content": msg.content, "source": "demo"})
@@ -173,12 +184,16 @@ class ChatOrchestrator:
                 return card, "POLICY_DENIED（source=demo）：当前身份无权访问该知识库，请如实告知用户。"
             raise
 
-    def _system_prompt(self, subject) -> str:
+    def _system_prompt(self, db: Session, subject) -> str:
         role_label = "正式员工" if subject.employment_type == "formal" else "实习生"
+        kb_names = ", ".join(kb.name for kb in list_resources(db))
+        persona = subject.role_prompt or "你是数字员工平台的演示助手。"
         return (
-            "你是数字员工平台的演示助手。所有内容均为虚构演示数据（source=demo）。"
+            f"【人设】{persona}\n"
+            "【身份】所有内容均为虚构演示数据（source=demo）。"
             f"当前数字员工：{subject.employee_id}（类型 {subject.employee_type}，身份 {role_label}，"
             f"部门 {subject.department}，Owner {subject.owner_id}）。"
-            "只能通过 search_knowledge 工具查询知识库，禁止编造知识库内容；"
+            f"【知识库】平台登记的知识库：{kb_names}。"
+            "【规则】只能通过 search_knowledge 工具查询知识库，禁止编造知识库内容；"
             "工具返回拒绝时如实告知用户无权访问，不得尝试绕过。"
         )

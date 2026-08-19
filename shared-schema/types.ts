@@ -123,7 +123,70 @@ export interface TaskRun {
   trace_id: string;
   request: string;
   status: string;
-  subtasks: unknown[];
+  subtasks: TaskSubtask[];
   summary: string;
   created_at: string;
+}
+
+export interface TaskSubtask {
+  worker_id: string;
+  worker_no: string;
+  summary: string;
+  plugin_ids: string[];
+  status: "pending" | "running" | "completed" | "approval" | "denied" | "failed";
+  result: string | null;
+  approval: { policy_id?: string; reason?: string } | null;
+}
+
+export interface WorkspacePlugin {
+  plugin_id: string;
+  name: string;
+  type: string;
+  action: string;
+  decision_mode: "allow" | "deny" | "approval";
+  data_level: string;
+}
+
+export interface WorkspaceKb {
+  knowledge_base_id: string;
+  name: string;
+  data_level: string;
+  description: string;
+  accessible: boolean;
+  decision: string;
+}
+
+export interface WorkspaceSecurity {
+  location: string;
+  internet: string;
+  max_data_level: string;
+  allowed_domains: string[];
+}
+
+export interface Workspace {
+  employee: Employee;
+  role_prompt: string;
+  plugins: WorkspacePlugin[];
+  knowledge_bases: WorkspaceKb[];
+  security: WorkspaceSecurity;
+}
+
+export interface ChatReply {
+  session_id: string;
+  trace_id: string;
+  message: string;
+  tool_cards: {
+    plugin_id: string;
+    name: string;
+    decision: string;
+    policy_id: string | null;
+    reason: string | null;
+  }[];
+  policy_denied: {
+    plugin_id: string;
+    name: string;
+    decision: string;
+    policy_id: string | null;
+    reason: string | null;
+  } | null;
 }

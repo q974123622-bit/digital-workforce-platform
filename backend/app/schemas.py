@@ -279,3 +279,72 @@ class MemoryOut(BaseModel):
     employee_no: str
     content: str
     created_at: datetime
+
+
+# ---- Sprint 5：Team Task（契约 §3.6 TaskRunDto）----
+
+
+class SubtaskOut(BaseModel):
+    worker_id: str
+    worker_no: str
+    summary: str
+    plugin_ids: list[str] = []
+    status: str = "pending"  # pending | running | completed | approval | denied | failed
+    result: str | None = None
+    approval: dict | None = None
+
+
+class TaskRunOut(BaseModel):
+    id: str
+    team_id: str
+    trace_id: str
+    request: str
+    status: str = "pending"  # parsing | running | approval | completed | denied | failed
+    subtasks: list[SubtaskOut] = []
+    summary: str = ""
+    created_at: datetime
+
+
+class TaskCreateIn(BaseModel):
+    request: str
+
+
+class TaskApproveIn(BaseModel):
+    approve: bool
+    actor_no: str
+
+
+# ---- Sprint 6：员工工作台 ----
+
+
+class WorkspacePluginOut(BaseModel):
+    plugin_id: str
+    name: str
+    type: str
+    action: str
+    decision_mode: str
+    data_level: str
+
+
+class WorkspaceKbOut(BaseModel):
+    knowledge_base_id: str
+    name: str
+    data_level: str
+    description: str
+    accessible: bool
+    decision: str
+
+
+class WorkspaceSecurityOut(BaseModel):
+    location: str
+    internet: str
+    max_data_level: str
+    allowed_domains: list[str]
+
+
+class WorkspaceOut(BaseModel):
+    employee: EmployeeOut
+    role_prompt: str
+    plugins: list[WorkspacePluginOut] = []
+    knowledge_bases: list[WorkspaceKbOut] = []
+    security: WorkspaceSecurityOut

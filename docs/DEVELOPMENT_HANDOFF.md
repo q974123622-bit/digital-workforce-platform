@@ -2,7 +2,34 @@
 
 > 版本：v1.0（2026-08-17）
 > 目的：让两名正式员工（A 架构/总装、B 安全/企业资源）在本基线上串行开发，实习生（C 前端、D Mock/测试）按契约并行。
-> 状态：Sprint 1/1.5/2/3 已完成；Sprint 4 Chat + DeepSeek Provider 已完成（2026-08-17）；本文件为稳定基线交接。
+> 状态：Sprint 1-4 已完成；Sprint 5 TeamTaskOrchestrator 已完成（2026-08-18）；Harness 尝试进行中（G2 止损中）；本文件为稳定基线交接。
+
+## 1.13 黄金链路联调（T3-02，2026-08-18）
+
+- **脚本**：`scripts/golden_chain.py`（`cd backend; .\.venv\Scripts\python.exe ..\scripts\golden_chain.py`），8 步全链路可重复验证。
+- **结果**：8/8 通过——健康检查；正式分身问内部制度 Allow；实习生同问 POLICY-002 Deny；RAG 向量检索命中 KB-IT-SERVICE；团队任务 3 子任务审批挂起；审批完成 + Leader 汇总；审计 trace 贯穿（create/execute×3/approve/summarize）；会话历史持久化。
+- **注意**：内部接口（`/internal/knowledge/search` 等）不带 `/api/v1` 前缀，契约 §6 定义于 `/internal/`。
+
+## 1.14 前端 Team 任务页（T2-04，2026-08-18）
+
+- **页面**：`frontend/src/pages/Teams.tsx` 新增「任务协作」标签：发起任务（TextArea + 按钮）、任务状态徽章、子任务进度卡（左侧色条 + 状态 Tag + 结果摘要）、敏感操作审批 Alert、审批通过/拒绝按钮（默认审批人 E10281）、Leader 汇总卡；任务在 pending/running/approval 状态每 3 秒轮询刷新。
+- **接口**：`api.createTask / getTask / approveTask` 已封装；端到端验证：create→approval（3 子任务）→ getTask→approval → approve→completed + LLM 汇总。
+
+## 1.15 一键启动/重置脚本（T3-01，2026-08-18）
+
+- **脚本**：`scripts/run_demo.ps1`（推荐演示用）：依赖检查 → 种子重置（`-NoReset` 跳过）→ 启动后端（8000，日志 backend/uvicorn-*.log）→ 启动前端（5173，日志 frontend/vite-dev*.log）→ 健康检查确认；`-Docker` 可选：构建 dwp-dsh 镜像并启用 Harness 模式（`DWP_HARNESS_ENABLED=1`）。
+- **注意**：脚本含中文，文件带 UTF-8 BOM（Windows PowerShell 5.1 需 BOM 才能正确解析）。
+
+## 1.11 Sprint 5 完成情况（TeamTaskOrchestrator，负责人 A）
+
+- **TeamTaskOrchestrator**：`backend/app/services/team_orchestrator.py`，TEAM-ONBOARD 模板 3 子任务（VE-0002 HR 制度 -> VE-0003 IT 账号 -> VE-0003 敏感报表审批）；子任务执行一律经 Plugin Gateway；状态机 parsing/running/approval/completed/denied/failed。
+- **接口**：`POST /api/v1/teams/{id}/tasks`、`GET /api/v1/teams/{id}/tasks/{id}`、`POST /api/v1/tasks/{id}/approve`（非挂起态审批 409）。
+- **汇总**：LLM（DeepSeek）生成 Leader 汇总，失败自动降级模板拼接。
+- **端到端验证**（真实链路）：发起"帮王小明完成入职准备" -> 3 子任务（2 completed + 1 approval）-> 审批通过 -> completed + 真实汇总文本；审计 6 条按 trace 贯穿（create/execute×3/approve/summarize）。
+- **测试**：`backend/tests/test_team.py` 7 项，后端共 58 项全绿。
+- **Harness（G2，Docker 方案）**：`docker/Dockerfile.dsh` 构建 `dwp-dsh:rc6` 镜像；`DockerHarnessRuntimeAdapter` 用 `docker run --env-file <临时文件> dwp-dsh:rc6 --profile headless <task>` 真实执行（交互环境 4-6s 验证通过，VE-0002 子任务已出现 `[Harness 执行]` 真实结果）。Windows 无控制台进程（uvicorn Hidden 启动）内 docker CLI/dsh 调用慢且偶发超时，故服务内默认 `DWP_HARNESS_ENABLED=0` 走 demo 模式（0.7s）；演示真实 Harness 可：a) 交互终端跑 `dsh --profile headless "<任务>"`；b) `docker run --rm --env-file tmp/dsh-docker.env dwp-dsh:rc6 --profile headless "<任务>"`。
+- **AgentTeams**：保持 Adapter 桩（需 K8s/Docker + Matrix 形态，本周不接入，Demo 口播"已预留"）。
+- **运维注意**：本机 venv python 启动 uvicorn 时会派生一个 Anaconda 解释器进程（conda launcher 行为），以实际加载的 venv site-packages 为准；`database.py` 已设 `expire_on_commit=False`（避免 Team 编排 JSON 字段在 commit 后过期报错）。
 
 ## 1.9 Sprint 4 完成情况（Digital Employee Chat + DeepSeek Provider，负责人 A）
 
@@ -95,7 +122,7 @@ pnpm --filter frontend dev
 
 | 项 | 命令 | 结果 |
 |---|---|---|
-| 后端 API 测试（51 用例：骨架 10 + 控制链路 18 + 企业资源 16 + Chat 7） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 51 passed |
+| 后端 API 测试（58 用例：骨架 10 + 控制链路 18 + 企业资源 16 + Chat 7 + Team 7） | `cd backend; .\.venv\Scripts\python.exe -m pytest tests -q` | ✅ 58 passed |
 | 前端类型检查 | `pnpm --filter frontend typecheck` | ✅ |
 | 前端冒烟测试 | `pnpm --filter frontend test` | ✅ 1 passed |
 | 前端生产构建 | `pnpm --filter frontend build` | ✅（chunk 体积提示非阻塞） |

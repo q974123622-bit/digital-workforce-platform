@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { Avatar, Button, Card, Col, Descriptions, Row, Space, Table, Tabs, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { Employee, Grant } from '@dwp/shared-schema';
+import { CommentOutlined } from '@ant-design/icons';
 import { api } from '../api/client';
 import { DecisionTag, LevelTag, StatusBadge, TypeTag } from '../components/tags';
 import { ErrorState, LoadingState } from '../components/PageState';
@@ -49,6 +50,11 @@ export default function EmployeeDetail() {
                   <TypeTag value={emp.type} />
                   <StatusBadge value={emp.status} />
                 </Space>
+                <Link to={`/employees/${emp.employee_no}/chat`}>
+                  <Button type="primary" icon={<CommentOutlined />} style={{ marginTop: 10 }}>
+                    进入工作台 · 对话
+                  </Button>
+                </Link>
                 <div style={{ marginTop: 8, color: '#5c6b83' }}>
                   <span className="mono">{emp.employee_no}</span> · {emp.department}
                 </div>

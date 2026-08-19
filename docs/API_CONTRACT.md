@@ -111,9 +111,9 @@ SSE 事件类型（固定枚举）：
 |---|---|---|
 | GET | `/teams` | 团队列表（✅ 骨架已实现） |
 | GET | `/teams/{team_id}` | 团队详情（✅ 骨架已实现） |
-| POST | `/teams/{team_id}/tasks` | 发起任务 `{request}` → 201 `{task_id, trace_id}` |
-| GET | `/teams/{team_id}/tasks/{task_id}` | 任务详情（轮询） |
-| POST | `/tasks/{task_id}/approve` | 审批 `{approve: bool, actor_no}` |
+| POST | `/teams/{team_id}/tasks` | 发起任务 `{request}` → 201 `{task_id, trace_id}`（✅ Sprint 5） |
+| GET | `/teams/{team_id}/tasks/{task_id}` | 任务详情（轮询）（✅ Sprint 5） |
+| POST | `/tasks/{task_id}/approve` | 审批 `{approve: bool, actor_no}`（✅ Sprint 5） |
 
 ### 3.7 Knowledge API（✅ 已实现；查询走 Knowledge Adapter）
 
@@ -313,3 +313,4 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 | 2026-08-17 | v1.1 实现状态更新（Sprint 2）：Policy Evaluate、Gateway Invoke、Knowledge Adapter 由 📋 转 ✅；接口定义无变更 | A | 本文件 |
 | 2026-08-17 | v1.1 兼容扩展（Sprint 3）：KnowledgeBaseDto 增加 data_level/resource_type/allowed_employment_type/department_scope（可选）；AuditEventDto 增加 knowledge_base_id（可选）；新增 POST /internal/knowledge/search；SandboxRunIn 增加可选 execution_location；Sandbox /knowledge/search 转 ✅ | B | 本文件 / shared-schema / models / schemas |
 | 2026-08-17 | v1.1 实现状态更新（Sprint 4）：Chat API 转 ✅（整段 JSON，SSE 弹性）；LLMProvider 统一 chat/tool_call/structured_output 已实现 | A | 本文件 |
+| 2026-08-18 | v1.1 实现状态更新（Sprint 5）：Team API 任务/审批转 ✅（TeamTaskOrchestrator，模板拆解 + Gateway 执行 + 审批 + LLM 汇总）；接口定义无变更 | A | 本文件 |
