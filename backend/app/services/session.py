@@ -73,16 +73,3 @@ def soft_delete(db: Session, session_id: str) -> bool:
     session.deleted = True
     db.commit()
     return True
-
-
-def set_title_if_empty(db: Session, session_id: str, content: str) -> None:
-    """会话标题为空时生成标题。
-
-    PoC：清理空白并截断第一条消息（超长加省略号）。
-    TODO: 接入 DeepSeek 密钥后升级为 LLM 自动总结（见 docs/MEMORY_PLUGIN_DESIGN.md 待确认清单）。
-    """
-    session = db.scalar(select(models.ChatSession).where(models.ChatSession.session_id == session_id))
-    if session and not session.title:
-        cleaned = content.strip().replace("\n", " ")
-        session.title = cleaned[:20] + ("…" if len(cleaned) > 20 else "")
-        db.commit()

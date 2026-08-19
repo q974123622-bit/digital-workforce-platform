@@ -17,8 +17,8 @@ from .. import models
 from .gateway import search_knowledge
 from .identity import resolve_identity
 from .knowledge_registry import list_resources
-from .llm import LLMProvider, LLMUnavailableError
-from .session import add_message, get_or_create, history, set_title_if_empty
+from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
+from .session import add_message, get_or_create, history
 
 MAX_TOOL_ROUNDS = 3
 
@@ -88,8 +88,10 @@ class ChatOrchestrator:
 
         session, _ = get_or_create(db, session_id, employee_no)
         add_message(db, session_id=session.session_id, role="user", content=message)
-        # 会话标题：第一条用户消息（前 20 字）作为标题，方便在会话列表里识别
-        set_title_if_empty(db, session.session_id, message)
+        # 会话标题：优先 LLM 自动总结；无密钥/失败时降级为截断
+        if not session.title:
+            session.title = self._summarize_title(message)
+            db.commit()
 
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt(db, subject), "source": "demo"},
@@ -167,6 +169,22 @@ class ChatOrchestrator:
             "policy_id": card.policy_id,
             "reason": card.reason,
         }
+
+    @staticmethod
+    def _summarize_title(message: str) -> str:
+        """生成会话标题：优先 LLM 总结；无密钥/失败时降级为截断。"""
+        try:
+            provider = DeepSeekProvider()
+            resp = provider.chat(
+                [{"role": "user", "content": f"请用不超过 15 个字概括这句话的主题，只输出标题本身：{message}", "source": "demo"}]
+            )
+            title = (resp.content or "").strip()
+            if title:
+                return title[:20]
+        except Exception:
+            pass  # 降级：下面用截断
+        cleaned = message.strip().replace("\n", " ")
+        return cleaned[:20] + ("…" if len(cleaned) > 20 else "")
 
     def _execute_tool(self, db: Session, subject, arguments: dict) -> tuple[ToolCard, str]:
         kb_id = str(arguments.get("knowledge_base_id", ""))
