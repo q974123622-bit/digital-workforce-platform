@@ -222,3 +222,34 @@ def test_generate_profile(client):
     profiles = client.get("/api/v1/memory", params={"kind": "profile"}).json()
     assert len(profiles) == 1
     assert profiles[0]["subject_no"] == "E10021"
+
+
+# ---- Step 9：MemoryAdapter（统一记忆访问接口） ----
+
+
+def test_memory_adapter_recall_and_remember(db_session):
+    """MemoryAdapter：写入记忆 + 召回记忆（含上下文格式化）。"""
+    from app.services.memory_adapter import MemoryAdapter
+
+    adapter = MemoryAdapter()
+    adapter.remember(db_session, subject_type="human", subject_no="E10021", kind="fact", content="偏好周五下午开会")
+    adapter.remember(db_session, subject_type="human", subject_no="E10021", kind="profile", content="沟通风格简洁直接")
+
+    recall = adapter.recall(db_session, subject_no="E10021")
+    assert len(recall.entries) >= 2
+    assert "偏好周五下午开会" in recall.context
+    assert "画像" in recall.context
+
+
+def test_memory_adapter_recall_respects_permission(db_session):
+    """MemoryAdapter.recall：按权限过滤（读者看不到 confidential）。"""
+    from app.services.memory_adapter import MemoryAdapter
+
+    adapter = MemoryAdapter()
+    adapter.remember(db_session, subject_type="human", subject_no="E10021", kind="fact", content="公开事实", visibility="public")
+    adapter.remember(db_session, subject_type="human", subject_no="E10021", kind="decision", content="涉密决策", visibility="confidential")
+
+    # 非管理员读者：只能看到 public，看不到 confidential
+    recall = adapter.recall(db_session, subject_no="E10021", reader_no="E10281")
+    assert all(e.visibility != "confidential" for e in recall.entries)
+    assert any(e.visibility == "public" for e in recall.entries)
