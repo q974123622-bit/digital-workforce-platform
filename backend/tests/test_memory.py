@@ -199,3 +199,26 @@ def test_upload_attachment(client):
     attachments = client.get("/api/v1/memory", params={"kind": "attachment"}).json()
     assert len(attachments) == 1
     assert attachments[0]["kind"] == "attachment"
+
+
+# ---- Step 8：用户画像 ----
+
+
+def test_generate_profile(client):
+    """生成用户画像：从记忆提炼画像，存 kind=profile。"""
+    # 先写几条记忆
+    client.post("/api/v1/memory", json={"subject_type": "human", "subject_no": "E10021", "kind": "fact", "content": "偏好周五下午开会"})
+    client.post("/api/v1/memory", json={"subject_type": "human", "subject_no": "E10021", "kind": "fact", "content": "沟通风格简洁直接"})
+
+    # 生成画像
+    resp = client.post("/api/v1/memory/profile/E10021")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] == "profile"
+    assert body["subject_no"] == "E10021"
+    assert body["content"]  # 画像内容非空
+
+    # 能查到画像
+    profiles = client.get("/api/v1/memory", params={"kind": "profile"}).json()
+    assert len(profiles) == 1
+    assert profiles[0]["subject_no"] == "E10021"

@@ -14,6 +14,7 @@ from ..database import get_db
 from ..services.memory_attachment import save_attachment
 from ..services.memory_compress import compress_expired_sessions
 from ..services.memory_permission import can_read_memory
+from ..services.memory_profile import generate_profile
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -33,6 +34,12 @@ def summarize(db: Session = Depends(get_db)):
     """压缩过期会话成摘要（Step 6），返回压缩的会话数。"""
     count = compress_expired_sessions(db)
     return {"summarized": count}
+
+
+@router.post("/profile/{subject_no}", response_model=schemas.MemoryOut)
+def profile(subject_no: str, db: Session = Depends(get_db)):
+    """生成/刷新某用户的画像（Step 8），返回画像记忆。"""
+    return generate_profile(db, subject_no=subject_no)
 
 
 @router.post("/attachments", response_model=schemas.MemoryOut, status_code=201)
