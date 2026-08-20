@@ -104,6 +104,7 @@ def _run_step(ctx: WorkflowExecutionContext, step_id: str, plugin_id: str, call)
 
 def invoke_plugin_step(ctx: WorkflowExecutionContext, step_id: str, plugin_id: str, action: str, params: dict, workflow_ctx: WorkflowExecutionContext | None = None) -> dict:
     """Workflow 内调用一个子 Plugin（必须再次经过 Gateway）。"""
+    child_ctx = workflow_ctx if workflow_ctx is not None else ctx
     return _run_step(
         ctx,
         step_id,
@@ -114,7 +115,7 @@ def invoke_plugin_step(ctx: WorkflowExecutionContext, step_id: str, plugin_id: s
             action=action,
             params=params,
             trace_id=ctx.trace_id,
-            workflow_ctx=workflow_ctx,
+            workflow_ctx=child_ctx,
         ),
     )
 

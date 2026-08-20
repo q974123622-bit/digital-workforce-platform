@@ -155,6 +155,49 @@ def test_workflow_cycle_blocked(monkeypatch):
     assert result["reason"] == "workflow_cycle_detected"
 
 
+def test_workflow_cycle_blocked_via_gateway(db_session, monkeypatch):
+    """经真实 Gateway 的 Workflow→Workflow 嵌套，递归保护沿链生效而非重置。"""
+    db_session.add(models.Plugin(
+        id="wf-a", name="wf-a", type="workflow",
+        endpoint_ref="workflow://test/a", data_level="L1",
+        status="active", description="",
+    ))
+    db_session.add(models.Plugin(
+        id="wf-b", name="wf-b", type="workflow",
+        endpoint_ref="workflow://test/b", data_level="L1",
+        status="active", description="",
+    ))
+    db_session.add(models.EmployeePluginGrant(employee_id="DT-E10281", plugin_id="wf-a", action="execute", decision_mode="allow"))
+    db_session.add(models.EmployeePluginGrant(employee_id="DT-E10281", plugin_id="wf-b", action="execute", decision_mode="allow"))
+    db_session.commit()
+
+    def handler_a(ctx, params):
+        return we.invoke_plugin_step(ctx, "b", "wf-b", "execute", {})
+
+    def handler_b(ctx, params):
+        return we.invoke_plugin_step(ctx, "a", "wf-a", "execute", {})
+
+    monkeypatch.setitem(we.WORKFLOW_REGISTRY, "workflow://test/a", handler_a)
+    monkeypatch.setitem(we.WORKFLOW_REGISTRY, "workflow://test/b", handler_b)
+
+    result = gateway.invoke_plugin(
+        db_session,
+        employee_id="DT-E10281",
+        plugin_id="wf-a",
+        action="execute",
+        params={},
+        trace_id="T-WF-CYCLE-GW",
+    )
+
+    step_b = result["data"]
+    assert step_b["plugin_id"] == "wf-b"
+    step_a = step_b["data"]
+    assert step_a["plugin_id"] == "wf-a"
+    blocked = step_a["data"]
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "workflow_cycle_detected"
+
+
 def test_workflow_depth_blocked():
     plugin = SimpleNamespace(id="wf-depth", endpoint_ref="workflow://test/depth")
     ctx = we.WorkflowExecutionContext(employee_id="DT-E10281", trace_id="T-WF-DEPTH", depth=we.MAX_WORKFLOW_DEPTH + 1)
