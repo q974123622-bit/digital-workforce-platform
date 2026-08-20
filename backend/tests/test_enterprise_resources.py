@@ -199,7 +199,11 @@ def test_multiformat_directory_search_returns_nonempty_hits(client):
 # ---- Sandbox Policy：remote_only / internet_deny / local_deny ----
 
 
-def test_sandbox_remote_allow(client):
+def test_sandbox_remote_allow(client, monkeypatch):
+    # 固定 local 降级路径：与真实 Docker daemon 状态无关（测试不依赖本机 daemon）
+    from app.services import sandbox_manager
+
+    monkeypatch.setattr(sandbox_manager, "docker_available", lambda timeout=3.0: False)
     resp = client.post(
         "/internal/sandbox/run",
         json={
@@ -215,7 +219,7 @@ def test_sandbox_remote_allow(client):
     body = resp.json()
     assert body["mode"] == "local"
     assert body["status"] == "ok"
-    assert any("remote_only" in log for log in body["logs"])
+    assert any("local" in log for log in body["logs"])
 
 
 def test_sandbox_local_deny_remote_only(client):

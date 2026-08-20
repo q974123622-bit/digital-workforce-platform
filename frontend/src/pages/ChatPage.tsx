@@ -18,6 +18,7 @@ import { Avatar, Badge, Button, Card, Empty, Input, List, Space, Spin, Tag, Typo
 import type { ChatReply, Workspace } from '@dwp/shared-schema';
 import { api } from '../api/client';
 import type { SessionSummary } from '../api/client';
+import MarkdownText from '../components/MarkdownText';
 
 const { Text, Paragraph } = Typography;
 
@@ -301,7 +302,9 @@ export default function ChatPage() {
             <div key={i} className={`msg ${m.role}`}>
               {m.role === 'assistant' && <Avatar size={30} icon={<RobotOutlined />} style={{ background: meta.color, flexShrink: 0 }} />}
               <div className="msg-col">
-                <div className={`bubble ${m.error ? 'bubble-error' : ''}`}>{m.content}</div>
+                <div className={`bubble ${m.error ? 'bubble-error' : ''}`}>
+                  <MarkdownText text={m.content} />
+                </div>
                 {m.cards && m.cards.length > 0 && (
                   <div className="tool-cards">
                     {m.cards.map((c, j) => (

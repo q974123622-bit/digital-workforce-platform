@@ -120,6 +120,7 @@ export interface ChatMessage {
 export interface TaskRun {
   id: string;
   team_id: string;
+  trigger_message_seq: number | null;
   trace_id: string;
   request: string;
   status: string;
@@ -169,6 +170,87 @@ export interface Workspace {
   plugins: WorkspacePlugin[];
   knowledge_bases: WorkspaceKb[];
   security: WorkspaceSecurity;
+}
+
+export interface Skill {
+  id: string;
+  owner_human_no: string;
+  name: string;
+  description: string;
+  content: string;
+  status: 'active' | 'disabled';
+  created_at: string;
+}
+
+export interface WorkplaceActor {
+  employee_no: string;
+  name: string;
+  department: string;
+  employment_type: 'formal' | 'intern';
+}
+
+export interface ConversationParticipant {
+  employee_no: string;
+  name: string;
+  role: 'organizer' | 'member';
+  employee_type: string;
+}
+
+export interface ConversationMessage {
+  id: number;
+  conversation_id: string;
+  participant_no: string;
+  participant_name: string;
+  role: 'user' | 'assistant';
+  content: string;
+  tool_cards: unknown[];
+  seq: number;
+}
+
+export interface Conversation {
+  id: string;
+  kind: 'direct' | 'group';
+  title: string;
+  owner_human_no: string;
+  participants: ConversationParticipant[];
+  messages: ConversationMessage[];
+  tasks: TaskRun[];
+  updated_at: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  kind: 'direct' | 'group';
+  title: string;
+  owner_human_no: string;
+  participants: ConversationParticipant[];
+  last_message: string;
+  updated_at: string;
+}
+
+export interface WorkplaceHome {
+  actor: WorkplaceActor;
+  twin: Employee;
+  available_employees: Employee[];
+  skills: Skill[];
+  recent_conversations: ConversationSummary[];
+}
+
+export interface WorkflowEmployee {
+  employee_no: string;
+  name: string;
+  type: string;
+}
+
+export interface Workflow {
+  plugin_id: string;
+  name: string;
+  type: string;
+  data_level: string;
+  description: string;
+  steps: string[];
+  demo_prompt: string;
+  authorized_employees: WorkflowEmployee[];
 }
 
 export interface ChatReply {

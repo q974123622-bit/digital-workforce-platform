@@ -124,6 +124,29 @@ SSE 事件类型（固定枚举）：
 | POST | `/internal/gateway/invoke` | ✅ | 通用插件执行（含知识查询） |
 | POST | `/internal/knowledge/search` | ✅ | 知识库专用入口（Sprint 3）：`{employee_id, knowledge_base_id, query, trace_id}` |
 
+### 3.8 个人工作中心（职场）API（✅ Sprint 7 已实现）
+
+> 员工视角的会话工作台：技能上传与「私聊/协作群聊」统一由 Conversation 承载。
+> 演示鉴权：新接口显式传 `actor_no`（无真实 IAM）。
+
+| 方法 | 路径 | 说明 | 关键请求 | 关键响应 |
+|---|---|---|---|---|
+| GET | `/workplace?actor_no=` | 职场聚合：本人信息 + 我的分身 + 可用数字员工（仅 virtual/rpa）+ 技能 + 最近会话 | — | `WorkplaceHomeDto` |
+| POST | `/skills` | 上传技能（文本/Markdown） | `{actor_no, name, description?, content?}` | 201 `SkillDto` |
+| GET | `/skills?actor_no=` | 我的技能列表 | — | `SkillDto[]` |
+| PUT | `/skills/{skill_id}` | 更新技能（含 status 启停） | `{name?, description?, content?, status?}` | `SkillDto` |
+| DELETE | `/skills/{skill_id}` | 删除技能 | — | 204 |
+| POST | `/conversations` | 创建会话（direct 恰 1 名成员且幂等复用；group 自动带头分身，≥1 名 virtual/rpa） | `{actor_no, kind, title?, participant_employee_nos}` | 201 `ConversationDto` |
+| GET | `/conversations?actor_no=` | 会话摘要列表（按 updated_at 倒序） | — | `ConversationSummaryDto[]` |
+| GET | `/conversations/{id}` | 会话详情（参与者 + 按 seq 消息） | — | `ConversationDto` |
+| POST | `/conversations/{id}/messages` | 统一发送入口：私聊单成员回复；群聊先由分身判断「任务/闲聊」——任务型走拆解→指派→Gateway 执行→审批→Leader 汇总，闲聊仅一位成员回复（点名某成员则那位回，否则分身回） | `{actor_no, content}` | `ConversationDto` |
+| POST | `/conversations/{id}/participants` | 添加群成员（仅 virtual/rpa） | `{employee_no}` | `ConversationDto` |
+| DELETE | `/conversations/{id}?actor_no=` | 清空会话（删除消息与协作任务，演示清洁用） | — | `{ok: true}` |
+
+`ConversationDto`：`{id, kind: direct|group, title, owner_human_no, participants: [{employee_no, name, role, employee_type}], messages: [{participant_no, participant_name, role, content, tool_cards, seq}], tasks: TaskRunDto[], updated_at}`；`TaskRunDto.trigger_message_seq` 用于任务卡片内联到触发消息之后。
+技能注入：分身（twin）对话 system prompt 自动追加「【你掌握的技能】」段落（仅本人可见，内容上限 4000 字符）。
+协作任务：群聊任务由 `TeamTaskOrchestrator` 创建（conversation_id + trigger_message_seq 关联），执行走 Policy→Gateway（Mock Adapter），审批复用 `POST /tasks/{id}/approve`；子任务结果为格式化文本（不再展示原始 JSON）；同会话同请求 10 分钟内自动去重复用；子任务执行器为 `SubtaskExecutor` 接口（默认 GatewaySubtaskExecutor，真实 RPA/Workflow/Harness 后续接入）。
+
 ## 4. Runtime Adapter Interface（📋 冻结，Sprint 3 实现）
 
 统一 Runtime 调用形态，由 RuntimeLauncher 调用；**不区分 harness/openclaw/agentteams 的差异，由 adapter 内部翻译**。
@@ -314,3 +337,6 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 | 2026-08-17 | v1.1 兼容扩展（Sprint 3）：KnowledgeBaseDto 增加 data_level/resource_type/allowed_employment_type/department_scope（可选）；AuditEventDto 增加 knowledge_base_id（可选）；新增 POST /internal/knowledge/search；SandboxRunIn 增加可选 execution_location；Sandbox /knowledge/search 转 ✅ | B | 本文件 / shared-schema / models / schemas |
 | 2026-08-17 | v1.1 实现状态更新（Sprint 4）：Chat API 转 ✅（整段 JSON，SSE 弹性）；LLMProvider 统一 chat/tool_call/structured_output 已实现 | A | 本文件 |
 | 2026-08-18 | v1.1 实现状态更新（Sprint 5）：Team API 任务/审批转 ✅（TeamTaskOrchestrator，模板拆解 + Gateway 执行 + 审批 + LLM 汇总）；接口定义无变更 | A | 本文件 |
+| 2026-08-19 | v1.1 兼容扩展（Sprint 7）：新增 §3.8 职场 API（WorkplaceHomeDto / SkillDto / ConversationDto）；新接口显式传 actor_no；群聊消息走顺序编排并复用 Policy→Gateway→审计 | A | 本文件 / shared-schema / schemas / routers/workplace.py |
+| 2026-08-19 | v1.1 实现更新（Sprint 7 C 档）：`POST /conversations/{id}/messages` 群聊改为「分身判断任务/闲聊」；任务型接入 TeamTaskOrchestrator（拆解/指派/审批/汇总），闲聊单成员回复；ConversationDto 增加 tasks；新增 SubtaskExecutor 接口 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py |
+| 2026-08-19 | v1.1 实现更新（Sprint 7 会话管理）：TaskRunDto 增加 trigger_message_seq（任务卡内联）；移除分身受理气泡；子任务结果格式化为可读文本；同请求去重；新增 DELETE /conversations/{id} 清空会话；会话摘要预览显示最新任务状态 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py / routers/workplace.py |

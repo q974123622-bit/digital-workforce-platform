@@ -2,15 +2,20 @@ import type {
   AuditEvent,
   ChatMessage,
   ChatReply,
+  Conversation,
+  ConversationSummary,
   Employee,
   KnowledgeBase,
   MemoryEntry,
   Plugin,
   Policy,
+  Skill,
   TaskRun,
   Team,
   TeamDetail,
+  Workflow,
   Workspace,
+  WorkplaceHome,
 } from '@dwp/shared-schema';
 
 const BASE = '/api/v1';
@@ -99,4 +104,39 @@ export const api = {
     visibility?: string;
     data_level?: string;
   }) => request<MemoryEntry[]>(`/memory${qs(params)}`),
+  getWorkplace: (actorNo: string) => request<WorkplaceHome>(`/workplace?actor_no=${encodeURIComponent(actorNo)}`),
+  listSkills: (actorNo: string) => request<Skill[]>(`/skills?actor_no=${encodeURIComponent(actorNo)}`),
+  createSkill: (payload: { actor_no: string; name: string; description?: string; content?: string }) =>
+    request<Skill>('/skills', { method: 'POST', body: JSON.stringify(payload) }),
+  updateSkill: (
+    skillId: string,
+    patch: Partial<Pick<Skill, 'name' | 'description' | 'content' | 'status'>>,
+  ) => request<Skill>(`/skills/${encodeURIComponent(skillId)}`, { method: 'PUT', body: JSON.stringify(patch) }),
+  deleteSkill: (skillId: string) => request<void>(`/skills/${encodeURIComponent(skillId)}`, { method: 'DELETE' }),
+  listConversations: (actorNo: string) =>
+    request<ConversationSummary[]>(`/conversations?actor_no=${encodeURIComponent(actorNo)}`),
+  createConversation: (payload: {
+    actor_no: string;
+    kind: 'direct' | 'group';
+    title?: string;
+    participant_employee_nos: string[];
+  }) => request<Conversation>('/conversations', { method: 'POST', body: JSON.stringify(payload) }),
+  getConversation: (conversationId: string) =>
+    request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}`),
+  sendConversationMessage: (conversationId: string, actorNo: string, content: string) =>
+    request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ actor_no: actorNo, content }),
+    }),
+  addConversationParticipant: (conversationId: string, employeeNo: string) =>
+    request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}/participants`, {
+      method: 'POST',
+      body: JSON.stringify({ employee_no: employeeNo }),
+    }),
+  clearConversation: (conversationId: string, actorNo: string) =>
+    request<{ ok: boolean }>(
+      `/conversations/${encodeURIComponent(conversationId)}?actor_no=${encodeURIComponent(actorNo)}`,
+      { method: 'DELETE' },
+    ),
+  listWorkflows: () => request<Workflow[]>('/workflows'),
 };

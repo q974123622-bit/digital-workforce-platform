@@ -8,7 +8,8 @@ from ..database import get_db
 from ..services.gateway import invoke_plugin, search_knowledge, write_audit
 from ..services.identity import resolve_identity
 from ..services.policy import DECISION_ALLOW, DECISION_DENY, ResourceRef, evaluate
-from ..services.sandbox_policy import MockExecutor, from_identity
+from ..services.sandbox_manager import SandboxManager
+from ..services.sandbox_policy import from_identity
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -102,13 +103,14 @@ def sandbox_run(payload: schemas.SandboxRunIn, db: Session = Depends(get_db)):
             detail={"message": "策略拒绝", "policy_id": "POLICY-003", "reason": reason, "audit_id": audit_id},
         )
 
-    # 3) 允许：Mock Executor 执行
-    executed = MockExecutor().execute(
-        policy,
+    # 3) 允许：SandboxManager 执行（Docker 真容器优先；daemon 不可用/失败自动降级 local）
+    executed = SandboxManager().execute(
+        employee_id=subject.employee_id,
         command=payload.command,
         mount_dir=payload.mount_dir or policy.filesystem_scope,
         network=payload.network,
         execution_location=payload.execution_location,
+        trace_id=trace_id,
     )
     write_audit(
         db,
