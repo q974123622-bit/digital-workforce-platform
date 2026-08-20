@@ -280,6 +280,42 @@ class AccessRequestOut(BaseModel):
     created_at: datetime
 
 
+# ---- P23：Memory（记忆插件后端核心） ----
+
+
+class MemoryCreate(BaseModel):
+    subject_type: str  # human | twin | virtual | team
+    subject_no: str  # E10281 / DT-E10281 / VE-0001 / TEAM-ONBOARD
+    kind: str = "fact"  # conversation|decision|fact|attachment|summary|profile|basic_info
+    content: str
+    content_type: str = "text"  # text | structured
+    related_subject_no: str | None = None
+    trace_id: str | None = None
+    file_ref: str | None = None
+    visibility: str = "personal"  # public | personal | shared | confidential
+    data_level: str = "L1"  # L1 | L2 | L3
+    lifecycle: str = "active"  # active | summarized
+
+
+class MemoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    subject_type: str
+    subject_no: str
+    kind: str
+    content: str
+    content_type: str
+    related_subject_no: str | None
+    trace_id: str | None
+    file_ref: str | None
+    visibility: str
+    data_level: str
+    lifecycle: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None

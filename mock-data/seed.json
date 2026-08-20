@@ -309,5 +309,9 @@
       ],
       "summary": "架构部周会纪要已整理完成并同步到共享盘。"
     }
+  ],
+  "personal_memories": [
+    {"subject_type": "human", "subject_no": "E10021", "kind": "fact", "content": "王老师询问过新员工入职第一天的报到流程", "content_type": "text", "related_subject_no": "VE-0001", "visibility": "personal", "data_level": "L2", "lifecycle": "active"},
+    {"subject_type": "human", "subject_no": "E10281", "kind": "fact", "content": "张三的分身记录：偏好周五下午不开会", "content_type": "text", "related_subject_no": "DT-E10281", "visibility": "personal", "data_level": "L1", "lifecycle": "active"}
   ]
 }

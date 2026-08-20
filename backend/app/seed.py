@@ -24,6 +24,7 @@ def seed_data(db, data: dict) -> None:
         models.Team,
         models.KnowledgeChunk,
         models.KnowledgeBase,
+        models.MemoryEntry,
         models.ChatMessage,
         models.ChatSession,
         models.EmployeePluginGrant,
@@ -54,6 +55,8 @@ def seed_data(db, data: dict) -> None:
             db.add(models.TeamMember(team_id=team["id"], **m))
     for row in data.get("knowledge_bases", []):
         db.add(models.KnowledgeBase(**row))
+    for row in data.get("personal_memories", []):
+        db.add(models.MemoryEntry(**row))
     for row in data.get("skills", []):
         db.add(models.Skill(**row))
     for conv in data.get("conversations", []):
