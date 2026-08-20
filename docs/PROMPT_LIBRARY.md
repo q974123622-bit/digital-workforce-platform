@@ -1114,6 +1114,60 @@ pnpm --filter frontend build
 
 ---
 
+## P24-1. 记忆插件整合 Phase 1：后端记忆核心（Owner B，P0，独立 integration 分支）
+
+```text
+你是数字员工平台 PoC 仓库的后端工程师（负责人 B 正式员工）。
+任务：把实习生分支 origin/feature/personal-memory 的"记忆插件"后端核心整合进一条独立的 integration 分支。
+
+【分支安全协议（最高优先级，违反即返工）】
+- 正式分支保护：master 与 codex/sprint5-mock-kb 是两名正式员工的正式分支，**严禁直接提交/推送**；
+- 第一步必须新建整合分支：git checkout -b integration/memory-plugin codex/sprint5-mock-kb；
+- 所有改动只提交到 integration/memory-plugin；完成后**不要 merge 回任何正式分支、不要 push**，停在本地汇报；
+- 若整合过程中发现与正式分支内容冲突或需要改动正式分支，停止并汇报，不得自行解决。
+
+开始前先读（只读，不改动）：
+- git show origin/feature/personal-memory:backend/app/routers/memory.py
+- git show origin/feature/personal-memory:backend/app/services/memory_permission.py / memory_compress.py / memory_attachment.py
+- git show origin/feature/personal-memory:backend/app/models.py（MemoryEntry 与 ChatSession 扩展字段）
+- git show origin/feature/personal-memory:backend/tests/test_memory.py
+- 当前 backend/app/models.py、schemas.py、main.py、mock-data/seed.json、docs/API_CONTRACT.md
+
+任务（Phase 1 后端记忆核心；不碰聊天自动写入，那是 Phase 2）：
+1. models.py：新增 MemoryEntry（按分支模型字段落地，7 维标签：
+   subject_type/subject_no/kind/content/content_type/related_subject_no/trace_id/file_ref/
+   visibility/data_level/lifecycle/created_at）；ChatSession 增加 title/deleted/summarized（默认值，向后兼容）。
+2. schemas.py：MemoryCreate / MemoryOut（字段与分支一致）。
+3. 落地 4 个文件（内容取自 origin/feature/personal-memory，适配当前代码风格与导入路径）：
+   routers/memory.py、services/memory_permission.py、services/memory_compress.py、services/memory_attachment.py。
+4. main.py 注册 memory router（Base Path /api/v1，前缀 /memory）。
+5. mock-data/seed.json：新增 1-2 条虚构示例记忆（E10021 的 fact，visibility=personal，data_level=L2），
+   与分支 test_memory.py 的种子断言一致。
+6. .gitignore 增加 backend/storage/（附件存储目录）。
+7. 测试：把分支 test_memory.py 落到 backend/tests/ 并适配当前 conftest（内存库 + 现有 seed）；
+   覆盖：种子样例、写入/读取（最新在前）、按主体隔离、权限过滤（X-Demo-Actor）、附件/压缩接口不报错。
+8. 契约：docs/API_CONTRACT.md 增加 §Memory API（POST/GET /memory、POST /memory/summarize、
+   POST /memory/attachments），变更登记追加一行（待 A 确认）。
+
+约束：
+- 不修改聊天核心（chat.py 自动写入记忆是 Phase 2，本期不做）；
+- memory_permission.py 的 PoC 硬编码管理员 E10021 保留，注释标注"后续接三级权限/白名单"；
+- 不引入真实数据/Key；附件仅支持文本文件；所有内容虚构；
+- 保持现有测试全绿（当前 131 项 + 新增记忆测试）。
+
+验收标准：
+- 后端 pytest 全绿；
+- API 冒烟：POST /api/v1/memory 写入 → GET /api/v1/memory?subject_no=E10021 能读到（最新在前）；
+  X-Demo-Actor 权限过滤（非本人/非管理员读不到 personal 记忆）；POST /api/v1/memory/summarize 不报错；
+- 所有改动只在 integration/memory-plugin 分支，正式分支未被触碰。
+
+验证命令：
+cd backend; .\.venv\Scripts\python.exe -m app.seed --reset
+cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+---
+
 ## 附：常用验证命令速查
 
 ```powershell
