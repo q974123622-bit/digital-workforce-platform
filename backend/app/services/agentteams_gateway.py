@@ -8,8 +8,8 @@
 本地 backend/.env gitignored），不入库、不落日志。
 """
 
-import time
 from dataclasses import dataclass
+from uuid import uuid4
 
 import httpx
 
@@ -89,7 +89,7 @@ class AgentTeamsGateway:
         token = self.login()
         body = {"msgtype": "m.text", "body": text}
         resp = self._client.put(
-            f"{self.base_url}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{int(time.time() * 1000)}",
+            f"{self.base_url}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/{uuid4().hex}",
             headers={"Authorization": f"Bearer {token}"},
             json=body,
         )
@@ -115,19 +115,55 @@ class AgentTeamsGateway:
             if ev.get("type") == "m.room.message":
                 content = ev.get("content") or {}
                 if content.get("msgtype") == "m.text":
-                    out.append({"sender": ev.get("sender", ""), "body": str(content.get("body", ""))})
+                    out.append(
+                        {
+                            "sender": ev.get("sender", ""),
+                            "body": str(content.get("body", "")),
+                            "event_id": ev.get("event_id", ""),
+                            "ts": ev.get("origin_server_ts", 0),
+                        }
+                    )
         return out
 
     # ---------- 解析完成汇报 ----------
 
     @staticmethod
-    def parse_completion(messages: list[dict], request_keyword: str) -> str | None:
-        """从房间消息中提取任务完成汇报：含"完成/结果/汇总/已"且提及任务关键词的最近一条消息文本。"""
-        keywords = ("完成", "结果", "汇总", "报告", "已")
+    def parse_completion(
+        messages: list[dict],
+        request_keyword: str,
+        since_ts: int | None = None,
+        task_id: str | None = None,
+        exclude_senders: set[str] | None = None,
+    ) -> str | None:
+        """从房间消息中提取任务完成汇报：含"完成/结果/汇总/已"且提及任务关键词的最近一条消息文本。
+
+        since_ts 用于排除发送任务之前的旧消息，避免误匹配历史汇报；
+        task_id 优先：回执若带 task_id 则精确匹配，防止串任务；
+        exclude_senders 用于排除平台自身发送的任务消息（含 task_id，不得当回执）。
+        """
+        # “已收到/已派发”只是 ACK，不能结束任务。终态必须同时携带 task_id
+        # 和明确的完成协议/语义。
+        terminal_keywords = ("TASK_COMPLETED", "完成", "已交付", "最终汇总", "最终报告")
+        excluded = exclude_senders or set()
+        if task_id:
+            for msg in reversed(messages):
+                body = msg.get("body", "")
+                if msg.get("sender", "") in excluded:
+                    continue
+                if (
+                    task_id in body
+                    and any(k in body for k in terminal_keywords)
+                    and (since_ts is None or (msg.get("ts") or 0) >= since_ts)
+                ):
+                    return body
         for msg in reversed(messages):
             body = msg.get("body", "")
-            if any(k in body for k in keywords) and (request_keyword in body or len(body) > 20):
-                return body[:500]
+            if msg.get("sender", "") in excluded:
+                continue
+            if since_ts is not None and (msg.get("ts") or 0) < since_ts:
+                continue
+            if any(k in body for k in terminal_keywords) and request_keyword and request_keyword in body:
+                return body
         return None
 
     def close(self) -> None:

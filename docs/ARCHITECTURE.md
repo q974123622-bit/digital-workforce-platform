@@ -17,6 +17,42 @@
 
 ## 2. 五层架构
 
+### 当前协同主链（Sprint 12）
+
+```text
+用户消息
+  → 数字分身：识别任务、按授权名册生成角色计划
+  → TaskRun(running)：先持久化任务与触发消息 seq
+  → AgentTeams：只做讨论、认领、风险提示（所有事件携带 task_id）
+  → 数字员工：每人建立独立 Harness 上下文，注入身份、职责、Task ID 与协作结论
+  → DeepSeek Harness：形成该员工的受控工具调用计划
+  → Policy → Plugin Gateway → Plugin Adapter Tool：执行一次真实业务动作
+  → Approval：批准后重新执行原子任务，不把批准当执行结果
+  → 数字分身：汇总并回写会话/任务卡片
+```
+
+角色边界：`twin` 是每位真人的对话组织者，不创建 AgentTeams worker；
+`virtual/rpa` 是独立执行身份，绑定 AgentTeams worker，并以 Harness 作为平台执行引擎。
+AgentTeams 不直接触发业务副作用，避免协作超时后产生双重报销、采购或 RPA 操作。
+
+### 统一能力契约与单次执行边界（Sprint 13）
+
+```text
+Capability Contract v1.0
+  ├─ Skill: instruction / executable=false / prompt 注入
+  └─ Plugin: knowledge|mcp|workflow|rpa|http / executable=true
+       → Identity → Policy → Gateway
+       → executor.primary=harness：员工 Harness 先形成工具调用计划
+       → executor.tool=adapter：Gateway 再调用一次获授权 Adapter 工具
+       → Harness 未启用/不可用：明确标记 Demo Adapter 降级并调用一次工具
+       → Audit
+```
+
+Harness 位于 Gateway 内部、业务 Adapter 的上游。VE-0002、VE-0003、RPA-0001、VE-0004
+分别持有独立 `DSH_HOME` 与 workspace；每次调用的上下文 ID 为 `员工工号:Task ID`。
+Plugin Adapter 是 Harness 可请求的平台受控工具，不是替代 Harness 的业务执行器；纯模型文本只作为计划摘要，
+只有 Adapter 回执可以把子任务标记为完成。Harness 未启用或失败时，UI 明确显示 `Demo Adapter 降级`。
+
 ```mermaid
 flowchart TB
   subgraph L1[1 产品门户层]
@@ -26,11 +62,11 @@ flowchart TB
     SE[员工/身份语义 + 种子数据]
   end
   subgraph L2[2 协作编排层]
-    TM[TeamTaskOrchestrator P0-lite 📋]
-    AT[AgentTeams Adapter 预留桩 📋]
+    TM[TeamTaskOrchestrator ✅]
+    AT[AgentTeams Matrix 协作通道 ✅]
   end
   subgraph L3[3 Runtime 执行层]
-    RA[RuntimeAdapter harness/demo/stub 📋]
+    RA[DeepSeek Harness / Gateway Adapter ✅]
   end
   subgraph L4[4 治理层]
     PE[Policy Engine 唯一授权源 ✅]
@@ -48,15 +84,13 @@ flowchart TB
   CH --> LLM[LLMProvider SAFEMODE ✅]
   CH --> GW
   TM --> GW
-  TM --> RL[RuntimeLauncher 📋]
-  RL --> PE
+  TM --> PE
   GW --> PE
   GW --> AU
   GW --> PL
-  RL --> SB
-  RL --> RA
-  TM -.-> AT
-  AT -. 本周不启用 .-> SB
+  TM --> RA
+  TM <--> AT
+  RA --> SB
 ```
 
 ### 各层职责与当前状态
@@ -64,8 +98,8 @@ flowchart TB
 | 层 | 组件 | 职责 | Sprint 1/1.5 状态 |
 |---|---|---|---|
 | 1 产品门户层 | React + FastAPI | 员工/数字分身/虚拟员工语义，聊天编排，团队任务入口，配置与展示 | ✅ 前端骨架 + 后端 CRUD + Chat 编排（Sprint 4）；Team 编排 📋 |
-| 2 协作编排层 | TeamTaskOrchestrator（P0-lite）；AgentTeams Adapter（预留） | 模板化任务 + LLM 补全/汇总、子任务分发、审批流转 | 📋 契约预留 |
-| 3 Runtime 执行层 | RuntimeAdapter（harness / demo / openclaw-stub / agentteams-stub） | 虚拟员工的受控执行；外部工具一律经 Plugin Gateway | 📋 契约预留 |
+| 2 协作编排层 | TeamTaskOrchestrator；AgentTeams Matrix 通道 | 唯一任务状态机、角色拆解、讨论/认领反馈、审批流转 | ✅ Sprint 12 |
+| 3 Runtime 执行层 | DeepSeek Harness / Gateway Adapter | 数字员工的受控执行；外部工具一律经 Plugin Gateway | ✅ Sprint 12（Harness 可配置启用） |
 | 4 治理层 | Policy Engine / Plugin Gateway / Audit Store | 授权、插件执行入口、全链路审计 | ✅ Sprint 2 已实现（评估/执行/审计链路接通） |
 | 5 隔离与资源层 | Sandbox Policy + Mock Executor（Sprint 3）+ 插件 Mock 资源 | 网络/目录/位置隔离；虚构知识库与 Mock 系统 | Mock 资源 ✅；Sandbox Policy + Mock Executor ✅；Docker 真启动 📋 |
 
@@ -75,13 +109,13 @@ flowchart TB
 |---|---|---|---|
 | LLMProvider | 唯一持有 DeepSeek Key 的代码点；统一 chat/tool_call/structured_output；SAFEMODE 校验所有 prompt 段来源 | 不做多模型路由；不持有真实数据 | ✅ Sprint 4 |
 | ChatOrchestrator | 单聊编排；内置轻量 Agent 循环（最多 3 轮工具调用）；整段 JSON（SSE 弹性） | 不直接评估策略；不直连插件 | ✅ Sprint 4 |
-| TeamTaskOrchestrator | 模板 + LLM 补全/汇总；`task_run` + JSON `subtasks`；审批挂起与续跑 | 不做通用调度器、动态 Worker 招聘 | 📋 Sprint 3 |
+| TeamTaskOrchestrator | 先持久化唯一 `task_run`；模板 + LLM 补全/汇总；审批挂起与批准后续跑 | 不做通用调度器、动态 Worker 招聘 | ✅ Sprint 12 |
 | Policy Engine | `evaluate(subject, resource, action, context) -> allow/deny/approval + reason`；默认拒绝 | 不执行工具；不创建容器；不暴露给前端 | ✅ Sprint 2（内置规则 POLICY-001~005 等） |
 | Plugin Gateway | 唯一插件执行入口：policy → Mock 凭据注入 → Adapter → 审计 | 不做授权决策 | ✅ Sprint 2 |
-| RuntimeAdapter | 统一 Runtime 接口；`harness` 真接或 `demo` 演示模式；OpenClaw/AgentTeams 为桩 | 不做权限判断 | 📋 Sprint 3 |
+| RuntimeAdapter | 统一 Harness/Gateway 执行接口；Harness 不可用时保留 Gateway 结果 | 不做权限判断；AgentTeams 协作消息不作为业务执行结果 | ✅ Sprint 12 |
 | Sandbox Policy + MockExecutor | SandboxPolicy 模型（runtime_location/internet_access/filesystem_scope）+ Mock 执行；先 Policy 后执行 | 不产生授权决策 | ✅ Sprint 3（Docker 真启动 📋） |
 | Audit Store | 追加式写入事件；按 trace_id 聚合为 Trace 时间线 | 不参与执行路径 | ✅ Sprint 2（Gateway 全决策落审计；Trace 时间线接口 📋） |
-| 前端 | 展示与表单收集；渲染工具卡片、Policy Denied、审批卡 | 不解释/不执行权限 | ✅ 骨架已实现；聊天/任务页 📋 |
+| 前端 | 展示与表单收集；渲染协作动态、执行来源、Policy Denied、审批卡 | 不解释/不执行权限 | ✅ Sprint 12 |
 
 ## 4. 统一资源访问链（强制）
 

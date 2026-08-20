@@ -1,5 +1,7 @@
 """Sprint 5 TeamTaskOrchestrator 测试（FakeLLM，不依赖真实 DeepSeek）。"""
 
+from app import models
+
 from app.services.llm import LLMProvider, LLMResponse, LLMUnavailableError
 from app.services.runtime_adapter import RuntimeResult
 from app.services.team_orchestrator import TeamTaskOrchestrator
@@ -47,8 +49,12 @@ def test_create_task_reaches_approval(db_session):
     assert [s.status for s in run.subtasks] == ["completed", "completed", "approval"]
     assert run.subtasks[0].worker_no == "VE-0002"
     assert run.subtasks[1].worker_no == "VE-0003"
+    assert run.subtasks[2].worker_no == "RPA-0001"
     assert run.subtasks[2].approval is not None
     assert run.subtasks[2].approval.get("policy_id") == "POLICY-005"
+    assert run.subtasks[2].runtime_mode == "pending"
+    assert run.subtasks[2].tool_name == "报表机器人"
+    assert run.subtasks[2].tool_type == "rpa"
     assert run.trace_id == run.id
 
 
@@ -60,6 +66,24 @@ def test_approve_continues_and_completes(client, db_session):
     assert approved.status == "completed"
     assert all(s.status == "completed" for s in approved.subtasks)
     assert approved.summary == "已为王小明完成入职准备：制度确认、账号开通、权限报表已生成。"
+    assert "已批准执行（Mock 结果）" not in (approved.subtasks[2].result or "")
+    assert "报表机器人" in (approved.subtasks[2].result or "")
+    decisions = [
+        event.decision
+        for event in db_session.query(models.AuditEvent)
+        .filter_by(trace_id=run.trace_id, plugin_id="rpa-report")
+        .order_by(models.AuditEvent.id)
+        .all()
+    ]
+    assert decisions == ["approval", "allow"]
+
+
+def test_conversation_task_rejects_unrelated_approver(client):
+    resp = client.post(
+        "/api/v1/tasks/T-20260819-DEMO1/approve",
+        json={"approve": True, "actor_no": "E10021"},
+    )
+    assert resp.status_code == 403
 
 
 def test_reject_marks_denied(client, db_session):
@@ -116,16 +140,19 @@ def test_harness_result_included_in_subtask(client, db_session):
     orch = _orchestrator(runtime=FakeRuntime(ok=True, text="已核对入职材料清单。"))
     run = _create(db_session, orch)
     assert run.subtasks[0].status == "completed"
-    assert "[Harness 执行]" in run.subtasks[0].result
-    assert "已核对入职材料清单" in run.subtasks[0].result
-    assert "[Gateway]" in run.subtasks[0].result
+    assert run.subtasks[0].runtime_mode == "harness"
+    assert run.subtasks[1].execution_mode == "harness"
+    assert run.subtasks[0].tool_name == "员工查询 MCP"
+    assert run.subtasks[1].tool_name == "入职流程 Workflow"
+    assert "已核对入职材料清单" in run.subtasks[1].runtime_summary
 
 
 def test_harness_fallback_to_gateway(client, db_session):
     orch = _orchestrator(runtime=FakeRuntime(ok=False))
     run = _create(db_session, orch)
     assert run.subtasks[0].status == "completed"
-    assert "[Harness 执行]" not in run.subtasks[0].result
+    assert run.subtasks[0].runtime_mode == "demo_adapter"
+    assert run.subtasks[1].runtime_mode == "demo_adapter"
     assert "流程：员工查询 MCP" in run.subtasks[0].result
     assert "王老师" in run.subtasks[0].result
 

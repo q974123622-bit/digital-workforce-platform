@@ -66,12 +66,20 @@ if ($Docker) {
     Write-Host "[3/6] 未启用 Docker（演示默认 demo 模式，快）"
 }
 
+# 重置前先停止旧服务，避免 Windows 上 SQLite 文件仍被后端进程占用。
+Stop-Port 8000
+Stop-Port 5173
+Start-Sleep -Milliseconds 500
+
 # 4) 重置数据（默认）
 if (-not $NoReset) {
     Write-Host "[4/6] 重置数据库 + 灌入虚构种子 ..."
     Push-Location $backend
     & $venvPy -m app.seed --reset
     Pop-Location
+    if ($LASTEXITCODE -ne 0) {
+        throw "数据库重置失败，已停止启动；请确认没有进程占用 backend/dwp.db。"
+    }
 } else {
     Write-Host "[4/6] 跳过重置（-NoReset）"
 }

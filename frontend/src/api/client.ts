@@ -1,5 +1,6 @@
 import type {
   AuditEvent,
+  Capability,
   ChatMessage,
   ChatReply,
   Conversation,
@@ -24,10 +25,23 @@ type RequestOptions = RequestInit & { absolute?: boolean };
 async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   const url = init?.absolute ? path : `${BASE}${path}`;
   const { absolute: _absolute, ...fetchInit } = init ?? {};
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...(fetchInit.headers ?? {}) },
-    ...fetchInit,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', ...(fetchInit.headers ?? {}) },
+      ...fetchInit,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (controller.signal.aborted) {
+      throw new Error('请求超时，请稍后重试');
+    }
+    throw err;
+  }
+  clearTimeout(timer);
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
     try {
@@ -53,6 +67,8 @@ export const api = {
   listEmployees: (params?: { type?: string }) => request<Employee[]>(`/employees${qs(params)}`),
   getEmployee: (employeeNo: string) => request<Employee>(`/employees/${encodeURIComponent(employeeNo)}`),
   listPlugins: () => request<Plugin[]>('/plugins'),
+  listCapabilities: (actorNo: string) =>
+    request<Capability[]>(`/capabilities?actor_no=${encodeURIComponent(actorNo)}`),
   listPolicies: () => request<Policy[]>('/policies'),
   listAudit: (params?: { decision?: string }) => request<AuditEvent[]>(`/audit${qs(params)}`),
   listTeams: () => request<Team[]>('/teams'),
@@ -83,9 +99,14 @@ export const api = {
     request<Skill>('/skills', { method: 'POST', body: JSON.stringify(payload) }),
   updateSkill: (
     skillId: string,
+    actorNo: string,
     patch: Partial<Pick<Skill, 'name' | 'description' | 'content' | 'status'>>,
-  ) => request<Skill>(`/skills/${encodeURIComponent(skillId)}`, { method: 'PUT', body: JSON.stringify(patch) }),
-  deleteSkill: (skillId: string) => request<void>(`/skills/${encodeURIComponent(skillId)}`, { method: 'DELETE' }),
+  ) => request<Skill>(`/skills/${encodeURIComponent(skillId)}?actor_no=${encodeURIComponent(actorNo)}`, {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  }),
+  deleteSkill: (skillId: string, actorNo: string) =>
+    request<void>(`/skills/${encodeURIComponent(skillId)}?actor_no=${encodeURIComponent(actorNo)}`, { method: 'DELETE' }),
   listConversations: (actorNo: string) =>
     request<ConversationSummary[]>(`/conversations?actor_no=${encodeURIComponent(actorNo)}`),
   createConversation: (payload: {

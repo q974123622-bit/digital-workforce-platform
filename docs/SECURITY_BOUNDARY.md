@@ -21,7 +21,7 @@
 |---|---|---|
 | L1 普通 | 公开制度、FAQ、培训材料 | 数字分身与虚拟员工默认可读 |
 | L2 内部 | 部门流程、内部文档、脱敏员工信息 | 按部门/岗位授权；正式员工分身可读指定 L2，实习生分身 Deny；VE 仅按 grant 授权 |
-| L3 敏感 | 客户、交易、凭据、未脱敏数据 | 本周仓库不存在真实 L3；任何 L3 请求一律 Deny（策略 P-DATA-003） |
+| L3 敏感 | 客户、交易、凭据、未脱敏数据 | 本仓库不存在真实 L3；读取一律 Deny。仅虚构 workflow/RPA 的特定执行动作可进入 Approval，批准后仍必须重新经过 Gateway 执行并留审计 |
 
 ## 3. 权限模型
 
@@ -62,7 +62,7 @@ Employee Identity
 ### Agent Team
 
 - 成员权限相互独立；Leader 不自动继承成员权限。
-- 审批由策略触发（`decision_mode=approval`），人工批准后继续。
+- 审批由策略触发（`decision_mode=approval`）；批准只改变授权状态，不等于执行成功，原子任务必须携带服务端审批凭证重新经过 Policy/Gateway/Adapter。
 
 ### RPA
 

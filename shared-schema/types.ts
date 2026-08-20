@@ -47,6 +47,24 @@ export interface Plugin {
   data_level: string;
   status: string;
   description: string;
+  runtime_meta: Record<string, unknown>;
+}
+
+export interface Capability {
+  contract_version: string;
+  id: string;
+  name: string;
+  source_type: 'skill' | 'plugin';
+  kind: string;
+  description: string;
+  status: 'active' | 'disabled';
+  executable: boolean;
+  actions: string[];
+  input_schema: Record<string, unknown>;
+  executor: { primary?: string; adapter_ref?: string; fallback?: string; [key: string]: unknown };
+  owner_human_no: string | null;
+  ready: boolean;
+  issues: string[];
 }
 
 export interface Policy {
@@ -120,14 +138,15 @@ export interface ChatMessage {
 export interface TaskRun {
   id: string;
   team_id: string;
+  conversation_id: string | null;
   trigger_message_seq: number | null;
   trace_id: string;
   request: string;
   status: string;
-    subtasks: TaskSubtask[];
-    summary: string;
-    source?: 'builtin' | 'agentteams';
-    created_at: string;
+  subtasks: TaskSubtask[];
+  summary: string;
+  source: 'builtin' | 'agentteams';
+  created_at: string;
 }
 
 export interface TaskSubtask {
@@ -138,6 +157,14 @@ export interface TaskSubtask {
   status: "pending" | "running" | "completed" | "approval" | "denied" | "failed";
   result: string | null;
   approval: { policy_id?: string; reason?: string } | null;
+  collaboration_status?: 'planned' | 'collaborating' | 'acknowledged' | 'reported' | 'unavailable';
+  collaboration_messages?: string[];
+  execution_mode?: 'pending' | 'demo_adapter' | 'knowledge_adapter' | 'harness' | 'failed';
+  runtime_mode?: 'pending' | 'demo_adapter' | 'knowledge_adapter' | 'harness' | 'failed';
+  runtime_context_id?: string;
+  runtime_summary?: string;
+  tool_name?: string;
+  tool_type?: string;
 }
 
 export interface WorkspacePlugin {
@@ -252,6 +279,7 @@ export interface Workflow {
   steps: string[];
   demo_prompt: string;
   authorized_employees: WorkflowEmployee[];
+  owner_employee: WorkflowEmployee | null;
 }
 
 export interface ChatReply {

@@ -92,6 +92,21 @@ const TASK_STATUS: Record<string, { label: string; color: string; icon: ReactNod
   failed: { label: '失败', color: 'error', icon: <StopOutlined /> },
 };
 
+const EXECUTION_MODE_LABEL: Record<string, string> = {
+  harness: 'DeepSeek Harness',
+  demo_adapter: 'Demo Adapter 降级',
+  knowledge_adapter: 'Knowledge Adapter',
+  pending: '待选择执行器',
+  failed: '执行失败',
+};
+
+const TOOL_TYPE_LABEL: Record<string, string> = {
+  mcp: 'MCP',
+  workflow: 'Workflow',
+  rpa: 'RPA',
+  http: 'HTTP',
+};
+
 interface TaskCardProps {
   task: TaskRun;
   workerName: (employeeNo: string) => string;
@@ -121,7 +136,10 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: TaskCardProps
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="wp-task-title">{task.request}</div>
           <Text type="secondary" style={{ fontSize: 11 }}>
-            {task.id} · {task.source === 'agentteams' ? 'AgentTeams 团队协作' : '由我的分身拆解安排'}
+            {task.id} ·{' '}
+            {task.source === 'agentteams'
+              ? 'AgentTeams 团队协作 · Harness 驱动 · Policy/Gateway 工具调用'
+              : '内置协作 · Harness 驱动 · Policy/Gateway 工具调用'}
           </Text>
         </div>
         <Space size={4}>
@@ -146,6 +164,7 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: TaskCardProps
             {task.subtasks.map((sub, index) => {
               const subMeta = TASK_STATUS[sub.status] ?? TASK_STATUS.pending;
               const workerMeta = metaOf(sub.worker_id);
+              const runtimeMode = sub.runtime_mode ?? sub.execution_mode;
               return (
                 <div className={`subtask ${sub.status}`} key={`${sub.worker_no}-${index}`}>
                   <div className="subtask-top">
@@ -161,14 +180,44 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: TaskCardProps
                         {sub.summary}
                       </Text>
                     </Space>
-                    <Tag icon={subMeta.icon} color={subMeta.color}>
-                      {subMeta.label}
-                    </Tag>
+                    <Space size={4}>
+                      {runtimeMode && runtimeMode !== 'pending' && (
+                        <Tag color={runtimeMode === 'harness' ? 'geekblue' : 'orange'}>
+                          运行时：{EXECUTION_MODE_LABEL[runtimeMode] ?? runtimeMode}
+                        </Tag>
+                      )}
+                      {sub.tool_name && (
+                        <Tag color="cyan">
+                          工具：{sub.tool_name}
+                          {sub.tool_type && !sub.tool_name.toLowerCase().includes(sub.tool_type.toLowerCase())
+                            ? ` · ${TOOL_TYPE_LABEL[sub.tool_type] ?? sub.tool_type}`
+                            : ''}
+                        </Tag>
+                      )}
+                      <Tag icon={subMeta.icon} color={subMeta.color}>
+                        {subMeta.label}
+                      </Tag>
+                    </Space>
                   </div>
                   {sub.result && (
                     <Paragraph type="secondary" style={{ margin: '6px 0 0', fontSize: 12 }}>
                       {sub.result}
                     </Paragraph>
+                  )}
+                  {sub.runtime_summary && runtimeMode === 'harness' && (
+                    <Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 11 }}>
+                      Harness 计划：{sub.runtime_summary}
+                    </Paragraph>
+                  )}
+                  {(sub.collaboration_messages?.length ?? 0) > 0 && (
+                    <div style={{ marginTop: 6 }}>
+                      <Text type="secondary" style={{ fontSize: 11 }}>AgentTeams 协作记录</Text>
+                      {sub.collaboration_messages?.map((item, messageIndex) => (
+                        <Paragraph key={`${sub.worker_no}-collab-${messageIndex}`} style={{ margin: '2px 0', fontSize: 12 }}>
+                          {item}
+                        </Paragraph>
+                      ))}
+                    </div>
                   )}
                   {sub.approval && (
                     <Alert
@@ -254,6 +303,8 @@ export default function WorkplacePage() {
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [pendingAfterSeq, setPendingAfterSeq] = useState<number | null>(null);
+  const pendingReply = pendingAfterSeq !== null;
   const [chatError, setChatError] = useState<string>();
   const [acting, setActing] = useState(false);
 
@@ -274,6 +325,7 @@ export default function WorkplacePage() {
     setSelectedId(null);
     setSelected(null);
     setInput('');
+    setPendingAfterSeq(null);
   }, [actorNo]);
 
   useEffect(() => {
@@ -295,21 +347,52 @@ export default function WorkplacePage() {
     };
   }, [selectedId]);
 
-  // 任务执行中/待审批时轮询刷新
-  const activeTask = selected?.tasks.find((task) => task.status === 'running' || task.status === 'approval');
+  // 等待后台回复，或任务尚未进入 completed / approval / failed / denied 时持续轮询。
+  const hasPollableTask = selected?.tasks.some((task) =>
+    ['pending', 'parsing', 'running'].includes(task.status),
+  );
   useEffect(() => {
-    if (!activeTask || !selectedId) return;
-    const timer = setTimeout(async () => {
+    if ((!hasPollableTask && !pendingReply) || !selectedId) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
       try {
         const conv = await api.getConversation(selectedId);
+        if (cancelled) return;
         setSelected(conv);
+        const hasMatchingReply =
+          pendingAfterSeq != null &&
+          conv.messages.some((m) => m.role === 'assistant' && m.seq > pendingAfterSeq);
+        // trigger_message_seq 是前端在拿到 Task ID 前关联本次消息和任务卡片的稳定键。
+        const matchingTask =
+          pendingAfterSeq == null
+            ? undefined
+            : conv.tasks.find((task) => task.trigger_message_seq === pendingAfterSeq);
+        const responseAppeared = hasMatchingReply || matchingTask != null;
+        if (responseAppeared) setPendingAfterSeq(null);
         await refreshConversations();
+
+        const taskStillRunning = conv.tasks.some((task) =>
+          ['pending', 'parsing', 'running'].includes(task.status),
+        );
+        const replyStillPending = pendingAfterSeq != null && !responseAppeared;
+        if (!cancelled && (taskStillRunning || replyStillPending)) {
+          timer = setTimeout(poll, 2500);
+        }
       } catch {
-        // 轮询失败保留当前状态，下次重试
+        // 临时网络失败不终止轮询；保留当前状态并继续重试。
+        if (!cancelled) timer = setTimeout(poll, 2500);
       }
-    }, 2500);
-    return () => clearTimeout(timer);
-  }, [activeTask, selectedId, refreshConversations]);
+    };
+
+    timer = setTimeout(poll, 2500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [hasPollableTask, pendingReply, pendingAfterSeq, selectedId, refreshConversations]);
 
   const twin = home?.twin ?? null;
   const employees = home?.available_employees ?? [];
@@ -434,6 +517,10 @@ export default function WorkplacePage() {
     try {
       const conv = await api.sendConversationMessage(selectedId, actorNo, text);
       setSelected(conv);
+      const triggerSeq = conv.messages
+        .filter((m) => m.role === 'user')
+        .reduce((max, m) => Math.max(max, m.seq), 0);
+      setPendingAfterSeq(triggerSeq || null);
       await refreshConversations();
     } catch (err) {
       setInput(text);
@@ -474,6 +561,7 @@ export default function WorkplacePage() {
     if (!selectedId) return;
     try {
       await api.clearConversation(selectedId, actorNo);
+      setPendingAfterSeq(null);
       const conv = await api.getConversation(selectedId);
       setSelected(conv);
       await refreshConversations();
@@ -529,7 +617,7 @@ export default function WorkplacePage() {
 
   const toggleSkill = async (skill: Skill, enabled: boolean) => {
     try {
-      await api.updateSkill(skill.id, { status: enabled ? 'active' : 'disabled' });
+      await api.updateSkill(skill.id, actorNo, { status: enabled ? 'active' : 'disabled' });
       reload();
     } catch (err) {
       message.error(`更新失败：${(err as Error).message}`);
@@ -538,7 +626,7 @@ export default function WorkplacePage() {
 
   const removeSkill = async (skill: Skill) => {
     try {
-      await api.deleteSkill(skill.id);
+      await api.deleteSkill(skill.id, actorNo);
       reload();
     } catch (err) {
       message.error(`删除失败：${(err as Error).message}`);
@@ -815,6 +903,11 @@ export default function WorkplacePage() {
                         </Tag>
                       </div>
                       <div className="wp-row-preview">{workflow.description}</div>
+                      {workflow.owner_employee && (
+                        <div className="wp-row-preview">
+                          由 {workflow.owner_employee.name} 处理
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -846,7 +939,10 @@ export default function WorkplacePage() {
                 </Text>
               </div>
               <div style={{ flex: 1 }} />
-              <Popconfirm title="清空本会话的消息与任务？" onConfirm={() => void handleClear()}>
+              <Popconfirm
+                title="清空本会话？将删除本会话的消息与任务，不影响其他协作空间。"
+                onConfirm={() => void handleClear()}
+              >
                 <Button size="small" danger>
                   清空会话
                 </Button>
@@ -881,7 +977,17 @@ export default function WorkplacePage() {
                         </Avatar>
                       )}
                       <div className="wp-msg-col">
-                        {!mine && isGroup && <div className="wp-msg-name">{msg.participant_name}</div>}
+                        {!mine && isGroup && (
+                          <div className="wp-msg-name">
+                            {msg.participant_name}
+                            {/完成|TASK_COMPLETED|交付/.test(msg.content) && (
+                              <span className="wp-feedback-ok">✅ 已完成</span>
+                            )}
+                            {!/完成|TASK_COMPLETED|交付/.test(msg.content) && /收到|开始|处理|认领/.test(msg.content) && (
+                              <span className="wp-feedback-run">⏳ 执行中</span>
+                            )}
+                          </div>
+                        )}
                         <div className={`wp-bubble ${mine ? 'me' : 'other'}`}>
                           <MarkdownText text={msg.content} />
                         </div>

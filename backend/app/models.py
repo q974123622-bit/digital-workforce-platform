@@ -45,6 +45,7 @@ class Plugin(Base):
     data_level: Mapped[str] = mapped_column(String, default="L1")
     status: Mapped[str] = mapped_column(String, default="active")
     description: Mapped[str] = mapped_column(String, default="")
+    runtime_meta: Mapped[dict] = mapped_column(JSON, default=dict)  # mcpServer/tool 等运行时元数据
 
 
 class EmployeePluginGrant(Base):
@@ -213,3 +214,14 @@ class ConversationMessage(Base):
     content: Mapped[str] = mapped_column(String, default="")
     tool_cards: Mapped[list] = mapped_column(JSON, default=list)
     seq: Mapped[int] = mapped_column(default=0)
+
+
+class AgentTeamsEventSeen(Base):
+    """已回传过的 AgentTeams 房间事件（持久化去重，避免重启后重放）。"""
+
+    __tablename__ = "agentteams_event_seen"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
