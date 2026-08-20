@@ -208,6 +208,30 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_policy_change",
+            "description": (
+                "用于对虚构监管/制度变更材料做跨知识源影响分析："
+                "读取变更文档，检索外部监管、内部制度和证券业务知识，"
+                "并可选查找相关数字员工发起协作。"
+                "该工具只收集结构化证据，不生成正式法律或合规结论。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "document_name": {"type": "string", "description": "待分析的虚构监管/制度变更材料文件名"},
+                    "query": {"type": "string", "description": "希望分析的政策变更主题"},
+                    "collaborate": {"type": "boolean", "description": "可选：是否在知识检索后发起数字员工协作，默认 true"},
+                    "target_employee_id": {"type": "string", "description": "可选：明确指定协作对象数字员工工号"},
+                    "employee_keyword": {"type": "string", "description": "可选：未指定 target 时用于搜索相关数字员工"},
+                    "department": {"type": "string", "description": "可选：未指定 target 时用于限定员工部门"},
+                },
+                "required": ["document_name", "query"],
+            },
+        },
+    },
 ]
 
 
@@ -223,6 +247,7 @@ DEMO_TOOL_PLUGIN_MAP: dict[str, tuple[str, str, str]] = {
     "handle_it_support": ("it-support-workflow", "execute", "it-support-workflow"),
     "assist_with_employee": ("employee-assist-workflow", "execute", "employee-assist-workflow"),
     "prepare_work_report": ("report-export-workflow", "execute", "report-export-workflow"),
+    "analyze_policy_change": ("policy-change-impact-workflow", "execute", "policy-change-impact-workflow"),
 }
 
 

@@ -257,6 +257,7 @@ search_knowledge
 | handle_it_support | it-support-workflow | search_knowledge(KB-IT-SERVICE)、employee-search、collaborate_employee | Existing (Demo) |
 | assist_with_employee | employee-assist-workflow | employee-search、collaborate_employee | Existing (Demo) |
 | prepare_work_report | report-export-workflow | work-record-query、rpa-report（Approval Required） | Existing (Demo) |
+| analyze_policy_change | policy-change-impact-workflow | document-read、search_knowledge(KB-REG-EXTERNAL)、search_knowledge(KB-REG-INTERNAL)、search_knowledge(KB-SECURITIES)、employee-search、collaborate_employee（可选） | Existing (Demo) |
 
 所有 Workflow 子调用均重新经过 Plugin Gateway + Policy + Audit；Workflow 只返回结构化结果，最终总结由 Skill + LLM 完成。
 

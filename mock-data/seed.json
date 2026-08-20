@@ -94,7 +94,8 @@
     {"id": "document-compliance-workflow", "name": "文档合规工作流（Mock）", "type": "workflow", "endpoint_ref": "workflow://document/compliance", "data_level": "L2", "status": "active", "description": "读取文档并收集外部监管与内部制度依据"},
     {"id": "it-support-workflow", "name": "IT 支持工作流（Mock）", "type": "workflow", "endpoint_ref": "workflow://it/support", "data_level": "L1", "status": "active", "description": "查询 IT 知识库并可选升级协作"},
     {"id": "employee-assist-workflow", "name": "员工协助工作流（Mock）", "type": "workflow", "endpoint_ref": "workflow://employee/assist", "data_level": "L1", "status": "active", "description": "查找数字员工并发起协作询问"},
-    {"id": "report-export-workflow", "name": "工作报表工作流（Mock）", "type": "workflow", "endpoint_ref": "workflow://report/export", "data_level": "L2", "status": "active", "description": "汇总工作记录并触发 RPA 报表（需审批）"}
+    {"id": "report-export-workflow", "name": "工作报表工作流（Mock）", "type": "workflow", "endpoint_ref": "workflow://report/export", "data_level": "L2", "status": "active", "description": "汇总工作记录并触发 RPA 报表（需审批）"},
+    {"id": "policy-change-impact-workflow", "name": "政策变更影响分析工作流（Mock）", "type": "workflow", "endpoint_ref": "workflow://policy/change-impact", "data_level": "L1", "status": "active", "description": "读取变更材料并聚合外部监管、内部制度、证券业务与员工协作证据"}
   ],
   "employee_plugin_grants": [
     {"employee_id": "DT-E10281", "plugin_id": "knowledge-l1", "action": "read", "decision_mode": "allow"},
@@ -126,7 +127,10 @@
     {"employee_id": "DT-E20999", "plugin_id": "it-support-workflow", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "DT-E20999", "plugin_id": "employee-assist-workflow", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "VE-0003", "plugin_id": "report-export-workflow", "action": "execute", "decision_mode": "allow"},
-    {"employee_id": "VE-0003", "plugin_id": "work-record-query", "action": "read", "decision_mode": "allow"}
+    {"employee_id": "VE-0003", "plugin_id": "work-record-query", "action": "read", "decision_mode": "allow"},
+    {"employee_id": "DT-E10281", "plugin_id": "policy-change-impact-workflow", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "DT-E20999", "plugin_id": "policy-change-impact-workflow", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "DT-E20999", "plugin_id": "document-read", "action": "read", "decision_mode": "allow"}
   ],
   "policies": [
     {"id": "POLICY-003", "name": "禁网员工禁止公网插件", "effect": "deny", "description": "subject.internet=deny 且 resource.type=http 时拒绝（公网插件）", "enabled": true, "priority": 100},

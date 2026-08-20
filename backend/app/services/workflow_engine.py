@@ -253,12 +253,94 @@ def _report_export(ctx: WorkflowExecutionContext, params: dict) -> dict:
     return workflow_result(ctx, "report-export-workflow", _aggregate_status(steps), steps, data)
 
 
+def _policy_change_impact(ctx: WorkflowExecutionContext, params: dict) -> dict:
+    """制度/监管变更影响分析：只收集结构化证据，不做正式合规结论。"""
+    document_name = str(params.get("document_name", ""))
+    query = str(params.get("query", ""))
+    collaborate = bool(params.get("collaborate", True))
+    target_employee_id = str(params.get("target_employee_id") or "").strip()
+    employee_keyword = str(params.get("employee_keyword") or "").strip()
+    department = str(params.get("department") or "").strip()
+
+    steps: list[dict] = []
+
+    # Step 1：读取变更材料（关键步骤，Deny/异常直接终止，不继续假装分析）
+    doc = invoke_plugin_step(ctx, "read_document", "document-read", "read", {"document_name": document_name})
+    steps.append(doc)
+    if doc["status"] == "denied":
+        return workflow_result(ctx, "policy-change-impact-workflow", "denied", steps, {"document": None}, reason="document_step_denied")
+    if doc["status"] == "approval":
+        return workflow_result(ctx, "policy-change-impact-workflow", "approval_required", steps, {"document": None}, reason="document_step_approval")
+    if doc["status"] == "error":
+        return workflow_result(ctx, "policy-change-impact-workflow", "error", steps, {"document": None}, reason="document_step_error")
+
+    doc_data = doc.get("data") or {}
+    doc_inner = doc_data.get("status") if isinstance(doc_data, dict) else None
+    if doc_inner == "error":
+        return workflow_result(ctx, "policy-change-impact-workflow", "error", steps, {"document": doc_data}, reason="document_error")
+    if doc_inner in ("not_found", "empty"):
+        return workflow_result(ctx, "policy-change-impact-workflow", "partial", steps, {"document": doc_data}, reason=f"document_{doc_inner}")
+
+    data: dict = {"document": doc_data}
+
+    # Step 2：外部监管（L1，Formal/Intern 均可读）
+    external = search_knowledge_step(ctx, "external_regulation", "KB-REG-EXTERNAL", f"{query} 外部监管要求")
+    steps.append(external)
+    data["external_regulation"] = external.get("data") if external["status"] == "allow" else None
+
+    # Step 3：内部制度（L2，Intern 预期 Deny）
+    internal = search_knowledge_step(ctx, "internal_policy", "KB-REG-INTERNAL", f"{query} 内部制度要求")
+    steps.append(internal)
+    data["internal_policy"] = internal.get("data") if internal["status"] == "allow" else None
+
+    # Step 4：证券业务影响（L2，Intern 预期 Deny）
+    securities = search_knowledge_step(ctx, "securities_impact", "KB-SECURITIES", f"{query} 证券业务影响")
+    steps.append(securities)
+    data["securities_impact"] = securities.get("data") if securities["status"] == "allow" else None
+
+    # Step 5 + 6：可选员工搜索与协作
+    if collaborate:
+        search_params: dict = {"digital_only": True}
+        if target_employee_id:
+            search_params["keyword"] = target_employee_id
+        else:
+            if employee_keyword:
+                search_params["keyword"] = employee_keyword
+            if department:
+                search_params["department"] = department
+        search = invoke_plugin_step(ctx, "employee_search", "employee-search", "read", search_params)
+        steps.append(search)
+        employees = (search.get("data") or {}).get("employees") or []
+        digital = [e for e in employees if e.get("type") in ("twin", "virtual", "rpa")]
+        if target_employee_id:
+            affected = next((e for e in digital if e.get("employee_no") == target_employee_id), None)
+        else:
+            affected = digital[0] if digital else None
+        data["affected_employee"] = affected
+        if affected is None:
+            data["collaboration_result"] = None
+            return workflow_result(ctx, "policy-change-impact-workflow", "partial", steps, data, reason="employee_not_found")
+        collab = invoke_plugin_step(ctx, "collaborate", "employee-collaboration", "execute", {
+            "target_employee_id": affected.get("employee_no"),
+            "action": "ask",
+            "request": f"请根据监管变更主题「{query}」，补充你认为需要关注的业务影响点。",
+        })
+        steps.append(collab)
+        data["collaboration_result"] = collab.get("data") if collab["status"] == "allow" else None
+    else:
+        data["affected_employee"] = None
+        data["collaboration_result"] = None
+
+    return workflow_result(ctx, "policy-change-impact-workflow", _aggregate_status(steps), steps, data)
+
+
 WORKFLOW_REGISTRY: dict[str, callable] = {
     "workflow://regulation/compare": _regulation_compare,
     "workflow://document/compliance": _document_compliance,
     "workflow://it/support": _it_support,
     "workflow://employee/assist": _employee_assist,
     "workflow://report/export": _report_export,
+    "workflow://policy/change-impact": _policy_change_impact,
 }
 
 

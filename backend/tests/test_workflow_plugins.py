@@ -222,6 +222,94 @@ def test_report_export_approval_required(db_session):
     assert audit_decisions["report-export-workflow"] == "allow"
 
 
+# ---- policy-change-impact-workflow：制度/监管变更影响分析 ----
+
+
+def test_policy_change_impact_formal_success(db_session):
+    result = _run(db_session, "DT-E10281", "policy-change-impact-workflow", {
+        "document_name": "regulatory-policy-change-notice.md",
+        "query": "投资者适当性管理",
+        "collaborate": True,
+        "target_employee_id": "VE-0002",
+    }, "T-WF-POLICY-FORMAL")
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["status"] == "success"
+    assert {s["step_id"] for s in data["steps"]} == {
+        "read_document", "external_regulation", "internal_policy",
+        "securities_impact", "employee_search", "collaborate",
+    }
+    assert all(s["decision"] == "allow" for s in data["steps"])
+    assert data["data"]["document"] is not None
+    assert data["data"]["external_regulation"] is not None
+    assert data["data"]["internal_policy"] is not None
+    assert data["data"]["securities_impact"] is not None
+    assert data["data"]["affected_employee"] is not None
+    assert data["data"]["collaboration_result"] is not None
+
+    audits = _audits(db_session, "T-WF-POLICY-FORMAL")
+    plugin_ids = {a.plugin_id for a in audits}
+    assert {"policy-change-impact-workflow", "document-read", "knowledge-l1",
+            "knowledge-l2", "employee-search", "employee-collaboration"} <= plugin_ids
+    kb_ids = {a.knowledge_base_id for a in audits if a.knowledge_base_id}
+    assert {"KB-REG-EXTERNAL", "KB-REG-INTERNAL", "KB-SECURITIES"} <= kb_ids
+
+
+def test_policy_change_impact_intern_partial(db_session):
+    result = _run(db_session, "DT-E20999", "policy-change-impact-workflow", {
+        "document_name": "regulatory-policy-change-notice.md",
+        "query": "投资者适当性管理",
+        "collaborate": True,
+        "target_employee_id": "VE-0002",
+    }, "T-WF-POLICY-INTERN")
+    data = result["data"]
+    assert data["status"] == "partial"
+    by_step = {s["step_id"]: s for s in data["steps"]}
+    assert by_step["read_document"]["decision"] == "allow"
+    assert by_step["external_regulation"]["decision"] == "allow"
+    assert by_step["internal_policy"]["decision"] == "deny"
+    assert by_step["securities_impact"]["decision"] == "deny"
+    assert data["data"]["external_regulation"] is not None
+    assert data["data"]["internal_policy"] is None
+    assert data["data"]["securities_impact"] is None
+    deny_plugins = {a.plugin_id for a in _audits(db_session, "T-WF-POLICY-INTERN") if a.decision == "deny"}
+    assert "knowledge-l2" in deny_plugins
+
+
+def test_policy_change_impact_document_not_found(db_session):
+    result = _run(db_session, "DT-E10281", "policy-change-impact-workflow", {
+        "document_name": "missing-policy-change.md",
+        "query": "投资者适当性管理",
+    }, "T-WF-POLICY-MISSING")
+    data = result["data"]
+    assert data["status"] == "partial"
+    assert data.get("reason") == "document_not_found"
+    assert len(data["steps"]) == 1
+    assert data["steps"][0]["step_id"] == "read_document"
+    assert "external_regulation" not in data["data"]
+    assert "internal_policy" not in data["data"]
+    assert "securities_impact" not in data["data"]
+
+
+def test_policy_change_impact_without_collaboration(db_session):
+    result = _run(db_session, "DT-E10281", "policy-change-impact-workflow", {
+        "document_name": "regulatory-policy-change-notice.md",
+        "query": "投资者适当性管理",
+        "collaborate": False,
+    }, "T-WF-POLICY-NOCOLLAB")
+    data = result["data"]
+    assert data["status"] == "success"
+    assert {s["step_id"] for s in data["steps"]} == {
+        "read_document", "external_regulation", "internal_policy", "securities_impact",
+    }
+    assert data["data"]["document"] is not None
+    assert data["data"]["external_regulation"] is not None
+    assert data["data"]["internal_policy"] is not None
+    assert data["data"]["securities_impact"] is not None
+    assert data["data"]["affected_employee"] is None
+    assert data["data"]["collaboration_result"] is None
+
+
 # ---- ChatOrchestrator dispatch 进入 Workflow ----
 
 
@@ -254,3 +342,27 @@ def test_chat_dispatch_assist_with_employee(db_session):
     orchestrator = ChatOrchestrator(FakeLLM(script))
     result = orchestrator.handle_message(db_session, employee_no="DT-E10281", message="协助", session_id=None)
     assert result.tool_cards and result.tool_cards[0].plugin_id == "employee-assist-workflow"
+
+
+def test_chat_dispatch_analyze_policy_change(db_session):
+    script = [
+        LLMResponse(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="tc-policy",
+                    name="analyze_policy_change",
+                    arguments={
+                        "document_name": "regulatory-policy-change-notice.md",
+                        "query": "投资者适当性管理",
+                        "collaborate": False,
+                    },
+                )
+            ],
+        ),
+        LLMResponse(content="分析完成"),
+    ]
+    orchestrator = ChatOrchestrator(FakeLLM(script))
+    result = orchestrator.handle_message(db_session, employee_no="DT-E10281", message="分析政策变更", session_id=None)
+    assert result.tool_cards and result.tool_cards[0].decision == "allow"
+    assert result.tool_cards[0].plugin_id == "policy-change-impact-workflow"

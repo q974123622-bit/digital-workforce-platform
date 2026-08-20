@@ -8,12 +8,12 @@
 |---|---|---|
 | Skill | Harness 兼容的可复用任务指令包，只规定“何时、如何使用能力”，不判权限 | `.agents/skills/*` |
 | Atomic Tool Plugin | 一个明确原子能力（查询目录/搜索/读取），无编排 | `knowledge-catalog` / `employee-search` / `document-catalog` 等 |
-| Workflow Plugin | 编排多个子 Plugin，子调用必须再次经过 Plugin Gateway + Policy + Audit | `workflow://*` 五个 Workflow |
+| Workflow Plugin | 编排多个子 Plugin，子调用必须再次经过 Plugin Gateway + Policy + Audit | `workflow://*` 六个 Workflow |
 | Knowledge Plugin | 知识库检索（Mock / RAG） | `knowledge-l1` / `knowledge-l2` |
 | MCP Plugin | Mock 的 MCP 形态原子能力 | `hr-employee-mcp` 等 |
 | RPA Plugin | 需审批的敏感执行能力 | `rpa-report` |
 
-## 2. 当前 Plugin 列表（共 17 个）
+## 2. 当前 Plugin 列表（共 18 个）
 
 | plugin_id | type | Tool | data_level | endpoint | 用途 | 状态 |
 |---|---|---|---|---|---|---|
@@ -32,6 +32,7 @@
 | it-support-workflow | workflow | handle_it_support | L1 | workflow://it/support | IT 知识 + 可选升级协作 | active |
 | employee-assist-workflow | workflow | assist_with_employee | L1 | workflow://employee/assist | 查员工 + 协作询问 | active |
 | report-export-workflow | workflow | prepare_work_report | L2 | workflow://report/export | 工作记录 + RPA 报表（需审批） | active |
+| policy-change-impact-workflow | workflow | analyze_policy_change | L1 | workflow://policy/change-impact | 制度/监管变更影响分析 | active |
 | rpa-report | rpa | — | L3 | mock://rpa/report | 报表机器人（敏感，Approval） | active |
 | internet-search | http | — | L1 | mock://http/internet-search | 公网搜索 Mock（演示禁网策略） | active |
 
@@ -53,6 +54,13 @@ employee-assist-workflow
 
 report-export-workflow
   └─ query_work_records → rpa-report（Approval Required，不自动执行）
+
+policy-change-impact-workflow
+  └─ document-read
+     → search_knowledge(KB-REG-EXTERNAL)
+     → search_knowledge(KB-REG-INTERNAL)
+     → search_knowledge(KB-SECURITIES)
+     → [collaborate=true] employee-search → collaborate_employee
 ```
 
 所有子调用都通过 Plugin Gateway 重新执行 Policy 评估并落审计，Workflow 不能直接调用 Adapter。
