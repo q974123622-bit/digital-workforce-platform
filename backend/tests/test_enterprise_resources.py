@@ -40,8 +40,8 @@ def test_registry_eight_resources(client):
     assert kbs["KB-INTERNAL"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-FINTECH"]["department_scope"] == ["金融科技部"]
     assert kbs["KB-INTERNAL"]["resource_type"] == "knowledge"
-    assert kbs["KB-IT-SERVICE"]["data_level"] == "L1"
-    assert kbs["KB-IT-SERVICE"]["allowed_employment_type"] == ["formal", "intern"]
+    assert kbs["KB-IT-SERVICE"]["data_level"] == "L2"
+    assert kbs["KB-IT-SERVICE"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-IT-SERVICE"]["doc_path"] == "mock-data/kb/it-service"
     assert kbs["KB-SECURITIES"]["data_level"] == "L2"
     assert kbs["KB-SECURITIES"]["allowed_employment_type"] == ["formal"]
@@ -147,15 +147,31 @@ def test_search_missing_kb(client):
 # ---- P17：新增模拟知识库（多格式虚构目录） ----
 
 
-def test_new_it_service_kb_l1_any_employee_allow(client):
-    for emp in ("DT-E10281", "DT-E20999"):
-        resp = _search(client, emp, "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-001")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["decision"] == "allow"
-        assert body["policy_id"] == "P-DEFAULT-001"
-        assert body["data"]["source"] == "demo"
-        assert len(body["data"]["hits"]) >= 1
+def test_new_it_service_kb_l2_formal_allow_intern_deny(client):
+    # P21：IT 服务库改 L2 内部；正式分身 allow（POLICY-001），实习生 deny（POLICY-002）
+    resp = _search(client, "DT-E10281", "KB-IT-SERVICE", "VPN 怎么连", "T-P21-IT-FORMAL")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["decision"] == "allow"
+    assert body["policy_id"] == "POLICY-001"
+    assert body["data"]["source"] == "demo"
+    assert len(body["data"]["hits"]) >= 1
+
+    resp = _search(client, "DT-E20999", "KB-IT-SERVICE", "VPN 怎么连", "T-P21-IT-INTERN")
+    assert resp.status_code == 403
+    assert resp.json()["error"]["detail"]["policy_id"] == "POLICY-002"
+
+
+def test_all_resources_have_three_level_classification(client):
+    """P21 分级完整性：9 知识库 + 12 插件全部带 L1/L2/L3 等级。"""
+    kbs = client.get("/api/v1/knowledge-bases").json()
+    plugins = client.get("/api/v1/plugins").json()
+    assert len(kbs) == 9
+    assert len(plugins) == 12
+    assert all(kb["data_level"] in {"L1", "L2", "L3"} for kb in kbs)
+    assert all(p["data_level"] in {"L1", "L2", "L3"} for p in plugins)
+    levels = {kb["id"]: kb["data_level"] for kb in kbs}
+    assert levels["KB-IT-SERVICE"] == "L2"
 
 
 def test_new_securities_kb_l2_formal_allow(client):

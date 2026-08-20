@@ -25,6 +25,8 @@ export interface Employee {
   employee_no: string;
   name: string;
   type: EmployeeType;
+  /** formal | intern（twin 取真人，virtual/rpa 取 Owner）；预留 outsource/consultant 等 */
+  employment_type: 'formal' | 'intern' | string;
   source_human_no: string | null;
   owner_human_no: string;
   department: string;

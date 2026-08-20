@@ -32,6 +32,16 @@ def test_employee_detail_grants(client):
     assert modes["rpa-report"] == "deny"
 
 
+def test_employee_employment_type(client):
+    formal = client.get("/api/v1/employees/DT-E10281").json()
+    intern = client.get("/api/v1/employees/DT-E20999").json()
+    assert formal["employment_type"] == "formal"
+    assert intern["employment_type"] == "intern"
+    # virtual/rpa 取 owner（正式员工）
+    virtual = client.get("/api/v1/employees/VE-0001").json()
+    assert virtual["employment_type"] == "formal"
+
+
 def test_employee_crud(client):
     resp = client.post(
         "/api/v1/employees",

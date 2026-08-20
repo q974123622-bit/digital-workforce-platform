@@ -5,7 +5,7 @@ import type { ColumnsType } from 'antd/es/table';
 import type { Employee, Grant } from '@dwp/shared-schema';
 import { CommentOutlined } from '@ant-design/icons';
 import { api } from '../api/client';
-import { DecisionTag, LevelTag, StatusBadge, TypeTag } from '../components/tags';
+import { DecisionTag, EmploymentTag, LevelTag, StatusBadge, TypeTag } from '../components/tags';
 import { ErrorState, LoadingState } from '../components/PageState';
 import { useAsyncData } from '../hooks/useAsyncData';
 
@@ -101,6 +101,9 @@ export default function EmployeeDetail() {
               <Card>
                 <Descriptions column={{ xs: 1, sm: 2 }} size="small">
                   <Descriptions.Item label="类型">{emp.type}</Descriptions.Item>
+                  <Descriptions.Item label="身份">
+                    <EmploymentTag value={emp.employment_type} />
+                  </Descriptions.Item>
                   <Descriptions.Item label="来源真人">{emp.source_human_no ?? '—'}</Descriptions.Item>
                   <Descriptions.Item label="Owner">{emp.owner_human_no}</Descriptions.Item>
                   <Descriptions.Item label="部门">{emp.department}</Descriptions.Item>

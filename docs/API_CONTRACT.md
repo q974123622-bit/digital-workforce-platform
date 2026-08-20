@@ -296,6 +296,7 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
   "employee_no": "DT-E10281",
   "name": "张三的分身",
   "type": "twin | virtual | rpa",
+  "employment_type": "formal | intern",
   "source_human_no": "E10281",
   "owner_human_no": "E10281",
   "department": "架构部",
@@ -312,6 +313,8 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 ```
 
 > v1.1 变更：EmployeeDto 由 v1.0 的嵌套 `runtime/sandbox/data_scope` 改为与实现一致的平铺结构，避免双轨。
+> v1.1 补充（2026-08-19）：EmployeeDto 增加 `employment_type`（twin 取真人、virtual/rpa 取 Owner），
+> 供前端渲染「正式员工/实习生」身份标识。
 
 ### PluginDto / PolicyDto / AuditEventDto
 
@@ -372,3 +375,6 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 | 2026-08-19 | v1.1 实现更新（Sprint 7 C 档）：`POST /conversations/{id}/messages` 群聊改为「分身判断任务/闲聊」；任务型接入 TeamTaskOrchestrator（拆解/指派/审批/汇总），闲聊单成员回复；ConversationDto 增加 tasks；新增 SubtaskExecutor 接口 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py |
 | 2026-08-19 | v1.1 实现更新（Sprint 7 会话管理）：TaskRunDto 增加 trigger_message_seq（任务卡内联）；移除分身受理气泡；子任务结果格式化为可读文本；同请求去重；新增 DELETE /conversations/{id} 清空会话；会话摘要预览显示最新任务状态 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py / routers/workplace.py |
 | 2026-08-19 | v1.1 兼容扩展（P20）：新增 §3.9 Access Request API 与 AccessRequestDto（申请/审批/列表）；L3 白名单策略（P-DATA-003 改为白名单控制，POLICY-005 审批语义被取代）；新增 knowledge-l3 插件与 KB-CUSTOMER-SENSITIVE（L3）；审计新增 access_apply/access_approve/access_grant 事件 | 待 A 确认 | 本文件 / shared-schema/types.ts / routers/access.py / models / schemas / services/policy.py |
+| 2026-08-19 | v1.1 兼容扩展（身份标识）：EmployeeDto 增加 employment_type（twin 取真人、virtual/rpa 取 Owner）；前端据此渲染「正式员工/实习生」标签并修正聊天页人设推断 | 待 A 确认 | 本文件 / shared-schema/types.ts / schemas.py / routers/employees.py / 前端 Employees/EmployeeDetail/ChatPage |
+| 2026-08-20 | v1.1 分级修正 + 聊天守卫（P21）：KB-IT-SERVICE L1→L2（allowed_employment_type=[formal]）；ChatOrchestrator 系统提示强化（知识库/制度/流程问题必须调用 search_knowledge，不得凭记忆列举主题，POLICY_DENIED 只告知无权访问）+ 未调工具兜底轮（命中查询意图且无工具卡时重生成一次，仍无则返回明确无权限/无法确认文案）；工具描述补充 KB-CUSTOMER-SENSITIVE | 待 A 确认 | 本文件 / mock-data/seed.json / services/chat.py / tests |
+| 2026-08-20 | v1.1 实现更新（P22）：聊天系统提示【知识库】改为按 subject 动态注入可访问清单（逐库 Policy evaluate=allow 才列入，输出 knowledge_base_id/name/data_level）；未授权库不得声称可访问、不得凭记忆描述内容；新增 accessible_knowledge_bases() | 待 A 确认 | 本文件 / services/knowledge_registry.py / services/chat.py / tests |

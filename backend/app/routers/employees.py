@@ -35,12 +35,20 @@ def _grants_for(db: Session, employee_no: str) -> list[schemas.GrantOut]:
     return out
 
 
+def _employment_type_for(db: Session, emp: models.DigitalEmployee) -> str:
+    """twin 取 source（真人）的 employment_type，virtual/rpa 取 owner；找不到按 intern 处理。"""
+    ref_no = emp.source_human_no or emp.owner_human_no
+    human = db.get(models.HumanEmployee, ref_no) if ref_no else None
+    return human.employment_type if human else "intern"
+
+
 def _to_out(db: Session, emp: models.DigitalEmployee) -> schemas.EmployeeOut:
     return schemas.EmployeeOut(
         id=emp.employee_no,
         employee_no=emp.employee_no,
         name=emp.name,
         type=emp.type,
+        employment_type=_employment_type_for(db, emp),
         source_human_no=emp.source_human_no,
         owner_human_no=emp.owner_human_no,
         department=emp.department,
