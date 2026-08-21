@@ -837,6 +837,20 @@ body {
   margin-bottom: 4px;
 }
 
+.wp-feedback-ok {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #52c41a;
+  font-weight: 500;
+}
+
+.wp-feedback-run {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #1677ff;
+  font-weight: 500;
+}
+
 .wp-bubble {
   padding: 10px 14px;
   border-radius: 12px;

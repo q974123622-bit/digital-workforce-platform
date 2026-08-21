@@ -243,6 +243,108 @@
 
 ## Sprint 5 — TeamTaskOrchestrator（已完成，2026-08-18）
 
+## Sprint 8 — AgentTeams 最小接入（2026-08-19）
+
+> 里程碑：增量接入，保留自研兜底；Harness 作为我方执行引擎。
+
+### S8-01 AgentTeamsGateway（Matrix 客户端）
+- [x]
+  - Owner Role：A
+  - Input：AgentTeams 容器（Docker 恢复）、Matrix 凭据（容器 env）
+  - Output：`backend/app/services/agentteams_gateway.py`：login / joined_rooms / send_message / poll_messages / parse_completion；失败统一 AgentTeamsUnavailableError
+  - Dependency：容器恢复
+  - Acceptance Criteria：Matrix 登录成功、房间可枚举；测试 4 项（Fake Matrix）
+
+### S8-02 群聊任务接入（auto 降级）
+- [x]
+  - Owner Role：A
+  - Input：S8-01、group_chat 任务路径
+  - Output：`DWP_TEAM_BACKEND=auto`：任务优先发 AgentTeams 房间并回收汇报回填 TaskRun（source=agentteams）；失败自动降级内置编排（source=builtin）；审计 agentteams:send/receive；TaskRun 增加 source 字段；前端任务卡标注来源
+  - Dependency：S8-01
+  - Acceptance Criteria：单元测试 121 项全绿（含 agentteams 路径与降级路径）
+
+### S8-03 环境接入验证与降级结论
+- [x]
+  - Owner Role：A
+  - Input：真实 AgentTeams 环境
+  - Output：容器恢复、凭据找回（admin/manager/worker/platform-bot）、房间枚举；**初版结论：团队房间为私有且所有可用用户为 guest/未加入，自动发送通道被 Matrix 权限阻塞 → 运行时自动降级内置编排**
+  - Dependency：S8-02
+  - Acceptance Criteria：降级路径实测通过（121 测试全绿）；结论记录于交接文档
+
+### S8-04 修复 AgentTeams 房间成员关系（自动通道打通）
+- [x]（2026-08-20 实测通过）
+  - Owner Role：A
+  - Input：S8-03 阻塞结论、Matrix/tuwunel 管理机制
+  - Output：
+    1. 新建正确团队 `team-onboard`（admin=platform-bot + manager(coordinator) + leader=kai + worker=xiaoming），新团队房间 `!yoYNJCwHes3orszqGx` 四成员全部 joined（`tmp/team-onboard.yaml` 可复现）
+    2. Manager `groupAllowFrom` 白名单加入 `@platform-bot`（MinIO + 本地挂载，重启 manager 生效）
+    3. 群聊任务消息带 `@manager:...` mention（`AGENTTEAMS_MANAGER_MXID` 可配，group_chat 已改）
+    4. `backend/.env`（gitignored）更新房间 ID 与 platform-bot 真实 token
+  - Dependency：S8-03
+  - Acceptance Criteria：platform-bot → 团队房间 → Manager 受理回执 → 派发 kai；网关轮询 parse_completion 命中；后端 121 测试全绿
+
+### S8-05 AgentTeams Worker 对齐平台数字员工
+- [x]（2026-08-20 实测通过）
+  - Owner Role：A
+  - Input：S8-04、平台数字员工名册（VE-0001/0002/0003）
+  - Output：
+    1. 新建 worker：onboard-assistant（新员工入职助手）/ hr-assistant（HR 助理）/ it-assistant（IT 助理），SOUL 注入人设（`tmp/soul-*.md`）
+    2. 重建 team-onboard：组长 onboard-assistant + 组员 hr-assistant、it-assistant（`tmp/team-onboard.yaml`）；删除测试 worker kai/xiaoming
+    3. 清 Manager 旧活动任务状态与 stale 会话；群聊白名单补 hr/it-assistant
+    4. 网关任务消息附带"先查名册再按角色派活"指令
+  - Dependency：S8-04
+  - Acceptance Criteria：平台任务 → Manager → onboard-assistant 拆解 → hr/it-assistant 执行并产出交付物（MinIO 实测可见）；后端 121 测试全绿
+
+### S9-01 数字员工生命周期绑定（创建即建容器 + 命名规则）
+- [x]（2026-08-20 实测通过）
+  - Owner Role：A
+  - Input：employees 路由、AgentTeams controller（agt CLI）
+  - Output：`agentteams_lifecycle.py`（docker exec agt 封装 + 命名规则 dwp-{type}-{no}）；创建/删除/更新员工级联容器；GET runtime 接口；种子 VE-0001/2/3 绑定 dwp-ve-0001/2/3
+  - Dependency：S8-05
+  - Acceptance Criteria：POST 员工 → 容器 Running；DELETE → 容器清理；修改人设 → SOUL 更新；runtime 接口返回状态
+
+### S9-02 DeepSeek Harness 执行引擎（壳回调平台）
+- [x]（2026-08-20 实测通过）
+  - Owner Role：A
+  - Output：`POST /internal/harness/execute`（Policy POLICY-HARNESS-001 → Docker dsh → 审计）；实测返回真实 DeepSeek 结果
+  - Dependency：S9-01
+  - Acceptance Criteria：allow 路径真实执行；local 员工 deny；审计落库
+
+### S9-03 群聊逐人协作反馈
+- [x]（2026-08-20 实测通过）
+  - Owner Role：A
+  - Output：团队任务轮询回传成员动态到会话消息 + subtasks 状态；parse_completion since_ts 过滤；前端消息气泡 ✅/⏳ 徽章
+  - Dependency：S8-04、S9-01
+  - Acceptance Criteria：真实任务后会话出现 HR/IT 助理逐人动态；subtasks 反映 completed/running；后端 129 + 前端 20 全绿
+
+### S9-04 记忆/会话管理（清空联动 + 防串台 + 持久化去重）
+- [x]（2026-08-20 实测通过）
+  - Owner Role：A
+  - Output：反馈轮询 since_ts 过滤；`agentteams_event_seen` 持久化去重；`reset_agentteams_context()`（state.json/memory/sessions/MinIO 任务目录）；清空会话联动；前端提示
+  - Dependency：S9-03
+  - Acceptance Criteria：清空后新任务不再串旧任务内容；重启不重放反馈；后端 131 + 前端 20 全绿
+
+### S10-01 关系理顺 + 统一执行链路 + 工作流角色化
+- [x]（2026-08-20 实测通过）
+  - Owner Role：A
+  - Output：分身=demo 组织者（不建容器）；虚拟员工=agentteams；结构化任务消息（task_id/请求者/目标）；parse_completion 按 task_id 匹配；WORKFLOW_META owner_employee；Mock adapter/模板去硬编码；前端来源三态徽章 + 工作流负责人
+  - Dependency：S9-04
+  - Acceptance Criteria：请假任务带 task_id 且 Manager 围绕 task_id 派单（实测）；内置降级显示"该员工"而非"王小明"；后端 135 + 前端 20 全绿
+
+### S10-02 修复任务原文误当回执
+- [x]（2026-08-20 实测通过）
+  - Owner Role：A
+  - Output：`parse_completion` 增加 `exclude_senders`（排除 platform-bot 自身消息），任务消息不再被当回执；实测任务汇总为 Manager 真实回执
+  - Dependency：S10-01
+  - Acceptance Criteria：新任务 summary 不含任务原文；后端 136 全绿
+
+### S11-01 任务交互异步化（消除同步阻塞/卡死）
+- [x]（2026-08-20 实测通过）
+  - Owner Role：A
+  - Output：发消息/审批异步化（BackgroundTasks + 独立 Session）；AgentTeams 轮询 60s；去重 2min 且只拦 running/approval；前端 fetch 超时 + 发送后轮询
+  - Dependency：S10-02
+  - Acceptance Criteria：发消息 <2s 返回且后台正确写回；审批异步续跑；后端 136 + 前端 20 全绿
+
 > 里程碑：团队协作主链路（方案 A：门户自研编排 + Harness 并行尝试 + AgentTeams 留桩）。
 
 ### S5-01 TeamTaskOrchestrator
@@ -411,3 +513,46 @@
   - Output：当日合并、阻塞清单、次日目标
   - Dependency：—（贯穿全周）
   - Acceptance Criteria：主分支每日可运行；阻塞项有明确 Owner 与截止时间
+
+## Sprint 12 — AgentTeams × DeepSeek Harness 协同重构（2026-08-20）
+
+### S12-01 可信任务状态机
+- [x] 用户消息以精确 `trigger_message_seq` 关联后台任务，同一会话进程内串行处理。
+- [x] 审批通过后重新进入 Policy → Gateway → Adapter → Harness，禁止“批准即伪装完成”。
+- [x] 普通执行异常落 `failed`，清空会话后通过触发消息存在性检测取消后台回写。
+- [x] AgentTeams 任务发送成功后不再自动重复走内置业务执行。
+
+### S12-02 AgentTeams 协作 + Harness 执行
+- [x] 同一个 `TaskRun` 贯穿“分身规划 → AgentTeams 讨论/认领 → Gateway/Harness 执行 → 审批 → 汇总”。
+- [x] AgentTeams 消息协议要求携带 `task_id`；ACK 与 `TASK_COMPLETED` 分离。
+- [x] `collaboration_status/messages` 与 `execution_mode` 暴露给任务卡片，展示协作过程和执行引擎。
+- [x] Matrix 不可用且尚未发送时安全降级；已发送后中断则失败停机，避免双执行。
+
+### S12-03 数字员工角色与生命周期
+- [x] 数字分身固定为 `twin + demo`，只承担用户代理、任务组织和最终汇总。
+- [x] 入职任务按 HR 助理 + IT 助理分工；仅明确要求权限报表时加入 RPA 审批任务。
+- [x] 新增 `RPA-0001 自动化报表机器人`、`VE-0004 采购助理`，移除 IT 助理的报表/采购越界授权。
+- [x] 创建/切换/删除员工时校验 Owner、运行时类型、活动任务和 AgentTeams 生命周期。
+
+### S12-04 工程与安全修复
+- [x] AgentTeams MinIO 密码和 Manager 房间信息移出源码，改为环境变量。
+- [x] Harness 本机调用改为 argv + `shell=False`；Sandbox 容器补 CPU/内存/PID 限制。
+- [x] 旧 SQLite 的 `plugin.runtime_meta` 增加轻量兼容迁移；前后端契约同步。
+- [x] 前端按本次用户消息 seq 轮询，不再被历史消息误判为已回复。
+
+### S12-05 后续生产化门禁
+- [ ] 用持久化队列替代 FastAPI `BackgroundTasks`，实现进程重启恢复、租约和重试。
+- [ ] 统一认证中间件与 RBAC，替代请求体中的演示 `actor_no`；封闭 `/internal/*`。
+- [ ] 为多 Uvicorn worker / PostgreSQL 增加数据库唯一约束和乐观锁。
+- [ ] 在受控环境验证真实 AgentTeams worker 协议、真实 Harness 镜像和审批后真实 Adapter。
+## Sprint 13：统一能力契约与 Harness 执行边界（2026-08-20）
+
+- [x] 定义 Capability Contract v1.0，统一 Skill/Plugin 的目录字段和就绪检查
+- [x] 将 Skill 明确为不可执行 instruction capability，限制长度并加强提示词边界
+- [x] 为 Plugin 增加 actions/input_schema/executor/fallback 契约
+- [x] 将 Harness 移入 Gateway Adapter 上游：员工 Harness 先规划，Adapter 作为受控工具调用一次
+- [x] Harness 未启用/失败时仅降级调用一次 Adapter，并显式标记 Demo Adapter 降级
+- [x] TeamTaskOrchestrator 移除业务执行后的 Harness 二次调用
+- [x] Gateway 校验插件状态、契约、动作；Policy grant 精确匹配 action
+- [x] 新增统一能力目录 API 与前端能力中心
+- [x] 补充员工独立 Harness 上下文、Adapter 单次工具调用、契约目录、所有权与完整性测试

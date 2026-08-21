@@ -76,6 +76,7 @@ const plugins: Plugin[] = [
     data_level: 'L1',
     status: 'active',
     description: '公开知识检索',
+    runtime_meta: {},
   },
 ];
 

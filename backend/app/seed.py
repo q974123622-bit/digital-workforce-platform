@@ -15,6 +15,7 @@ def load_seed() -> dict:
 def seed_data(db, data: dict) -> None:
     # 幂等：先清空旧数据再灌种子（演示环境专用，SQLite 无外键约束）
     for model in (
+        models.AgentTeamsEventSeen,
         models.ConversationMessage,
         models.Conversation,
         models.Skill,

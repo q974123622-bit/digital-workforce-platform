@@ -78,6 +78,12 @@ RULES: list[Rule] = [
         "远程 Sandbox 允许远程执行",
         lambda s, r, a: r.type == "sandbox" and r.id == "remote" and s.location == "remote",
     ),
+    # POLICY-HARNESS-001 远程数字员工允许调用 DeepSeek Harness 执行引擎
+    Rule(
+        "POLICY-HARNESS-001", DECISION_ALLOW, 72,
+        "远程执行允许调用 DeepSeek Harness",
+        lambda s, r, a: r.type == "runtime" and r.id == "harness" and a == "execute" and s.location == "remote",
+    ),
     # POLICY-002 实习生分身禁止内部知识
     Rule(
         "POLICY-002", DECISION_DENY, 70,
@@ -147,6 +153,7 @@ def evaluate(
             select(models.EmployeePluginGrant).where(
                 models.EmployeePluginGrant.employee_id == subject.employee_id,
                 models.EmployeePluginGrant.plugin_id == resource.id,
+                models.EmployeePluginGrant.action == action,
             )
         )
         if grant is None:

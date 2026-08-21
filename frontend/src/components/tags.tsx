@@ -41,6 +41,7 @@ export const EMPLOYMENT_META: Record<string, { label: string; color: string; ico
 
 /** 插件类型 */
 export const PLUGIN_TYPE_META: Record<string, TypeMeta> = {
+  instruction: { label: 'Instruction Skill', color: 'default', icon: <BookOutlined />, hex: '#5c6b83', bg: '#f5f5f5' },
   knowledge: { label: '知识库', color: 'geekblue', icon: <BookOutlined />, hex: '#2f54eb', bg: '#f0f5ff' },
   mcp: { label: 'MCP', color: 'purple', icon: <ApiOutlined />, hex: '#722ed1', bg: '#f9f0ff' },
   workflow: { label: 'Workflow', color: 'cyan', icon: <ApartmentOutlined />, hex: '#13c2c2', bg: '#e6fffb' },

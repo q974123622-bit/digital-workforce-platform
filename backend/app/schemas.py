@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GrantOut(BaseModel):
@@ -20,8 +20,7 @@ class EmployeeCreate(BaseModel):
     owner_human_no: str
     department: str = ""
     role_prompt: str = ""
-    runtime_type: str = "demo"
-    runtime_ref: str | None = None
+    runtime_type: str | None = None  # 缺省按 type：twin→demo（不建容器），virtual/rpa→agentteams
     location: str = "remote"
     internet: str = "deny"
     max_data_level: str = "L1"
@@ -34,7 +33,6 @@ class EmployeeUpdate(BaseModel):
     role_prompt: str | None = None
     status: str | None = None
     runtime_type: str | None = None
-    runtime_ref: str | None = None
     location: str | None = None
     internet: str | None = None
     max_data_level: str | None = None
@@ -61,13 +59,25 @@ class EmployeeOut(BaseModel):
     grants: list[GrantOut] = []
 
 
+class EmployeeRuntimeOut(BaseModel):
+    employee_no: str
+    runtime_type: str
+    runtime_ref: str | None
+    status: str
+    worker_phase: str | None = None
+    matrix_user_id: str | None = None
+    room_id: str | None = None
+    detail: str = ""
+
+
 class PluginBase(BaseModel):
-    name: str
-    type: str
+    name: str = Field(min_length=1, max_length=100)
+    type: Literal["knowledge", "mcp", "workflow", "rpa", "http"]
     endpoint_ref: str = "mock://"
-    data_level: str = "L1"
-    status: str = "active"
+    data_level: Literal["L1", "L2", "L3"] = "L1"
+    status: Literal["active", "disabled"] = "active"
     description: str = ""
+    runtime_meta: dict = {}
 
 
 class PluginCreate(PluginBase):
@@ -76,15 +86,49 @@ class PluginCreate(PluginBase):
 
 class PluginUpdate(BaseModel):
     name: str | None = None
-    type: str | None = None
+    type: Literal["knowledge", "mcp", "workflow", "rpa", "http"] | None = None
     endpoint_ref: str | None = None
-    data_level: str | None = None
-    status: str | None = None
+    data_level: Literal["L1", "L2", "L3"] | None = None
+    status: Literal["active", "disabled"] | None = None
     description: str | None = None
+    runtime_meta: dict | None = None
+
+
+class HarnessExecuteIn(BaseModel):
+    employee_no: str
+    task_prompt: str
+    trace_id: str = "HARNESS-0"
+
+
+class HarnessExecuteOut(BaseModel):
+    trace_id: str
+    decision: str
+    policy_id: str | None = None
+    reason: str = ""
+    mode: str = "demo"
+    ok: bool = False
+    result: str = ""
 
 
 class PluginOut(PluginBase):
     id: str
+
+
+class CapabilityOut(BaseModel):
+    contract_version: str
+    id: str
+    name: str
+    source_type: Literal["skill", "plugin"]
+    kind: str
+    description: str
+    status: str
+    executable: bool
+    actions: list[str]
+    input_schema: dict
+    executor: dict
+    owner_human_no: str | None = None
+    ready: bool = True
+    issues: list[str] = []
 
 
 class PolicyBase(BaseModel):
@@ -203,6 +247,12 @@ class GatewayInvokeOut(BaseModel):
     decision: str
     audit_ids: list[int] = []
     policy_id: str | None = None
+    execution_mode: str = "pending"
+    runtime_mode: str = "pending"
+    runtime_context_id: str = ""
+    runtime_summary: str = ""
+    tool_name: str = ""
+    tool_type: str = ""
 
 
 # ---- Sprint 3：Enterprise Resource & Security Layer ----
@@ -340,6 +390,14 @@ class SubtaskOut(BaseModel):
     status: str = "pending"  # pending | running | completed | approval | denied | failed
     result: str | None = None
     approval: dict | None = None
+    collaboration_status: str = "planned"
+    collaboration_messages: list[str] = []
+    execution_mode: str = "pending"
+    runtime_mode: str = "pending"
+    runtime_context_id: str = ""
+    runtime_summary: str = ""
+    tool_name: str = ""
+    tool_type: str = ""
 
 
 class TaskRunOut(BaseModel):
@@ -352,6 +410,7 @@ class TaskRunOut(BaseModel):
     status: str = "pending"  # parsing | running | approval | completed | denied | failed
     subtasks: list[SubtaskOut] = []
     summary: str = ""
+    source: str = "builtin"  # builtin | agentteams
     created_at: datetime
 
 
@@ -405,16 +464,16 @@ class WorkspaceOut(BaseModel):
 
 class SkillCreate(BaseModel):
     actor_no: str
-    name: str
-    description: str = ""
-    content: str = ""
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    content: str = Field(default="", max_length=20_000)
 
 
 class SkillUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    content: str | None = None
-    status: str | None = None  # active | disabled
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    content: str | None = Field(default=None, max_length=20_000)
+    status: Literal["active", "disabled"] | None = None
 
 
 class SkillOut(BaseModel):
@@ -516,6 +575,7 @@ class WorkflowOut(BaseModel):
     steps: list[str] = []
     demo_prompt: str = ""
     authorized_employees: list[WorkflowEmployeeOut] = []
+    owner_employee: WorkflowEmployeeOut | None = None
 
 
 class ClearConversationOut(BaseModel):

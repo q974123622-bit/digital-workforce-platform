@@ -78,7 +78,7 @@ def test_policy_004_local_execution_deny(client):
 
 def test_policy_l3_sensitive_requires_whitelist(client):
     # P20：L3 资源一律走白名单；无白名单授权 → P-DATA-003 DENY（原 POLICY-005 审批语义已被取代）
-    resp = _evaluate(client, "VE-0003", "rpa", "rpa-report", "L3", "execute")
+    resp = _evaluate(client, "RPA-0001", "rpa", "rpa-report", "L3", "execute")
     assert resp.status_code == 200
     body = resp.json()
     assert body["decision"] == "deny"
@@ -179,7 +179,7 @@ def test_gateway_l3_plugin_denied_without_whitelist(client):
     resp = client.post(
         "/internal/gateway/invoke",
         json={
-            "employee_id": "VE-0003",
+            "employee_id": "RPA-0001",
             "plugin_id": "rpa-report",
             "action": "execute",
             "params": {},

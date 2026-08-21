@@ -3,9 +3,12 @@
 import pytest
 from fastapi import HTTPException
 
+from app import models
+from app.routers.workplace import _conversation_out
 from app.services.chat import ChatOrchestrator
-from app.services.group_chat import send_group_message
+from app.services.group_chat import process_conversation, send_conversation_message, send_group_message
 from app.services.llm import LLMProvider, LLMResponse, LLMUnavailableError
+from app.services.team_orchestrator import TeamTaskOrchestrator
 
 
 class FakeLLM(LLMProvider):
@@ -70,11 +73,14 @@ def test_skill_crud(client, db_session):
     listed = client.get("/api/v1/skills?actor_no=E10281").json()
     assert any(s["id"] == skill_id for s in listed)
 
-    updated = client.put(f"/api/v1/skills/{skill_id}", json={"status": "disabled"})
+    updated = client.put(
+        f"/api/v1/skills/{skill_id}?actor_no=E10281",
+        json={"status": "disabled"},
+    )
     assert updated.status_code == 200
     assert updated.json()["status"] == "disabled"
 
-    deleted = client.delete(f"/api/v1/skills/{skill_id}")
+    deleted = client.delete(f"/api/v1/skills/{skill_id}?actor_no=E10281")
     assert deleted.status_code == 204
     assert not any(s["id"] == skill_id for s in client.get("/api/v1/skills?actor_no=E10281").json())
 
@@ -97,7 +103,7 @@ def test_skill_injected_into_twin_persona(db_session):
     assert result.message == "好的，我按技能回答。"
     system_prompt = fake.calls[0][0]["content"]
     assert "报销制度速答" in system_prompt
-    assert "【你掌握的技能】" in system_prompt
+    assert "【用户维护的参考技能】" in system_prompt
 
 
 def test_skill_not_injected_into_virtual_employee(db_session):
@@ -282,23 +288,14 @@ def test_send_group_message_all_fail_raises(db_session):
 
 def test_send_message_endpoint(client, db_session, monkeypatch):
     conv = _seed_group(db_session)
-
-    def fake_provider_factory():
-        return FakeLLM([LLMResponse(content="分身回复")])
-
-    import app.services.group_chat as group_chat
-
-    monkeypatch.setattr(group_chat, "DeepSeekProvider", fake_provider_factory)
     resp = client.post(
         f"/api/v1/conversations/{conv.id}/messages",
         json={"actor_no": "E10281", "content": "大家看看这个"},
     )
     assert resp.status_code == 200
     body = resp.json()
-    msgs = body["messages"]
-    # 群聊消息默认按「闲聊」处理：仅分身回复一次（分类器 structured_output 返回 {} → chat）
-    assert [m["role"] for m in msgs] == ["user", "assistant"]
-    assert msgs[-1]["participant_no"] == "DT-E10281"
+    # 异步语义：POST 只落用户消息并立即返回，后台编排尚未执行
+    assert [m["role"] for m in body["messages"]] == ["user"]
     assert body["tasks"] == []
 
 
@@ -333,27 +330,24 @@ def test_group_message_task_dispatch(client, db_session, monkeypatch):
     import app.services.group_chat as group_chat
 
     monkeypatch.setattr(group_chat, "DeepSeekProvider", lambda: fake)
-    resp = client.post(
-        "/api/v1/conversations/CONV-0002/messages",
-        json={"actor_no": "E10281", "content": "帮我准备入职材料"},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
+    conv = db_session.get(models.Conversation, "CONV-0002")
+    send_conversation_message(db_session, conversation=conv, actor_no="E10281", content="帮我准备入职材料")
+    body = _conversation_out(db_session, conv).model_dump()
     seed_task_ids = {"T-20260819-DEMO1", "T-20260819-DEMO2", "T-20260819-DEMO3"}
     new_tasks = [t for t in body["tasks"] if t["id"] not in seed_task_ids]
     assert len(new_tasks) == 1
     task = new_tasks[0]
     assert task["conversation_id"] == "CONV-0002"
     assert task["status"] == "completed"
-    assert task["subtasks"][0]["worker_no"] == "VE-0001"
-    assert task["subtasks"][0]["status"] == "completed"
+    assert {sub["worker_no"] for sub in task["subtasks"]} == {"VE-0002", "VE-0003"}
+    assert all(sub["status"] == "completed" for sub in task["subtasks"])
     assert task["summary"] == "Leader 汇总：入职材料已确认。"
     # 不再追加受理气泡：最后一条为触发任务的消息，任务记录其 seq 用于卡片内联
     msgs = body["messages"]
     assert msgs[-1]["participant_no"] == "E10281"
     assert task["trigger_message_seq"] == msgs[-1]["seq"]
-    assert "流程：入职流程 Workflow" in task["subtasks"][0]["result"]
-    assert "{" not in task["subtasks"][0]["result"]
+    assert any("流程：入职流程 Workflow" in (sub["result"] or "") for sub in task["subtasks"])
+    assert all("{" not in (sub["result"] or "") for sub in task["subtasks"])
 
 
 def test_group_message_task_dispatch_plugin_type_alias(client, db_session, monkeypatch):
@@ -373,47 +367,41 @@ def test_group_message_task_dispatch_plugin_type_alias(client, db_session, monke
     import app.services.group_chat as group_chat
 
     monkeypatch.setattr(group_chat, "DeepSeekProvider", lambda: fake)
-    resp = client.post(
-        "/api/v1/conversations/CONV-0002/messages",
-        json={"actor_no": "E10281", "content": "帮我整理新员工入职准备清单"},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
+    conv = db_session.get(models.Conversation, "CONV-0002")
+    send_conversation_message(db_session, conversation=conv, actor_no="E10281", content="帮我整理新员工入职准备清单")
+    body = _conversation_out(db_session, conv).model_dump()
     seed_task_ids = {"T-20260819-DEMO1", "T-20260819-DEMO2", "T-20260819-DEMO3"}
     task = next(t for t in body["tasks"] if t["id"] not in seed_task_ids)
-    assert task["subtasks"][0]["plugin_ids"] == ["adp-onboarding"]
-    assert task["subtasks"][0]["summary"] == "整理入职材料并跟进账号开通"
+    assert {sub["plugin_ids"][0] for sub in task["subtasks"]} == {
+        "hr-employee-mcp", "adp-onboarding"
+    }
+    assert {sub["worker_no"] for sub in task["subtasks"]} == {"VE-0002", "VE-0003"}
 
 
-def test_group_message_task_dedup(client, db_session, monkeypatch):
-    fake = TaskFakeLLM(
-        structured=[
-            {"action": "task"},
-            {"subtasks": [{"worker_id": "VE-0001", "summary": "确认入职材料", "plugin_ids": ["adp-onboarding"]}]},
-            {"action": "task"},
-        ],
-        chat=[LLMResponse(content="Leader 汇总：入职材料已确认。")],
+def test_find_recent_task_only_dedup_running_or_approval(db_session):
+    from app.services.group_chat import _find_recent_task
+
+    running = models.TaskRun(
+        id="T-RUN-1",
+        team_id="CONV-0002",
+        conversation_id="CONV-0002",
+        request="帮我准备入职材料",
+        status="running",
     )
-
-    import app.services.group_chat as group_chat
-
-    monkeypatch.setattr(group_chat, "DeepSeekProvider", lambda: fake)
-    first = client.post(
-        "/api/v1/conversations/CONV-0002/messages",
-        json={"actor_no": "E10281", "content": "帮我准备入职材料"},
-    ).json()
-    second = client.post(
-        "/api/v1/conversations/CONV-0002/messages",
-        json={"actor_no": "E10281", "content": "帮我准备入职材料"},
-    ).json()
-    seed_task_ids = {"T-20260819-DEMO1", "T-20260819-DEMO2", "T-20260819-DEMO3"}
-    first_new = [t for t in first["tasks"] if t["id"] not in seed_task_ids]
-    second_new = [t for t in second["tasks"] if t["id"] not in seed_task_ids]
-    assert len(first_new) == 1
-    # 第二次同请求：不新建任务，只追加去重提示
-    assert len(second_new) == 1
-    assert second_new[0]["id"] == first_new[0]["id"]
-    assert "重复" in second["messages"][-1]["content"]
+    done = models.TaskRun(
+        id="T-DONE-1",
+        team_id="CONV-0002",
+        conversation_id="CONV-0002",
+        request="帮我准备入职材料",
+        status="completed",
+    )
+    db_session.add_all([running, done])
+    db_session.commit()
+    # 去重只拦 running/approval，completed 允许重发
+    assert _find_recent_task(db_session, "CONV-0002", "帮我准备入职材料").id == "T-RUN-1"
+    db_session.delete(running)
+    db_session.commit()
+    assert _find_recent_task(db_session, "CONV-0002", "帮我准备入职材料") is None
 
 
 def test_group_message_chat_single_reply(client, db_session, monkeypatch):
@@ -422,12 +410,9 @@ def test_group_message_chat_single_reply(client, db_session, monkeypatch):
     import app.services.group_chat as group_chat
 
     monkeypatch.setattr(group_chat, "DeepSeekProvider", lambda: fake)
-    resp = client.post(
-        "/api/v1/conversations/CONV-0002/messages",
-        json={"actor_no": "E10281", "content": "大家早上好"},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
+    conv = db_session.get(models.Conversation, "CONV-0002")
+    send_conversation_message(db_session, conversation=conv, actor_no="E10281", content="大家早上好")
+    body = _conversation_out(db_session, conv).model_dump()
     seed_task_ids = {"T-20260819-DEMO1", "T-20260819-DEMO2", "T-20260819-DEMO3"}
     assert all(t["id"] in seed_task_ids for t in body["tasks"])
     new_msgs = body["messages"][-2:]
@@ -441,11 +426,9 @@ def test_group_message_chat_mentions_member(client, db_session, monkeypatch):
     import app.services.group_chat as group_chat
 
     monkeypatch.setattr(group_chat, "DeepSeekProvider", lambda: fake)
-    resp = client.post(
-        "/api/v1/conversations/CONV-0002/messages",
-        json={"actor_no": "E10281", "content": "IT 助理，VPN 怎么申请"},
-    )
-    body = resp.json()
+    conv = db_session.get(models.Conversation, "CONV-0002")
+    send_conversation_message(db_session, conversation=conv, actor_no="E10281", content="IT 助理，VPN 怎么申请")
+    body = _conversation_out(db_session, conv).model_dump()
     assert [m["role"] for m in body["messages"][-2:]] == ["user", "assistant"]
     assert body["messages"][-1]["participant_no"] == "VE-0003"
 
@@ -456,11 +439,9 @@ def test_group_message_classifier_failure_defaults_chat(client, db_session, monk
     import app.services.group_chat as group_chat
 
     monkeypatch.setattr(group_chat, "DeepSeekProvider", lambda: fake)
-    resp = client.post(
-        "/api/v1/conversations/CONV-0002/messages",
-        json={"actor_no": "E10281", "content": "随便聊聊"},
-    )
-    body = resp.json()
+    conv = db_session.get(models.Conversation, "CONV-0002")
+    send_conversation_message(db_session, conversation=conv, actor_no="E10281", content="随便聊聊")
+    body = _conversation_out(db_session, conv).model_dump()
     seed_task_ids = {"T-20260819-DEMO1", "T-20260819-DEMO2", "T-20260819-DEMO3"}
     assert all(t["id"] in seed_task_ids for t in body["tasks"])
     assert [m["role"] for m in body["messages"][-2:]] == ["user", "assistant"]
@@ -472,24 +453,18 @@ def test_conversation_out_includes_seed_task(client):
     task = body["tasks"][0]
     assert task["status"] == "approval"
     assert len(task["subtasks"]) == 3
-    assert task["subtasks"][2]["approval"]["policy_id"] == "POLICY-005"
+    assert task["subtasks"][2]["approval"]["policy_id"] is None
 
 
 def test_approve_seed_conversation_task(client, db_session, monkeypatch):
     fake = TaskFakeLLM(chat=[LLMResponse(content="Leader 汇总：入职准备全部完成。")])
-
-    import app.routers.teams as teams_router
-
-    monkeypatch.setattr(teams_router, "DeepSeekProvider", lambda: fake)
-    resp = client.post(
-        "/api/v1/tasks/T-20260819-DEMO1/approve",
-        json={"approve": True, "actor_no": "E10281"},
+    orchestrator = TeamTaskOrchestrator(fake)
+    task = orchestrator.approve(
+        db_session, task_id="T-20260819-DEMO1", approve=True, actor_no="E10281"
     )
-    assert resp.status_code == 200
-    task = resp.json()
-    assert task["status"] == "completed"
-    assert task["summary"] == "Leader 汇总：入职准备全部完成。"
-    assert all(sub["status"] == "completed" for sub in task["subtasks"])
+    assert task.status == "completed"
+    assert task.summary == "Leader 汇总：入职准备全部完成。"
+    assert all(sub.status == "completed" for sub in task.subtasks)
 
 
 def test_reject_seed_conversation_task(client):
@@ -539,7 +514,7 @@ def test_new_mock_workflow_executes_via_gateway(client):
 def test_purchase_workflow_requires_whitelist(client):
     """L3 插件（purchase-request）走 P20 白名单：未授权 403 → 申请批准 → allow。"""
     payload = {
-        "employee_id": "VE-0003",
+        "employee_id": "VE-0004",
         "plugin_id": "purchase-request",
         "action": "execute",
         "params": {"item": "办公显示器"},
@@ -551,7 +526,7 @@ def test_purchase_workflow_requires_whitelist(client):
     # 白名单申请 → 管理员批准
     req = client.post(
         "/api/v1/access-requests",
-        params={"applicant_no": "VE-0003"},
+        params={"applicant_no": "VE-0004"},
         json={"resource_type": "plugin", "resource_id": "purchase-request", "reason": "采购流程演示"},
     )
     assert req.status_code == 201

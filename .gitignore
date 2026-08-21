@@ -21,6 +21,7 @@ venv/
 
 # Sandbox 宿主工作区（本机执行隔离挂载目录，不入库）
 backend/sandbox-workspaces/
+backend/harness-workspaces/
 
 # 记忆附件存储（仅文本文件，不入库）
 backend/storage/

@@ -4,14 +4,16 @@
 私聊与群聊统一由 Conversation 承载，消息发送走 services/group_chat 编排。
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import datetime
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
 from ..services.adapters import WORKFLOW_META
-from ..services.group_chat import send_conversation_message
+from ..services.group_chat import append_user_message, process_conversation_async
 from ..services.team_orchestrator import TeamTaskOrchestrator
 from .employees import _to_out as _employee_out
 
@@ -41,7 +43,22 @@ def _get_digital_employee(db: Session, employee_no: str) -> models.DigitalEmploy
     emp = db.get(models.DigitalEmployee, employee_no)
     if emp is None:
         raise HTTPException(status_code=404, detail="数字员工不存在")
+    if emp.status != "active":
+        raise HTTPException(status_code=409, detail="数字员工当前未启用")
     return emp
+
+
+def _employee_workflow_out(
+    db: Session, employee_no: str
+) -> schemas.WorkflowEmployeeOut | None:
+    emp = db.get(models.DigitalEmployee, employee_no)
+    if emp is None:
+        return None
+    return schemas.WorkflowEmployeeOut(
+        employee_no=emp.employee_no,
+        name=emp.name,
+        type=emp.type,
+    )
 
 
 def _participants_out(db: Session, participants: list) -> list[schemas.ConversationParticipantOut]:
@@ -218,10 +235,18 @@ def list_skills(actor_no: str = Query(...), db: Session = Depends(get_db)):
 
 
 @skills_router.put("/{skill_id}", response_model=schemas.SkillOut)
-def update_skill(skill_id: str, payload: schemas.SkillUpdate, db: Session = Depends(get_db)):
+def update_skill(
+    skill_id: str,
+    payload: schemas.SkillUpdate,
+    actor_no: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    _get_actor(db, actor_no)
     skill = db.get(models.Skill, skill_id)
     if skill is None:
         raise HTTPException(status_code=404, detail="技能不存在")
+    if skill.owner_human_no != actor_no:
+        raise HTTPException(status_code=403, detail="无权修改其他员工的技能")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(skill, field, value)
     db.commit()
@@ -230,10 +255,17 @@ def update_skill(skill_id: str, payload: schemas.SkillUpdate, db: Session = Depe
 
 
 @skills_router.delete("/{skill_id}", status_code=204)
-def delete_skill(skill_id: str, db: Session = Depends(get_db)):
+def delete_skill(
+    skill_id: str,
+    actor_no: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    _get_actor(db, actor_no)
     skill = db.get(models.Skill, skill_id)
     if skill is None:
         raise HTTPException(status_code=404, detail="技能不存在")
+    if skill.owner_human_no != actor_no:
+        raise HTTPException(status_code=403, detail="无权删除其他员工的技能")
     db.delete(skill)
     db.commit()
 
@@ -316,7 +348,12 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
 
 
 @conversations_router.post("/{conversation_id}/messages", response_model=schemas.ConversationOut)
-def send_message(conversation_id: str, payload: schemas.ConversationSendIn, db: Session = Depends(get_db)):
+def send_message(
+    conversation_id: str,
+    payload: schemas.ConversationSendIn,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     conv = db.get(models.Conversation, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -325,7 +362,19 @@ def send_message(conversation_id: str, payload: schemas.ConversationSendIn, db: 
     content = payload.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="消息不能为空")
-    send_conversation_message(db, conversation=conv, actor_no=payload.actor_no, content=content)
+    # 只落用户消息并立即返回；后台异步执行分类/派发/执行，避免请求阻塞导致前端卡死
+    user_message = append_user_message(db, conversation=conv, actor_no=payload.actor_no, content=content)
+    conv.updated_at = datetime.now()
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    background_tasks.add_task(
+        process_conversation_async,
+        conv.id,
+        payload.actor_no,
+        content,
+        user_message.seq,
+    )
     return _conversation_out(db, conv)
 
 
@@ -359,7 +408,7 @@ def clear_conversation(
     actor_no: str = Query(...),
     db: Session = Depends(get_db),
 ):
-    """清空会话：删除本会话的全部消息与协作任务（演示清洁用）。"""
+    """清空本地会话数据；后台任务通过触发消息存在性检测自动取消。"""
     conv = db.get(models.Conversation, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -369,6 +418,9 @@ def clear_conversation(
         models.ConversationMessage.conversation_id == conversation_id
     ).delete()
     db.query(models.TaskRun).filter(models.TaskRun.conversation_id == conversation_id).delete()
+    db.query(models.AgentTeamsEventSeen).filter(
+        models.AgentTeamsEventSeen.conversation_id == conversation_id
+    ).delete()
     db.commit()
     return schemas.ClearConversationOut(ok=True)
 
@@ -399,13 +451,9 @@ def list_workflows(db: Session = Depends(get_db)):
         for employee_no in grant_map.get(plugin.id, []):
             emp = db.get(models.DigitalEmployee, employee_no)
             if emp is not None:
-                employees.append(
-                    schemas.WorkflowEmployeeOut(
-                        employee_no=emp.employee_no,
-                        name=emp.name,
-                        type=emp.type,
-                    )
-                )
+                out_emp = _employee_workflow_out(db, employee_no)
+                if out_emp is not None:
+                    employees.append(out_emp)
         out.append(
             schemas.WorkflowOut(
                 plugin_id=plugin.id,
@@ -416,6 +464,11 @@ def list_workflows(db: Session = Depends(get_db)):
                 steps=meta.get("steps", []),
                 demo_prompt=meta.get("demo_prompt", ""),
                 authorized_employees=employees,
+                owner_employee=(
+                    _employee_workflow_out(db, meta["owner_employee"])
+                    if meta.get("owner_employee")
+                    else None
+                ),
             )
         )
     return out
