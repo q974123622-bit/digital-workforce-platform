@@ -47,6 +47,7 @@ class EmployeeOut(BaseModel):
     employment_type: str  # formal | intern（twin 取真人，virtual/rpa 取 Owner）
     source_human_no: str | None
     owner_human_no: str
+    owner_name: str = ""
     department: str
     role_prompt: str
     status: str

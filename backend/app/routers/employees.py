@@ -9,6 +9,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..services.chat import ChatOrchestrator
 from ..services.identity import resolve_identity
+from ..services.knowledge_registry import plugin_id_for_level
 from ..services.llm import DeepSeekProvider, LLMUnavailableError
 from ..services.policy import ResourceRef, evaluate
 from ..services.agentteams_gateway import AgentTeamsUnavailableError
@@ -38,22 +39,18 @@ def _grants_for(db: Session, employee_no: str) -> list[schemas.GrantOut]:
     return out
 
 
-def _employment_type_for(db: Session, emp: models.DigitalEmployee) -> str:
-    """twin 取 source（真人）的 employment_type，virtual/rpa 取 owner；找不到按 intern 处理。"""
-    ref_no = emp.source_human_no or emp.owner_human_no
-    human = db.get(models.HumanEmployee, ref_no) if ref_no else None
-    return human.employment_type if human else "intern"
-
-
 def _to_out(db: Session, emp: models.DigitalEmployee) -> schemas.EmployeeOut:
+    identity = resolve_identity(db, emp.employee_no)
+    owner = db.get(models.HumanEmployee, emp.owner_human_no)
     return schemas.EmployeeOut(
         id=emp.employee_no,
         employee_no=emp.employee_no,
         name=emp.name,
         type=emp.type,
-        employment_type=_employment_type_for(db, emp),
+        employment_type=identity.employment_type,
         source_human_no=emp.source_human_no,
         owner_human_no=emp.owner_human_no,
+        owner_name=owner.name if owner else emp.owner_human_no,
         department=emp.department,
         role_prompt=emp.role_prompt,
         status=emp.status,
@@ -103,6 +100,18 @@ def create_employee(payload: schemas.EmployeeCreate, db: Session = Depends(get_d
         raise HTTPException(status_code=400, detail="owner_human_no 对应的真人员工不存在")
     if payload.type == "twin" and payload.source_human_no != payload.owner_human_no:
         raise HTTPException(status_code=400, detail="数字分身的 source_human_no 必须与 owner_human_no 一致")
+    if payload.type == "twin":
+        existing_twin = db.scalar(
+            select(models.DigitalEmployee).where(
+                models.DigitalEmployee.type == "twin",
+                models.DigitalEmployee.source_human_no == payload.source_human_no,
+            )
+        )
+        if existing_twin is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"每位真人只能拥有一个数字分身，当前已绑定 {existing_twin.employee_no}",
+            )
     employee_no = _next_employee_no(db, payload.type, payload.source_human_no)
     # 概念模型：分身=对话组织者（demo，不建容器）；虚拟员工/RPA=执行者（agentteams，自动建容器）
     effective_runtime = payload.runtime_type or (
@@ -357,7 +366,7 @@ def get_workspace(employee_no: str, db: Session = Depends(get_db)):
 
     kbs: list[schemas.WorkspaceKbOut] = []
     for kb in db.scalars(select(models.KnowledgeBase).order_by(models.KnowledgeBase.id)).all():
-        plugin_id = "knowledge-l1" if kb.data_level == "L1" else "knowledge-l2"
+        plugin_id = plugin_id_for_level(kb.data_level)
         result = evaluate(db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read")
         kbs.append(
             schemas.WorkspaceKbOut(

@@ -124,7 +124,17 @@ SSE 事件类型（固定枚举）：
 | POST | `/internal/gateway/invoke` | ✅ | 通用插件执行（含知识查询） |
 | POST | `/internal/knowledge/search` | ✅ | 知识库专用入口（Sprint 3）：`{employee_id, knowledge_base_id, query, trace_id}` |
 
-### 3.8 个人工作中心（职场）API（✅ Sprint 7 已实现）
+### 3.8 L3 访问申请 API（✅ 已实现）
+
+| 方法 | 路径 | 说明 | 关键请求 |
+|---|---|---|---|
+| POST | `/access-requests?applicant_no=` | 正式员工申请 L3 读取白名单 | `{resource_type: knowledge|plugin, resource_id, reason}` |
+| GET | `/access-requests` | 查询申请单，可按 `applicant_no/status` 过滤 | — |
+| POST | `/access-requests/{id}/approve` | 正式员工数字分身批准或拒绝；批准写入 `grant_source=whitelist` 的 read grant | `{approve, actor_no}` |
+
+边界：白名单只控制 L3 `read`；L3 `execute/export/delete/approve` 继续由 `POLICY-005` 返回 `approval`，不可被读取白名单绕过。实习生不可申请，virtual/rpa 不可充当审批人。
+
+### 3.9 个人工作中心（职场）API（✅ Sprint 7 已实现）
 
 > 员工视角的会话工作台：技能上传与「私聊/协作群聊」统一由 Conversation 承载。
 > 演示鉴权：新接口显式传 `actor_no`（无真实 IAM）。
@@ -326,6 +336,7 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
   "employment_type": "formal | intern",
   "source_human_no": "E10281",
   "owner_human_no": "E10281",
+  "owner_name": "张三",
   "department": "架构部",
   "role_prompt": "...",
   "status": "active",

@@ -29,11 +29,18 @@ def ensure_schema_compatibility() -> None:
     """
     if not DATABASE_URL.startswith("sqlite"):
         return
-    columns = {column["name"] for column in inspect(engine).get_columns("plugin")}
-    if columns and "runtime_meta" not in columns:
+    inspector = inspect(engine)
+    plugin_columns = {column["name"] for column in inspector.get_columns("plugin")}
+    if plugin_columns and "runtime_meta" not in plugin_columns:
         with engine.begin() as connection:
             connection.execute(
                 text("ALTER TABLE plugin ADD COLUMN runtime_meta JSON NOT NULL DEFAULT '{}'")
+            )
+    grant_columns = {column["name"] for column in inspector.get_columns("employee_plugin_grant")}
+    if grant_columns and "grant_source" not in grant_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE employee_plugin_grant ADD COLUMN grant_source VARCHAR NOT NULL DEFAULT ''")
             )
 
 

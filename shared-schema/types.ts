@@ -29,6 +29,7 @@ export interface Employee {
   employment_type: 'formal' | 'intern' | string;
   source_human_no: string | null;
   owner_human_no: string;
+  owner_name?: string;
   department: string;
   role_prompt: string;
   status: string;

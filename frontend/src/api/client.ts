@@ -1,4 +1,5 @@
 import type {
+  AccessRequest,
   AuditEvent,
   Capability,
   ChatMessage,
@@ -71,6 +72,18 @@ export const api = {
     request<Capability[]>(`/capabilities?actor_no=${encodeURIComponent(actorNo)}`),
   listPolicies: () => request<Policy[]>('/policies'),
   listAudit: (params?: { decision?: string }) => request<AuditEvent[]>(`/audit${qs(params)}`),
+  listAccessRequests: (params?: { applicant_no?: string; status?: string }) =>
+    request<AccessRequest[]>(`/access-requests${qs(params)}`),
+  createAccessRequest: (applicantNo: string, resourceType: 'knowledge' | 'plugin', resourceId: string, reason: string) =>
+    request<AccessRequest>(`/access-requests?applicant_no=${encodeURIComponent(applicantNo)}`, {
+      method: 'POST',
+      body: JSON.stringify({ resource_type: resourceType, resource_id: resourceId, reason }),
+    }),
+  approveAccessRequest: (requestId: number, approve: boolean, actorNo: string) =>
+    request<AccessRequest>(`/access-requests/${requestId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ approve, actor_no: actorNo }),
+    }),
   listTeams: () => request<Team[]>('/teams'),
   getTeam: (teamId: string) => request<TeamDetail>(`/teams/${encodeURIComponent(teamId)}`),
   createTask: (teamId: string, requestText: string) =>

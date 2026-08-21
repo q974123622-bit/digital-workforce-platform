@@ -615,7 +615,7 @@ describe('WorkplacePage', () => {
     expect(screen.queryByText('整理新员工入职准备清单')).not.toBeInTheDocument();
   });
 
-  it('工作流卡片：点击查看步骤/授权成员/示例指令', async () => {
+  it('使用指南：点击查看步骤/授权成员/示例指令', async () => {
     const workflows: Workflow[] = [
       {
         plugin_id: 'expense-claim',
@@ -636,7 +636,7 @@ describe('WorkplacePage', () => {
     });
     renderPage();
 
-    fireEvent.click(await screen.findByRole('button', { name: '工作流' }));
+    fireEvent.click(await screen.findByRole('button', { name: '使用指南' }));
     expect(screen.getByText('差旅报销流程')).toBeInTheDocument();
     fireEvent.click(screen.getByText('差旅报销流程'));
 

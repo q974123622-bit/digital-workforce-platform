@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import {
   CheckCircleOutlined,
+  CommentOutlined,
   ClockCircleOutlined,
   DeleteOutlined,
   DownOutlined,
   ExperimentOutlined,
   PlusOutlined,
+  QuestionCircleOutlined,
   RobotOutlined,
   SendOutlined,
   StopOutlined,
+  ToolOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   UpOutlined,
@@ -30,6 +34,7 @@ import {
   Space,
   Switch,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message,
@@ -297,7 +302,7 @@ export default function WorkplacePage() {
       .catch(() => setWorkflows([]));
   }, [refreshConversations]);
 
-  const [tab, setTab] = useState<'messages' | 'contacts' | 'workflows'>('messages');
+  const [tab, setTab] = useState<'messages' | 'contacts' | 'guide'>('messages');
   const [keyword, setKeyword] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Conversation | null>(null);
@@ -422,7 +427,10 @@ export default function WorkplacePage() {
           (emp) =>
             !keyword ||
             emp.name.includes(keyword) ||
+            emp.employee_no.includes(keyword) ||
             emp.department.includes(keyword) ||
+            emp.owner_human_no.includes(keyword) ||
+            (emp.owner_name ?? '').includes(keyword) ||
             emp.role_prompt.includes(keyword),
         ),
       }))
@@ -452,7 +460,12 @@ export default function WorkplacePage() {
   const visibleWorkflows = useMemo(
     () =>
       keyword
-        ? workflows.filter((wf) => wf.name.includes(keyword) || wf.description.includes(keyword))
+        ? workflows.filter((wf) =>
+            wf.name.includes(keyword) ||
+            wf.description.includes(keyword) ||
+            wf.steps.some((step) => step.includes(keyword)) ||
+            wf.authorized_employees.some((employee) => employee.name.includes(keyword) || employee.employee_no.includes(keyword)),
+          )
         : workflows,
     [keyword, workflows],
   );
@@ -700,7 +713,7 @@ export default function WorkplacePage() {
           </Space>
             <Input
               allowClear
-              placeholder={tab === 'messages' ? '搜索会话' : tab === 'contacts' ? '搜索联系人' : '搜索工作流'}
+              placeholder={tab === 'messages' ? '搜索会话' : tab === 'contacts' ? '搜索联系人' : '搜索使用指南'}
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             style={{ marginTop: 12 }}
@@ -725,16 +738,6 @@ export default function WorkplacePage() {
               }}
             >
               通讯录
-            </Button>
-            <Button
-              type={tab === 'workflows' ? 'primary' : 'text'}
-              size="small"
-              onClick={() => {
-                setTab('workflows');
-                setKeyword('');
-              }}
-            >
-              工作流
             </Button>
             <div style={{ flex: 1 }} />
             <Button
@@ -843,23 +846,45 @@ export default function WorkplacePage() {
                   {group.items.map((emp) => {
                     const meta = metaOf(emp.employee_no);
                     return (
-                      <div key={emp.employee_no} className="wp-contact-row">
+                      <div key={emp.employee_no} className="wp-contact-row wp-employee-row">
                         <Avatar size={38} style={{ background: meta.bg, color: meta.color }}>
                           {meta.emoji}
                         </Avatar>
                         <div className="wp-row-main">
-                          <div className="wp-row-name">{emp.name}</div>
-                          <div className="wp-row-preview">{emp.role_prompt || `${emp.department} · ${meta.label}`}</div>
+                          <Link className="wp-contact-name-link" to={`/employees/${emp.employee_no}`}>
+                            {emp.name}
+                          </Link>
+                          <div className="wp-row-preview">
+                            {emp.employee_no} · {emp.department || '未设置部门'}
+                          </div>
+                          <div className="wp-row-preview">
+                            负责人：{emp.owner_name || emp.owner_human_no}（{emp.owner_human_no}）
+                          </div>
                         </div>
-                        <Space size={4}>
+                        <Space size={2} className="wp-contact-actions">
                           {emp.type === 'twin' && (
-                            <Button size="small" onClick={() => setSkillDrawerOpen(true)}>
-                              技能
-                            </Button>
+                            <Tooltip title="管理技能">
+                              <Button
+                                type="text"
+                                shape="circle"
+                                size="small"
+                                aria-label="技能"
+                                icon={<ToolOutlined />}
+                                onClick={() => setSkillDrawerOpen(true)}
+                              />
+                            </Tooltip>
                           )}
-                          <Button size="small" type="primary" ghost onClick={() => void openDirect(emp.employee_no)}>
-                            私聊
-                          </Button>
+                          <Tooltip title="发起私聊">
+                            <Button
+                              className="wp-chat-action"
+                              type="text"
+                              shape="circle"
+                              size="small"
+                              aria-label="私聊"
+                              icon={<CommentOutlined />}
+                              onClick={() => void openDirect(emp.employee_no)}
+                            />
+                          </Tooltip>
                         </Space>
                       </div>
                     );
@@ -872,7 +897,7 @@ export default function WorkplacePage() {
             <>
               <div className="wp-contacts-head">
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Mock 工作流/RPA 目录 · 点击卡片查看步骤与授权成员
+                  使用指南 · 了解可由数字员工执行的流程、步骤和示例指令
                 </Text>
               </div>
               {visibleWorkflows.map((workflow) => {
@@ -912,9 +937,28 @@ export default function WorkplacePage() {
                   </div>
                 );
               })}
-              {visibleWorkflows.length === 0 && <Empty style={{ marginTop: 48 }} description="没有找到相关工作流" />}
+              {visibleWorkflows.length === 0 && <Empty style={{ marginTop: 48 }} description="没有找到相关指南" />}
             </>
           )}
+        </div>
+        <div className="wp-sidebar-foot">
+          <button
+            type="button"
+            className="wp-guide-trigger"
+            aria-label="使用指南"
+            onClick={() => {
+              setTab('guide');
+              setKeyword('');
+            }}
+          >
+            <Tag
+              icon={<QuestionCircleOutlined />}
+              color={tab === 'guide' ? 'blue' : undefined}
+              className="wp-guide-tag"
+            >
+              使用指南
+            </Tag>
+          </button>
         </div>
       </aside>
 
@@ -1261,9 +1305,9 @@ export default function WorkplacePage() {
         )}
       </Drawer>
 
-      {/* 工作流详情抽屉 */}
+      {/* 使用指南详情抽屉 */}
       <Drawer
-        title="工作流详情"
+        title="使用指南"
         open={selectedWorkflow !== null}
         onClose={() => setSelectedWorkflow(null)}
         width={400}

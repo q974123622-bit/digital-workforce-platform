@@ -66,6 +66,21 @@ def test_employee_crud(client):
     assert client.get(f"/api/v1/employees/{employee_no}").status_code == 404
 
 
+def test_each_human_can_only_have_one_twin(client):
+    resp = client.post(
+        "/api/v1/employees",
+        json={
+            "name": "重复的张三分身",
+            "type": "twin",
+            "source_human_no": "E10281",
+            "owner_human_no": "E10281",
+            "department": "金融科技部",
+        },
+    )
+    assert resp.status_code == 409
+    assert "只能拥有一个数字分身" in resp.json()["error"]["message"]
+
+
 def test_plugin_crud(client):
     resp = client.post(
         "/api/v1/plugins",
