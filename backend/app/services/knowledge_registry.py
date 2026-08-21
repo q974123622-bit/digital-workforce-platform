@@ -22,5 +22,18 @@ def resolve(db: Session, knowledge_base_id: str) -> models.KnowledgeBase | None:
 
 
 def plugin_id_for_level(data_level: str) -> str:
-    """知识库访问经统一知识插件入口（L1→knowledge-l1，L2→knowledge-l2）。"""
-    return "knowledge-l1" if data_level == "L1" else "knowledge-l2"
+    """知识库访问经分级知识插件入口。"""
+    return {"L1": "knowledge-l1", "L2": "knowledge-l2", "L3": "knowledge-l3"}.get(data_level, "knowledge-l3")
+
+
+def accessible_knowledge_bases(db: Session, subject) -> list[dict]:
+    """返回当前主体实际可读的知识库，不泄露不可访问资源的名称。"""
+    from .policy import DECISION_ALLOW, ResourceRef, evaluate
+
+    result: list[dict] = []
+    for kb in list_resources(db):
+        plugin_id = plugin_id_for_level(kb.data_level)
+        decision = evaluate(db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read")
+        if decision.decision == DECISION_ALLOW:
+            result.append({"id": kb.id, "name": kb.name, "data_level": kb.data_level})
+    return result

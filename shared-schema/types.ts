@@ -25,8 +25,10 @@ export interface Employee {
   employee_no: string;
   name: string;
   type: EmployeeType;
+  employment_type: "formal" | "intern";
   source_human_no: string | null;
   owner_human_no: string;
+  owner_name?: string;
   department: string;
   role_prompt: string;
   status: string;
@@ -37,6 +39,19 @@ export interface Employee {
   max_data_level: string;
   allowed_domains: string[];
   grants: Grant[];
+}
+
+export interface AccessRequest {
+  id: number;
+  applicant_no: string;
+  resource_type: "knowledge" | "plugin";
+  resource_id: string;
+  reason: string;
+  status: "pending" | "granted" | "rejected";
+  approval_chain: { actor_no: string; decision: string }[];
+  decided_by: string | null;
+  decided_at: string | null;
+  created_at: string;
 }
 
 export interface Plugin {

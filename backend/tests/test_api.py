@@ -10,9 +10,9 @@ def test_seed_counts(client):
     assert len([e for e in employees if e["type"] == "twin"]) == 2
     assert len([e for e in employees if e["type"] == "virtual"]) == 4
     assert len([e for e in employees if e["type"] == "rpa"]) == 1
-    assert len(client.get("/api/v1/plugins").json()) == 11
+    assert len(client.get("/api/v1/plugins").json()) == 12
     assert len(client.get("/api/v1/policies").json()) == 9
-    assert len(client.get("/api/v1/knowledge-bases").json()) == 8
+    assert len(client.get("/api/v1/knowledge-bases").json()) == 9
     teams = client.get("/api/v1/teams").json()
     assert len(teams) == 1
     assert len(teams[0]["members"]) == 4
@@ -54,6 +54,21 @@ def test_employee_crud(client):
 
     assert client.delete(f"/api/v1/employees/{employee_no}").status_code == 204
     assert client.get(f"/api/v1/employees/{employee_no}").status_code == 404
+
+
+def test_each_human_can_only_have_one_twin(client):
+    resp = client.post(
+        "/api/v1/employees",
+        json={
+            "name": "重复的张三分身",
+            "type": "twin",
+            "source_human_no": "E10281",
+            "owner_human_no": "E10281",
+            "department": "金融科技部",
+        },
+    )
+    assert resp.status_code == 409
+    assert "只能拥有一个数字分身" in resp.json()["error"]["message"]
 
 
 def test_plugin_crud(client):

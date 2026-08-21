@@ -25,6 +25,7 @@ def seed_data(db, data: dict) -> None:
         models.Team,
         models.KnowledgeChunk,
         models.KnowledgeBase,
+        models.AccessRequest,
         models.ChatMessage,
         models.ChatSession,
         models.EmployeePluginGrant,

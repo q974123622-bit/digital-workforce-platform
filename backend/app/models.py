@@ -56,6 +56,7 @@ class EmployeePluginGrant(Base):
     plugin_id: Mapped[str] = mapped_column(String, index=True)
     action: Mapped[str] = mapped_column(String, default="read")
     decision_mode: Mapped[str] = mapped_column(String, default="allow")  # allow | deny | approval
+    grant_source: Mapped[str] = mapped_column(String, default="")  # seed | whitelist | manual
 
 
 class Policy(Base):
@@ -168,6 +169,23 @@ class TaskRun(Base):
     subtasks: Mapped[list] = mapped_column(JSON, default=list)
     summary: Mapped[str] = mapped_column(String, default="")
     source: Mapped[str] = mapped_column(String, default="builtin")  # builtin | agentteams
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AccessRequest(Base):
+    """L3 敏感资源读取白名单申请：pending -> granted/rejected。"""
+
+    __tablename__ = "access_request"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    applicant_no: Mapped[str] = mapped_column(String, index=True)
+    resource_type: Mapped[str] = mapped_column(String)  # knowledge | plugin
+    resource_id: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="pending")
+    approval_chain: Mapped[list] = mapped_column(JSON, default=list)
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 

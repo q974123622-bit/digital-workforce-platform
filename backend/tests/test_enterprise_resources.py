@@ -18,11 +18,12 @@ def _search(client, employee_id, kb_id, query, trace_id):
 # ---- Knowledge Resource Registry ----
 
 
-def test_registry_eight_resources(client):
+def test_registry_resources(client):
     resp = client.get("/api/v1/knowledge-bases")
     assert resp.status_code == 200
     kbs = {kb["id"]: kb for kb in resp.json()}
     assert set(kbs) == {
+        "KB-CUSTOMER-SENSITIVE",
         "KB-PUBLIC",
         "KB-ONBOARD",
         "KB-INTERNAL",
@@ -39,8 +40,8 @@ def test_registry_eight_resources(client):
     assert kbs["KB-INTERNAL"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-FINTECH"]["department_scope"] == ["金融科技部"]
     assert kbs["KB-INTERNAL"]["resource_type"] == "knowledge"
-    assert kbs["KB-IT-SERVICE"]["data_level"] == "L1"
-    assert kbs["KB-IT-SERVICE"]["allowed_employment_type"] == ["formal", "intern"]
+    assert kbs["KB-IT-SERVICE"]["data_level"] == "L2"
+    assert kbs["KB-IT-SERVICE"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-IT-SERVICE"]["doc_path"] == "mock-data/kb/it-service"
     assert kbs["KB-SECURITIES"]["data_level"] == "L2"
     assert kbs["KB-SECURITIES"]["allowed_employment_type"] == ["formal"]
@@ -142,15 +143,14 @@ def test_search_missing_kb(client):
 # ---- P17：新增模拟知识库（多格式虚构目录） ----
 
 
-def test_new_it_service_kb_l1_any_employee_allow(client):
-    for emp in ("DT-E10281", "DT-E20999"):
-        resp = _search(client, emp, "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-001")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["decision"] == "allow"
-        assert body["policy_id"] == "P-DEFAULT-001"
-        assert body["data"]["source"] == "demo"
-        assert len(body["data"]["hits"]) >= 1
+def test_it_service_kb_is_internal(client):
+    formal = _search(client, "DT-E10281", "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-001")
+    assert formal.status_code == 200
+    assert formal.json()["policy_id"] == "POLICY-001"
+
+    intern = _search(client, "DT-E20999", "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-002")
+    assert intern.status_code == 403
+    assert intern.json()["error"]["detail"]["policy_id"] == "POLICY-002"
 
 
 def test_new_securities_kb_l2_formal_allow(client):

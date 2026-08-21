@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Badge, Card, Col, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd';
+import { Badge, Button, Card, Col, message, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { AuditEvent, Policy } from '@dwp/shared-schema';
+import type { AccessRequest, AuditEvent, Policy } from '@dwp/shared-schema';
 import { api } from '../api/client';
 import { DecisionTag } from '../components/tags';
 import { EmptyState, ErrorState, LoadingState } from '../components/PageState';
@@ -146,6 +146,67 @@ function AuditPanel() {
   );
 }
 
+function AccessRequestsPanel() {
+  const [messageApi, contextHolder] = message.useMessage();
+  const fetcher = useCallback(() => api.listAccessRequests(), []);
+  const { data, loading, error, reload } = useAsyncData<AccessRequest[]>(fetcher);
+  const [submitting, setSubmitting] = useState(false);
+
+  const createDemoRequest = async () => {
+    setSubmitting(true);
+    try {
+      await api.createAccessRequest('DT-E10281', 'knowledge', 'KB-CUSTOMER-SENSITIVE', '内部演示：申请查看客户 KYC 示例');
+      messageApi.success('L3 访问申请已提交');
+      reload();
+    } catch (err) {
+      messageApi.error(err instanceof Error ? err.message : '提交失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const decide = async (id: number, approve: boolean) => {
+    try {
+      await api.approveAccessRequest(id, approve, 'DT-E10281');
+      messageApi.success(approve ? '已批准并写入读取白名单' : '已拒绝申请');
+      reload();
+    } catch (err) {
+      messageApi.error(err instanceof Error ? err.message : '审批失败');
+    }
+  };
+
+  const columns: ColumnsType<AccessRequest> = [
+    { title: '申请单', dataIndex: 'id', width: 90, render: (id: number) => <span className="mono">ARQ-{id}</span> },
+    { title: '申请人', dataIndex: 'applicant_no', render: (value: string) => <span className="mono">{value}</span> },
+    { title: '资源', dataIndex: 'resource_id', render: (value: string) => <span className="mono">{value}</span> },
+    { title: '理由', dataIndex: 'reason' },
+    { title: '状态', dataIndex: 'status', render: (value: string) => <Tag color={value === 'granted' ? 'success' : value === 'rejected' ? 'error' : 'warning'}>{value === 'granted' ? '已授权' : value === 'rejected' ? '已拒绝' : '待审批'}</Tag> },
+    {
+      title: '操作', key: 'actions', width: 170,
+      render: (_: unknown, record: AccessRequest) => record.status === 'pending' ? (
+        <Space>
+          <Popconfirm title="批准后将写入 L3 读取白名单" onConfirm={() => decide(record.id, true)}><Button size="small" type="primary">批准</Button></Popconfirm>
+          <Button size="small" danger onClick={() => decide(record.id, false)}>拒绝</Button>
+        </Space>
+      ) : <Typography.Text type="secondary">{record.decided_by ?? '—'}</Typography.Text>,
+    },
+  ];
+
+  if (error) return <ErrorState onRetry={reload} />;
+  return (
+    <div>
+      {contextHolder}
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <Typography.Text>演示链路：正式员工申请 L3 客户敏感信息 → 正式员工数字分身审批 → 写入只读白名单。</Typography.Text>
+          <Button type="primary" loading={submitting} onClick={createDemoRequest}>发起演示申请</Button>
+        </Space>
+      </Card>
+      <Table rowKey="id" size="small" loading={loading} columns={columns} dataSource={data ?? []} pagination={false} scroll={{ x: 900 }} />
+    </div>
+  );
+}
+
 export default function Security() {
   return (
     <div>
@@ -153,6 +214,7 @@ export default function Security() {
       <Tabs
         items={[
           { key: 'policies', label: '权限策略', children: <PoliciesPanel /> },
+          { key: 'access', label: '访问申请', children: <AccessRequestsPanel /> },
           { key: 'audit', label: '审计日志', children: <AuditPanel /> },
         ]}
       />

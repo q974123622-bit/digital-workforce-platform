@@ -81,6 +81,31 @@ def test_chat_endpoint_virtual_onboarding_allow(db_session):
     assert "报到" in result.message
 
 
+def test_chat_guard_blocks_query_answer_without_tool(db_session):
+    fake = FakeLLM([
+        LLMResponse(content="金融科技库里可能有区块链和风控。"),
+        LLMResponse(content="金融科技库里可能有区块链和风控。"),
+    ])
+    result = ChatOrchestrator(fake).handle_message(
+        db_session, employee_no="DT-E20999", message="查询一下金融科技知识库", session_id=None,
+    )
+    assert result.tool_cards == []
+    assert "无法确认" in result.message
+    assert "区块链" not in result.message
+    assert len(fake.calls) == 2
+
+
+def test_system_prompt_hides_inaccessible_kb_names(db_session):
+    fake = FakeLLM([LLMResponse(content="好的")])
+    ChatOrchestrator(fake).handle_message(
+        db_session, employee_no="DT-E20999", message="你好", session_id=None,
+    )
+    system_prompt = fake.calls[0][0]["content"]
+    assert "公共知识（L1）" in system_prompt
+    assert "示例客户敏感信息库" not in system_prompt
+    assert "IT 服务知识库" not in system_prompt
+
+
 def test_chat_saves_session_history(client, db_session):
     fake = FakeLLM(
         [

@@ -6,18 +6,19 @@
 
 - **Sprint 1/1.5**：前后端骨架、五层架构、API 契约 v1.1 冻结、目录整理。
 - **Sprint 2（Core Control Plane）**：Employee Identity、Policy Engine（四维评估，POLICY-001~005）、Plugin Gateway、Mock Adapter、全决策审计。
-- **Sprint 3（Enterprise Resource & Security）**：Knowledge Adapter（Mock + Stub + 多格式解析）、Resource Registry（8 个知识库）、Sandbox Policy + Mock Executor、Secret/Config 环境变量引用。
+- **Sprint 3（Enterprise Resource & Security）**：Knowledge Adapter（Mock + Stub + 多格式解析）、Resource Registry（9 个知识库）、Sandbox Policy + Mock Executor、Secret/Config 环境变量引用。
+- **权限治理**：L3 读取采用“正式员工申请 → 正式员工数字分身审批 → 只读白名单”；L3 执行/导出/删除仍由 POLICY-005 人工审批，聊天仅注入当前身份可访问的知识库清单。
 - **Sprint 4（Chat + DeepSeek）**：LLMProvider（chat/tool_call/structured_output + SAFEMODE）、Session Manager、Chat Orchestrator（≤3 轮工具，Deny 卡片）。
 - **Sprint 5（Team）**：TeamTaskOrchestrator（模板拆解 + Worker 执行 + 审批 + LLM 汇总）、DeepSeek Harness Docker 接入（`DWP_HARNESS_ENABLED=1` 启用）。
 - **Sprint 6（工作台）**：前端聊天页 + 员工工作台面板（角色配色 / 插件授权 / 知识库权限 / 安全策略）+ 人设注入（role_prompt 进 system prompt）+ 前端 Team 任务页。
-- **Sprint 7（职场会话台）**：企业微信式会话台、群聊分发（分身判断任务/闲聊）、SubtaskExecutor、SandboxManager Docker 真启动。
+- **Sprint 7（职场会话台）**：以消息、通讯录为主入口；流程目录收敛为使用指南；通讯录展示数字员工工号、部门和负责人；群聊分发（分身判断任务/闲聊）、SubtaskExecutor、SandboxManager Docker 真启动。
 - **Sprint 8-12（协同执行）**：先持久化唯一 TaskRun；AgentTeams 负责讨论、认领与风险提示；Identity → Policy/Gateway → 员工 DeepSeek Harness → Plugin Adapter Tool 负责受控执行；审批通过后才执行原子任务。协作事件按 `task_id`、发送者和时间窗口隔离，超时不会再复制任务或触发双重副作用。
 - **Sprint 13（统一能力契约）**：Skill 明确为 instruction capability，Plugin 声明统一 actions/input_schema/executor；每个数字员工由独立 Harness 上下文驱动，Plugin Adapter 作为受控工具调用。Harness 不可用时 UI 明确显示 `Demo Adapter 降级`。
 - **Sprint 7（我的职场）**：企业微信式个人工作中心——会话列表（我的分身置顶）/ 通讯录 / 微信气泡对话 / 技能上传（文本/Markdown 注入分身人设）/ 工作流目录卡片（点击查看步骤与授权成员）；私聊与群聊统一由 Conversation 承载。群聊消息由分身判断「任务/闲聊」：任务型接入 TeamTaskOrchestrator（拆解→指派→Gateway 执行→审批→Leader 汇总，任务卡片内联到触发消息之后，子任务结果可读化，同请求自动去重，支持一键清空会话），闲聊仅一位成员回复；执行器为 SubtaskExecutor 接口（默认 Gateway，真实 RPA/Workflow 后续接入）。
 - **RAG 检索**：Qwen Embedding（qwen3.7-text-embedding）+ kb_chunk 向量索引 + 余弦 top-k，`DWP_KB_MODE=rag` 时启用，失败自动降级 Mock。
 - **黄金链路联调（T3-02）**：`scripts/golden_chain.py` 8/8 通过——问答 → RAG → 团队任务 → 审批 → 审计。
 
-Mock 数据：正式员工 2、实习生 2、数字分身 2、通用虚拟员工 4、RPA 员工 1、插件 11（含报销/请假/纪要/周报/采购 5 个虚构 workflow/RPA）、策略 9、虚构知识库资源 8、团队 1、技能 5（张三 4 + 陈晓萌 1）、职场会话 2。角色已拆分为入职协调、HR、IT、采购和报表自动化，避免 IT/HR 身份越界代办采购或 RPA。
+Mock 数据：正式员工 2、实习生 2、数字分身 2、通用虚拟员工 4、RPA 员工 1、插件 12（含 L3 敏感知识入口）、策略 9、虚构知识库资源 9、团队 1、技能 5（张三 4 + 陈晓萌 1）、职场会话 2。角色已拆分为入职协调、HR、IT、采购和报表自动化，避免 IT/HR 身份越界代办采购或 RPA。
 
 ## 目录结构
 

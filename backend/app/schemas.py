@@ -44,8 +44,10 @@ class EmployeeOut(BaseModel):
     employee_no: str
     name: str
     type: str
+    employment_type: Literal["formal", "intern"]
     source_human_no: str | None
     owner_human_no: str
+    owner_name: str
     department: str
     role_prompt: str
     status: str
@@ -201,6 +203,32 @@ class KnowledgeBaseOut(BaseModel):
     description: str
     status: str
     doc_path: str | None
+
+
+class AccessRequestCreate(BaseModel):
+    resource_type: Literal["knowledge", "plugin"]
+    resource_id: str = Field(min_length=1)
+    reason: str = Field(default="", max_length=500)
+
+
+class AccessRequestApproveIn(BaseModel):
+    approve: bool
+    actor_no: str
+
+
+class AccessRequestOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    applicant_no: str
+    resource_type: str
+    resource_id: str
+    reason: str
+    status: str
+    approval_chain: list = []
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    created_at: datetime
 
 
 # ---- Sprint 2：Core Control Plane 内部接口（契约 API_CONTRACT.md §6） ----

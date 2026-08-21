@@ -40,6 +40,7 @@ const twin: Employee = {
   employee_no: 'DT-E10281',
   name: '张三的数字分身',
   type: 'twin',
+  employment_type: 'formal',
   source_human_no: 'E10281',
   owner_human_no: 'E10281',
   department: '架构部',
@@ -76,6 +77,7 @@ const ve1: Employee = {
   employee_no: 'VE-0001',
   name: '新员工入职助手',
   type: 'virtual',
+  employment_type: 'formal',
   source_human_no: null,
   owner_human_no: 'E10021',
   department: '人力资源部',
@@ -95,6 +97,7 @@ const rpa: Employee = {
   employee_no: 'RPA-0001',
   name: '报表机器人',
   type: 'rpa',
+  employment_type: 'formal',
   source_human_no: null,
   owner_human_no: 'E10021',
   department: '财务部',
@@ -612,7 +615,7 @@ describe('WorkplacePage', () => {
     expect(screen.queryByText('整理新员工入职准备清单')).not.toBeInTheDocument();
   });
 
-  it('工作流卡片：点击查看步骤/授权成员/示例指令', async () => {
+  it('使用指南：点击查看步骤/授权成员/示例指令', async () => {
     const workflows: Workflow[] = [
       {
         plugin_id: 'expense-claim',
@@ -633,7 +636,7 @@ describe('WorkplacePage', () => {
     });
     renderPage();
 
-    fireEvent.click(await screen.findByRole('button', { name: '工作流' }));
+    fireEvent.click(await screen.findByRole('button', { name: '使用指南' }));
     expect(screen.getByText('差旅报销流程')).toBeInTheDocument();
     fireEvent.click(screen.getByText('差旅报销流程'));
 
