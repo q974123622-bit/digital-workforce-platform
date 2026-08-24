@@ -113,8 +113,8 @@ def test_it_support_escalate_intern_partial(db_session):
     data = result["data"]
     assert data["status"] == "partial"
     by_step = {s["step_id"]: s for s in data["steps"]}
-    assert by_step["kb"]["decision"] == "allow"
-    assert by_step["collaborate"]["decision"] == "deny"
+    assert by_step["kb"]["decision"] == "deny"
+    assert "collaborate" not in by_step
 
 
 # ---- employee-assist-workflow ----

@@ -8,6 +8,7 @@ import {
   DeploymentUnitOutlined,
   LinkOutlined,
   RobotOutlined,
+  ReadOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -32,8 +33,14 @@ export const TYPE_META: Record<string, TypeMeta> = {
   rpa: { label: 'RPA', color: 'orange', icon: <ThunderboltOutlined />, hex: '#fa8c16', bg: '#fff7e6' },
 };
 
+export const EMPLOYMENT_META: Record<string, { label: string; color: string; icon: ReactNode }> = {
+  formal: { label: '正式员工', color: 'blue', icon: <ReadOutlined /> },
+  intern: { label: '实习生', color: 'gold', icon: <ReadOutlined /> },
+};
+
 /** 插件类型 */
 export const PLUGIN_TYPE_META: Record<string, TypeMeta> = {
+  instruction: { label: 'Instruction Skill', color: 'default', icon: <BookOutlined />, hex: '#5c6b83', bg: '#f5f5f5' },
   knowledge: { label: '知识库', color: 'geekblue', icon: <BookOutlined />, hex: '#2f54eb', bg: '#f0f5ff' },
   mcp: { label: 'MCP', color: 'purple', icon: <ApiOutlined />, hex: '#722ed1', bg: '#f9f0ff' },
   workflow: { label: 'Workflow', color: 'cyan', icon: <ApartmentOutlined />, hex: '#13c2c2', bg: '#e6fffb' },
@@ -69,6 +76,12 @@ export function TypeTag({ value }: { value: string }) {
       {meta.label}
     </Tag>
   );
+}
+
+export function EmploymentTag({ value }: { value: string }) {
+  const meta = EMPLOYMENT_META[value];
+  if (!meta) return <Tag>{value}</Tag>;
+  return <Tag icon={meta.icon} color={meta.color}>{meta.label}</Tag>;
 }
 
 export function PluginTypeTag({ value }: { value: string }) {

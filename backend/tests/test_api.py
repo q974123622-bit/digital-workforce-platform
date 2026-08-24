@@ -6,15 +6,16 @@ def test_health(client):
 
 def test_seed_counts(client):
     employees = client.get("/api/v1/employees").json()
-    assert len(employees) == 5
+    assert len(employees) == 7
     assert len([e for e in employees if e["type"] == "twin"]) == 2
-    assert len([e for e in employees if e["type"] == "virtual"]) == 3
-    assert len(client.get("/api/v1/plugins").json()) == 18
+    assert len([e for e in employees if e["type"] == "virtual"]) == 4
+    assert len([e for e in employees if e["type"] == "rpa"]) == 1
+    assert len(client.get("/api/v1/plugins").json()) == 24
     assert len(client.get("/api/v1/policies").json()) == 9
-    assert len(client.get("/api/v1/knowledge-bases").json()) == 8
+    assert len(client.get("/api/v1/knowledge-bases").json()) == 9
     teams = client.get("/api/v1/teams").json()
     assert len(teams) == 1
-    assert len(teams[0]["members"]) == 3
+    assert len(teams[0]["members"]) == 4
 
 
 def test_employee_list_filters(client):
@@ -40,11 +41,12 @@ def test_employee_crud(client):
             "type": "virtual",
             "owner_human_no": "E10281",
             "department": "测试部",
+            "runtime_type": "demo",
         },
     )
     assert resp.status_code == 201
     employee_no = resp.json()["employee_no"]
-    assert employee_no == "VE-0004"
+    assert employee_no == "VE-0005"
 
     resp = client.put(f"/api/v1/employees/{employee_no}", json={"name": "改名后的虚拟员工"})
     assert resp.status_code == 200
@@ -52,6 +54,21 @@ def test_employee_crud(client):
 
     assert client.delete(f"/api/v1/employees/{employee_no}").status_code == 204
     assert client.get(f"/api/v1/employees/{employee_no}").status_code == 404
+
+
+def test_each_human_can_only_have_one_twin(client):
+    resp = client.post(
+        "/api/v1/employees",
+        json={
+            "name": "重复的张三分身",
+            "type": "twin",
+            "source_human_no": "E10281",
+            "owner_human_no": "E10281",
+            "department": "金融科技部",
+        },
+    )
+    assert resp.status_code == 409
+    assert "只能拥有一个数字分身" in resp.json()["error"]["message"]
 
 
 def test_plugin_crud(client):
@@ -105,7 +122,9 @@ def test_audit_events(client):
 def test_teams_and_knowledge(client):
     team = client.get("/api/v1/teams/TEAM-ONBOARD").json()
     assert team["leader_employee_id"] == "VE-0001"
-    assert {m["employee_id"] for m in team["members"]} == {"VE-0001", "VE-0002", "VE-0003"}
+    assert {m["employee_id"] for m in team["members"]} == {
+        "VE-0001", "VE-0002", "VE-0003", "RPA-0001"
+    }
 
     kb = client.get("/api/v1/knowledge-bases/KB-PUBLIC").json()
     assert kb["level"] == "L1"

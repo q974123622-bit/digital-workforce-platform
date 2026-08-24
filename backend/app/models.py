@@ -45,6 +45,7 @@ class Plugin(Base):
     data_level: Mapped[str] = mapped_column(String, default="L1")
     status: Mapped[str] = mapped_column(String, default="active")
     description: Mapped[str] = mapped_column(String, default="")
+    runtime_meta: Mapped[dict] = mapped_column(JSON, default=dict)  # mcpServer/tool 等运行时元数据
 
 
 class EmployeePluginGrant(Base):
@@ -55,6 +56,7 @@ class EmployeePluginGrant(Base):
     plugin_id: Mapped[str] = mapped_column(String, index=True)
     action: Mapped[str] = mapped_column(String, default="read")
     decision_mode: Mapped[str] = mapped_column(String, default="allow")  # allow | deny | approval
+    grant_source: Mapped[str] = mapped_column(String, default="")  # seed | whitelist | manual
 
 
 class Policy(Base):
@@ -159,9 +161,85 @@ class TaskRun(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     team_id: Mapped[str] = mapped_column(String)
+    conversation_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    trigger_message_seq: Mapped[int | None] = mapped_column(nullable=True)
     trace_id: Mapped[str] = mapped_column(String, default="")
     request: Mapped[str] = mapped_column(String, default="")
     status: Mapped[str] = mapped_column(String, default="pending")
     subtasks: Mapped[list] = mapped_column(JSON, default=list)
     summary: Mapped[str] = mapped_column(String, default="")
+    source: Mapped[str] = mapped_column(String, default="builtin")  # builtin | agentteams
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AccessRequest(Base):
+    """L3 敏感资源读取白名单申请：pending -> granted/rejected。"""
+
+    __tablename__ = "access_request"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    applicant_no: Mapped[str] = mapped_column(String, index=True)
+    resource_type: Mapped[str] = mapped_column(String)  # knowledge | plugin
+    resource_id: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="pending")
+    approval_chain: Mapped[list] = mapped_column(JSON, default=list)
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+# ---- Sprint 7：个人工作中心（职场）----
+
+
+class Skill(Base):
+    """员工上传给数字分身的技能（文本/Markdown，注入分身人设）。"""
+
+    __tablename__ = "skill"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_human_no: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(String, default="")
+    content: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="active")  # active | disabled
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class Conversation(Base):
+    """职场会话：私聊（direct）与协作群聊（group）统一承载。"""
+
+    __tablename__ = "conversation"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, default="direct")  # direct | group
+    title: Mapped[str] = mapped_column(String, default="")
+    owner_human_no: Mapped[str] = mapped_column(String, index=True)
+    participants: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class ConversationMessage(Base):
+    """职场会话消息：user 为员工本人，assistant 为数字成员回复。"""
+
+    __tablename__ = "conversation_message"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True)
+    participant_no: Mapped[str] = mapped_column(String, default="")
+    participant_name: Mapped[str] = mapped_column(String, default="")
+    role: Mapped[str] = mapped_column(String, default="user")  # user | assistant
+    content: Mapped[str] = mapped_column(String, default="")
+    tool_cards: Mapped[list] = mapped_column(JSON, default=list)
+    seq: Mapped[int] = mapped_column(default=0)
+
+
+class AgentTeamsEventSeen(Base):
+    """已回传过的 AgentTeams 房间事件（持久化去重，避免重启后重放）。"""
+
+    __tablename__ = "agentteams_event_seen"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

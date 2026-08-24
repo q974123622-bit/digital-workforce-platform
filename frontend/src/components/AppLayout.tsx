@@ -1,33 +1,46 @@
 import { useEffect, useState } from 'react';
 import {
   AppstoreOutlined,
+  DashboardOutlined,
+  DownOutlined,
   HomeOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   TeamOutlined,
-  UserOutlined,
 } from '@ant-design/icons';
-import { Avatar, Badge, Button, Divider, Input, Layout, Menu, Space, Typography } from 'antd';
+import { Avatar, Badge, Button, Divider, Dropdown, Input, Layout, Menu, Space, Typography } from 'antd';
+import type { MenuProps } from 'antd';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { CURRENT_USERS, useCurrentUser } from '../context/CurrentUserContext';
 import { BRAND_PRIMARY } from '../theme';
 
 const { Sider, Header, Content, Footer } = Layout;
 
-const menuItems = [
-  { key: '/', icon: <HomeOutlined />, label: <Link to="/">首页</Link> },
-  { key: '/employees', icon: <RobotOutlined />, label: <Link to="/employees">数字员工</Link> },
-  { key: '/plugins', icon: <AppstoreOutlined />, label: <Link to="/plugins">插件中心</Link> },
-  { key: '/security', icon: <SafetyCertificateOutlined />, label: <Link to="/security">安全中心</Link> },
-  { key: '/teams', icon: <TeamOutlined />, label: <Link to="/teams">协作团队</Link> },
+const menuItems: MenuProps['items'] = [
+  { key: '/workplace', icon: <HomeOutlined />, label: <Link to="/workplace">我的职场</Link> },
+  { type: 'divider' },
+  {
+    key: 'admin',
+    type: 'group',
+    label: '管理后台',
+    children: [
+      { key: '/admin', icon: <DashboardOutlined />, label: <Link to="/admin">数据总览</Link> },
+      { key: '/employees', icon: <RobotOutlined />, label: <Link to="/employees">数字员工</Link> },
+      { key: '/plugins', icon: <AppstoreOutlined />, label: <Link to="/plugins">能力中心</Link> },
+      { key: '/security', icon: <SafetyCertificateOutlined />, label: <Link to="/security">安全中心</Link> },
+      { key: '/teams', icon: <TeamOutlined />, label: <Link to="/teams">协作团队</Link> },
+    ],
+  },
 ];
 
 const routeMeta: Record<string, string> = {
-  '/': '首页',
+  '/workplace': '我的职场',
+  '/admin': '数据总览',
   '/employees': '数字员工',
-  '/plugins': '插件中心',
+  '/plugins': '能力中心',
   '/security': '安全中心',
   '/teams': '协作团队',
 };
@@ -37,11 +50,16 @@ type HealthState = 'checking' | 'ok' | 'error';
 export default function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { actor, setActor } = useCurrentUser();
   const [collapsed, setCollapsed] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [health, setHealth] = useState<HealthState>('checking');
 
-  const selected = menuItems.find((m) => location.pathname.startsWith(m.key))?.key ?? '/';
+  const flatKeys = ['/workplace', '/admin', '/employees', '/plugins', '/security', '/teams'];
+  const selected =
+    flatKeys
+      .filter((key) => location.pathname.startsWith(key))
+      .sort((a, b) => b.length - a.length)[0] ?? '/workplace';
   const title = routeMeta[selected] ?? '数字员工平台';
 
   useEffect(() => {
@@ -155,10 +173,24 @@ export default function AppLayout() {
           <Badge status={healthMeta[health].status} text={healthMeta[health].text} />
           <Divider type="vertical" />
           <Space size={8}>
-            <Avatar size="small" style={{ background: BRAND_PRIMARY }} icon={<UserOutlined />} />
-            <Typography.Text type="secondary" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>
-              演示用户
-            </Typography.Text>
+            <Dropdown
+              menu={{
+                items: CURRENT_USERS.map((user) => ({
+                  key: user.employee_no,
+                  label: `${user.name}（${user.department}）`,
+                })),
+                onClick: ({ key }) => setActor(key),
+                selectedKeys: [actor.employee_no],
+              }}
+            >
+              <Button type="text" style={{ display: 'flex', alignItems: 'center', gap: 6, height: 40 }}>
+                <Avatar size="small" style={{ background: BRAND_PRIMARY }}>
+                  {actor.name.slice(0, 1)}
+                </Avatar>
+                <Typography.Text style={{ fontSize: 13, whiteSpace: 'nowrap' }}>{actor.name}</Typography.Text>
+                <DownOutlined style={{ fontSize: 10, color: '#5c6b83' }} />
+              </Button>
+            </Dropdown>
           </Space>
         </Header>
         <Content

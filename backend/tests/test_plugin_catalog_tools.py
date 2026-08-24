@@ -25,6 +25,7 @@ def test_knowledge_catalog_all(db_session):
     assert {kb["id"] for kb in kbs} == {
         "KB-PUBLIC", "KB-ONBOARD", "KB-INTERNAL", "KB-FINTECH",
         "KB-IT-SERVICE", "KB-SECURITIES", "KB-REG-INTERNAL", "KB-REG-EXTERNAL",
+        "KB-CUSTOMER-SENSITIVE",
     }
     for kb in kbs:
         assert set(kb) == {"id", "name", "level", "domain", "description"}
@@ -32,9 +33,9 @@ def test_knowledge_catalog_all(db_session):
 
 def test_knowledge_catalog_level_filter(db_session):
     l1 = {kb["id"] for kb in _invoke(db_session, "knowledge-catalog", {"level": "L1"})["data"]["knowledge_bases"]}
-    assert l1 == {"KB-PUBLIC", "KB-ONBOARD", "KB-IT-SERVICE", "KB-REG-EXTERNAL"}
+    assert l1 == {"KB-PUBLIC", "KB-ONBOARD", "KB-REG-EXTERNAL"}
     l2 = {kb["id"] for kb in _invoke(db_session, "knowledge-catalog", {"level": "L2"})["data"]["knowledge_bases"]}
-    assert l2 == {"KB-INTERNAL", "KB-FINTECH", "KB-SECURITIES", "KB-REG-INTERNAL"}
+    assert l2 == {"KB-INTERNAL", "KB-FINTECH", "KB-IT-SERVICE", "KB-SECURITIES", "KB-REG-INTERNAL"}
 
 
 def test_knowledge_catalog_unknown_level_empty(db_session):

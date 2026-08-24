@@ -2,7 +2,11 @@
 
 > 状态：Sprint 1.5 冻结（2026-08-17）。本目录只放接口契约与注册说明，**不包含任何实现代码**。
 > 约束：不允许直接访问知识库、数据库、Workflow 或 RPA；所有资源调用必须走统一链路：
-> `Employee Identity → Policy Engine → Plugin Gateway → Adapter → Enterprise Resource`。
+> `Employee Identity → Policy Engine → Plugin Gateway → Employee Harness → Plugin Adapter Tool → Enterprise Resource`。
+
+Skill 与 Plugin 统一使用 Capability Contract v1.0，但 Skill 是不可执行的 instruction；
+只有 Plugin 可以进入上述执行链。Harness 负责员工级理解与工具计划，Adapter 是其受控业务工具；
+正常或降级路径都只允许 Adapter 调用一次，Harness 文本不能作为业务成功回执。
 
 ## 目录用途
 

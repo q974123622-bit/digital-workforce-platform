@@ -6,7 +6,6 @@
 """
 
 import os
-import json
 import shutil
 import subprocess
 import tempfile
@@ -25,17 +24,51 @@ class RuntimeResult:
     result: str = ""
 
 
+@dataclass(frozen=True)
+class HarnessExecutionContext:
+    """一次数字员工 Harness 执行的完整、可审计上下文。"""
+
+    task_id: str
+    employee_id: str
+    employee_name: str
+    role_prompt: str
+    responsibility: str
+    request: str
+    subtask: str
+    collaboration_summary: str
+    capability_id: str
+    capability_name: str
+
+    @property
+    def context_id(self) -> str:
+        return f"{self.employee_id}:{self.task_id}"
+
+
 class RuntimeAdapter:
     """统一 Runtime 接口：run(subject, task, context) -> RuntimeResult。"""
 
-    def run(self, *, employee_id: str, task_prompt: str, trace_id: str) -> RuntimeResult:
+    def run(
+        self,
+        *,
+        employee_id: str,
+        task_prompt: str,
+        trace_id: str,
+        context: HarnessExecutionContext | None = None,
+    ) -> RuntimeResult:
         raise NotImplementedError
 
 
 class NoopRuntimeAdapter(RuntimeAdapter):
     """演示模式：不调用外部运行时（测试/降级用）。"""
 
-    def run(self, *, employee_id: str, task_prompt: str, trace_id: str) -> RuntimeResult:
+    def run(
+        self,
+        *,
+        employee_id: str,
+        task_prompt: str,
+        trace_id: str,
+        context: HarnessExecutionContext | None = None,
+    ) -> RuntimeResult:
         return RuntimeResult(mode="demo", ok=False)
 
 
@@ -51,20 +84,34 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
     def __init__(self, timeout: int = 120):
         self.timeout = timeout
 
-    def run(self, *, employee_id: str, task_prompt: str, trace_id: str) -> RuntimeResult:
+    def run(
+        self,
+        *,
+        employee_id: str,
+        task_prompt: str,
+        trace_id: str,
+        context: HarnessExecutionContext | None = None,
+    ) -> RuntimeResult:
         if config.get("DWP_HARNESS_ENABLED") != "1":
             return RuntimeResult(mode="demo", ok=False, result="DWP_HARNESS_ENABLED 未开启，使用演示模式")
         if not config.get("DEEPSEEK_API_KEY"):
             return RuntimeResult(mode="demo", ok=False, result="DEEPSEEK_API_KEY 未配置")
         dsh_bin = shutil.which("dsh") or shutil.which("dsh.cmd")
         if dsh_bin:
-            runner = f'"{dsh_bin}" --profile headless'
+            runner = [dsh_bin, "--profile", "headless"]
         else:
             npx = shutil.which("npx") or shutil.which("npx.cmd")
             if not npx:
                 return RuntimeResult(mode="demo", ok=False, result="dsh/npx 不可用")
-            runner = f'"{npx}" --yes @deepseek-ai/dsh --profile headless'
+            runner = [npx, "--yes", "@deepseek-ai/dsh", "--profile", "headless"]
         env = os.environ.copy()
+        safe_employee = "".join(ch.lower() if ch.isalnum() else "-" for ch in employee_id).strip("-")
+        context_root = REPO_ROOT / "backend" / "harness-workspaces" / safe_employee
+        dsh_home = context_root / "dsh-home"
+        workspace = context_root / "workspace"
+        dsh_home.mkdir(parents=True, exist_ok=True)
+        workspace.mkdir(parents=True, exist_ok=True)
+        env["DSH_HOME"] = str(dsh_home)
         # headless 无交互：默认 approval=ask 会等待输入导致卡死；
         # danger-full-access 使 approval=never，仅用于虚构演示任务
         env["DSH_PERMISSION_MODE"] = "danger-full-access"
@@ -75,14 +122,14 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
             with os.fdopen(out_fd, "wb") as fout, os.fdopen(err_fd, "wb") as ferr:
                 try:
                     proc = subprocess.run(
-                        f"{runner} {json.dumps(task_prompt)}",
-                        shell=True,
+                        [*runner, task_prompt],
+                        shell=False,
                         stdin=subprocess.DEVNULL,
                         stdout=fout,
                         stderr=ferr,
                         timeout=self.timeout,
                         env=env,
-                        cwd=str(REPO_ROOT),
+                        cwd=str(workspace),
                         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                     )
                 except (subprocess.TimeoutExpired, OSError) as exc:
@@ -113,7 +160,14 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
         self.image = image
         self.timeout = timeout
 
-    def run(self, *, employee_id: str, task_prompt: str, trace_id: str) -> RuntimeResult:
+    def run(
+        self,
+        *,
+        employee_id: str,
+        task_prompt: str,
+        trace_id: str,
+        context: HarnessExecutionContext | None = None,
+    ) -> RuntimeResult:
         api_key = config.get("DEEPSEEK_API_KEY")
         docker_bin = shutil.which("docker")
         if not api_key:
@@ -122,9 +176,19 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
             return RuntimeResult(mode="demo", ok=False, result="docker 不可用")
 
         env_path = None
+        safe_employee = "".join(ch.lower() if ch.isalnum() else "-" for ch in employee_id).strip("-")
+        context_root = REPO_ROOT / "backend" / "harness-workspaces" / safe_employee
+        dsh_home = context_root / "dsh-home"
+        workspace = context_root / "workspace"
+        dsh_home.mkdir(parents=True, exist_ok=True)
+        workspace.mkdir(parents=True, exist_ok=True)
         try:
             with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False, encoding="utf-8") as f:
-                f.write(f"DEEPSEEK_API_KEY={api_key}\nDSH_PERMISSION_MODE=danger-full-access\n")
+                f.write(
+                    f"DEEPSEEK_API_KEY={api_key}\n"
+                    "DSH_PERMISSION_MODE=danger-full-access\n"
+                    "DSH_HOME=/dsh-home\n"
+                )
                 env_path = f.name
             proc = subprocess.run(
                 [
@@ -133,6 +197,12 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
                     "--rm",
                     "--env-file",
                     env_path,
+                    "--mount",
+                    f"type=bind,source={dsh_home.resolve()},target=/dsh-home",
+                    "--mount",
+                    f"type=bind,source={workspace.resolve()},target=/workspace",
+                    "--workdir",
+                    "/workspace",
                     self.image,
                     "--profile",
                     "headless",

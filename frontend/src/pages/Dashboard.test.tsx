@@ -13,6 +13,7 @@ const employees: Employee[] = [
     employee_no: 'DT-E10281',
     name: '张三的数字分身',
     type: 'twin',
+    employment_type: 'formal',
     source_human_no: 'E10281',
     owner_human_no: 'E10281',
     department: '架构部',
@@ -31,6 +32,7 @@ const employees: Employee[] = [
     employee_no: 'VE-0001',
     name: '新员工入职助手',
     type: 'virtual',
+    employment_type: 'formal',
     source_human_no: null,
     owner_human_no: 'E10021',
     department: '人力资源部',
@@ -49,6 +51,7 @@ const employees: Employee[] = [
     employee_no: 'RPA-0001',
     name: '报表机器人',
     type: 'rpa',
+    employment_type: 'formal',
     source_human_no: null,
     owner_human_no: 'E20999',
     department: '财务部',
@@ -73,6 +76,7 @@ const plugins: Plugin[] = [
     data_level: 'L1',
     status: 'active',
     description: '公开知识检索',
+    runtime_meta: {},
   },
 ];
 

@@ -1,6 +1,7 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GrantOut(BaseModel):
@@ -19,8 +20,7 @@ class EmployeeCreate(BaseModel):
     owner_human_no: str
     department: str = ""
     role_prompt: str = ""
-    runtime_type: str = "demo"
-    runtime_ref: str | None = None
+    runtime_type: str | None = None  # 缺省按 type：twin→demo（不建容器），virtual/rpa→agentteams
     location: str = "remote"
     internet: str = "deny"
     max_data_level: str = "L1"
@@ -33,7 +33,6 @@ class EmployeeUpdate(BaseModel):
     role_prompt: str | None = None
     status: str | None = None
     runtime_type: str | None = None
-    runtime_ref: str | None = None
     location: str | None = None
     internet: str | None = None
     max_data_level: str | None = None
@@ -45,8 +44,10 @@ class EmployeeOut(BaseModel):
     employee_no: str
     name: str
     type: str
+    employment_type: Literal["formal", "intern"]
     source_human_no: str | None
     owner_human_no: str
+    owner_name: str
     department: str
     role_prompt: str
     status: str
@@ -59,13 +60,25 @@ class EmployeeOut(BaseModel):
     grants: list[GrantOut] = []
 
 
+class EmployeeRuntimeOut(BaseModel):
+    employee_no: str
+    runtime_type: str
+    runtime_ref: str | None
+    status: str
+    worker_phase: str | None = None
+    matrix_user_id: str | None = None
+    room_id: str | None = None
+    detail: str = ""
+
+
 class PluginBase(BaseModel):
-    name: str
-    type: str
+    name: str = Field(min_length=1, max_length=100)
+    type: Literal["knowledge", "mcp", "workflow", "rpa", "http"]
     endpoint_ref: str = "mock://"
-    data_level: str = "L1"
-    status: str = "active"
+    data_level: Literal["L1", "L2", "L3"] = "L1"
+    status: Literal["active", "disabled"] = "active"
     description: str = ""
+    runtime_meta: dict = {}
 
 
 class PluginCreate(PluginBase):
@@ -74,15 +87,49 @@ class PluginCreate(PluginBase):
 
 class PluginUpdate(BaseModel):
     name: str | None = None
-    type: str | None = None
+    type: Literal["knowledge", "mcp", "workflow", "rpa", "http"] | None = None
     endpoint_ref: str | None = None
-    data_level: str | None = None
-    status: str | None = None
+    data_level: Literal["L1", "L2", "L3"] | None = None
+    status: Literal["active", "disabled"] | None = None
     description: str | None = None
+    runtime_meta: dict | None = None
+
+
+class HarnessExecuteIn(BaseModel):
+    employee_no: str
+    task_prompt: str
+    trace_id: str = "HARNESS-0"
+
+
+class HarnessExecuteOut(BaseModel):
+    trace_id: str
+    decision: str
+    policy_id: str | None = None
+    reason: str = ""
+    mode: str = "demo"
+    ok: bool = False
+    result: str = ""
 
 
 class PluginOut(PluginBase):
     id: str
+
+
+class CapabilityOut(BaseModel):
+    contract_version: str
+    id: str
+    name: str
+    source_type: Literal["skill", "plugin"]
+    kind: str
+    description: str
+    status: str
+    executable: bool
+    actions: list[str]
+    input_schema: dict
+    executor: dict
+    owner_human_no: str | None = None
+    ready: bool = True
+    issues: list[str] = []
 
 
 class PolicyBase(BaseModel):
@@ -158,6 +205,32 @@ class KnowledgeBaseOut(BaseModel):
     doc_path: str | None
 
 
+class AccessRequestCreate(BaseModel):
+    resource_type: Literal["knowledge", "plugin"]
+    resource_id: str = Field(min_length=1)
+    reason: str = Field(default="", max_length=500)
+
+
+class AccessRequestApproveIn(BaseModel):
+    approve: bool
+    actor_no: str
+
+
+class AccessRequestOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    applicant_no: str
+    resource_type: str
+    resource_id: str
+    reason: str
+    status: str
+    approval_chain: list = []
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    created_at: datetime
+
+
 # ---- Sprint 2：Core Control Plane 内部接口（契约 API_CONTRACT.md §6） ----
 
 
@@ -201,6 +274,12 @@ class GatewayInvokeOut(BaseModel):
     decision: str
     audit_ids: list[int] = []
     policy_id: str | None = None
+    execution_mode: str = "pending"
+    runtime_mode: str = "pending"
+    runtime_context_id: str = ""
+    runtime_summary: str = ""
+    tool_name: str = ""
+    tool_type: str = ""
 
 
 # ---- Sprint 3：Enterprise Resource & Security Layer ----
@@ -273,16 +352,27 @@ class SubtaskOut(BaseModel):
     status: str = "pending"  # pending | running | completed | approval | denied | failed
     result: str | None = None
     approval: dict | None = None
+    collaboration_status: str = "planned"
+    collaboration_messages: list[str] = []
+    execution_mode: str = "pending"
+    runtime_mode: str = "pending"
+    runtime_context_id: str = ""
+    runtime_summary: str = ""
+    tool_name: str = ""
+    tool_type: str = ""
 
 
 class TaskRunOut(BaseModel):
     id: str
     team_id: str
+    conversation_id: str | None = None
+    trigger_message_seq: int | None = None
     trace_id: str
     request: str
     status: str = "pending"  # parsing | running | approval | completed | denied | failed
     subtasks: list[SubtaskOut] = []
     summary: str = ""
+    source: str = "builtin"  # builtin | agentteams
     created_at: datetime
 
 
@@ -329,3 +419,126 @@ class WorkspaceOut(BaseModel):
     plugins: list[WorkspacePluginOut] = []
     knowledge_bases: list[WorkspaceKbOut] = []
     security: WorkspaceSecurityOut
+
+
+# ---- Sprint 7：个人工作中心（职场）----
+
+
+class SkillCreate(BaseModel):
+    actor_no: str
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    content: str = Field(default="", max_length=20_000)
+
+
+class SkillUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    content: str | None = Field(default=None, max_length=20_000)
+    status: Literal["active", "disabled"] | None = None
+
+
+class SkillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    owner_human_no: str
+    name: str
+    description: str
+    content: str
+    status: str
+    created_at: datetime
+
+
+class ActorOut(BaseModel):
+    employee_no: str
+    name: str
+    department: str
+    employment_type: str
+
+
+class ConversationParticipantOut(BaseModel):
+    employee_no: str
+    name: str = ""
+    role: str = "member"  # organizer | member
+    employee_type: str = ""
+
+
+class ConversationCreate(BaseModel):
+    actor_no: str
+    kind: str = "direct"  # direct | group
+    title: str = ""
+    participant_employee_nos: list[str] = []
+
+
+class ConversationMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    conversation_id: str
+    participant_no: str
+    participant_name: str
+    role: str
+    content: str
+    tool_cards: list = []
+    seq: int
+
+
+class ConversationOut(BaseModel):
+    id: str
+    kind: str
+    title: str
+    owner_human_no: str
+    participants: list[ConversationParticipantOut] = []
+    messages: list[ConversationMessageOut] = []
+    tasks: list[TaskRunOut] = []
+    updated_at: datetime
+
+
+class ConversationSummaryOut(BaseModel):
+    id: str
+    kind: str
+    title: str
+    owner_human_no: str
+    participants: list[ConversationParticipantOut] = []
+    last_message: str = ""
+    updated_at: datetime
+
+
+class ConversationSendIn(BaseModel):
+    actor_no: str
+    content: str
+
+
+class ConversationAddParticipantIn(BaseModel):
+    employee_no: str
+
+
+class WorkplaceHomeOut(BaseModel):
+    actor: ActorOut
+    twin: EmployeeOut
+    available_employees: list[EmployeeOut] = []
+    skills: list[SkillOut] = []
+    recent_conversations: list[ConversationSummaryOut] = []
+
+
+class WorkflowEmployeeOut(BaseModel):
+    employee_no: str
+    name: str
+    type: str
+
+
+class WorkflowOut(BaseModel):
+    plugin_id: str
+    name: str
+    type: str
+    data_level: str
+    description: str
+    steps: list[str] = []
+    demo_prompt: str = ""
+    authorized_employees: list[WorkflowEmployeeOut] = []
+    owner_employee: WorkflowEmployeeOut | None = None
+
+
+class ClearConversationOut(BaseModel):
+    ok: bool

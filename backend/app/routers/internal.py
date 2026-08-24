@@ -8,7 +8,9 @@ from ..database import get_db
 from ..services.gateway import invoke_plugin, search_knowledge, write_audit
 from ..services.identity import resolve_identity
 from ..services.policy import DECISION_ALLOW, DECISION_DENY, ResourceRef, evaluate
-from ..services.sandbox_policy import MockExecutor, from_identity
+from ..services.runtime_adapter import DockerHarnessRuntimeAdapter, RuntimeResult
+from ..services.sandbox_manager import SandboxManager
+from ..services.sandbox_policy import from_identity
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
@@ -34,7 +36,7 @@ def policy_evaluate(payload: schemas.PolicyEvaluateIn, db: Session = Depends(get
 
 @router.post("/gateway/invoke", response_model=schemas.GatewayInvokeOut)
 def gateway_invoke(payload: schemas.GatewayInvokeIn, db: Session = Depends(get_db)):
-    """唯一插件执行入口：Identity → Policy → Gateway → Adapter → Result + Audit。"""
+    """唯一能力执行入口：Identity → Policy → Gateway → Harness → Adapter 工具 → Audit。"""
     return invoke_plugin(
         db,
         employee_id=payload.employee_id,
@@ -42,6 +44,69 @@ def gateway_invoke(payload: schemas.GatewayInvokeIn, db: Session = Depends(get_d
         action=payload.action,
         params=payload.params or {},
         trace_id=payload.trace_id,
+    )
+
+
+@router.post("/harness/execute", response_model=schemas.HarnessExecuteOut)
+def harness_execute(payload: schemas.HarnessExecuteIn, db: Session = Depends(get_db)):
+    """DeepSeek Harness 执行引擎（壳回调平台入口）。
+
+    调用链：Employee Identity -> Policy（internet/remote_only）-> Docker Harness -> Audit。
+    """
+    subject = resolve_identity(db, payload.employee_no)
+    if subject is None:
+        raise HTTPException(status_code=404, detail="数字员工不存在")
+
+    # Policy 前置：Harness 是受控模型执行通道，不等同于业务公网插件；
+    # internet 字段继续约束 http 插件，Harness 还受 DWP_HARNESS_ENABLED 与 SAFEMODE 约束。
+    result = evaluate(
+        db,
+        subject,
+        ResourceRef(type="runtime", id="harness", data_level=subject.max_data_level or "L1"),
+        "execute",
+        {},
+    )
+    if result.decision != DECISION_ALLOW:
+        write_audit(
+            db,
+            trace_id=payload.trace_id,
+            employee_id=payload.employee_no,
+            plugin_id="harness:execute",
+            action="execute",
+            decision=result.decision,
+            reason=result.reason or "Policy 拒绝",
+            result_summary=payload.task_prompt[:200],
+        )
+        return schemas.HarnessExecuteOut(
+            trace_id=payload.trace_id,
+            decision=result.decision,
+            policy_id=result.policy_id,
+            reason=result.reason or "Policy 拒绝",
+        )
+
+    runner = DockerHarnessRuntimeAdapter()
+    out: RuntimeResult = runner.run(
+        employee_id=payload.employee_no,
+        task_prompt=payload.task_prompt,
+        trace_id=payload.trace_id,
+    )
+    write_audit(
+        db,
+        trace_id=payload.trace_id,
+        employee_id=payload.employee_no,
+        plugin_id="harness:execute",
+        action="execute",
+        decision=DECISION_ALLOW,
+        reason=f"Harness 执行完成（mode={out.mode}）",
+        result_summary=(out.result or "")[:200],
+    )
+    return schemas.HarnessExecuteOut(
+        trace_id=payload.trace_id,
+        decision=DECISION_ALLOW,
+        reason="Harness 执行完成",
+        mode=out.mode,
+        ok=out.ok,
+        result=out.result,
     )
 
 
@@ -102,13 +167,14 @@ def sandbox_run(payload: schemas.SandboxRunIn, db: Session = Depends(get_db)):
             detail={"message": "策略拒绝", "policy_id": "POLICY-003", "reason": reason, "audit_id": audit_id},
         )
 
-    # 3) 允许：Mock Executor 执行
-    executed = MockExecutor().execute(
-        policy,
+    # 3) 允许：SandboxManager 执行（Docker 真容器优先；daemon 不可用/失败自动降级 local）
+    executed = SandboxManager().execute(
+        employee_id=subject.employee_id,
         command=payload.command,
         mount_dir=payload.mount_dir or policy.filesystem_scope,
         network=payload.network,
         execution_location=payload.execution_location,
+        trace_id=trace_id,
     )
     write_audit(
         db,

@@ -25,8 +25,10 @@ export interface Employee {
   employee_no: string;
   name: string;
   type: EmployeeType;
+  employment_type: "formal" | "intern";
   source_human_no: string | null;
   owner_human_no: string;
+  owner_name?: string;
   department: string;
   role_prompt: string;
   status: string;
@@ -39,6 +41,19 @@ export interface Employee {
   grants: Grant[];
 }
 
+export interface AccessRequest {
+  id: number;
+  applicant_no: string;
+  resource_type: "knowledge" | "plugin";
+  resource_id: string;
+  reason: string;
+  status: "pending" | "granted" | "rejected";
+  approval_chain: { actor_no: string; decision: string }[];
+  decided_by: string | null;
+  decided_at: string | null;
+  created_at: string;
+}
+
 export interface Plugin {
   id: string;
   name: string;
@@ -47,6 +62,24 @@ export interface Plugin {
   data_level: string;
   status: string;
   description: string;
+  runtime_meta: Record<string, unknown>;
+}
+
+export interface Capability {
+  contract_version: string;
+  id: string;
+  name: string;
+  source_type: 'skill' | 'plugin';
+  kind: string;
+  description: string;
+  status: 'active' | 'disabled';
+  executable: boolean;
+  actions: string[];
+  input_schema: Record<string, unknown>;
+  executor: { primary?: string; adapter_ref?: string; fallback?: string; [key: string]: unknown };
+  owner_human_no: string | null;
+  ready: boolean;
+  issues: string[];
 }
 
 export interface Policy {
@@ -120,11 +153,14 @@ export interface ChatMessage {
 export interface TaskRun {
   id: string;
   team_id: string;
+  conversation_id: string | null;
+  trigger_message_seq: number | null;
   trace_id: string;
   request: string;
   status: string;
   subtasks: TaskSubtask[];
   summary: string;
+  source: 'builtin' | 'agentteams';
   created_at: string;
 }
 
@@ -136,6 +172,14 @@ export interface TaskSubtask {
   status: "pending" | "running" | "completed" | "approval" | "denied" | "failed";
   result: string | null;
   approval: { policy_id?: string; reason?: string } | null;
+  collaboration_status?: 'planned' | 'collaborating' | 'acknowledged' | 'reported' | 'unavailable';
+  collaboration_messages?: string[];
+  execution_mode?: 'pending' | 'demo_adapter' | 'knowledge_adapter' | 'harness' | 'failed';
+  runtime_mode?: 'pending' | 'demo_adapter' | 'knowledge_adapter' | 'harness' | 'failed';
+  runtime_context_id?: string;
+  runtime_summary?: string;
+  tool_name?: string;
+  tool_type?: string;
 }
 
 export interface WorkspacePlugin {
@@ -169,6 +213,88 @@ export interface Workspace {
   plugins: WorkspacePlugin[];
   knowledge_bases: WorkspaceKb[];
   security: WorkspaceSecurity;
+}
+
+export interface Skill {
+  id: string;
+  owner_human_no: string;
+  name: string;
+  description: string;
+  content: string;
+  status: 'active' | 'disabled';
+  created_at: string;
+}
+
+export interface WorkplaceActor {
+  employee_no: string;
+  name: string;
+  department: string;
+  employment_type: 'formal' | 'intern';
+}
+
+export interface ConversationParticipant {
+  employee_no: string;
+  name: string;
+  role: 'organizer' | 'member';
+  employee_type: string;
+}
+
+export interface ConversationMessage {
+  id: number;
+  conversation_id: string;
+  participant_no: string;
+  participant_name: string;
+  role: 'user' | 'assistant';
+  content: string;
+  tool_cards: unknown[];
+  seq: number;
+}
+
+export interface Conversation {
+  id: string;
+  kind: 'direct' | 'group';
+  title: string;
+  owner_human_no: string;
+  participants: ConversationParticipant[];
+  messages: ConversationMessage[];
+  tasks: TaskRun[];
+  updated_at: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  kind: 'direct' | 'group';
+  title: string;
+  owner_human_no: string;
+  participants: ConversationParticipant[];
+  last_message: string;
+  updated_at: string;
+}
+
+export interface WorkplaceHome {
+  actor: WorkplaceActor;
+  twin: Employee;
+  available_employees: Employee[];
+  skills: Skill[];
+  recent_conversations: ConversationSummary[];
+}
+
+export interface WorkflowEmployee {
+  employee_no: string;
+  name: string;
+  type: string;
+}
+
+export interface Workflow {
+  plugin_id: string;
+  name: string;
+  type: string;
+  data_level: string;
+  description: string;
+  steps: string[];
+  demo_prompt: string;
+  authorized_employees: WorkflowEmployee[];
+  owner_employee: WorkflowEmployee | null;
 }
 
 export interface ChatReply {

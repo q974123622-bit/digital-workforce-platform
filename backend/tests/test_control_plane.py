@@ -77,8 +77,8 @@ def test_policy_004_local_execution_deny(client):
 
 
 def test_policy_005_sensitive_operation_approval(client):
-    # L3 执行类敏感操作：APPROVAL by POLICY-005（VE-0003 有 rpa-report approval 授权）
-    resp = _evaluate(client, "VE-0003", "rpa", "rpa-report", "L3", "execute")
+    # L3 执行类敏感操作：独立 RPA 员工触发 POLICY-005 审批。
+    resp = _evaluate(client, "RPA-0001", "rpa", "rpa-report", "L3", "execute")
     assert resp.status_code == 200
     body = resp.json()
     assert body["decision"] == "approval"
@@ -179,7 +179,7 @@ def test_gateway_approval(client):
     resp = client.post(
         "/internal/gateway/invoke",
         json={
-            "employee_id": "VE-0003",
+            "employee_id": "RPA-0001",
             "plugin_id": "rpa-report",
             "action": "execute",
             "params": {},
