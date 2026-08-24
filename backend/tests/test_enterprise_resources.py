@@ -31,6 +31,7 @@ def test_registry_eight_resources(client):
         "KB-SECURITIES",
         "KB-REG-INTERNAL",
         "KB-REG-EXTERNAL",
+        "KB-CUSTOMER-SENSITIVE",
     }
     assert kbs["KB-PUBLIC"]["data_level"] == "L1"
     assert kbs["KB-PUBLIC"]["allowed_employment_type"] == ["formal", "intern"]
@@ -39,8 +40,8 @@ def test_registry_eight_resources(client):
     assert kbs["KB-INTERNAL"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-FINTECH"]["department_scope"] == ["金融科技部"]
     assert kbs["KB-INTERNAL"]["resource_type"] == "knowledge"
-    assert kbs["KB-IT-SERVICE"]["data_level"] == "L1"
-    assert kbs["KB-IT-SERVICE"]["allowed_employment_type"] == ["formal", "intern"]
+    assert kbs["KB-IT-SERVICE"]["data_level"] == "L2"
+    assert kbs["KB-IT-SERVICE"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-IT-SERVICE"]["doc_path"] == "mock-data/kb/it-service"
     assert kbs["KB-SECURITIES"]["data_level"] == "L2"
     assert kbs["KB-SECURITIES"]["allowed_employment_type"] == ["formal"]
@@ -49,6 +50,10 @@ def test_registry_eight_resources(client):
     assert kbs["KB-REG-INTERNAL"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-REG-EXTERNAL"]["data_level"] == "L1"
     assert kbs["KB-REG-EXTERNAL"]["allowed_employment_type"] == ["formal", "intern"]
+    assert kbs["KB-CUSTOMER-SENSITIVE"]["data_level"] == "L3"
+    assert kbs["KB-CUSTOMER-SENSITIVE"]["allowed_employment_type"] == ["formal"]
+    assert kbs["KB-CUSTOMER-SENSITIVE"]["resource_type"] == "knowledge"
+    assert kbs["KB-CUSTOMER-SENSITIVE"]["doc_path"] == "mock-data/kb/customer-sensitive"
 
 
 def test_registry_kb_not_found(client):
@@ -142,15 +147,31 @@ def test_search_missing_kb(client):
 # ---- P17：新增模拟知识库（多格式虚构目录） ----
 
 
-def test_new_it_service_kb_l1_any_employee_allow(client):
-    for emp in ("DT-E10281", "DT-E20999"):
-        resp = _search(client, emp, "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-001")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["decision"] == "allow"
-        assert body["policy_id"] == "P-DEFAULT-001"
-        assert body["data"]["source"] == "demo"
-        assert len(body["data"]["hits"]) >= 1
+def test_new_it_service_kb_l2_formal_allow_intern_deny(client):
+    # P21：IT 服务库改 L2 内部；正式分身 allow（POLICY-001），实习生 deny（POLICY-002）
+    resp = _search(client, "DT-E10281", "KB-IT-SERVICE", "VPN 怎么连", "T-P21-IT-FORMAL")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["decision"] == "allow"
+    assert body["policy_id"] == "POLICY-001"
+    assert body["data"]["source"] == "demo"
+    assert len(body["data"]["hits"]) >= 1
+
+    resp = _search(client, "DT-E20999", "KB-IT-SERVICE", "VPN 怎么连", "T-P21-IT-INTERN")
+    assert resp.status_code == 403
+    assert resp.json()["error"]["detail"]["policy_id"] == "POLICY-002"
+
+
+def test_all_resources_have_three_level_classification(client):
+    """P21 分级完整性：9 知识库 + 12 插件全部带 L1/L2/L3 等级。"""
+    kbs = client.get("/api/v1/knowledge-bases").json()
+    plugins = client.get("/api/v1/plugins").json()
+    assert len(kbs) == 9
+    assert len(plugins) == 13
+    assert all(kb["data_level"] in {"L1", "L2", "L3"} for kb in kbs)
+    assert all(p["data_level"] in {"L1", "L2", "L3"} for p in plugins)
+    levels = {kb["id"]: kb["data_level"] for kb in kbs}
+    assert levels["KB-IT-SERVICE"] == "L2"
 
 
 def test_new_securities_kb_l2_formal_allow(client):
@@ -194,6 +215,21 @@ def test_multiformat_directory_search_returns_nonempty_hits(client):
         resp = _search(client, emp, kb_id, query, f"T-P17-MF-{i}")
         assert resp.status_code == 200
         assert len(resp.json()["data"]["hits"]) >= 1
+
+
+# ---- P20：L3 内部敏感演示库（未授权默认拒绝） ----
+
+
+def test_l3_customer_sensitive_kb_denied_for_all(client):
+    for emp in ("DT-E10281", "DT-E20999"):
+        resp = _search(client, emp, "KB-CUSTOMER-SENSITIVE", "客户 KYC 信息", f"T-P20-{emp}")
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["error"]["code"] == "POLICY_DENIED"
+        assert body["error"]["detail"]["policy_id"] == "P-DATA-003"
+        audit = client.get(f"/api/v1/audit/{body['error']['detail']['audit_id']}").json()
+        assert audit["decision"] == "deny"
+        assert audit["knowledge_base_id"] == "KB-CUSTOMER-SENSITIVE"
 
 
 # ---- Sandbox Policy：remote_only / internet_deny / local_deny ----

@@ -35,8 +35,8 @@ def compress_expired_sessions(db: Session, days: int = DEFAULT_DAYS) -> int:
     cutoff = datetime.now() - timedelta(days=days)
     sessions = db.scalars(
         select(models.ChatSession).where(
-            models.ChatSession.deleted == False,
-            models.ChatSession.summarized == False,
+            models.ChatSession.deleted == False,  # noqa: E712
+            models.ChatSession.summarized == False,  # noqa: E712
             models.ChatSession.created_at < cutoff,
         )
     ).all()

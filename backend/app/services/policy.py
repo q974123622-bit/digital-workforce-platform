@@ -9,9 +9,10 @@
 - POLICY-003  禁网（internet=deny）员工调用公网插件 DENY
 - POLICY-004  仅远程（location=remote）员工请求本地执行 DENY
 - POLICY-005  敏感操作（L3 执行类）APPROVAL
-- P-DATA-003  L3 读取 DENY
+- P-DATA-003  L3 敏感资源访问：无白名单授权 DENY，有白名单授权 ALLOW（白名单经 access request 审批授予）
 - P-PLUGIN-007 VE-0001 可执行 adp-onboarding
 - P-DEFAULT-001 默认 L1 可读
+- POLICY-005 敏感操作审批已被 L3 白名单机制取代（P20），不再单独生效
 """
 
 from dataclasses import dataclass, field
@@ -65,12 +66,6 @@ RULES: list[Rule] = [
         "禁网员工禁止调用公网插件",
         lambda s, r, a: s.internet == "deny" and r.type == "http",
     ),
-    # P-DATA-003 L3 读取
-    Rule(
-        "P-DATA-003", DECISION_DENY, 90,
-        "敏感数据禁止读取",
-        lambda s, r, a: r.data_level == "L3" and a == "read",
-    ),
     # POLICY-004 仅远程请求本地执行
     Rule(
         "POLICY-004", DECISION_DENY, 80,
@@ -94,12 +89,6 @@ RULES: list[Rule] = [
         "POLICY-001", DECISION_ALLOW, 60,
         "正式员工数字分身可访问内部知识库",
         lambda s, r, a: s.employee_type == "twin" and s.employment_type == "formal" and _is_internal_kb(r),
-    ),
-    # POLICY-005 敏感操作审批
-    Rule(
-        "POLICY-005", DECISION_APPROVAL, 50,
-        "敏感操作需要人工审批",
-        lambda s, r, a: r.data_level == "L3" and a in ("execute", "export", "delete", "approve"),
     ),
     # P-PLUGIN-007 VE-0001 可执行 ADP
     Rule(
@@ -129,6 +118,21 @@ def evaluate(
     context: dict | None = None,
 ) -> EvaluationResult:
     """四维评估：subject / resource / action / environment（environment 取自 subject 绑定配置）。"""
+    # P-DATA-003：L3 敏感资源（知识读/插件执行/读取等）一律走白名单授权；
+    # 白名单 grant 由 access request 审批写入（decision_mode=allow 且 grant_source=whitelist）。
+    if resource.data_level == "L3":
+        whitelist = db.scalar(
+            select(models.EmployeePluginGrant).where(
+                models.EmployeePluginGrant.employee_id == subject.employee_id,
+                models.EmployeePluginGrant.plugin_id == resource.id,
+                models.EmployeePluginGrant.decision_mode == DECISION_ALLOW,
+                models.EmployeePluginGrant.grant_source == "whitelist",
+            )
+        )
+        if whitelist is None:
+            return EvaluationResult(DECISION_DENY, "P-DATA-003", "L3 敏感资源未在白名单：默认拒绝")
+        return EvaluationResult(DECISION_ALLOW, "P-DATA-003", "L3 敏感资源白名单授权已批准")
+
     matched = [r for r in RULES if r.condition(subject, resource, action)]
 
     deny_rules = [r for r in matched if r.effect == DECISION_DENY]

@@ -921,6 +921,253 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 
 ---
 
+## P20-1. 三级权限第一步：构造内部敏感（L3）知识库（Owner B，P0，数据层）
+
+```text
+你是数字员工平台 PoC 仓库的数据/后端工程师（负责人角色：B 正式员工）。
+开始前先读：
+- backend/app/services/knowledge_registry.py、knowledge_adapter.py、adapters.py
+- mock-data/seed.json（knowledge_bases / plugins 结构）
+- mock-data/kb/ 现有文件（虚构声明格式；四分类目录已入库）
+- docs/API_CONTRACT.md §3.7（Knowledge API）与 §7（KnowledgeBaseDto）
+
+任务：为三级权限体系构造「内部敏感（L3）」演示知识库。
+本期不做申请/审批流（下一步 P20-2 做），只让敏感库存在且"未授权默认拒绝"行为生效。
+
+交付物：
+1. 新增插件 knowledge-l3（seed.json plugins）：id=knowledge-l3，name=敏感数据知识库，
+   type=knowledge，endpoint_ref=mock://kb/l3，data_level=L3，status=active。
+2. backend/app/services/knowledge_registry.py：plugin_id_for_level 支持 L3 → knowledge-l3。
+3. 敏感库内容（纯数据工作，质量优先）：
+   - mock-data/kb/customer-sensitive/ 目录，新增 2 个虚构文件（建议 xlsx 表格形态）：
+     a) 示例客户KYC信息.xlsx：列=客户编号(虚构)/客户类型/KYC状态/风险等级/开户日期（虚构占位如 C0001）；
+     b) 示例客户资产与交易KPI.xlsx：列=客户编号/资产区间/交易频次/持仓品种/收益区间（虚构汇总形态）；
+   - 每个文件头带「虚构演示数据」声明；不得出现真实人名/电话/证件号/真实证券代码/真实金额；
+   - 数据量 8-15 行，表格形态要像"敏感数据"而不是 QA。
+4. seed.json knowledge_bases 增加：
+   KB-CUSTOMER-SENSITIVE：name=示例客户敏感信息库，data_level=L3，resource_type=knowledge，
+   allowed_employment_type=[formal]，department_scope=[*]，doc_path=mock-data/kb/customer-sensitive，
+   description 注明「虚构敏感数据，仅供白名单申请演示」。
+5. 不新增任何员工授权（默认全拒）；不修改策略规则（现有 P-DATA-003 对 L3 读即 deny，正好满足"未授权拒绝"）。
+
+约束：
+- 不修改现有 8 个知识库；不碰 access_request/接口/策略（下一步做）。
+- 所有内容虚构；不引入真实数据/Key；不改前端。
+- 若 customer-sensitive 目录被 .gitignore 误伤，仅将该目录纳入跟踪（git add -f），不影响其他 ignore 规则。
+
+验收标准：
+- cd backend; .\.venv\Scripts\python.exe -m app.seed --reset 成功；
+- GET /api/v1/knowledge-bases 返回 9 个（含 KB-CUSTOMER-SENSITIVE，L3）；
+- POST /internal/knowledge/search：DT-E10281 与 DT-E20999 访问 KB-CUSTOMER-SENSITIVE → 403 P-DATA-003
+  （未授权默认拒绝）；
+- 后端 pytest 全绿（现有 84 项不受影响）。
+
+验证命令：
+cd backend; .\.venv\Scripts\python.exe -m app.seed --reset
+cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+---
+
+## P20-2. 三级权限第二步：内部敏感白名单申请/审批（Owner B，P0，依赖 P20-1）
+
+```text
+你是数字员工平台 PoC 仓库的后端工程师（负责人角色：B 正式员工/安全与企业资源）。
+本任务只做后端，前端由同事 A 后续整合；交付必须包含清晰接口说明，供 A 的 Codex 按 OpenAPI 对接。
+开始前先通读：
+- docs/API_CONTRACT.md（冻结契约 v1.1；本次为契约扩展，需在变更登记表追加记录）
+- docs/SECURITY_BOUNDARY.md（数据分级 L1/L2/L3、审计、统一资源访问链）
+- docs/ARCHITECTURE.md（五层架构、Policy/Gateway/Adapter 职责）
+- backend/app/models.py、schemas.py、services/policy.py、services/gateway.py、services/knowledge_registry.py、
+  services/knowledge_adapter.py、services/adapters.py、routers/、shared-schema/types.ts、mock-data/seed.json
+
+背景与已定稿设计（B 已确认，不要偏离）：
+- 三级权限：外部公开（L1，全员）、内部公开（L2，正式+授权岗位）、内部敏感（L3，白名单，仅正式员工可申请）；
+- 所有资源（知识库/插件/数据）统一带三级权限等级：L1/L2 按既有 grant 规则，L3 一律走白名单申请；
+- 审批：单级管理员审批（后端一键通过/拒绝）；access_request 保留 approval_chain 字段（JSON，预留多级审批，本期不实现）；
+- 敏感库：新增虚构 KB-CUSTOMER-SENSITIVE「示例客户敏感信息库」（L3），内容全虚构、表格/数据形态；
+- 演示链路：实习生访问敏感库被拒 → 正式员工发起申请 → 管理员批准 → 白名单授权生效 → 再访问 allow → 审计可追溯；
+- 前端不做（A 负责）；但 shared-schema/types.ts 必须同步新 DTO（三处同步：OpenAPI / shared-schema / API_CONTRACT.md）。
+
+交付物：
+1. backend/app/models.py：新增 AccessRequest 表
+   （id / applicant_no / resource_type / resource_id / reason / status: pending|approved|rejected|granted /
+    approval_chain JSON 预留 / decided_by / decided_at / created_at）。
+2. backend/app/schemas.py：AccessRequestCreate（resource_type/resource_id/reason）、
+   AccessRequestOut、AccessRequestApproveIn（approve: bool, actor_no）。
+3. backend/app/routers/access.py：
+   - POST /api/v1/access-requests：发起申请；仅 employment_type=formal 可申请，
+     实习生返回 403 POLICY_DENIED（策略拒绝，不落申请单）；
+     resource_type 枚举：knowledge | plugin | data（申请对象不限于知识库）；
+   - POST /api/v1/access-requests/{id}/approve：管理员一键通过/拒绝；
+     通过时写 employee_plugin_grant（employee_id=申请人，plugin_id=资源对应插件，action=read，
+     decision_mode=allow，并在备注/来源字段标记 whitelist；plugin/data 类资源按资源映射的插件写入）
+     并置状态 granted；拒绝置 rejected；
+     已终态再审批返回 409 STATE_CONFLICT；
+   - GET /api/v1/access-requests：按 applicant_no / status 过滤查询（含待审批列表）。
+4. 策略调整（backend/app/services/policy.py）：
+   - P-DATA-003 由「L3 读一律 Deny」改为「L3 资源访问：存在已批准白名单授权（employee_plugin_grant
+     decision_mode=allow 且来源 whitelist）→ Allow，否则 Deny」；覆盖 L3 知识读与 L3 插件执行/读取；
+     默认拒绝语义不变；
+   - 申请入口限制放在路由层校验（formal）与审计记录，不新增前端可见权限逻辑。
+5. 敏感库与资源注册：
+   - 新增插件 knowledge-l3（endpoint_ref mock://kb/l3，data_level=L3）；
+   - knowledge_registry.plugin_id_for_level 支持 L3 → knowledge-l3；
+   - mock-data/kb/customer-sensitive/ 新增 1-2 个虚构文件（表格/数据形态：虚构客户 KYC、
+     资产区间、交易 KPI 汇总；文件头带「虚构演示数据」声明；不得包含真实数据）；
+   - seed.json：新增 KB-CUSTOMER-SENSITIVE（data_level=L3，allowed_employment_type=[formal]，
+     doc_path=mock-data/kb/customer-sensitive）；不授权任何员工（默认全拒，靠申请）。
+   - 插件等级统一标注：核对 seed.json 全部插件 data_level 与三级语义一致
+     （rpa-report 已是 L3，作为「敏感插件走白名单」演示对象；其余插件按实际数据等级标注）。
+6. 审计：申请、审批、授权（写 grant）、访问四类事件全部落 audit_event，
+   用 trace_id 串成一条链路；knowledge_base_id 字段记录 KB-CUSTOMER-SENSITIVE。
+7. 契约三处同步：backend OpenAPI（FastAPI 自动）、shared-schema/types.ts 增加
+   AccessRequest DTO、docs/API_CONTRACT.md 增加 §3.8 Access Request API 并在变更登记表追加一行
+   （日期/变更/批准人=待 A 确认/涉及文件）。
+8. backend/tests/test_access.py：
+   - 实习生发起申请 → 403；正式员工发起 → 201 pending；
+   - 批准 → status=granted + employee_plugin_grant 落库；再调 /internal/knowledge/search
+     访问 KB-CUSTOMER-SENSITIVE → allow；拒绝 → 仍 deny（403 P-DATA-003）；
+   - L3 插件场景：未白名单时 VE-0001 执行 rpa-report → deny；申请并批准后 → allow；
+   - 终态重复审批 → 409；审计按 trace 可聚合。
+
+约束：
+- 不修改业务模块对现有 L1/L2 的访问行为；不改变冻结的既有接口字段。
+- 沙箱策略本期不动（敏感资源执行更严隔离列为后续可选）。
+- 全部内容虚构；不引入真实客户/资产/交易数据；不引入真实 Key。
+- 前端不改；交付说明中附接口摘要（路径/请求/响应/状态码）与 OpenAPI 地址说明。
+
+验收标准：
+- 后端 pytest 全绿（现有 84 + 新增 access 用例）；
+- API 冒烟走通演示链路：实习生 deny → 正式申请 → 批准 → granted → 再访问 allow；
+- shared-schema/types.ts 与 OpenAPI、API_CONTRACT.md 三处一致；
+- git status 无真实数据/Key；新敏感库文件已纳入跟踪（customer-sensitive 目录不在 ignore 范围）。
+
+验证命令：
+cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
+cd backend; .\.venv\Scripts\python.exe -m app.seed --reset
+```
+
+---
+
+## P21. 管理员平台：员工快捷管理（新建数字员工 + 权限设置）（Owner B，P0，前端独立交付后交 A 合并）
+
+```text
+你是数字员工平台 PoC 仓库的全栈工程师（负责人角色：B 正式员工/安全与企业资源）。
+本任务补齐"管理员平台"的最小闭环：前端新建数字员工 + 员工权限设置（插件授权/安全字段）；
+后端缺的授权接口一并补上。完成后推分支交给同事 A 合并（前端与他个人工作中心整合时可能复用）。
+开始前先通读：
+- docs/API_CONTRACT.md §3.1（Employee API；PUT /employees/{no}/plugins 为 📋 待实现，本次实现并登记）
+- docs/SECURITY_BOUNDARY.md（L1/L2/L3 三级语义、默认拒绝、授权只经 Policy）
+- docs/P20（三级权限：L3 走白名单申请，管理员界面设置 L1/L2 授权即可，L3 提示走申请）
+- backend/app/routers/employees.py、schemas.py、models.py、services/policy.py
+- frontend/src/pages/Employees.tsx、EmployeeDetail.tsx、api/client.ts、shared-schema/types.ts
+
+现状：
+- 后端已有 GET/POST/PUT/DELETE /employees、/employees/{no}、/employees/{no}/chat、/employees/{no}/workspace；
+- 缺 PUT /api/v1/employees/{employee_no}/plugins（插件授权批量更新，契约标 📋）；
+- 前端只有员工列表/详情（授权表只读），无新建/编辑入口。
+
+交付物：
+1. 后端：PUT /api/v1/employees/{employee_no}/plugins
+   - 请求 {grants: [{plugin_id, action, decision_mode: allow|deny|approval}]}；整体替换该员工的插件授权；
+   - 校验：员工存在（404）、插件存在（404）、decision_mode 合法（400 VALIDATION_ERROR）；
+   - 授权是配置写入（employee_plugin_grant 表），不走 Gateway；写审计（action=employee_grant_update，
+     decision=allow，result_summary=插件数量摘要）；
+   - 契约登记：API_CONTRACT.md §3.1 该行 📋→✅，变更登记表追加；shared-schema/types.ts 增加
+     EmployeeGrantUpdate DTO（前端复用）；OpenAPI 自动同步。
+2. 前端：员工管理入口（沿用 AntD 主题、中文文案、typecheck/test 全绿）
+   - Employees 页顶部加「新建数字员工」按钮 + Modal 表单：name/type(twin|virtual|rpa)/owner_human_no/
+     department/role_prompt/runtime_type/location/internet/max_data_level(L1|L2|L3，
+     L3 旁注明"需白名单申请")/allowed_domains；提交调 POST /employees；
+   - EmployeeDetail 页加「权限设置」按钮 + Modal：
+     a) 插件授权编辑：现有 grants 列表可增删改（选择插件、action、decision_mode allow|deny|approval），
+        提交调 PUT /employees/{no}/plugins；
+     b) 安全字段调整（可选同 Modal 或单独区）：max_data_level/internet/location/allowed_domains，
+        提交调 PUT /employees/{no}；
+   - api/client.ts 增加 createEmployee / updateEmployeeGrants（沿用 request<T> 封装）；
+   - 交互反馈：成功 message、失败错误展示（403/404/409 错误形状统一处理）。
+3. 测试：
+   - 后端 backend/tests/test_employee_grants.py：设 allow → gateway 调用该插件 allow；设 deny → 403；
+     设 approval → 返回 approval 决策；员工/插件不存在 404；审计落库；
+   - 前端 vitest：Employees 页点新建 → 表单提交调用 POST；EmployeeDetail 权限设置 → 提交调用
+     PUT /plugins；typecheck/build 全绿。
+
+约束：
+- 不改变冻结的既有接口字段；新接口按契约风格实现并登记（批准人=待 A 确认）。
+- 权限判断只由 Policy 执行：管理员界面只是配置写入，不自行解释权限语义。
+- L3 资源在管理界面只提示"需白名单申请"，不直接给 L3 插件开 allow（除非按 P20 白名单流程）。
+- 全部使用现有虚构种子；不引入真实数据/Key；不改聊天/团队等既有页面逻辑。
+
+验收标准：
+- 后端 pytest 全绿（现有 93 + 新增）；前端 typecheck/test/build 全绿；
+- 手工冒烟：新建虚拟员工 → 详情可看 → 设 knowledge-l2 allow → 该员工 search KB-INTERNAL allow；
+  设 deny → 403；审计可见 employee_grant_update；
+- 三处契约同步一致（OpenAPI / shared-schema / API_CONTRACT.md）。
+
+验证命令：
+cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
+pnpm --filter frontend typecheck
+pnpm --filter frontend test
+pnpm --filter frontend build
+```
+
+---
+
+## P24-1. 记忆插件整合 Phase 1：后端记忆核心（Owner B，P0，独立 integration 分支）
+
+```text
+你是数字员工平台 PoC 仓库的后端工程师（负责人 B 正式员工）。
+任务：把实习生分支 origin/feature/personal-memory 的"记忆插件"后端核心整合进一条独立的 integration 分支。
+
+【分支安全协议（最高优先级，违反即返工）】
+- 正式分支保护：master 与 codex/sprint5-mock-kb 是两名正式员工的正式分支，**严禁直接提交/推送**；
+- 第一步必须新建整合分支：git checkout -b integration/memory-plugin codex/sprint5-mock-kb；
+- 所有改动只提交到 integration/memory-plugin；完成后**不要 merge 回任何正式分支、不要 push**，停在本地汇报；
+- 若整合过程中发现与正式分支内容冲突或需要改动正式分支，停止并汇报，不得自行解决。
+
+开始前先读（只读，不改动）：
+- git show origin/feature/personal-memory:backend/app/routers/memory.py
+- git show origin/feature/personal-memory:backend/app/services/memory_permission.py / memory_compress.py / memory_attachment.py
+- git show origin/feature/personal-memory:backend/app/models.py（MemoryEntry 与 ChatSession 扩展字段）
+- git show origin/feature/personal-memory:backend/tests/test_memory.py
+- 当前 backend/app/models.py、schemas.py、main.py、mock-data/seed.json、docs/API_CONTRACT.md
+
+任务（Phase 1 后端记忆核心；不碰聊天自动写入，那是 Phase 2）：
+1. models.py：新增 MemoryEntry（按分支模型字段落地，7 维标签：
+   subject_type/subject_no/kind/content/content_type/related_subject_no/trace_id/file_ref/
+   visibility/data_level/lifecycle/created_at）；ChatSession 增加 title/deleted/summarized（默认值，向后兼容）。
+2. schemas.py：MemoryCreate / MemoryOut（字段与分支一致）。
+3. 落地 4 个文件（内容取自 origin/feature/personal-memory，适配当前代码风格与导入路径）：
+   routers/memory.py、services/memory_permission.py、services/memory_compress.py、services/memory_attachment.py。
+4. main.py 注册 memory router（Base Path /api/v1，前缀 /memory）。
+5. mock-data/seed.json：新增 1-2 条虚构示例记忆（E10021 的 fact，visibility=personal，data_level=L2），
+   与分支 test_memory.py 的种子断言一致。
+6. .gitignore 增加 backend/storage/（附件存储目录）。
+7. 测试：把分支 test_memory.py 落到 backend/tests/ 并适配当前 conftest（内存库 + 现有 seed）；
+   覆盖：种子样例、写入/读取（最新在前）、按主体隔离、权限过滤（X-Demo-Actor）、附件/压缩接口不报错。
+8. 契约：docs/API_CONTRACT.md 增加 §Memory API（POST/GET /memory、POST /memory/summarize、
+   POST /memory/attachments），变更登记追加一行（待 A 确认）。
+
+约束：
+- 不修改聊天核心（chat.py 自动写入记忆是 Phase 2，本期不做）；
+- memory_permission.py 的 PoC 硬编码管理员 E10021 保留，注释标注"后续接三级权限/白名单"；
+- 不引入真实数据/Key；附件仅支持文本文件；所有内容虚构；
+- 保持现有测试全绿（当前 131 项 + 新增记忆测试）。
+
+验收标准：
+- 后端 pytest 全绿；
+- API 冒烟：POST /api/v1/memory 写入 → GET /api/v1/memory?subject_no=E10021 能读到（最新在前）；
+  X-Demo-Actor 权限过滤（非本人/非管理员读不到 personal 记忆）；POST /api/v1/memory/summarize 不报错；
+- 所有改动只在 integration/memory-plugin 分支，正式分支未被触碰。
+
+验证命令：
+cd backend; .\.venv\Scripts\python.exe -m app.seed --reset
+cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+---
+
 ## 附：常用验证命令速查
 
 ```powershell

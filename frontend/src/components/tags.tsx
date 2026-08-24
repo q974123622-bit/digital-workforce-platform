@@ -7,6 +7,7 @@ import {
   CloseCircleOutlined,
   DeploymentUnitOutlined,
   LinkOutlined,
+  ReadOutlined,
   RobotOutlined,
   ThunderboltOutlined,
   UserOutlined,
@@ -30,6 +31,12 @@ export const TYPE_META: Record<string, TypeMeta> = {
   twin: { label: '数字分身', color: 'blue', icon: <RobotOutlined />, hex: '#2f54eb', bg: '#eef4ff' },
   virtual: { label: '虚拟员工', color: 'green', icon: <UserOutlined />, hex: '#52c41a', bg: '#f6ffed' },
   rpa: { label: 'RPA', color: 'orange', icon: <ThunderboltOutlined />, hex: '#fa8c16', bg: '#fff7e6' },
+};
+
+/** 雇佣身份（正式/实习生；预留 outsource/consultant 等扩展） */
+export const EMPLOYMENT_META: Record<string, { label: string; color: string; icon: ReactNode }> = {
+  formal: { label: '正式员工', color: 'blue', icon: <UserOutlined /> },
+  intern: { label: '实习生', color: 'cyan', icon: <ReadOutlined /> },
 };
 
 /** 插件类型 */
@@ -63,6 +70,16 @@ const LEVEL_META: Record<string, { label: string; color: string }> = {
 
 export function TypeTag({ value }: { value: string }) {
   const meta = TYPE_META[value];
+  if (!meta) return <Tag>{value}</Tag>;
+  return (
+    <Tag icon={meta.icon} color={meta.color}>
+      {meta.label}
+    </Tag>
+  );
+}
+
+export function EmploymentTag({ value }: { value: string }) {
+  const meta = EMPLOYMENT_META[value];
   if (!meta) return <Tag>{value}</Tag>;
   return (
     <Tag icon={meta.icon} color={meta.color}>

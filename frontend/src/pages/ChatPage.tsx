@@ -31,7 +31,7 @@ const ROLE_META: Record<string, { label: string; grad: string; color: string; em
 
 function roleKey(w: Workspace): string {
   const e = w.employee;
-  if (e.type === 'twin') return `${e.source_human_no ? 'formal' : 'intern'}_twin`;
+  if (e.type === 'twin') return `${e.employment_type === 'intern' ? 'intern' : 'formal'}_twin`;
   return e.type;
 }
 

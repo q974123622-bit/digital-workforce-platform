@@ -25,6 +25,9 @@ backend/storage/
 # Sandbox 宿主工作区（本机执行隔离挂载目录，不入库）
 backend/sandbox-workspaces/
 
+# 记忆附件存储（仅文本文件，不入库）
+backend/storage/
+
 # PDF 生成中间文件（最终产物在 output/pdf/）
 tmp/
 

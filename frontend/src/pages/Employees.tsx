@@ -5,7 +5,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import type { Employee } from '@dwp/shared-schema';
 import { CommentOutlined } from '@ant-design/icons';
 import { api } from '../api/client';
-import { LevelTag, StatusBadge, TypeTag, TYPE_META } from '../components/tags';
+import { EmploymentTag, LevelTag, StatusBadge, TypeTag, TYPE_META } from '../components/tags';
 import { ErrorState } from '../components/PageState';
 import { useAsyncData } from '../hooks/useAsyncData';
 
@@ -62,6 +62,7 @@ export default function Employees() {
       },
       { title: '工号', dataIndex: 'employee_no', render: (value: string) => <span className="mono">{value}</span> },
       { title: '类型', dataIndex: 'type', render: (value: string) => <TypeTag value={value} /> },
+      { title: '身份', dataIndex: 'employment_type', render: (value: string) => <EmploymentTag value={value} /> },
       { title: '部门', dataIndex: 'department' },
       { title: 'Owner', dataIndex: 'owner_human_no', render: (value: string) => <span className="mono">{value}</span> },
       {

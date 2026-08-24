@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -45,6 +46,7 @@ class EmployeeOut(BaseModel):
     employee_no: str
     name: str
     type: str
+    employment_type: str  # formal | intern（twin 取真人，virtual/rpa 取 Owner）
     source_human_no: str | None
     owner_human_no: str
     department: str
@@ -256,22 +258,36 @@ class ChatSessionOut(BaseModel):
     employee_id: str
     title: str
     created_at: datetime
+# ---- P20：Access Request API（L3 敏感资源白名单申请/审批） ----
 
 
-class ChatRequest(BaseModel):
-    message: str
-    session_id: str | None = None
+class AccessRequestCreate(BaseModel):
+    resource_type: Literal["knowledge", "plugin", "data"]
+    resource_id: str
+    reason: str = ""
 
 
-class ChatResponse(BaseModel):
-    session_id: str
-    trace_id: str
-    message: str
-    tool_cards: list = []
-    policy_denied: dict | None = None
+class AccessRequestApproveIn(BaseModel):
+    approve: bool
+    actor_no: str
 
 
-# ---- 记忆插件（Memory Entry）----
+class AccessRequestOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    applicant_no: str
+    resource_type: str
+    resource_id: str
+    reason: str = ""
+    status: str = "pending"
+    approval_chain: list = []
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    created_at: datetime
+
+
+# ---- P23：Memory（记忆插件后端核心） ----
 
 
 class MemoryCreate(BaseModel):
@@ -305,6 +321,24 @@ class MemoryOut(BaseModel):
     lifecycle: str
     created_at: datetime
     updated_at: datetime
+
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str | None = None
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    trace_id: str
+    message: str
+    tool_cards: list = []
+    policy_denied: dict | None = None
+
+
+# ---- 记忆插件（Memory Entry）----
+
+
 
 
 # ---- Sprint 5：Team Task（契约 §3.6 TaskRunDto）----

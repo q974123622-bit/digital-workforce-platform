@@ -9,9 +9,9 @@ def test_seed_counts(client):
     assert len(employees) == 5
     assert len([e for e in employees if e["type"] == "twin"]) == 2
     assert len([e for e in employees if e["type"] == "virtual"]) == 3
-    assert len(client.get("/api/v1/plugins").json()) == 12
+    assert len(client.get("/api/v1/plugins").json()) == 13
     assert len(client.get("/api/v1/policies").json()) == 9
-    assert len(client.get("/api/v1/knowledge-bases").json()) == 8
+    assert len(client.get("/api/v1/knowledge-bases").json()) == 9
     teams = client.get("/api/v1/teams").json()
     assert len(teams) == 1
     assert len(teams[0]["members"]) == 3
@@ -30,6 +30,16 @@ def test_employee_detail_grants(client):
     modes = {g["plugin_id"]: g["decision_mode"] for g in emp["grants"]}
     assert modes["knowledge-l2"] == "allow"
     assert modes["rpa-report"] == "deny"
+
+
+def test_employee_employment_type(client):
+    formal = client.get("/api/v1/employees/DT-E10281").json()
+    intern = client.get("/api/v1/employees/DT-E20999").json()
+    assert formal["employment_type"] == "formal"
+    assert intern["employment_type"] == "intern"
+    # virtual/rpa 取 owner（正式员工）
+    virtual = client.get("/api/v1/employees/VE-0001").json()
+    assert virtual["employment_type"] == "formal"
 
 
 def test_employee_crud(client):

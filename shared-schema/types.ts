@@ -25,6 +25,8 @@ export interface Employee {
   employee_no: string;
   name: string;
   type: EmployeeType;
+  /** formal | intern（twin 取真人，virtual/rpa 取 Owner）；预留 outsource/consultant 等 */
+  employment_type: 'formal' | 'intern' | string;
   source_human_no: string | null;
   owner_human_no: string;
   department: string;
@@ -290,4 +292,33 @@ export interface MemoryEntry {
   lifecycle: string;
   created_at: string;
   updated_at: string;
+}
+
+// ---- P20：Access Request（L3 敏感资源白名单申请/审批） ----
+
+export type AccessResourceType = "knowledge" | "plugin" | "data";
+export type AccessRequestStatus = "pending" | "approved" | "rejected" | "granted";
+
+export interface AccessRequestCreate {
+  resource_type: AccessResourceType;
+  resource_id: string;
+  reason: string;
+}
+
+export interface AccessRequestApproveIn {
+  approve: boolean;
+  actor_no: string;
+}
+
+export interface AccessRequest {
+  id: number;
+  applicant_no: string;
+  resource_type: AccessResourceType;
+  resource_id: string;
+  reason: string;
+  status: AccessRequestStatus;
+  approval_chain: unknown[];
+  decided_by: string | null;
+  decided_at: string | null;
+  created_at: string;
 }

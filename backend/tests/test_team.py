@@ -48,7 +48,9 @@ def test_create_task_reaches_approval(db_session):
     assert run.subtasks[0].worker_no == "VE-0002"
     assert run.subtasks[1].worker_no == "VE-0003"
     assert run.subtasks[2].approval is not None
-    assert run.subtasks[2].approval.get("policy_id") == "POLICY-005"
+    # P20：L3 审批已改为白名单；团队审批演示走 L2 插件的 approval grant（无内置策略 id）
+    assert run.subtasks[2].approval.get("policy_id") is None
+    assert run.subtasks[2].approval.get("reason")
     assert run.trace_id == run.id
 
 
@@ -99,7 +101,7 @@ def test_audit_trace_through_task(client, db_session):
     assert "approve" in actions
     assert "summarize" in actions
     plugins = {e["plugin_id"] for e in events}
-    assert {"hr-employee-mcp", "adp-onboarding", "rpa-report", "team:task", "team:approval", "team:summary"} <= plugins
+    assert {"hr-employee-mcp", "adp-onboarding", "team:task", "team:approval", "team:summary"} <= plugins
 
 
 def test_summary_fallback_when_llm_unavailable(client, db_session):

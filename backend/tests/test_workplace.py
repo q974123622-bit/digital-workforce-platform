@@ -536,20 +536,35 @@ def test_new_mock_workflow_executes_via_gateway(client):
     assert "报销申请提交" in body["data"]["steps"]
 
 
-def test_purchase_workflow_requires_approval(client):
-    resp = client.post(
-        "/internal/gateway/invoke",
-        json={
-            "employee_id": "VE-0003",
-            "plugin_id": "purchase-request",
-            "action": "execute",
-            "params": {"item": "办公显示器"},
-        },
+def test_purchase_workflow_requires_whitelist(client):
+    """L3 插件（purchase-request）走 P20 白名单：未授权 403 → 申请批准 → allow。"""
+    payload = {
+        "employee_id": "VE-0003",
+        "plugin_id": "purchase-request",
+        "action": "execute",
+        "params": {"item": "办公显示器"},
+    }
+    # 未白名单：L3 默认拒绝
+    resp = client.post("/internal/gateway/invoke", json=payload)
+    assert resp.status_code == 403
+    assert resp.json()["error"]["detail"]["policy_id"] == "P-DATA-003"
+    # 白名单申请 → 管理员批准
+    req = client.post(
+        "/api/v1/access-requests",
+        params={"applicant_no": "VE-0003"},
+        json={"resource_type": "plugin", "resource_id": "purchase-request", "reason": "采购流程演示"},
     )
+    assert req.status_code == 201
+    approved = client.post(
+        f"/api/v1/access-requests/{req.json()['id']}/approve",
+        json={"approve": True, "actor_no": "DT-E10281"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "granted"
+    # 白名单生效 → allow
+    resp = client.post("/internal/gateway/invoke", json=payload)
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["decision"] == "approval"
-    assert body["policy_id"] == "POLICY-005"
+    assert resp.json()["decision"] == "allow"
 
 
 def test_workflow_catalog(client):

@@ -147,6 +147,56 @@ SSE 事件类型（固定枚举）：
 技能注入：分身（twin）对话 system prompt 自动追加「【你掌握的技能】」段落（仅本人可见，内容上限 4000 字符）。
 协作任务：群聊任务由 `TeamTaskOrchestrator` 创建（conversation_id + trigger_message_seq 关联），执行走 Policy→Gateway（Mock Adapter），审批复用 `POST /tasks/{id}/approve`；子任务结果为格式化文本（不再展示原始 JSON）；同会话同请求 10 分钟内自动去重复用；子任务执行器为 `SubtaskExecutor` 接口（默认 GatewaySubtaskExecutor，真实 RPA/Workflow/Harness 后续接入）。
 
+### 3.9 Access Request API（✅ P20 已实现：L3 敏感资源白名单申请/审批）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/access-requests?applicant_no={employee_no}` | 发起敏感资源申请；仅 employment_type=formal 可申请，实习生返回 403 POLICY_DENIED（不落申请单） |
+| POST | `/access-requests/{request_id}/approve` | 管理员一键通过/拒绝；终态再审批返回 409 STATE_CONFLICT |
+| GET | `/access-requests?applicant_no=&status=` | 查询申请单（含待审批列表），按申请人/状态过滤 |
+
+请求（创建）：
+
+```json
+{"resource_type": "knowledge|plugin|data", "resource_id": "KB-CUSTOMER-SENSITIVE", "reason": "演示申请"}
+```
+
+请求（审批）：`{"approve": true, "actor_no": "DT-E10281"}`
+
+响应（AccessRequestDto）：
+
+```json
+{"id": 1, "applicant_no": "DT-E10281", "resource_type": "knowledge", "resource_id": "KB-CUSTOMER-SENSITIVE",
+ "reason": "演示申请", "status": "pending|approved|rejected|granted", "approval_chain": [],
+ "decided_by": null, "decided_at": null, "created_at": "2026-08-19T..."}
+```
+
+状态码：`201`（创建成功）/ `200`（审批、列表）/ `403 POLICY_DENIED`（非正式员工）/ `404`（资源或申请单不存在）/ `409 STATE_CONFLICT`（终态重复审批）/ `422`（参数不合法）。
+
+说明：
+- 通过审批时后端写入 `employee_plugin_grant`（action=read，decision_mode=allow，grant_source=whitelist）并置状态 granted；拒绝置 rejected；
+- 策略 P-DATA-003：L3 资源访问（知识读 / 插件执行与读取）无白名单授权默认 DENY，有白名单授权 ALLOW；L3 一律走白名单申请；
+- 审计：access_apply / access_approve / access_grant / read 四类事件按 trace_id（默认 `ARQ-{id}`，访问调用方传入同值）可聚合追溯。
+
+### 3.10 Memory API（✅ P23 已实现：记忆插件后端核心，Phase 1）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/memory` | 写入一条记忆（7 维度标签：subject_type/subject_no/kind/content/content_type/related_subject_no/trace_id/file_ref/visibility/data_level/lifecycle） |
+| GET | `/memory?subject_no=&kind=&related_subject_no=&visibility=&data_level=` | 查询记忆（时间倒序，最新在前）；按 X-Demo-Actor 过滤权限 |
+| POST | `/memory/summarize` | 压缩过期会话为摘要（Step 6），返回 `{"summarized": count}` |
+| POST | `/memory/attachments` | 上传文本附件（multipart：subject_no + file），存 backend/storage/ 并生成 kind=attachment 记忆 |
+
+请求（写入）：
+
+```json
+{"subject_type": "human", "subject_no": "E10021", "kind": "fact", "content": "...", "visibility": "personal", "data_level": "L2"}
+```
+
+响应（MemoryDto）：`{id, subject_type, subject_no, kind, content, content_type, related_subject_no, trace_id, file_ref, visibility, data_level, lifecycle, created_at, updated_at}`
+
+状态码：`201`（写入/附件）/ `200`（查询、压缩）。权限规则（PoC）：无 X-Demo-Actor 视为系统内部调用；管理员（E10021）可读全部；public 任何人；confidential 仅管理员；personal/shared 仅本人或 owner（后续接三级权限/白名单）。
+
 ## 4. Runtime Adapter Interface（📋 冻结，Sprint 3 实现）
 
 统一 Runtime 调用形态，由 RuntimeLauncher 调用；**不区分 harness/openclaw/agentteams 的差异，由 adapter 内部翻译**。
@@ -265,6 +315,7 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
   "employee_no": "DT-E10281",
   "name": "张三的分身",
   "type": "twin | virtual | rpa",
+  "employment_type": "formal | intern",
   "source_human_no": "E10281",
   "owner_human_no": "E10281",
   "department": "架构部",
@@ -281,6 +332,8 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 ```
 
 > v1.1 变更：EmployeeDto 由 v1.0 的嵌套 `runtime/sandbox/data_scope` 改为与实现一致的平铺结构，避免双轨。
+> v1.1 补充（2026-08-19）：EmployeeDto 增加 `employment_type`（twin 取真人、virtual/rpa 取 Owner），
+> 供前端渲染「正式员工/实习生」身份标识。
 
 ### PluginDto / PolicyDto / AuditEventDto
 
@@ -340,3 +393,8 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 | 2026-08-19 | v1.1 兼容扩展（Sprint 7）：新增 §3.8 职场 API（WorkplaceHomeDto / SkillDto / ConversationDto）；新接口显式传 actor_no；群聊消息走顺序编排并复用 Policy→Gateway→审计 | A | 本文件 / shared-schema / schemas / routers/workplace.py |
 | 2026-08-19 | v1.1 实现更新（Sprint 7 C 档）：`POST /conversations/{id}/messages` 群聊改为「分身判断任务/闲聊」；任务型接入 TeamTaskOrchestrator（拆解/指派/审批/汇总），闲聊单成员回复；ConversationDto 增加 tasks；新增 SubtaskExecutor 接口 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py |
 | 2026-08-19 | v1.1 实现更新（Sprint 7 会话管理）：TaskRunDto 增加 trigger_message_seq（任务卡内联）；移除分身受理气泡；子任务结果格式化为可读文本；同请求去重；新增 DELETE /conversations/{id} 清空会话；会话摘要预览显示最新任务状态 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py / routers/workplace.py |
+| 2026-08-19 | v1.1 兼容扩展（P20）：新增 §3.9 Access Request API 与 AccessRequestDto（申请/审批/列表）；L3 白名单策略（P-DATA-003 改为白名单控制，POLICY-005 审批语义被取代）；新增 knowledge-l3 插件与 KB-CUSTOMER-SENSITIVE（L3）；审计新增 access_apply/access_approve/access_grant 事件 | 待 A 确认 | 本文件 / shared-schema/types.ts / routers/access.py / models / schemas / services/policy.py |
+| 2026-08-19 | v1.1 兼容扩展（身份标识）：EmployeeDto 增加 employment_type（twin 取真人、virtual/rpa 取 Owner）；前端据此渲染「正式员工/实习生」标签并修正聊天页人设推断 | 待 A 确认 | 本文件 / shared-schema/types.ts / schemas.py / routers/employees.py / 前端 Employees/EmployeeDetail/ChatPage |
+| 2026-08-20 | v1.1 分级修正 + 聊天守卫（P21）：KB-IT-SERVICE L1→L2（allowed_employment_type=[formal]）；ChatOrchestrator 系统提示强化（知识库/制度/流程问题必须调用 search_knowledge，不得凭记忆列举主题，POLICY_DENIED 只告知无权访问）+ 未调工具兜底轮（命中查询意图且无工具卡时重生成一次，仍无则返回明确无权限/无法确认文案）；工具描述补充 KB-CUSTOMER-SENSITIVE | 待 A 确认 | 本文件 / mock-data/seed.json / services/chat.py / tests |
+| 2026-08-20 | v1.1 实现更新（P22）：聊天系统提示【知识库】改为按 subject 动态注入可访问清单（逐库 Policy evaluate=allow 才列入，输出 knowledge_base_id/name/data_level）；未授权库不得声称可访问、不得凭记忆描述内容；新增 accessible_knowledge_bases() | 待 A 确认 | 本文件 / services/knowledge_registry.py / services/chat.py / tests |
+| 2026-08-20 | v1.1 兼容扩展（P23 记忆插件 Phase 1，integration/memory-plugin）：新增 §3.10 Memory API 与 MemoryDto（写入/查询/压缩/附件）；models 新增 MemoryEntry（7 维度标签）与 ChatSession title/deleted/summarized；seed 新增 personal_memories；附件存 backend/storage/（gitignore）；PoC 管理员 E10021 写死（后续接三级权限/白名单） | 待 A 确认 | 本文件 / models.py / schemas.py / routers/memory.py / services/memory_* / seed.py / seed.json / .gitignore / tests/test_memory.py |

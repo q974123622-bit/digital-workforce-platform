@@ -81,6 +81,95 @@ def test_chat_endpoint_virtual_onboarding_allow(db_session):
     assert "报到" in result.message
 
 
+def test_chat_guard_blocks_freeform_answer_without_tool(db_session):
+    """P21 聊天守卫：实习生问'查询一下金融科技知识库'，LLM 只聊天不调工具 →
+    兜底轮触发 → 最终为明确无权限/无法确认文案，且不含金融科技具体内容。"""
+    fake = FakeLLM(
+        [
+            LLMResponse(content="我来帮你查询一下金融科技知识库，里面通常包含区块链、AI、风控等主题。"),
+            LLMResponse(content="我来帮你查询一下金融科技知识库，里面通常包含区块链、AI、风控等主题。"),
+        ]
+    )
+    orchestrator = ChatOrchestrator(fake)
+    result = orchestrator.handle_message(
+        db_session,
+        employee_no="DT-E20999",
+        message="查询一下金融科技知识库",
+        session_id=None,
+    )
+    assert result.tool_cards == []
+    assert ("无法确认" in result.message) or ("无权限" in result.message) or ("无权" in result.message)
+    assert "区块链" not in result.message
+    assert "AI" not in result.message
+    assert "风控" not in result.message
+    assert len(fake.calls) == 2  # 首轮 + 兜底轮各一次
+
+
+def test_chat_guard_retry_recovers_with_tool_call(db_session):
+    """P21 聊天守卫：兜底提示后模型改为调用工具 → 命中 Deny 卡片（POLICY-002）。"""
+    fake = FakeLLM(
+        [
+            LLMResponse(content="我先看看知识库里有什么。"),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="tc-1", name="search_knowledge", arguments={"knowledge_base_id": "KB-FINTECH", "query": "金融科技"})],
+            ),
+            LLMResponse(content="当前身份无权访问该知识库。"),
+        ]
+    )
+    orchestrator = ChatOrchestrator(fake)
+    result = orchestrator.handle_message(
+        db_session,
+        employee_no="DT-E20999",
+        message="查询一下金融科技知识库",
+        session_id=None,
+    )
+    assert result.policy_denied is not None
+    assert result.policy_denied.decision == "deny"
+    assert result.policy_denied.policy_id == "POLICY-002"
+    assert "无权" in result.message
+
+
+def test_system_prompt_injects_accessible_kb_list_intern(db_session):
+    """P22：实习生系统提示只注入其可访问的 L1 库清单，不含任何 L2/L3 库。"""
+    fake = FakeLLM([LLMResponse(content="好的。")])
+    orchestrator = ChatOrchestrator(fake)
+    orchestrator.handle_message(db_session, employee_no="DT-E20999", message="你好", session_id=None)
+    system = fake.calls[0][0]["content"]
+    assert "你能访问的知识库只有" in system
+    assert "公共知识（L1）" in system
+    assert "入职 Demo 知识库（L1）" in system
+    assert "外部监管知识库（L1）" in system
+    for name in (
+        "正式员工内部知识库",
+        "金融科技部门知识库",
+        "IT 服务知识库",
+        "证券业务知识库",
+        "内部制度知识库",
+        "示例客户敏感信息库",
+    ):
+        assert name not in system
+
+
+def test_system_prompt_injects_accessible_kb_list_formal(db_session):
+    """P22：正式员工系统提示按实际授权注入 L1/L2 库，未白名单的 L3 库不出现。"""
+    fake = FakeLLM([LLMResponse(content="好的。")])
+    orchestrator = ChatOrchestrator(fake)
+    orchestrator.handle_message(db_session, employee_no="DT-E10281", message="你好", session_id=None)
+    system = fake.calls[0][0]["content"]
+    assert "你能访问的知识库只有" in system
+    for name in (
+        "公共知识（L1）",
+        "正式员工内部知识库（L2）",
+        "金融科技部门知识库（L2）",
+        "IT 服务知识库（L2）",
+        "证券业务知识库（L2）",
+        "内部制度知识库（L2）",
+    ):
+        assert name in system
+    assert "示例客户敏感信息库" not in system  # 无白名单授权
+
+
 def test_chat_saves_session_history(client, db_session):
     fake = FakeLLM(
         [

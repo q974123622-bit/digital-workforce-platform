@@ -55,6 +55,7 @@ class EmployeePluginGrant(Base):
     plugin_id: Mapped[str] = mapped_column(String, index=True)
     action: Mapped[str] = mapped_column(String, default="read")
     decision_mode: Mapped[str] = mapped_column(String, default="allow")  # allow | deny | approval
+    grant_source: Mapped[str] = mapped_column(String, default="")  # 空=种子/普通授权；whitelist=L3 白名单授权
 
 
 class Policy(Base):
@@ -134,6 +135,23 @@ class KnowledgeChunk(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class AccessRequest(Base):
+    """L3 敏感资源白名单申请单（P20）：pending → granted/rejected；approved 为多级审批预留。"""
+
+    __tablename__ = "access_request"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    applicant_no: Mapped[str] = mapped_column(String, index=True)
+    resource_type: Mapped[str] = mapped_column(String)  # knowledge | plugin | data
+    resource_id: Mapped[str] = mapped_column(String)
+    reason: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending|approved|rejected|granted
+    approval_chain: Mapped[list] = mapped_column(JSON, default=list)  # 预留多级审批，本期不实现
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class ChatSession(Base):
     __tablename__ = "chat_session"
 
@@ -144,6 +162,7 @@ class ChatSession(Base):
     title: Mapped[str] = mapped_column(String, default="")  # 会话标题（自动总结主题）
     deleted: Mapped[bool] = mapped_column(default=False)  # 软删除：前端隐藏，后台保留供管理回查
     summarized: Mapped[bool] = mapped_column(default=False)  # 是否已压缩成摘要（Step 6）
+    summarized: Mapped[bool] = mapped_column(default=False)  # 是否已压缩成摘要
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -155,21 +174,6 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String)  # user | assistant | tool
     content: Mapped[str] = mapped_column(String, default="")
     tool_cards: Mapped[list] = mapped_column(JSON, default=list)
-
-
-class TaskRun(Base):
-    __tablename__ = "task_run"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    team_id: Mapped[str] = mapped_column(String)
-    conversation_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    trigger_message_seq: Mapped[int | None] = mapped_column(nullable=True)
-    trace_id: Mapped[str] = mapped_column(String, default="")
-    request: Mapped[str] = mapped_column(String, default="")
-    status: Mapped[str] = mapped_column(String, default="pending")
-    subtasks: Mapped[list] = mapped_column(JSON, default=list)
-    summary: Mapped[str] = mapped_column(String, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class MemoryEntry(Base):
@@ -207,7 +211,19 @@ class MemoryEntry(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
-# ---- Sprint 7：个人工作中心（职场）----
+class TaskRun(Base):
+    __tablename__ = "task_run"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    team_id: Mapped[str] = mapped_column(String)
+    conversation_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    trigger_message_seq: Mapped[int | None] = mapped_column(nullable=True)
+    trace_id: Mapped[str] = mapped_column(String, default="")
+    request: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="pending")
+    subtasks: Mapped[list] = mapped_column(JSON, default=list)
+    summary: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class Skill(Base):

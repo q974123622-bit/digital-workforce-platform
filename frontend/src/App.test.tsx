@@ -13,6 +13,7 @@ const twin: Employee = {
   employee_no: 'DT-E10281',
   name: '张三的数字分身',
   type: 'twin',
+  employment_type: 'formal',
   source_human_no: 'E10281',
   owner_human_no: 'E10281',
   department: '架构部',
