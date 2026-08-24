@@ -1,0 +1,8 @@
+{
+  "services": [
+    {"service": "VPN", "health": "degraded", "incident_id": "INC-DEMO-001", "summary": "虚构演示：部分用户连接延迟升高。", "maintenance_window": null},
+    {"service": "Email", "health": "healthy", "incident_id": null, "summary": "虚构演示：服务运行正常。", "maintenance_window": null},
+    {"service": "Trading-App-Demo", "health": "maintenance", "incident_id": null, "summary": "虚构演示：计划维护中。", "maintenance_window": "2026-08-21 01:00-02:00"},
+    {"service": "HR-System-Demo", "health": "outage", "incident_id": "INC-DEMO-002", "summary": "虚构演示：服务暂时不可用。", "maintenance_window": null}
+  ]
+}

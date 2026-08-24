@@ -334,6 +334,170 @@ def _policy_change_impact(ctx: WorkflowExecutionContext, params: dict) -> dict:
     return workflow_result(ctx, "policy-change-impact-workflow", _aggregate_status(steps), steps, data)
 
 
+def _hr_onboarding(ctx: WorkflowExecutionContext, params: dict) -> dict:
+    """Collect onboarding preparation evidence without making an HR decision."""
+    employee_no = str(params.get("employee_no") or "")
+    collaborate = bool(params.get("collaborate", True))
+    steps: list[dict] = []
+    employee = invoke_plugin_step(ctx, "employee", "employee-search", "read", {"keyword": employee_no})
+    steps.append(employee)
+    matches = (employee.get("data") or {}).get("employees") or []
+    if employee["status"] != "allow" or not matches:
+        return workflow_result(ctx, "hr-onboarding-workflow", _aggregate_status(steps, critical=("employee",)), steps, {"employee": None}, reason="employee_not_found")
+    policy = search_knowledge_step(ctx, "hr_policy", "KB-HR-POLICY", str(params.get("question") or "入职政策 材料要求"))
+    steps.append(policy)
+    onboarding_knowledge = search_knowledge_step(ctx, "onboarding_knowledge", "KB-ONBOARD", "入职准备事项")
+    steps.append(onboarding_knowledge)
+    checklist = invoke_plugin_step(ctx, "onboarding_status", "hr-onboarding-status", "read", {"employee_no": employee_no})
+    steps.append(checklist)
+    checklist_data = checklist.get("data") or {}
+    missing_items = [row for row in checklist_data.get("checklist", []) if row.get("status") in ("missing", "pending")]
+    data = {
+        "employee": matches[0],
+        "policy": policy.get("data") if policy["status"] == "allow" else None,
+        "onboarding_knowledge": onboarding_knowledge.get("data") if onboarding_knowledge["status"] == "allow" else None,
+        "checklist": checklist_data,
+        "missing_items": missing_items,
+        "adp_result": None,
+        "hr_employee": None,
+        "collaboration_result": None,
+    }
+    if bool(params.get("execute_onboarding")):
+        adp = invoke_plugin_step(ctx, "adp_onboarding", "adp-onboarding", "execute", {"employee_name": employee_no})
+        steps.append(adp)
+        data["adp_result"] = adp.get("data") if adp["status"] == "allow" else None
+    if collaborate and missing_items:
+        search = invoke_plugin_step(ctx, "hr_employee_search", "employee-search", "read", {"department": "人力资源部", "digital_only": True})
+        steps.append(search)
+        hr_employees = (search.get("data") or {}).get("employees") or []
+        target = str(params.get("target_hr_employee_id") or "").strip()
+        selected = next((row for row in hr_employees if row.get("employee_no") == target), None) if target else next((row for row in hr_employees if "HR" in str(row.get("name", ""))), hr_employees[0] if hr_employees else None)
+        data["hr_employee"] = selected
+        if selected:
+            collab = invoke_plugin_step(ctx, "hr_collaboration", "employee-collaboration", "execute", {
+                "target_employee_id": selected["employee_no"], "action": "ask", "request": "请补充确认入职清单中的待确认或缺失事项。"
+            })
+            steps.append(collab)
+            data["collaboration_result"] = collab.get("data") if collab["status"] == "allow" else None
+    return workflow_result(ctx, "hr-onboarding-workflow", _aggregate_status(steps, critical=("employee",)), steps, data)
+
+
+def _hr_transfer_review(ctx: WorkflowExecutionContext, params: dict) -> dict:
+    """Review fictional transfer materials; it is explicitly not an approval action."""
+    document_name = str(params.get("document_name") or "")
+    employee_no = str(params.get("employee_no") or "")
+    steps: list[dict] = []
+    document = invoke_plugin_step(ctx, "transfer_document", "document-read", "read", {"document_name": document_name})
+    steps.append(document)
+    doc_status = (document.get("data") or {}).get("status")
+    if document["status"] != "allow" or doc_status in ("not_found", "empty", "error"):
+        return workflow_result(ctx, "hr-transfer-review-workflow", "partial" if document["status"] == "allow" else _aggregate_status(steps), steps, {"transfer_document": document.get("data")}, reason=f"document_{doc_status or document['status']}")
+    employee = invoke_plugin_step(ctx, "employee", "employee-search", "read", {"keyword": employee_no})
+    steps.append(employee)
+    matches = (employee.get("data") or {}).get("employees") or []
+    hr_policy = search_knowledge_step(ctx, "hr_policy", "KB-HR-POLICY", str(params.get("query") or "岗位调整 转岗要求"))
+    steps.append(hr_policy)
+    data = {
+        "transfer_document": document.get("data"),
+        "employee": matches[0] if matches else None,
+        "hr_policy": hr_policy.get("data") if hr_policy["status"] == "allow" else None,
+        "hr_contact": None,
+        "collaboration_result": None,
+    }
+    if bool(params.get("collaborate", True)):
+        search = invoke_plugin_step(ctx, "hr_employee_search", "employee-search", "read", {"department": "人力资源部", "digital_only": True})
+        steps.append(search)
+        candidates = (search.get("data") or {}).get("employees") or []
+        if candidates:
+            contact = next((row for row in candidates if "HR" in str(row.get("name", ""))), candidates[0])
+            data["hr_contact"] = contact
+            collab = invoke_plugin_step(ctx, "hr_collaboration", "employee-collaboration", "execute", {
+                "target_employee_id": contact["employee_no"], "action": "ask", "request": "请协助确认虚构岗位调整材料的待确认事项。"
+            })
+            steps.append(collab)
+            data["collaboration_result"] = collab.get("data") if collab["status"] == "allow" else None
+    return workflow_result(ctx, "hr-transfer-review-workflow", _aggregate_status(steps, critical=("transfer_document",)), steps, data)
+
+
+def _it_incident_triage(ctx: WorkflowExecutionContext, params: dict) -> dict:
+    """Classify a service incident from status facts, not model intuition."""
+    service_name = str(params.get("service_name") or "")
+    symptom = str(params.get("symptom") or "")
+    escalate = bool(params.get("escalate", True))
+    steps: list[dict] = []
+    service_status = invoke_plugin_step(ctx, "service_status", "it-service-status", "read", {"service_name": service_name})
+    steps.append(service_status)
+    services = (service_status.get("data") or {}).get("services") or []
+    if service_status["status"] != "allow" or not services:
+        return workflow_result(ctx, "it-incident-triage-workflow", "partial" if service_status["status"] == "allow" else _aggregate_status(steps), steps, {"service": None}, reason="service_not_found")
+    service = services[0]
+    knowledge = search_knowledge_step(ctx, "it_knowledge", "KB-IT-SERVICE", f"{service_name} {symptom}".strip())
+    steps.append(knowledge)
+    health = service.get("health")
+    triage = {
+        "health": health,
+        "shared_incident_possible": health in ("degraded", "outage"),
+        "maintenance_related": health == "maintenance",
+        "requires_follow_up": health != "healthy",
+    }
+    data = {"service": service, "knowledge": knowledge.get("data") if knowledge["status"] == "allow" else None, "triage": triage, "it_employee": None, "collaboration_result": None}
+    if escalate and health != "healthy":
+        search = invoke_plugin_step(ctx, "it_employee_search", "employee-search", "read", {"department": "IT 服务部", "digital_only": True})
+        steps.append(search)
+        candidates = (search.get("data") or {}).get("employees") or []
+        target = str(params.get("target_it_employee_id") or "").strip()
+        selected = next((row for row in candidates if row.get("employee_no") == target), None) if target else (candidates[0] if candidates else None)
+        data["it_employee"] = selected
+        if selected:
+            collab = invoke_plugin_step(ctx, "it_collaboration", "employee-collaboration", "execute", {
+                "target_employee_id": selected["employee_no"], "action": "ask", "request": f"请协助核查 {service_name} 的虚构故障现象：{symptom}"
+            })
+            steps.append(collab)
+            data["collaboration_result"] = collab.get("data") if collab["status"] == "allow" else None
+    return workflow_result(ctx, "it-incident-triage-workflow", _aggregate_status(steps, critical=("service_status",)), steps, data)
+
+
+def _audit_evidence_review(ctx: WorkflowExecutionContext, params: dict) -> dict:
+    """Aggregate audit evidence and gaps; never produce a compliance conclusion."""
+    document_name = str(params.get("document_name") or "")
+    query = str(params.get("query") or "审计证据 Trace 核查")
+    trace_id = str(params.get("trace_id") or "T-DEMO-001")
+    steps: list[dict] = []
+    document = invoke_plugin_step(ctx, "evidence_document", "document-read", "read", {"document_name": document_name})
+    steps.append(document)
+    doc_status = (document.get("data") or {}).get("status")
+    if document["status"] != "allow" or doc_status in ("not_found", "empty", "error"):
+        return workflow_result(ctx, "audit-evidence-review-workflow", "partial" if document["status"] == "allow" else _aggregate_status(steps), steps, {"document": document.get("data")}, reason=f"document_{doc_status or document['status']}")
+    procedure = search_knowledge_step(ctx, "audit_procedure", "KB-AUDIT-PROCEDURE", query)
+    internal = search_knowledge_step(ctx, "internal_policy", "KB-REG-INTERNAL", query)
+    work_records = invoke_plugin_step(ctx, "work_records", "work-record-query", "read", {"employee_id": ctx.employee_id})
+    audit_events = invoke_plugin_step(ctx, "audit_events", "audit-event-query", "read", {"trace_id": trace_id, "limit": params.get("limit", 20)})
+    steps.extend([procedure, internal, work_records, audit_events])
+    events = (audit_events.get("data") or {}).get("events") or []
+    data = {
+        "document": document.get("data"),
+        "audit_procedure": procedure.get("data") if procedure["status"] == "allow" else None,
+        "internal_policy": internal.get("data") if internal["status"] == "allow" else None,
+        "work_records": work_records.get("data") if work_records["status"] == "allow" else None,
+        "audit_events": events,
+        "evidence_gaps": [] if events else ["未找到与指定 Trace 匹配的当前主体审计事件"],
+        "audit_contact": None,
+        "collaboration_result": None,
+    }
+    if bool(params.get("collaborate", True)):
+        search = invoke_plugin_step(ctx, "audit_employee_search", "employee-search", "read", {"department": "审计演示组", "digital_only": True})
+        steps.append(search)
+        candidates = (search.get("data") or {}).get("employees") or []
+        if candidates:
+            data["audit_contact"] = candidates[0]
+            collab = invoke_plugin_step(ctx, "audit_collaboration", "employee-collaboration", "execute", {
+                "target_employee_id": candidates[0]["employee_no"], "action": "ask", "request": "请协助复核虚构审计证据中的 Trace 与待补充项。"
+            })
+            steps.append(collab)
+            data["collaboration_result"] = collab.get("data") if collab["status"] == "allow" else None
+    return workflow_result(ctx, "audit-evidence-review-workflow", _aggregate_status(steps, critical=("evidence_document",)), steps, data)
+
+
 WORKFLOW_REGISTRY: dict[str, callable] = {
     "workflow://regulation/compare": _regulation_compare,
     "workflow://document/compliance": _document_compliance,
@@ -341,6 +505,10 @@ WORKFLOW_REGISTRY: dict[str, callable] = {
     "workflow://employee/assist": _employee_assist,
     "workflow://report/export": _report_export,
     "workflow://policy/change-impact": _policy_change_impact,
+    "workflow://hr/onboarding": _hr_onboarding,
+    "workflow://hr/transfer-review": _hr_transfer_review,
+    "workflow://it/incident-triage": _it_incident_triage,
+    "workflow://audit/evidence-review": _audit_evidence_review,
 }
 
 

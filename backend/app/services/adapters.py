@@ -299,6 +299,74 @@ def _mock_purchase_request(_plugin: models.Plugin, params: dict) -> dict:
     }
 
 
+def _mock_onboarding_status(_plugin: models.Plugin, params: dict) -> dict:
+    """Return only fictional onboarding checklist states; never personal HR data."""
+    path = REPO_ROOT / "mock-data" / "skill-fixtures" / "hr" / "onboarding-status.json"
+    employee_no = str(params.get("employee_no") or "")
+    records = json.loads(path.read_text(encoding="utf-8")).get("records", [])
+    record = next((row for row in records if row.get("employee_no") == employee_no), None)
+    return {
+        "source": "demo",
+        "status": "success",
+        "employee_no": employee_no,
+        "checklist": list(record.get("checklist", [])) if record else [],
+    }
+
+
+def _mock_it_service_status(_plugin: models.Plugin, params: dict) -> dict:
+    """Read fixed demo service health; it never performs a real network check."""
+    path = REPO_ROOT / "mock-data" / "skill-fixtures" / "it" / "service-status.json"
+    requested = str(params.get("service_name") or "").strip().lower()
+    services = json.loads(path.read_text(encoding="utf-8")).get("services", [])
+    if requested:
+        services = [row for row in services if str(row.get("service", "")).lower() == requested]
+    return {"source": "demo", "status": "success", "services": services}
+
+
+def _mock_query_audit_events(_plugin: models.Plugin, params: dict) -> dict:
+    """Safely query platform audit events for the current subject only.
+
+    ``employee_id`` supplied by a model is intentionally ignored.  Cross-subject
+    audit access would require a separate, explicitly governed capability.
+    """
+    db = params.get("_db_session")
+    subject_id = params.get("source_employee_id")
+    if db is None or not subject_id:
+        return {"source": "demo", "status": "error", "events": [], "reason": "audit context unavailable"}
+    query = db.query(models.AuditEvent).filter(models.AuditEvent.employee_id == subject_id)
+    trace_id = str(params.get("audit_trace_id") or "").strip()
+    plugin_id = str(params.get("plugin_id") or "").strip()
+    decision = str(params.get("decision") or "").strip()
+    if trace_id:
+        query = query.filter(models.AuditEvent.trace_id == trace_id)
+    if plugin_id:
+        query = query.filter(models.AuditEvent.plugin_id == plugin_id)
+    if decision:
+        query = query.filter(models.AuditEvent.decision == decision)
+    try:
+        limit = max(1, min(int(params.get("limit", 20)), 100))
+    except (TypeError, ValueError):
+        limit = 20
+    rows = query.order_by(models.AuditEvent.id.asc()).limit(limit).all()
+    return {
+        "source": "demo",
+        "status": "success",
+        "events": [
+            {
+                "audit_id": row.id,
+                "trace_id": row.trace_id,
+                "employee_id": row.employee_id,
+                "plugin_id": row.plugin_id,
+                "action": row.action,
+                "decision": row.decision,
+                "reason": row.reason,
+                "created_at": row.ts.isoformat() if row.ts else None,
+            }
+            for row in rows
+        ],
+    }
+
+
 REGISTRY: dict[str, callable] = {
     "mock://kb/l1": _mock_kb_l1,
     "mock://kb/l2": _mock_kb_l2,
@@ -317,6 +385,9 @@ REGISTRY: dict[str, callable] = {
     "mock://workflow/meeting-notes": _mock_meeting_notes,
     "mock://rpa/weekly-report": _mock_weekly_report,
     "mock://workflow/purchase-request": _mock_purchase_request,
+    "mock://hr/onboarding-status": _mock_onboarding_status,
+    "mock://it/service-status": _mock_it_service_status,
+    "mock://audit/events": _mock_query_audit_events,
 }
 
 # 工作流目录（职场「工作流」卡片展示用）：步骤 + 示例指令

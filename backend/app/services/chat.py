@@ -240,6 +240,62 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_onboarding_status",
+            "description": "查询虚构员工的入职检查清单状态；不执行入职。",
+            "parameters": {"type": "object", "properties": {"employee_no": {"type": "string"}}, "required": ["employee_no"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_it_service_status",
+            "description": "查询虚构 IT 服务健康状态；不进行真实网络探测。",
+            "parameters": {"type": "object", "properties": {"service_name": {"type": "string"}}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_audit_events",
+            "description": "查询当前调用主体可见的审计事件；不支持任意员工越权查询。",
+            "parameters": {"type": "object", "properties": {"trace_id": {"type": "string"}, "plugin_id": {"type": "string"}, "decision": {"type": "string"}, "limit": {"type": "integer"}}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assist_hr_onboarding",
+            "description": "收集虚构员工入职准备证据；不作允许或拒绝入职决定。",
+            "parameters": {"type": "object", "properties": {"employee_no": {"type": "string"}, "question": {"type": "string"}, "collaborate": {"type": "boolean"}, "target_hr_employee_id": {"type": "string"}, "execute_onboarding": {"type": "boolean"}}, "required": ["employee_no"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "review_hr_transfer",
+            "description": "核查虚构岗位调整材料并收集制度依据；不作审批决定。",
+            "parameters": {"type": "object", "properties": {"document_name": {"type": "string"}, "employee_no": {"type": "string"}, "query": {"type": "string"}, "collaborate": {"type": "boolean"}}, "required": ["document_name", "employee_no"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "triage_it_incident",
+            "description": "依据虚构服务状态和 IT 知识进行事件分诊。",
+            "parameters": {"type": "object", "properties": {"service_name": {"type": "string"}, "symptom": {"type": "string"}, "escalate": {"type": "boolean"}, "target_it_employee_id": {"type": "string"}}, "required": ["service_name", "symptom"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "review_audit_evidence",
+            "description": "聚合虚构审计材料、制度、记录与 Trace；不作正式审计结论。",
+            "parameters": {"type": "object", "properties": {"document_name": {"type": "string"}, "query": {"type": "string"}, "trace_id": {"type": "string"}, "collaborate": {"type": "boolean"}, "limit": {"type": "integer"}}, "required": ["document_name"]},
+        },
+    },
 ]
 
 
@@ -256,6 +312,13 @@ DEMO_TOOL_PLUGIN_MAP: dict[str, tuple[str, str, str]] = {
     "assist_with_employee": ("employee-assist-workflow", "execute", "employee-assist-workflow"),
     "prepare_work_report": ("report-export-workflow", "execute", "report-export-workflow"),
     "analyze_policy_change": ("policy-change-impact-workflow", "execute", "policy-change-impact-workflow"),
+    "query_onboarding_status": ("hr-onboarding-status", "read", "onboarding-status"),
+    "query_it_service_status": ("it-service-status", "read", "it-service-status"),
+    "query_audit_events": ("audit-event-query", "read", "audit-events"),
+    "assist_hr_onboarding": ("hr-onboarding-workflow", "execute", "hr-onboarding-workflow"),
+    "review_hr_transfer": ("hr-transfer-review-workflow", "execute", "hr-transfer-review-workflow"),
+    "triage_it_incident": ("it-incident-triage-workflow", "execute", "it-incident-triage-workflow"),
+    "review_audit_evidence": ("audit-evidence-review-workflow", "execute", "audit-evidence-review-workflow"),
 }
 
 

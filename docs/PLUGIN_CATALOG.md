@@ -71,3 +71,18 @@ policy-change-impact-workflow
 - 平台 `plugin` 表、Plugin Gateway、Adapter、WorkflowEngine 是数字员工 Demo 平台的业务插件体系。
 - 平台现有 `RuntimeAdapter`（Noop / Harness headless / Docker，默认 demo 模式）与 `TeamTaskOrchestrator`，是 Sprint 5 的 Runtime / 团队协作能力，独立于本目录的 Skill Demo Tool 与业务 Workflow。
 - 当前 `Harness Runtime → 平台 Plugin Gateway` 的完整桥接仍未打通；不要把平台 Plugin 描述为已通过 `ctx.plugin(...)` 加载的 DSH Cordis Plugin。
+# Domain Plugin Additions
+
+| Category | Plugin / knowledge base | Tool / endpoint |
+|---|---|---|
+| Atomic | hr-onboarding-status | query_onboarding_status / mock://hr/onboarding-status |
+| Atomic | it-service-status | query_it_service_status / mock://it/service-status |
+| Atomic | audit-event-query | query_audit_events / mock://audit/events |
+| Workflow | hr-onboarding-workflow | assist_hr_onboarding / workflow://hr/onboarding |
+| Workflow | hr-transfer-review-workflow | review_hr_transfer / workflow://hr/transfer-review |
+| Workflow | it-incident-triage-workflow | triage_it_incident / workflow://it/incident-triage |
+| Workflow | audit-evidence-review-workflow | review_audit_evidence / workflow://audit/evidence-review |
+| Knowledge | KB-HR-POLICY | mock-data/kb/hr-policy/ (L2) |
+| Knowledge | KB-AUDIT-PROCEDURE | mock-data/kb/audit-procedure/ (L2) |
+
+Each entry contains only fictional Demo data. The audit query is restricted to the current subject; a caller-provided employee filter is ignored.

@@ -1,5 +1,8 @@
 {
   "scenarios": [
+    {"scenario_id": "COLLAB-HR-ASK-001", "target_employee_id": "VE-0002", "action": "ask", "status": "success", "response_template": "已收到 HR 协作请求：{request}。Demo 建议补充待确认材料和部门确认。", "reason": null},
+    {"scenario_id": "COLLAB-IT-ASK-001", "target_employee_id": "VE-0003", "action": "ask", "status": "success", "response_template": "已收到故障协作请求：{request}。Demo 建议先确认影响范围和当前服务状态。", "reason": null},
+    {"scenario_id": "COLLAB-AUDIT-ASK-001", "target_employee_id": "VE-0005", "action": "ask", "status": "success", "response_template": "已收到审计证据复核请求：{request}。Demo 建议补充缺失 Trace 或审批记录。", "reason": null},
     {
       "scenario_id": "success_ask",
       "target_employee_id": "VE-0002",

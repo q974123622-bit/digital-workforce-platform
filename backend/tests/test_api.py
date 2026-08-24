@@ -6,13 +6,13 @@ def test_health(client):
 
 def test_seed_counts(client):
     employees = client.get("/api/v1/employees").json()
-    assert len(employees) == 7
+    assert len(employees) == 8
     assert len([e for e in employees if e["type"] == "twin"]) == 2
-    assert len([e for e in employees if e["type"] == "virtual"]) == 4
+    assert len([e for e in employees if e["type"] == "virtual"]) == 5
     assert len([e for e in employees if e["type"] == "rpa"]) == 1
-    assert len(client.get("/api/v1/plugins").json()) == 24
+    assert len(client.get("/api/v1/plugins").json()) == 31
     assert len(client.get("/api/v1/policies").json()) == 9
-    assert len(client.get("/api/v1/knowledge-bases").json()) == 9
+    assert len(client.get("/api/v1/knowledge-bases").json()) == 11
     teams = client.get("/api/v1/teams").json()
     assert len(teams) == 1
     assert len(teams[0]["members"]) == 4
@@ -46,7 +46,7 @@ def test_employee_crud(client):
     )
     assert resp.status_code == 201
     employee_no = resp.json()["employee_no"]
-    assert employee_no == "VE-0005"
+    assert employee_no == "VE-0006"
 
     resp = client.put(f"/api/v1/employees/{employee_no}", json={"name": "改名后的虚拟员工"})
     assert resp.status_code == 200

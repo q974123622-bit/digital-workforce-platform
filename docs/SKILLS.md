@@ -20,3 +20,12 @@ Skill 资产完成 ≠ 真实 Runtime 能力已经接通。
 详细的 Skill → Tool / Plugin 能力 → Mock Fixture 映射关系见：[docs/SKILL_TOOL_CONTRACTS.md](SKILL_TOOL_CONTRACTS.md)
 
 平台 Plugin 体系（原子能力 / Workflow / RPA / Knowledge / MCP）目录见：[docs/PLUGIN_CATALOG.md](PLUGIN_CATALOG.md)
+# Domain Skills
+
+| Domain | Skills | Primary tool pattern |
+|---|---|---|
+| HR | hr-policy-assistant, hr-onboarding-assistant, hr-transfer-assistant | knowledge search; onboarding/transfer workflows |
+| IT | it-service-assistant, it-incident-triage, it-change-assistant | knowledge + service status; incident workflow |
+| Audit | audit-policy-check, audit-trace-review, audit-evidence-review | knowledge; safe audit query; evidence workflow |
+
+All domain Skills operate on fictional Demo data. Skills describe how to use visible tools; Gateway and Policy retain all authorization decisions.

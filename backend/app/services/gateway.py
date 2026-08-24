@@ -229,6 +229,10 @@ def invoke_plugin(
         )
         execution_params = dict(params)
         execution_params["source_employee_id"] = employee_id
+        if plugin_id == "audit-event-query":
+            # Preserve the caller's trace filter separately from the trace ID
+            # recorded for this capability invocation.
+            execution_params["audit_trace_id"] = params.get("trace_id")
         execution_params["trace_id"] = trace_id
         execution_params["_db_session"] = db
         execution = execute_capability(

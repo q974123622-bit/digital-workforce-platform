@@ -18,7 +18,7 @@ def _search(client, employee_id, kb_id, query, trace_id):
 # ---- Knowledge Resource Registry ----
 
 
-def test_registry_resources(client):
+def test_registry_eleven_resources(client):
     resp = client.get("/api/v1/knowledge-bases")
     assert resp.status_code == 200
     kbs = {kb["id"]: kb for kb in resp.json()}
@@ -32,6 +32,8 @@ def test_registry_resources(client):
         "KB-SECURITIES",
         "KB-REG-INTERNAL",
         "KB-REG-EXTERNAL",
+        "KB-HR-POLICY",
+        "KB-AUDIT-PROCEDURE",
     }
     assert kbs["KB-PUBLIC"]["data_level"] == "L1"
     assert kbs["KB-PUBLIC"]["allowed_employment_type"] == ["formal", "intern"]

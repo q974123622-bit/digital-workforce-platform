@@ -262,3 +262,18 @@ search_knowledge
 所有 Workflow 子调用均重新经过 Plugin Gateway + Policy + Audit；Workflow 只返回结构化结果，最终总结由 Skill + LLM 完成。
 
 完整 Plugin 目录见 `docs/PLUGIN_CATALOG.md`。
+# Domain Skill Tool Contracts
+
+| Skill | Tool / workflow tool | Plugin / sources |
+|---|---|---|
+| hr-policy-assistant | search_knowledge | KB-HR-POLICY |
+| hr-onboarding-assistant | assist_hr_onboarding | hr-onboarding-workflow |
+| hr-transfer-assistant | review_hr_transfer | hr-transfer-review-workflow |
+| it-service-assistant | search_knowledge, query_it_service_status | KB-IT-SERVICE, it-service-status |
+| it-incident-triage | triage_it_incident | it-incident-triage-workflow |
+| it-change-assistant | query_it_service_status, search_knowledge | it-service-status, KB-IT-SERVICE |
+| audit-policy-check | search_knowledge | KB-AUDIT-PROCEDURE, KB-REG-INTERNAL, KB-REG-EXTERNAL |
+| audit-trace-review | query_audit_events | audit-event-query |
+| audit-evidence-review | review_audit_evidence | audit-evidence-review-workflow |
+
+All workflow children re-enter Plugin Gateway; only policy-governed results may be presented.

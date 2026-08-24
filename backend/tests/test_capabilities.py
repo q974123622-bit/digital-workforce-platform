@@ -24,7 +24,7 @@ def test_capability_catalog_unifies_plugins_and_skills(client):
     resp = client.get("/api/v1/capabilities?actor_no=E10281")
     assert resp.status_code == 200
     rows = resp.json()
-    assert len(rows) == 28  # 24 plugins + 张三的 4 skills
+    assert len(rows) == 35  # 31 plugins + 张三的 4 skills
     skill = next(row for row in rows if row["id"] == "SK-0001")
     workflow = next(row for row in rows if row["id"] == "expense-claim")
     assert skill["kind"] == "instruction" and skill["executable"] is False

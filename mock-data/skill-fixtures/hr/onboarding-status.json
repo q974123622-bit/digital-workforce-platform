@@ -1,0 +1,22 @@
+{
+  "records": [
+    {
+      "employee_no": "EMP-DEMO-001",
+      "checklist": [
+        {"item": "基础信息确认", "status": "completed"},
+        {"item": "入职培训", "status": "completed"},
+        {"item": "系统权限申请", "status": "pending"},
+        {"item": "部门确认", "status": "completed"}
+      ]
+    },
+    {
+      "employee_no": "EMP-DEMO-002",
+      "checklist": [
+        {"item": "基础信息确认", "status": "completed"},
+        {"item": "入职培训", "status": "missing"},
+        {"item": "系统权限申请", "status": "missing"},
+        {"item": "部门确认", "status": "pending"}
+      ]
+    }
+  ]
+}

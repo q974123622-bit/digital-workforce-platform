@@ -529,7 +529,7 @@ def test_purchase_workflow_requires_approval(client):
 
 def test_workflow_catalog(client):
     body = client.get("/api/v1/workflows").json()
-    assert len(body) == 13
+    assert len(body) == 17
     assert all(w["type"] in ("workflow", "rpa") for w in body)
     expense = next(w for w in body if w["plugin_id"] == "expense-claim")
     assert expense["steps"] == ["报销申请提交", "直属领导审批", "财务复核打款"]
