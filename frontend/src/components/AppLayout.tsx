@@ -29,7 +29,7 @@ const menuItems: MenuProps['items'] = [
     children: [
       { key: '/admin', icon: <DashboardOutlined />, label: <Link to="/admin">数据总览</Link> },
       { key: '/employees', icon: <RobotOutlined />, label: <Link to="/employees">数字员工</Link> },
-      { key: '/plugins', icon: <AppstoreOutlined />, label: <Link to="/plugins">插件中心</Link> },
+      { key: '/plugins', icon: <AppstoreOutlined />, label: <Link to="/plugins">能力中心</Link> },
       { key: '/security', icon: <SafetyCertificateOutlined />, label: <Link to="/security">安全中心</Link> },
       { key: '/teams', icon: <TeamOutlined />, label: <Link to="/teams">协作团队</Link> },
     ],
@@ -40,7 +40,7 @@ const routeMeta: Record<string, string> = {
   '/workplace': '我的职场',
   '/admin': '数据总览',
   '/employees': '数字员工',
-  '/plugins': '插件中心',
+  '/plugins': '能力中心',
   '/security': '安全中心',
   '/teams': '协作团队',
 };

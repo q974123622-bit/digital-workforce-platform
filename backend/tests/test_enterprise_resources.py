@@ -18,11 +18,12 @@ def _search(client, employee_id, kb_id, query, trace_id):
 # ---- Knowledge Resource Registry ----
 
 
-def test_registry_eight_resources(client):
+def test_registry_resources(client):
     resp = client.get("/api/v1/knowledge-bases")
     assert resp.status_code == 200
     kbs = {kb["id"]: kb for kb in resp.json()}
     assert set(kbs) == {
+        "KB-CUSTOMER-SENSITIVE",
         "KB-PUBLIC",
         "KB-ONBOARD",
         "KB-INTERNAL",
@@ -167,7 +168,7 @@ def test_all_resources_have_three_level_classification(client):
     kbs = client.get("/api/v1/knowledge-bases").json()
     plugins = client.get("/api/v1/plugins").json()
     assert len(kbs) == 9
-    assert len(plugins) == 13
+    assert len(plugins) == 12
     assert all(kb["data_level"] in {"L1", "L2", "L3"} for kb in kbs)
     assert all(p["data_level"] in {"L1", "L2", "L3"} for p in plugins)
     levels = {kb["id"]: kb["data_level"] for kb in kbs}

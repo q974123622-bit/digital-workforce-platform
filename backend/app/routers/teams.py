@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from ..database import get_db
+from ..database import SessionLocal, get_db
 from ..services import config
 from ..services.llm import DeepSeekProvider
 from ..services.runtime_adapter import DockerHarnessRuntimeAdapter, NoopRuntimeAdapter
@@ -20,6 +20,17 @@ def _team_orchestrator() -> TeamTaskOrchestrator:
     else:
         runtime = NoopRuntimeAdapter()
     return TeamTaskOrchestrator(DeepSeekProvider(), runtime=runtime)
+
+
+def _approve_continue_async(task_id: str) -> None:
+    """审批通过后后台续跑执行（独立 DB session，避免审批请求再次阻塞）。"""
+    db = SessionLocal()
+    try:
+        run = db.get(models.TaskRun, task_id)
+        if run is not None and run.status == "running":
+            _team_orchestrator()._run_loop(db, run)
+    finally:
+        db.close()
 
 
 def _to_out(db: Session, team: models.Team) -> schemas.TeamOut:
@@ -65,7 +76,17 @@ def get_task(team_id: str, task_id: str, db: Session = Depends(get_db)):
 
 
 @tasks_router.post("/tasks/{task_id}/approve", response_model=schemas.TaskRunOut)
-def approve_task(task_id: str, payload: schemas.TaskApproveIn, db: Session = Depends(get_db)):
-    """审批（Sprint 5）：仅 approval 挂起态可审批，否则 409。"""
+def approve_task(
+    task_id: str,
+    payload: schemas.TaskApproveIn,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """审批：受理即返回，通过后由后台继续执行（Sprint 11 异步化）。"""
     orchestrator = _team_orchestrator()
-    return orchestrator.approve(db, task_id=task_id, approve=payload.approve, actor_no=payload.actor_no)
+    out = orchestrator.apply_approval(
+        db, task_id=task_id, approve=payload.approve, actor_no=payload.actor_no
+    )
+    if out.status == "running":
+        background_tasks.add_task(_approve_continue_async, task_id)
+    return out

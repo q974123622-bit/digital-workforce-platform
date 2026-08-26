@@ -3,13 +3,17 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from .. import models, schemas
 from ..database import get_db
 from ..services.chat import ChatOrchestrator
 from ..services.identity import resolve_identity
+from ..services.knowledge_registry import plugin_id_for_level
 from ..services.llm import DeepSeekProvider, LLMUnavailableError
 from ..services.policy import ResourceRef, evaluate
+from ..services.agentteams_gateway import AgentTeamsUnavailableError
+from ..services import agentteams_lifecycle as at_lifecycle
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -35,22 +39,18 @@ def _grants_for(db: Session, employee_no: str) -> list[schemas.GrantOut]:
     return out
 
 
-def _employment_type_for(db: Session, emp: models.DigitalEmployee) -> str:
-    """twin 取 source（真人）的 employment_type，virtual/rpa 取 owner；找不到按 intern 处理。"""
-    ref_no = emp.source_human_no or emp.owner_human_no
-    human = db.get(models.HumanEmployee, ref_no) if ref_no else None
-    return human.employment_type if human else "intern"
-
-
 def _to_out(db: Session, emp: models.DigitalEmployee) -> schemas.EmployeeOut:
+    identity = resolve_identity(db, emp.employee_no)
+    owner = db.get(models.HumanEmployee, emp.owner_human_no)
     return schemas.EmployeeOut(
         id=emp.employee_no,
         employee_no=emp.employee_no,
         name=emp.name,
         type=emp.type,
-        employment_type=_employment_type_for(db, emp),
+        employment_type=identity.employment_type,
         source_human_no=emp.source_human_no,
         owner_human_no=emp.owner_human_no,
+        owner_name=owner.name if owner else emp.owner_human_no,
         department=emp.department,
         role_prompt=emp.role_prompt,
         status=emp.status,
@@ -95,11 +95,69 @@ def list_employees(
 
 @router.post("", response_model=schemas.EmployeeOut, status_code=201)
 def create_employee(payload: schemas.EmployeeCreate, db: Session = Depends(get_db)):
+    owner = db.get(models.HumanEmployee, payload.owner_human_no)
+    if owner is None:
+        raise HTTPException(status_code=400, detail="owner_human_no 对应的真人员工不存在")
+    if payload.type == "twin" and payload.source_human_no != payload.owner_human_no:
+        raise HTTPException(status_code=400, detail="数字分身的 source_human_no 必须与 owner_human_no 一致")
+    if payload.type == "twin":
+        existing_twin = db.scalar(
+            select(models.DigitalEmployee).where(
+                models.DigitalEmployee.type == "twin",
+                models.DigitalEmployee.source_human_no == payload.source_human_no,
+            )
+        )
+        if existing_twin is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"每位真人只能拥有一个数字分身，当前已绑定 {existing_twin.employee_no}",
+            )
     employee_no = _next_employee_no(db, payload.type, payload.source_human_no)
-    emp = models.DigitalEmployee(employee_no=employee_no, **payload.model_dump())
-    db.add(emp)
-    db.commit()
-    db.refresh(emp)
+    # 概念模型：分身=对话组织者（demo，不建容器）；虚拟员工/RPA=执行者（agentteams，自动建容器）
+    effective_runtime = payload.runtime_type or (
+        "demo" if payload.type == "twin" else "agentteams"
+    )
+    if payload.type == "twin" and effective_runtime != "demo":
+        raise HTTPException(status_code=400, detail="数字分身只负责组织，不创建 AgentTeams worker")
+    if effective_runtime not in ("demo", "agentteams"):
+        raise HTTPException(status_code=400, detail="runtime_type 必须为 demo 或 agentteams")
+    data = payload.model_dump()
+    data["runtime_type"] = effective_runtime
+    emp = models.DigitalEmployee(employee_no=employee_no, **data)
+    runtime_ref: str | None = None
+    if effective_runtime == "agentteams":
+        expected_worker = at_lifecycle.worker_name(employee_no, payload.type)
+        existed_before: bool | None = None
+        try:
+            existed_before = at_lifecycle.get_worker(expected_worker) is not None
+            runtime_ref = at_lifecycle.create_worker(
+                employee_no=employee_no,
+                employee_type=payload.type,
+                display_name=payload.name,
+                soul=payload.role_prompt or f"你是{payload.name}，请按角色履行职责。",
+            )
+            at_lifecycle.add_team_member(runtime_ref)
+        except AgentTeamsUnavailableError as exc:
+            if existed_before is False:
+                try:
+                    at_lifecycle.delete_worker(expected_worker)
+                except AgentTeamsUnavailableError:
+                    pass
+            raise HTTPException(status_code=503, detail=f"AgentTeams 容器创建失败：{exc}") from exc
+        emp.runtime_ref = runtime_ref
+    try:
+        db.add(emp)
+        db.commit()
+        db.refresh(emp)
+    except Exception:
+        # 容器已建但落库失败：尽力清理容器，避免孤儿实例
+        if runtime_ref:
+            try:
+                at_lifecycle.delete_worker(runtime_ref)
+            except AgentTeamsUnavailableError:
+                pass
+        db.rollback()
+        raise
     return _to_out(db, emp)
 
 
@@ -116,10 +174,58 @@ def update_employee(employee_no: str, payload: schemas.EmployeeUpdate, db: Sessi
     emp = db.get(models.DigitalEmployee, employee_no)
     if not emp:
         raise HTTPException(status_code=404, detail="员工不存在")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    patch = payload.model_dump(exclude_unset=True)
+    desired_runtime = patch.get("runtime_type", emp.runtime_type)
+    if emp.type == "twin" and desired_runtime != "demo":
+        raise HTTPException(status_code=400, detail="数字分身只负责组织对话，不创建 AgentTeams worker")
+    if desired_runtime not in ("demo", "agentteams"):
+        raise HTTPException(status_code=400, detail="runtime_type 必须为 demo 或 agentteams")
+
+    old_runtime = emp.runtime_type
+    old_ref = emp.runtime_ref
+    new_ref = old_ref
+    if old_runtime != desired_runtime:
+        if desired_runtime == "agentteams":
+            try:
+                new_ref = at_lifecycle.create_worker(
+                    employee_no=emp.employee_no,
+                    employee_type=emp.type,
+                    display_name=patch.get("name", emp.name),
+                    soul=patch.get("role_prompt", emp.role_prompt) or f"你是{emp.name}，请按角色履行职责。",
+                )
+                at_lifecycle.add_team_member(new_ref)
+            except AgentTeamsUnavailableError as exc:
+                raise HTTPException(status_code=503, detail=f"Worker 创建失败：{exc}") from exc
+        elif old_ref:
+            try:
+                at_lifecycle.delete_worker(old_ref)
+            except AgentTeamsUnavailableError as exc:
+                raise HTTPException(status_code=503, detail=f"Worker 删除失败：{exc}") from exc
+            new_ref = None
+
+    for field, value in patch.items():
         setattr(emp, field, value)
-    db.commit()
-    db.refresh(emp)
+    emp.runtime_ref = new_ref
+    # 人设/显示名变化时同步 worker SOUL（仅 agentteams 运行时）
+    if emp.runtime_type == "agentteams" and emp.runtime_ref:
+        changed = payload.role_prompt is not None or payload.name is not None
+        if changed:
+            try:
+                at_lifecycle.update_worker_soul(emp.runtime_ref, payload.name or emp.name, payload.role_prompt or emp.role_prompt)
+            except AgentTeamsUnavailableError as exc:
+                raise HTTPException(status_code=503, detail=f"Worker SOUL 同步失败：{exc}") from exc
+    try:
+        db.commit()
+        db.refresh(emp)
+    except Exception:
+        db.rollback()
+        # 数据库失败时尽量恢复外部运行实例，避免配置与实际资源长期分叉。
+        if old_runtime != desired_runtime and desired_runtime == "agentteams" and new_ref:
+            try:
+                at_lifecycle.delete_worker(new_ref)
+            except AgentTeamsUnavailableError:
+                pass
+        raise
     return _to_out(db, emp)
 
 
@@ -128,8 +234,72 @@ def delete_employee(employee_no: str, db: Session = Depends(get_db)):
     emp = db.get(models.DigitalEmployee, employee_no)
     if not emp:
         raise HTTPException(status_code=404, detail="员工不存在")
+    active_runs = db.scalars(
+        select(models.TaskRun).where(models.TaskRun.status.in_(["running", "approval"]))
+    ).all()
+    if any(
+        any(sub.get("worker_id") == employee_no for sub in (run.subtasks or []))
+        for run in active_runs
+    ):
+        raise HTTPException(status_code=409, detail="数字员工仍有运行中或待审批任务，不能删除")
+    if emp.type == "twin":
+        owned_conversation = db.scalar(
+            select(models.Conversation.id).where(
+                models.Conversation.owner_human_no == emp.owner_human_no
+            ).limit(1)
+        )
+        if owned_conversation:
+            raise HTTPException(status_code=409, detail="数字分身仍绑定职场会话，不能直接删除")
+
+    # 先删容器（失败则保留记录），再原子清理平台侧授权和成员关系。
+    if emp.runtime_type == "agentteams" and emp.runtime_ref:
+        try:
+            at_lifecycle.delete_worker(emp.runtime_ref)
+        except AgentTeamsUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=f"AgentTeams 容器删除失败：{exc}") from exc
+    for conv in db.scalars(select(models.Conversation)).all():
+        participants = [
+            p for p in (conv.participants or []) if p.get("employee_no") != employee_no
+        ]
+        if len(participants) != len(conv.participants or []):
+            conv.participants = participants
+            flag_modified(conv, "participants")
+    db.query(models.EmployeePluginGrant).filter(
+        models.EmployeePluginGrant.employee_id == employee_no
+    ).delete()
+    db.query(models.TeamMember).filter(models.TeamMember.employee_id == employee_no).delete()
     db.delete(emp)
     db.commit()
+
+
+@router.get("/{employee_no}/runtime", response_model=schemas.EmployeeRuntimeOut)
+def get_employee_runtime(employee_no: str, db: Session = Depends(get_db)):
+    """返回数字员工对应的运行实例状态（AgentTeams worker / demo）。"""
+    emp = db.get(models.DigitalEmployee, employee_no)
+    if not emp:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    if emp.runtime_type != "agentteams" or not emp.runtime_ref:
+        return schemas.EmployeeRuntimeOut(
+            employee_no=emp.employee_no,
+            runtime_type=emp.runtime_type,
+            runtime_ref=emp.runtime_ref,
+            status=emp.status,
+            detail="未绑定 AgentTeams 运行实例",
+        )
+    try:
+        worker = at_lifecycle.get_worker(emp.runtime_ref)
+    except AgentTeamsUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=f"AgentTeams 状态查询失败：{exc}") from exc
+    return schemas.EmployeeRuntimeOut(
+        employee_no=emp.employee_no,
+        runtime_type=emp.runtime_type,
+        runtime_ref=emp.runtime_ref,
+        status=emp.status,
+        worker_phase=(worker or {}).get("phase"),
+        matrix_user_id=(worker or {}).get("matrixUserID"),
+        room_id=(worker or {}).get("roomID"),
+        detail="" if worker else "实例不存在（可能已删除）",
+    )
 
 
 @router.post("/{employee_no}/chat", response_model=schemas.ChatResponse)
@@ -205,7 +375,7 @@ def get_workspace(employee_no: str, db: Session = Depends(get_db)):
 
     kbs: list[schemas.WorkspaceKbOut] = []
     for kb in db.scalars(select(models.KnowledgeBase).order_by(models.KnowledgeBase.id)).all():
-        plugin_id = "knowledge-l1" if kb.data_level == "L1" else "knowledge-l2"
+        plugin_id = plugin_id_for_level(kb.data_level)
         result = evaluate(db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read")
         kbs.append(
             schemas.WorkspaceKbOut(

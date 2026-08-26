@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import {
   CheckCircleOutlined,
+  CommentOutlined,
   ClockCircleOutlined,
   DeleteOutlined,
   DownOutlined,
   ExperimentOutlined,
   PlusOutlined,
+  QuestionCircleOutlined,
   RobotOutlined,
   SendOutlined,
   StopOutlined,
+  ToolOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   UpOutlined,
@@ -30,6 +34,7 @@ import {
   Space,
   Switch,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message,
@@ -92,6 +97,21 @@ const TASK_STATUS: Record<string, { label: string; color: string; icon: ReactNod
   failed: { label: '失败', color: 'error', icon: <StopOutlined /> },
 };
 
+const EXECUTION_MODE_LABEL: Record<string, string> = {
+  harness: 'DeepSeek Harness',
+  demo_adapter: 'Demo Adapter 降级',
+  knowledge_adapter: 'Knowledge Adapter',
+  pending: '待选择执行器',
+  failed: '执行失败',
+};
+
+const TOOL_TYPE_LABEL: Record<string, string> = {
+  mcp: 'MCP',
+  workflow: 'Workflow',
+  rpa: 'RPA',
+  http: 'HTTP',
+};
+
 interface TaskCardProps {
   task: TaskRun;
   workerName: (employeeNo: string) => string;
@@ -121,7 +141,10 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: TaskCardProps
         <div style={{ minWidth: 0, flex: 1 }}>
           <div className="wp-task-title">{task.request}</div>
           <Text type="secondary" style={{ fontSize: 11 }}>
-            {task.id} · 由我的分身拆解安排
+            {task.id} ·{' '}
+            {task.source === 'agentteams'
+              ? 'AgentTeams 团队协作 · Harness 驱动 · Policy/Gateway 工具调用'
+              : '内置协作 · Harness 驱动 · Policy/Gateway 工具调用'}
           </Text>
         </div>
         <Space size={4}>
@@ -146,6 +169,7 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: TaskCardProps
             {task.subtasks.map((sub, index) => {
               const subMeta = TASK_STATUS[sub.status] ?? TASK_STATUS.pending;
               const workerMeta = metaOf(sub.worker_id);
+              const runtimeMode = sub.runtime_mode ?? sub.execution_mode;
               return (
                 <div className={`subtask ${sub.status}`} key={`${sub.worker_no}-${index}`}>
                   <div className="subtask-top">
@@ -161,14 +185,44 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: TaskCardProps
                         {sub.summary}
                       </Text>
                     </Space>
-                    <Tag icon={subMeta.icon} color={subMeta.color}>
-                      {subMeta.label}
-                    </Tag>
+                    <Space size={4}>
+                      {runtimeMode && runtimeMode !== 'pending' && (
+                        <Tag color={runtimeMode === 'harness' ? 'geekblue' : 'orange'}>
+                          运行时：{EXECUTION_MODE_LABEL[runtimeMode] ?? runtimeMode}
+                        </Tag>
+                      )}
+                      {sub.tool_name && (
+                        <Tag color="cyan">
+                          工具：{sub.tool_name}
+                          {sub.tool_type && !sub.tool_name.toLowerCase().includes(sub.tool_type.toLowerCase())
+                            ? ` · ${TOOL_TYPE_LABEL[sub.tool_type] ?? sub.tool_type}`
+                            : ''}
+                        </Tag>
+                      )}
+                      <Tag icon={subMeta.icon} color={subMeta.color}>
+                        {subMeta.label}
+                      </Tag>
+                    </Space>
                   </div>
                   {sub.result && (
                     <Paragraph type="secondary" style={{ margin: '6px 0 0', fontSize: 12 }}>
                       {sub.result}
                     </Paragraph>
+                  )}
+                  {sub.runtime_summary && runtimeMode === 'harness' && (
+                    <Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 11 }}>
+                      Harness 计划：{sub.runtime_summary}
+                    </Paragraph>
+                  )}
+                  {(sub.collaboration_messages?.length ?? 0) > 0 && (
+                    <div style={{ marginTop: 6 }}>
+                      <Text type="secondary" style={{ fontSize: 11 }}>AgentTeams 协作记录</Text>
+                      {sub.collaboration_messages?.map((item, messageIndex) => (
+                        <Paragraph key={`${sub.worker_no}-collab-${messageIndex}`} style={{ margin: '2px 0', fontSize: 12 }}>
+                          {item}
+                        </Paragraph>
+                      ))}
+                    </div>
                   )}
                   {sub.approval && (
                     <Alert
@@ -248,12 +302,14 @@ export default function WorkplacePage() {
       .catch(() => setWorkflows([]));
   }, [refreshConversations]);
 
-  const [tab, setTab] = useState<'messages' | 'contacts' | 'workflows'>('messages');
+  const [tab, setTab] = useState<'messages' | 'contacts' | 'guide'>('messages');
   const [keyword, setKeyword] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [pendingAfterSeq, setPendingAfterSeq] = useState<number | null>(null);
+  const pendingReply = pendingAfterSeq !== null;
   const [chatError, setChatError] = useState<string>();
   const [acting, setActing] = useState(false);
 
@@ -274,6 +330,7 @@ export default function WorkplacePage() {
     setSelectedId(null);
     setSelected(null);
     setInput('');
+    setPendingAfterSeq(null);
   }, [actorNo]);
 
   useEffect(() => {
@@ -295,21 +352,52 @@ export default function WorkplacePage() {
     };
   }, [selectedId]);
 
-  // 任务执行中/待审批时轮询刷新
-  const activeTask = selected?.tasks.find((task) => task.status === 'running' || task.status === 'approval');
+  // 等待后台回复，或任务尚未进入 completed / approval / failed / denied 时持续轮询。
+  const hasPollableTask = selected?.tasks.some((task) =>
+    ['pending', 'parsing', 'running'].includes(task.status),
+  );
   useEffect(() => {
-    if (!activeTask || !selectedId) return;
-    const timer = setTimeout(async () => {
+    if ((!hasPollableTask && !pendingReply) || !selectedId) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
       try {
         const conv = await api.getConversation(selectedId);
+        if (cancelled) return;
         setSelected(conv);
+        const hasMatchingReply =
+          pendingAfterSeq != null &&
+          conv.messages.some((m) => m.role === 'assistant' && m.seq > pendingAfterSeq);
+        // trigger_message_seq 是前端在拿到 Task ID 前关联本次消息和任务卡片的稳定键。
+        const matchingTask =
+          pendingAfterSeq == null
+            ? undefined
+            : conv.tasks.find((task) => task.trigger_message_seq === pendingAfterSeq);
+        const responseAppeared = hasMatchingReply || matchingTask != null;
+        if (responseAppeared) setPendingAfterSeq(null);
         await refreshConversations();
+
+        const taskStillRunning = conv.tasks.some((task) =>
+          ['pending', 'parsing', 'running'].includes(task.status),
+        );
+        const replyStillPending = pendingAfterSeq != null && !responseAppeared;
+        if (!cancelled && (taskStillRunning || replyStillPending)) {
+          timer = setTimeout(poll, 2500);
+        }
       } catch {
-        // 轮询失败保留当前状态，下次重试
+        // 临时网络失败不终止轮询；保留当前状态并继续重试。
+        if (!cancelled) timer = setTimeout(poll, 2500);
       }
-    }, 2500);
-    return () => clearTimeout(timer);
-  }, [activeTask, selectedId, refreshConversations]);
+    };
+
+    timer = setTimeout(poll, 2500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [hasPollableTask, pendingReply, pendingAfterSeq, selectedId, refreshConversations]);
 
   const twin = home?.twin ?? null;
   const employees = home?.available_employees ?? [];
@@ -339,7 +427,10 @@ export default function WorkplacePage() {
           (emp) =>
             !keyword ||
             emp.name.includes(keyword) ||
+            emp.employee_no.includes(keyword) ||
             emp.department.includes(keyword) ||
+            emp.owner_human_no.includes(keyword) ||
+            (emp.owner_name ?? '').includes(keyword) ||
             emp.role_prompt.includes(keyword),
         ),
       }))
@@ -369,7 +460,12 @@ export default function WorkplacePage() {
   const visibleWorkflows = useMemo(
     () =>
       keyword
-        ? workflows.filter((wf) => wf.name.includes(keyword) || wf.description.includes(keyword))
+        ? workflows.filter((wf) =>
+            wf.name.includes(keyword) ||
+            wf.description.includes(keyword) ||
+            wf.steps.some((step) => step.includes(keyword)) ||
+            wf.authorized_employees.some((employee) => employee.name.includes(keyword) || employee.employee_no.includes(keyword)),
+          )
         : workflows,
     [keyword, workflows],
   );
@@ -434,6 +530,10 @@ export default function WorkplacePage() {
     try {
       const conv = await api.sendConversationMessage(selectedId, actorNo, text);
       setSelected(conv);
+      const triggerSeq = conv.messages
+        .filter((m) => m.role === 'user')
+        .reduce((max, m) => Math.max(max, m.seq), 0);
+      setPendingAfterSeq(triggerSeq || null);
       await refreshConversations();
     } catch (err) {
       setInput(text);
@@ -474,6 +574,7 @@ export default function WorkplacePage() {
     if (!selectedId) return;
     try {
       await api.clearConversation(selectedId, actorNo);
+      setPendingAfterSeq(null);
       const conv = await api.getConversation(selectedId);
       setSelected(conv);
       await refreshConversations();
@@ -529,7 +630,7 @@ export default function WorkplacePage() {
 
   const toggleSkill = async (skill: Skill, enabled: boolean) => {
     try {
-      await api.updateSkill(skill.id, { status: enabled ? 'active' : 'disabled' });
+      await api.updateSkill(skill.id, actorNo, { status: enabled ? 'active' : 'disabled' });
       reload();
     } catch (err) {
       message.error(`更新失败：${(err as Error).message}`);
@@ -538,7 +639,7 @@ export default function WorkplacePage() {
 
   const removeSkill = async (skill: Skill) => {
     try {
-      await api.deleteSkill(skill.id);
+      await api.deleteSkill(skill.id, actorNo);
       reload();
     } catch (err) {
       message.error(`删除失败：${(err as Error).message}`);
@@ -612,7 +713,7 @@ export default function WorkplacePage() {
           </Space>
             <Input
               allowClear
-              placeholder={tab === 'messages' ? '搜索会话' : tab === 'contacts' ? '搜索联系人' : '搜索工作流'}
+              placeholder={tab === 'messages' ? '搜索会话' : tab === 'contacts' ? '搜索联系人' : '搜索使用指南'}
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             style={{ marginTop: 12 }}
@@ -637,16 +738,6 @@ export default function WorkplacePage() {
               }}
             >
               通讯录
-            </Button>
-            <Button
-              type={tab === 'workflows' ? 'primary' : 'text'}
-              size="small"
-              onClick={() => {
-                setTab('workflows');
-                setKeyword('');
-              }}
-            >
-              工作流
             </Button>
             <div style={{ flex: 1 }} />
             <Button
@@ -755,23 +846,45 @@ export default function WorkplacePage() {
                   {group.items.map((emp) => {
                     const meta = metaOf(emp.employee_no);
                     return (
-                      <div key={emp.employee_no} className="wp-contact-row">
+                      <div key={emp.employee_no} className="wp-contact-row wp-employee-row">
                         <Avatar size={38} style={{ background: meta.bg, color: meta.color }}>
                           {meta.emoji}
                         </Avatar>
                         <div className="wp-row-main">
-                          <div className="wp-row-name">{emp.name}</div>
-                          <div className="wp-row-preview">{emp.role_prompt || `${emp.department} · ${meta.label}`}</div>
+                          <Link className="wp-contact-name-link" to={`/employees/${emp.employee_no}`}>
+                            {emp.name}
+                          </Link>
+                          <div className="wp-row-preview">
+                            {emp.employee_no} · {emp.department || '未设置部门'}
+                          </div>
+                          <div className="wp-row-preview">
+                            负责人：{emp.owner_name || emp.owner_human_no}（{emp.owner_human_no}）
+                          </div>
                         </div>
-                        <Space size={4}>
+                        <Space size={2} className="wp-contact-actions">
                           {emp.type === 'twin' && (
-                            <Button size="small" onClick={() => setSkillDrawerOpen(true)}>
-                              技能
-                            </Button>
+                            <Tooltip title="管理技能">
+                              <Button
+                                type="text"
+                                shape="circle"
+                                size="small"
+                                aria-label="技能"
+                                icon={<ToolOutlined />}
+                                onClick={() => setSkillDrawerOpen(true)}
+                              />
+                            </Tooltip>
                           )}
-                          <Button size="small" type="primary" ghost onClick={() => void openDirect(emp.employee_no)}>
-                            私聊
-                          </Button>
+                          <Tooltip title="发起私聊">
+                            <Button
+                              className="wp-chat-action"
+                              type="text"
+                              shape="circle"
+                              size="small"
+                              aria-label="私聊"
+                              icon={<CommentOutlined />}
+                              onClick={() => void openDirect(emp.employee_no)}
+                            />
+                          </Tooltip>
                         </Space>
                       </div>
                     );
@@ -784,7 +897,7 @@ export default function WorkplacePage() {
             <>
               <div className="wp-contacts-head">
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Mock 工作流/RPA 目录 · 点击卡片查看步骤与授权成员
+                  使用指南 · 了解可由数字员工执行的流程、步骤和示例指令
                 </Text>
               </div>
               {visibleWorkflows.map((workflow) => {
@@ -815,13 +928,37 @@ export default function WorkplacePage() {
                         </Tag>
                       </div>
                       <div className="wp-row-preview">{workflow.description}</div>
+                      {workflow.owner_employee && (
+                        <div className="wp-row-preview">
+                          由 {workflow.owner_employee.name} 处理
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
               })}
-              {visibleWorkflows.length === 0 && <Empty style={{ marginTop: 48 }} description="没有找到相关工作流" />}
+              {visibleWorkflows.length === 0 && <Empty style={{ marginTop: 48 }} description="没有找到相关指南" />}
             </>
           )}
+        </div>
+        <div className="wp-sidebar-foot">
+          <button
+            type="button"
+            className="wp-guide-trigger"
+            aria-label="使用指南"
+            onClick={() => {
+              setTab('guide');
+              setKeyword('');
+            }}
+          >
+            <Tag
+              icon={<QuestionCircleOutlined />}
+              color={tab === 'guide' ? 'blue' : undefined}
+              className="wp-guide-tag"
+            >
+              使用指南
+            </Tag>
+          </button>
         </div>
       </aside>
 
@@ -846,7 +983,10 @@ export default function WorkplacePage() {
                 </Text>
               </div>
               <div style={{ flex: 1 }} />
-              <Popconfirm title="清空本会话的消息与任务？" onConfirm={() => void handleClear()}>
+              <Popconfirm
+                title="清空本会话？将删除本会话的消息与任务，不影响其他协作空间。"
+                onConfirm={() => void handleClear()}
+              >
                 <Button size="small" danger>
                   清空会话
                 </Button>
@@ -881,7 +1021,17 @@ export default function WorkplacePage() {
                         </Avatar>
                       )}
                       <div className="wp-msg-col">
-                        {!mine && isGroup && <div className="wp-msg-name">{msg.participant_name}</div>}
+                        {!mine && isGroup && (
+                          <div className="wp-msg-name">
+                            {msg.participant_name}
+                            {/完成|TASK_COMPLETED|交付/.test(msg.content) && (
+                              <span className="wp-feedback-ok">✅ 已完成</span>
+                            )}
+                            {!/完成|TASK_COMPLETED|交付/.test(msg.content) && /收到|开始|处理|认领/.test(msg.content) && (
+                              <span className="wp-feedback-run">⏳ 执行中</span>
+                            )}
+                          </div>
+                        )}
                         <div className={`wp-bubble ${mine ? 'me' : 'other'}`}>
                           <MarkdownText text={msg.content} />
                         </div>
@@ -1155,9 +1305,9 @@ export default function WorkplacePage() {
         )}
       </Drawer>
 
-      {/* 工作流详情抽屉 */}
+      {/* 使用指南详情抽屉 */}
       <Drawer
-        title="工作流详情"
+        title="使用指南"
         open={selectedWorkflow !== null}
         onClose={() => setSelectedWorkflow(null)}
         width={400}

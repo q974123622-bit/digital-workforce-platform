@@ -9,10 +9,9 @@
 - POLICY-003  禁网（internet=deny）员工调用公网插件 DENY
 - POLICY-004  仅远程（location=remote）员工请求本地执行 DENY
 - POLICY-005  敏感操作（L3 执行类）APPROVAL
-- P-DATA-003  L3 敏感资源访问：无白名单授权 DENY，有白名单授权 ALLOW（白名单经 access request 审批授予）
+- P-DATA-003  L3 读取仅允许 whitelist grant
 - P-PLUGIN-007 VE-0001 可执行 adp-onboarding
 - P-DEFAULT-001 默认 L1 可读
-- POLICY-005 敏感操作审批已被 L3 白名单机制取代（P20），不再单独生效
 """
 
 from dataclasses import dataclass, field
@@ -78,6 +77,12 @@ RULES: list[Rule] = [
         "远程 Sandbox 允许远程执行",
         lambda s, r, a: r.type == "sandbox" and r.id == "remote" and s.location == "remote",
     ),
+    # POLICY-HARNESS-001 远程数字员工允许调用 DeepSeek Harness 执行引擎
+    Rule(
+        "POLICY-HARNESS-001", DECISION_ALLOW, 72,
+        "远程执行允许调用 DeepSeek Harness",
+        lambda s, r, a: r.type == "runtime" and r.id == "harness" and a == "execute" and s.location == "remote",
+    ),
     # POLICY-002 实习生分身禁止内部知识
     Rule(
         "POLICY-002", DECISION_DENY, 70,
@@ -89,6 +94,12 @@ RULES: list[Rule] = [
         "POLICY-001", DECISION_ALLOW, 60,
         "正式员工数字分身可访问内部知识库",
         lambda s, r, a: s.employee_type == "twin" and s.employment_type == "formal" and _is_internal_kb(r),
+    ),
+    # POLICY-005 敏感操作审批（L3 执行类；白名单只覆盖 L3 读取，不得绕过人工审批）
+    Rule(
+        "POLICY-005", DECISION_APPROVAL, 50,
+        "敏感操作需要人工审批",
+        lambda s, r, a: r.data_level == "L3" and a in ("execute", "export", "delete", "approve"),
     ),
     # P-PLUGIN-007 VE-0001 可执行 ADP
     Rule(
@@ -118,20 +129,21 @@ def evaluate(
     context: dict | None = None,
 ) -> EvaluationResult:
     """四维评估：subject / resource / action / environment（environment 取自 subject 绑定配置）。"""
-    # P-DATA-003：L3 敏感资源（知识读/插件执行/读取等）一律走白名单授权；
-    # 白名单 grant 由 access request 审批写入（decision_mode=allow 且 grant_source=whitelist）。
-    if resource.data_level == "L3":
+    # L3 读取使用显式白名单，且只认访问审批链写入的 whitelist grant。
+    # L3 执行类动作继续由 POLICY-005 控制，白名单不得绕过人工审批。
+    if resource.data_level == "L3" and action == "read":
         whitelist = db.scalar(
             select(models.EmployeePluginGrant).where(
                 models.EmployeePluginGrant.employee_id == subject.employee_id,
                 models.EmployeePluginGrant.plugin_id == resource.id,
+                models.EmployeePluginGrant.action == "read",
                 models.EmployeePluginGrant.decision_mode == DECISION_ALLOW,
                 models.EmployeePluginGrant.grant_source == "whitelist",
             )
         )
         if whitelist is None:
-            return EvaluationResult(DECISION_DENY, "P-DATA-003", "L3 敏感资源未在白名单：默认拒绝")
-        return EvaluationResult(DECISION_ALLOW, "P-DATA-003", "L3 敏感资源白名单授权已批准")
+            return EvaluationResult(DECISION_DENY, "P-DATA-003", "L3 敏感数据需先申请并通过白名单审批")
+        return EvaluationResult(DECISION_ALLOW, "P-DATA-003", "L3 敏感数据白名单授权通过")
 
     matched = [r for r in RULES if r.condition(subject, resource, action)]
 
@@ -147,6 +159,7 @@ def evaluate(
             select(models.EmployeePluginGrant).where(
                 models.EmployeePluginGrant.employee_id == subject.employee_id,
                 models.EmployeePluginGrant.plugin_id == resource.id,
+                models.EmployeePluginGrant.action == action,
             )
         )
         if grant is None:

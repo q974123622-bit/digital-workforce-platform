@@ -2,7 +2,28 @@
 
 > 版本：v1.0（2026-08-17）
 > 目的：让两名正式员工（A 架构/总装、B 安全/企业资源）在本基线上串行开发，实习生（C 前端、D Mock/测试）按契约并行。
-> 状态：Sprint 1-4 已完成；Sprint 5 TeamTaskOrchestrator 已完成（2026-08-18）；Harness 尝试进行中（G2 止损中）；本文件为稳定基线交接。
+> 状态：Sprint 13 能力契约与执行边界重构已完成（2026-08-20）；下方早期 Sprint 记录保留用于追溯，最新状态以 1.23 为准。
+
+## 1.23 Sprint 13：统一 Capability Contract + Harness 执行边界（2026-08-20）
+
+- 新增 `Capability Contract v1.0`：Skill 与 Plugin 共用目录 DTO。Skill 明确为不可执行 instruction；Plugin 声明 actions、input_schema、executor、fallback、ready/issues。
+- 新增 `GET /api/v1/capabilities?actor_no=` 和前端“能力中心”，统一展示个人 Skills 与平台 Plugins，并显示契约版本、执行器和就绪状态。
+- MCP/Workflow/RPA 默认声明 `executor.primary=harness, tool=adapter, fallback=demo_adapter`：员工 Harness 先形成工具调用计划，Gateway 再调用一次 Adapter 工具；Harness 不可用时仍只调用一次 Adapter，并明确标记 `Demo Adapter 降级`。
+- VE-0002、VE-0003、RPA-0001、VE-0004 使用独立 DSH_HOME/workspace；Prompt 注入工号、人设、职责、Task ID、用户任务、子任务和 AgentTeams 协作结论。
+- TeamTaskOrchestrator 已移除 Gateway 完成后的 Harness 二次调用；执行模式由 Gateway 返回并写入子任务。
+- Gateway 增加插件状态、契约就绪度、契约动作校验；Policy grant 精确匹配 action；拒绝均写审计。
+- Skill 更新/删除增加 owner 校验和字段长度/状态约束；插件存在授权时禁止直接删除。
+- 验证：后端 147 项、前端 20 项、TypeScript 类型检查与生产构建全部通过；Docker 冒烟已验证 Harness 计划与 Adapter 工具回执同时返回。
+
+## 1.22 Sprint 12：AgentTeams × DeepSeek Harness 协同执行重构（2026-08-20）
+
+- **职责拆分**：数字分身只负责识别意图、组织团队和汇总；AgentTeams 只负责讨论、认领、风险提示；真正业务动作统一走 `Identity → Policy/Plugin Gateway → 员工 Harness → Adapter Tool`。AgentTeams 消息被明确禁止直接产生业务副作用。
+- **唯一任务实例**：先持久化 TaskRun，再携带同一 `task_id` 发起协作。反馈按任务 ID、参与者、时间窗口和 Matrix event ID 过滤；ACK 不再算完成；协作超时后继续执行同一 TaskRun，不再创建一份内置降级任务。
+- **审批修复**：批准后子任务回到 pending 并重新执行，只有 Adapter 返回结果才进入 completed；审批人必须是当前会话所有者或正式员工。
+- **并发/交互修复**：会话按触发消息 seq 绑定；同一会话串行处理；前端只在收到晚于本次消息的回复或对应任务后停止轮询；普通清空只清本地会话，不再重置全局 AgentTeams Manager。
+- **角色重构**：保留 VE-0001 入职协调、VE-0002 HR、VE-0003 IT；新增 RPA-0001 报表自动化和 VE-0004 采购助理。周报/报表授权迁到 RPA，采购授权迁到采购助理；数字分身不创建 worker。
+- **配置/生命周期**：worker 模型与 runtime 改由 `AGENTTEAMS_WORKER_MODEL` / `AGENTTEAMS_WORKER_RUNTIME` 配置；创建、切换、删除增加外部资源补偿；活动任务执行者不能删除。
+- **验证**：后端 137 项、前端 20 项、TypeScript 类型检查和生产构建通过。生产化仍需持久队列、统一认证/RBAC、数据库级并发锁和真实 AgentTeams/Harness 受控环境压测。
 
 ## 1.13 黄金链路联调（T3-02，2026-08-18）
 
@@ -19,6 +40,67 @@
 
 - **脚本**：`scripts/run_demo.ps1`（推荐演示用）：依赖检查 → 种子重置（`-NoReset` 跳过）→ 启动后端（8000，日志 backend/uvicorn-*.log）→ 启动前端（5173，日志 frontend/vite-dev*.log）→ 健康检查确认；`-Docker` 可选：构建 dwp-dsh 镜像并启用 Harness 模式（`DWP_HARNESS_ENABLED=1`）。
 - **注意**：脚本含中文，文件带 UTF-8 BOM（Windows PowerShell 5.1 需 BOM 才能正确解析）。
+
+## 1.16 AgentTeams 最小接入（Sprint 8，2026-08-19）
+
+- **代码接入已完成**：`backend/app/services/agentteams_gateway.py`（Matrix Client-Server API：login/joined_rooms/send/poll/parse）；`group_chat` 任务路径 `DWP_TEAM_BACKEND=auto`——任务优先发 AgentTeams 房间并回收汇报（TaskRun.source=agentteams），失败自动降级内置编排（source=builtin）；审计 `agentteams:send/receive`；前端任务卡标注来源。
+- **房间成员关系已修复（2026-08-20）**：原 `.env` 指向的团队房间（`test-hadm-1958.teamRoomID`）成员全为 guest/未加入，自动发送通道被 Matrix 权限阻塞。修复动作：
+  1. 经 controller 新建正确团队 `team-onboard`（`agt apply -f tmp/team-onboard.yaml`：admin=platform-bot、humanMembers=[manager(coordinator)]、leader=kai、worker=xiaoming），新团队房间 `!yoYNJCwHes3orszqGx` 四名成员（admin/manager/kai/xiaoming）**全部 joined**，`guest_access=can_join`。
+  2. 根因二：Manager 的 Matrix 通道 `groupAllowFrom` 白名单不含 platform-bot，群聊消息被忽略。已在 MinIO `agents/manager/openclaw.json` + 本地挂载写入 `@platform-bot` 白名单（manager 容器重启后生效；controller 合并逻辑会保留该增量）。
+  3. 根因三：Manager 只处理群聊房间中 **@mention 自己的消息**（AGENTS.md @Mention 协议）。`group_chat._try_agentteams_task` 已改为发送 `@manager:... [平台任务] ...`（MXID 由 `AGENTTEAMS_MANAGER_MXID` 配置，默认值已内置）。
+  4. 本地 `backend/.env`（gitignored）已更新：`AGENTTEAMS_ROOM_ID=!yoYNJCwHes3orszqGx:...`、`AGENTTEAMS_MATRIX_TOKEN`=platform-bot 真实 token（非 guest）。
+  **端到端实测通过**：platform-bot 发 `@manager [平台任务]` → Manager 受理并在团队房间回执（含任务 ID/执行人/状态）→ 派发 `task-20260820-011713` 给 kai 执行；平台网关轮询 `parse_completion` 命中回执，TaskRun.source=agentteams 链路可用。
+- **已知限制**：Manager→Worker 的任务文件（MinIO `shared/tasks/...`）存在偶发未落盘/同步延迟（与旧测评一致：taskflow ack/submit 协议不匹配），Worker 侧执行可能重试或卡住；平台侧 `DWP_TEAM_BACKEND=auto` 超时自动降级内置编排，演示有兜底。
+- **测试**：后端 121 项全绿（含网关单元 3 + agentteams 路径 + 降级路径）。
+
+## 1.17 AgentTeams Worker 对齐数字员工（2026-08-20）
+
+- **问题**：AgentTeams 执行实例此前是测试 worker（kai/xiaoming），与平台数字员工（VE-0001 新员工入职助手 / VE-0002 HR 助理 / VE-0003 IT 助理）不对应，演示语义错位。
+- **修复**：
+  1. 新建三个数字员工 worker（copaw + deepseek-v4-flash，SOUL 注入人设）：`onboard-assistant`（新员工入职助手）、`hr-assistant`（HR 助理）、`it-assistant`（IT 助理）；人设文件 `tmp/soul-*.md` 可复现。
+  2. 重建团队 `team-onboard`（`tmp/team-onboard.yaml`）：组长 onboard-assistant，组员 hr-assistant + it-assistant，admin=platform-bot、manager 为 coordinator；团队房间 `!yoYNJCwHes3orszqGx` 五成员全部 joined。
+  3. 删除旧测试 worker kai/xiaoming（`agt delete worker`，容器已清）；清空 Manager `state.json` 的旧活动任务与其 stale 会话，避免 Manager 继续派活给已删除 worker。
+  4. Manager 群聊白名单（`groupAllowFrom`）补充 hr-assistant / it-assistant；平台网关任务消息附带"先 `agt get workers` 确认名册再按角色派活"的指令（`group_chat._try_agentteams_task`），演示路由稳定。
+- **端到端实测**：平台发"新员工岳灵珊入职" → Manager 受理并交组长 onboard-assistant → 组长 @mention hr-assistant（制度与材料）与 it-assistant（账号与权限）→ 两助手真实执行并产出交付物（MinIO `teams/team-onboard/shared/tasks/task-20260820-021701/`：it-part、HR 汇总、result.md）→ 房间内 TASK_COMPLETED。
+- **测试**：后端 121 项全绿；前端 20 项。
+
+## 1.18 Sprint 9：数字员工生命周期化 + Harness 执行引擎 + 群聊逐人反馈（2026-08-20）
+
+- **生命周期绑定**：`backend/app/services/agentteams_lifecycle.py` 封装 `docker exec agentteams-controller agt ...`（create/delete/get worker、team apply）。命名规则 `dwp-{ve|twin|rpa}-{工号}`（VE-0001→dwp-ve-0001、DT-E10281→dwp-twin-e10281）。
+- **创建即建容器**：`POST /api/v1/employees` 默认 `runtime_type=agentteams`——生成工号 → 自动建 worker 容器（SOUL=role_prompt，deepseek-v4-flash/copaw）→ 加入 team-onboard → 回填 runtime_ref；`DELETE` 先从团队移除再删容器；`PUT` 同步 SOUL；`GET /api/v1/employees/{no}/runtime` 返回实例状态。
+- **DeepSeek Harness 执行引擎**：`POST /internal/harness/execute`——Policy（POLICY-HARNESS-001 远程允许）→ `DockerHarnessRuntimeAdapter`（dwp-dsh:rc6 真执行）→ 审计 `harness:execute`。实测 5.6s 返回真实 DeepSeek 结果。
+- **群聊逐人反馈**：团队任务轮询时把每个数字员工在房间的动态写入 `ConversationMessage`（按 sender MXID→员工映射），同步 `TaskRun.subtasks` 状态（completed/running）；`AgentTeamsGateway.parse_completion` 支持 `since_ts` 过滤旧消息，避免误匹配历史汇报。
+- **修正**：`TeamTaskOrchestrator._to_out` 补传 `source` 字段（此前 API 响应 source 恒为 builtin）。
+- **测试**：后端 129 项全绿（新增 8 项：lifecycle 4 + harness 3 + 群聊反馈 1）；前端 20 项全绿。
+
+## 1.19 记忆/会话管理修复（2026-08-20）
+
+- **问题**：反馈轮询会把历史任务（如宋青书）的消息写进新任务（赵仁杰）会话；去重仅存内存（重启重放）；"清空会话"只删平台本地，AgentTeams 侧记忆/任务状态残留。
+- **修复**：
+  1. 反馈轮询只回传**任务发送之后**的消息（`since_ts` 过滤），历史任务不再串会话。
+  2. 新增 `agentteams_event_seen` 表做**持久化去重**（按 event_id），进程重启/重复轮询不重放。
+  3. `agentteams_lifecycle.reset_agentteams_context()`：清空 Manager `state.json`（active_tasks）、memory/会话/缓存文件、MinIO 旧任务目录。
+  4. `DELETE /api/v1/conversations/{id}`（清空会话）联动调用重置，并清理该会话已回传事件记录；前端按钮提示"将重置数字员工记忆"。
+- **验证**：清空后发"赵仁杰"任务，会话不含"宋青书"；Manager reset 后按新名册正常派单；后端 131 项、前端 20 项全绿。
+
+## 1.20 关系理顺 + 统一执行链路 + 工作流角色化（2026-08-20）
+
+- **概念模型**：数字分身（twin）= 对话组织者（demo，不建容器，映射 AgentTeams Manager）；数字员工（virtual/rpa）= 执行者（agentteams，自动建容器）。`POST /api/v1/employees` 按 type 默认 runtime_type。
+- **统一 AgentTeams 主链路**：群聊任务默认走 AgentTeams；内置 TeamTaskOrchestrator 仅降级，前端标注"内置降级（AgentTeams 不可用）"。
+- **结构化任务消息**：平台发 Manager 的消息带 `[平台任务 id={task_id}] 请求者={姓名}({工号}) 请求={内容} 目标={员工若有}`；`parse_completion` 优先按 task_id 精确匹配回执（Manager 回执实测引用 task_id，不再自由发挥/串任务）。
+- **工作流角色化 + 参数化**：`WORKFLOW_META` 增加 `owner_employee`（adp-onboarding→VE-0001；请假/报销/采购/报表→VE-0002；会议纪要→VE-0001），前端工作流卡片显示"由 XX 处理"；Mock adapter 与模板去掉硬编码"王小明"（默认"该员工"，请求中提取员工名注入）。
+- **验证**：实测"帮我申请请假2天"→ 消息 `id=T-20260820-02D4DA 请求者=张三(E10281)` → Manager 围绕 task_id 派单给 HR 助理；后端 135 项、前端 20 项全绿。
+- **修复（同日）**：`parse_completion` 曾把平台自身发送的任务消息（含 task_id）误当回执，导致任务汇总变成任务原文。已增加 `exclude_senders`（排除 platform-bot），回执只认 Manager/数字员工的消息；实测新任务汇总为 Manager 真实回执（受理+按角色派发），不再出现任务原文。后端 136 项全绿。
+
+## 1.21 Sprint 11：任务交互异步化（消除卡死）
+
+- **根因**：`POST /conversations/{id}/messages` 曾同步执行「分类 → AgentTeams 轮询（最长 90s）→ 内置编排（LLM 拆解/执行/汇总）」，整段堵在一个请求；前端 fetch 无超时且发送期间禁用输入，导致"点完卡住"。
+- **改造**：
+  1. 发送消息端点只落用户消息并立即返回，用 `BackgroundTasks` 后台执行 `process_conversation`（独立 DB session）；任务/回复写回后由前端轮询 `GET /conversations/{id}` 获取。
+  2. 审批端点 `POST /tasks/{id}/approve` 受理即返回，后台续跑 `_run_loop`。
+  3. AgentTeams 轮询窗口 90s→60s；任务去重窗口 10min→2min 且只拦 running/approval（completed 允许重发）。
+  4. 前端 fetch 加 30s 超时（AbortController），发送后进入轮询（`pendingReply` 态），审批按钮保留。
+- **测试**：后端 136 项全绿；前端 20 项全绿；实测发消息 1.32s 返回（原 90s）。
 
 ## 1.11 Sprint 5 完成情况（TeamTaskOrchestrator，负责人 A）
 

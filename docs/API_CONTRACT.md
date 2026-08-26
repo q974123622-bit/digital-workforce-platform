@@ -124,7 +124,17 @@ SSE 事件类型（固定枚举）：
 | POST | `/internal/gateway/invoke` | ✅ | 通用插件执行（含知识查询） |
 | POST | `/internal/knowledge/search` | ✅ | 知识库专用入口（Sprint 3）：`{employee_id, knowledge_base_id, query, trace_id}` |
 
-### 3.8 个人工作中心（职场）API（✅ Sprint 7 已实现）
+### 3.8 L3 访问申请 API（✅ 已实现）
+
+| 方法 | 路径 | 说明 | 关键请求 |
+|---|---|---|---|
+| POST | `/access-requests?applicant_no=` | 正式员工申请 L3 读取白名单 | `{resource_type: knowledge|plugin, resource_id, reason}` |
+| GET | `/access-requests` | 查询申请单，可按 `applicant_no/status` 过滤 | — |
+| POST | `/access-requests/{id}/approve` | 正式员工数字分身批准或拒绝；批准写入 `grant_source=whitelist` 的 read grant | `{approve, actor_no}` |
+
+边界：白名单只控制 L3 `read`；L3 `execute/export/delete/approve` 继续由 `POLICY-005` 返回 `approval`，不可被读取白名单绕过。实习生不可申请，virtual/rpa 不可充当审批人。
+
+### 3.9 个人工作中心（职场）API（✅ Sprint 7 已实现）
 
 > 员工视角的会话工作台：技能上传与「私聊/协作群聊」统一由 Conversation 承载。
 > 演示鉴权：新接口显式传 `actor_no`（无真实 IAM）。
@@ -134,7 +144,12 @@ SSE 事件类型（固定枚举）：
 | GET | `/workplace?actor_no=` | 职场聚合：本人信息 + 我的分身 + 可用数字员工（仅 virtual/rpa）+ 技能 + 最近会话 | — | `WorkplaceHomeDto` |
 | POST | `/skills` | 上传技能（文本/Markdown） | `{actor_no, name, description?, content?}` | 201 `SkillDto` |
 | GET | `/skills?actor_no=` | 我的技能列表 | — | `SkillDto[]` |
-| PUT | `/skills/{skill_id}` | 更新技能（含 status 启停） | `{name?, description?, content?, status?}` | `SkillDto` |
+| PUT | `/skills/{skill_id}?actor_no=` | 更新本人的技能（含 status 启停） | `{name?, description?, content?, status?}` | `SkillDto` |
+| DELETE | `/skills/{skill_id}?actor_no=` | 删除本人的技能 | — | 204 |
+| GET | `/capabilities?actor_no=` | 统一能力目录（全部 Plugin + 本人 Skill） | — | `CapabilityDto[]` |
+
+`CapabilityDto` 统一字段：`contract_version / id / name / source_type / kind / status / executable / actions / input_schema / executor / owner_human_no / ready / issues`。
+其中 Skill 固定为 `kind=instruction, executable=false, executor.primary=prompt`；Plugin 才能进入 Policy/Gateway 执行链。
 | DELETE | `/skills/{skill_id}` | 删除技能 | — | 204 |
 | POST | `/conversations` | 创建会话（direct 恰 1 名成员且幂等复用；group 自动带头分身，≥1 名 virtual/rpa） | `{actor_no, kind, title?, participant_employee_nos}` | 201 `ConversationDto` |
 | GET | `/conversations?actor_no=` | 会话摘要列表（按 updated_at 倒序） | — | `ConversationSummaryDto[]` |
@@ -145,7 +160,7 @@ SSE 事件类型（固定枚举）：
 
 `ConversationDto`：`{id, kind: direct|group, title, owner_human_no, participants: [{employee_no, name, role, employee_type}], messages: [{participant_no, participant_name, role, content, tool_cards, seq}], tasks: TaskRunDto[], updated_at}`；`TaskRunDto.trigger_message_seq` 用于任务卡片内联到触发消息之后。
 技能注入：分身（twin）对话 system prompt 自动追加「【你掌握的技能】」段落（仅本人可见，内容上限 4000 字符）。
-协作任务：群聊任务由 `TeamTaskOrchestrator` 创建（conversation_id + trigger_message_seq 关联），执行走 Policy→Gateway（Mock Adapter），审批复用 `POST /tasks/{id}/approve`；子任务结果为格式化文本（不再展示原始 JSON）；同会话同请求 10 分钟内自动去重复用；子任务执行器为 `SubtaskExecutor` 接口（默认 GatewaySubtaskExecutor，真实 RPA/Workflow/Harness 后续接入）。
+协作任务：群聊任务由 `TeamTaskOrchestrator` 创建（conversation_id + trigger_message_seq 关联），执行走员工独立 Harness → Policy/Gateway → Plugin Adapter Tool，审批复用 `POST /tasks/{id}/approve`；子任务结果为格式化工具回执，Harness 输出单独保存为计划摘要；同会话同请求 10 分钟内自动去重复用。
 
 ### 3.9 Access Request API（✅ P20 已实现：L3 敏感资源白名单申请/审批）
 
@@ -229,7 +244,10 @@ RuntimeAdapter.run(subject, task, context) -> RuntimeResult
 
 约束：
 - Adapter 不持有权限逻辑；调用前 Policy 已评估（或 RuntimeLauncher 已调 Policy）。
-- `mode=demo` 时 UI 必须标注「Adapter 演示模式」。
+- Harness 上下文必须包含员工工号、人设、职责、Task ID、子任务和 AgentTeams 协作结论；不同员工使用独立 DSH_HOME/workspace。
+- `mode=harness` 时 UI 显示「运行时：DeepSeek Harness」，并单独显示工具名称/类型。
+- Harness 未启用或不可用时 UI 必须标注「运行时：Demo Adapter 降级」，不得笼统显示 Adapter。
+- Harness 输出是工具调用计划，不是业务成功结果；任务完成状态只能来自 Gateway 后的 Adapter 工具回执。
 - 失败返回 `RUNTIME_UNAVAILABLE`（503），不吞错误。
 
 ## 5. Knowledge Adapter Interface（✅ Sprint 3 已实现）
@@ -318,6 +336,7 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
   "employment_type": "formal | intern",
   "source_human_no": "E10281",
   "owner_human_no": "E10281",
+  "owner_name": "张三",
   "department": "架构部",
   "role_prompt": "...",
   "status": "active",

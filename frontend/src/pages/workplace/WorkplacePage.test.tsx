@@ -193,6 +193,8 @@ const conv1WithReply: Conversation = {
 const groupTask: TaskRun = {
   id: 'T-DEMO-1',
   team_id: 'CONV-G',
+  conversation_id: 'CONV-G',
+  source: 'builtin',
   trigger_message_seq: 1,
   trace_id: 'T-DEMO-1',
   request: '整理新员工入职准备清单',
@@ -205,6 +207,12 @@ const groupTask: TaskRun = {
       plugin_ids: ['adp-onboarding'],
       status: 'completed',
       result: '材料清单已确认：身份证、学历证书复印件、银行卡复印件。',
+      execution_mode: 'harness',
+      runtime_mode: 'harness',
+      runtime_context_id: 'VE-0001:T-DEMO-1',
+      runtime_summary: `计划开始：${'完整执行细节。'.repeat(180)}：计划结束`,
+      tool_name: '入职流程 Workflow',
+      tool_type: 'workflow',
       approval: null,
     },
     {
@@ -224,7 +232,20 @@ const groupTask: TaskRun = {
 const groupTaskCompleted: TaskRun = {
   ...groupTask,
   status: 'completed',
-  subtasks: groupTask.subtasks.map((sub) => ({ ...sub, status: 'completed', result: sub.result ?? '已批准执行' })),
+  subtasks: groupTask.subtasks.map((sub, index) => ({
+    ...sub,
+    status: 'completed',
+    result: sub.result ?? '已批准执行',
+    ...(index === 1
+      ? {
+          execution_mode: 'demo_adapter' as const,
+          runtime_mode: 'demo_adapter' as const,
+          runtime_context_id: 'RPA-0001:T-DEMO-1',
+          tool_name: '报表机器人',
+          tool_type: 'rpa',
+        }
+      : {}),
+  })),
   summary: '材料清单与 IT 账号已确认，权限报表已生成，入职准备就绪。',
 };
 
@@ -397,7 +418,7 @@ describe('WorkplacePage', () => {
       '/api/v1/workplace?actor_no=E10281': home,
       '/api/v1/conversations?actor_no=E10281': [],
       '/api/v1/skills': { id: 'SK-0002', owner_human_no: 'E10281', name: '会议纪要模板', status: 'active', created_at: '2026-08-19T10:00:00', description: '', content: '结论先行' },
-      '/api/v1/skills/SK-0001': { ...skill, status: 'disabled' },
+      '/api/v1/skills/SK-0001?actor_no=E10281': { ...skill, status: 'disabled' },
     });
     renderPage();
 
@@ -428,7 +449,7 @@ describe('WorkplacePage', () => {
     fireEvent.click(screen.getByLabelText('切换技能 报销制度速答'));
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([inputUrl, init]) =>
-        String(inputUrl).endsWith('/api/v1/skills/SK-0001') && init?.method === 'PUT',
+        String(inputUrl).endsWith('/api/v1/skills/SK-0001?actor_no=E10281') && init?.method === 'PUT',
       );
       expect(call).toBeTruthy();
       const body = (call as [RequestInfo | URL, RequestInit | undefined] | undefined)?.[1]?.body;
@@ -452,6 +473,10 @@ describe('WorkplacePage', () => {
     fireEvent.click(await screen.findByText('新员工入职协作（3）'));
     expect(await screen.findByText('整理新员工入职准备清单')).toBeInTheDocument();
     expect(screen.getByText('确认入职制度与材料清单')).toBeInTheDocument();
+    expect(screen.getByText('运行时：DeepSeek Harness')).toBeInTheDocument();
+    expect(screen.getByText('工具：入职流程 Workflow')).toBeInTheDocument();
+    expect(screen.getByText(/计划结束/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '展开' })).not.toBeInTheDocument();
     expect(screen.getByText('敏感操作需审批（POLICY-005）')).toBeInTheDocument();
     expect(screen.getAllByText('待审批').length).toBeGreaterThan(0);
 
@@ -466,6 +491,8 @@ describe('WorkplacePage', () => {
       expect(JSON.parse(String(body))).toEqual({ approve: true, actor_no: 'E10281' });
     });
     expect(await screen.findByText('材料清单与 IT 账号已确认，权限报表已生成，入职准备就绪。')).toBeInTheDocument();
+    expect(screen.getByText('运行时：Demo Adapter 降级')).toBeInTheDocument();
+    expect(screen.getByText('工具：报表机器人 · RPA')).toBeInTheDocument();
     expect(screen.getAllByText('已完成').length).toBeGreaterThan(0);
   });
 
@@ -497,6 +524,68 @@ describe('WorkplacePage', () => {
     expect(call).toBeTruthy();
   });
 
+  it('后台首次无结果时持续轮询，直到对应任务完成', async () => {
+    const triggerSeq = 20;
+    const waitingConv: Conversation = {
+      ...groupConvEmpty,
+      messages: [
+        {
+          id: 20,
+          conversation_id: 'CONV-G',
+          participant_no: 'E10281',
+          participant_name: '张三',
+          role: 'user',
+          content: '请持续执行入职协作测试',
+          tool_cards: [],
+          seq: triggerSeq,
+        },
+      ],
+    };
+    const runningTask: TaskRun = {
+      ...groupTask,
+      id: 'T-POLL-1',
+      trace_id: 'T-POLL-1',
+      trigger_message_seq: triggerSeq,
+      request: '请持续执行入职协作测试',
+      status: 'running',
+      subtasks: groupTask.subtasks.map((sub) => ({ ...sub, status: 'running' })),
+    };
+    const completedTask: TaskRun = {
+      ...runningTask,
+      status: 'completed',
+      subtasks: runningTask.subtasks.map((sub) => ({ ...sub, status: 'completed' })),
+      summary: '持续轮询任务已完成。',
+    };
+    let sent = false;
+    let pollsAfterSend = 0;
+    stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [groupSummary],
+      '/api/v1/conversations/CONV-G': () => {
+        if (!sent) return groupConvEmpty;
+        pollsAfterSend += 1;
+        if (pollsAfterSend === 1) return waitingConv;
+        if (pollsAfterSend === 2) return { ...waitingConv, tasks: [runningTask] };
+        return { ...waitingConv, tasks: [completedTask] };
+      },
+      '/api/v1/conversations/CONV-G/messages': () => {
+        sent = true;
+        return waitingConv;
+      },
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByText('新员工入职协作（3）'));
+    await screen.findByText('打个招呼，开始今天的协作吧。');
+    fireEvent.change(screen.getByPlaceholderText('描述一个任务，我来拆解安排给同事们…'), {
+      target: { value: '请持续执行入职协作测试' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /发送/ }));
+
+    expect(await screen.findByText('持续轮询任务已完成。', {}, { timeout: 12000 })).toBeInTheDocument();
+    expect(pollsAfterSend).toBeGreaterThanOrEqual(3);
+  }, 15000);
+
   it('清空会话：确认后删除消息与任务', async () => {
     let state: Conversation = groupConv;
     const fetchMock = stubFetch({
@@ -526,7 +615,7 @@ describe('WorkplacePage', () => {
     expect(screen.queryByText('整理新员工入职准备清单')).not.toBeInTheDocument();
   });
 
-  it('工作流卡片：点击查看步骤/授权成员/示例指令', async () => {
+  it('使用指南：点击查看步骤/授权成员/示例指令', async () => {
     const workflows: Workflow[] = [
       {
         plugin_id: 'expense-claim',
@@ -537,6 +626,7 @@ describe('WorkplacePage', () => {
         steps: ['报销申请提交', '直属领导审批', '财务复核打款'],
         demo_prompt: '帮我提交差旅报销',
         authorized_employees: [{ employee_no: 'VE-0002', name: 'HR 助理', type: 'virtual' }],
+        owner_employee: { employee_no: 'VE-0002', name: 'HR 助理', type: 'virtual' },
       },
     ];
     stubFetch({
@@ -546,7 +636,7 @@ describe('WorkplacePage', () => {
     });
     renderPage();
 
-    fireEvent.click(await screen.findByRole('button', { name: '工作流' }));
+    fireEvent.click(await screen.findByRole('button', { name: '使用指南' }));
     expect(screen.getByText('差旅报销流程')).toBeInTheDocument();
     fireEvent.click(screen.getByText('差旅报销流程'));
 

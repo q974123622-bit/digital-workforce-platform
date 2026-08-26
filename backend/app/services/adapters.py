@@ -44,7 +44,7 @@ def _mock_adp_onboarding(_plugin: models.Plugin, params: dict) -> dict:
     return {
         "source": "demo",
         "workflow": "adp-onboarding",
-        "employee_name": params.get("employee_name", "王小明"),
+        "employee_name": params.get("employee_name") or "该员工",
         "status": "completed",
         "steps": ["资料核对完成", "账号开通完成", "工牌发放完成"],
         "note": "演示：入职流程已发起并执行完成",
@@ -148,30 +148,37 @@ WORKFLOW_META: dict[str, dict] = {
     "adp-onboarding": {
         "steps": ["资料核对", "账号开通", "工牌发放"],
         "demo_prompt": "帮我整理新员工入职准备清单",
+        "owner_employee": "VE-0001",
     },
     "expense-claim": {
         "steps": ["报销申请提交", "直属领导审批", "财务复核打款"],
         "demo_prompt": "帮我提交差旅报销",
+        "owner_employee": "VE-0002",
     },
     "leave-request": {
         "steps": ["提交请假申请", "直属领导审批", "考勤记录同步"],
         "demo_prompt": "帮我请一天年假",
+        "owner_employee": "VE-0002",
     },
     "meeting-notes": {
         "steps": ["会议记录采集", "结构化整理", "分发到共享盘"],
         "demo_prompt": "整理上周架构部周会纪要",
+        "owner_employee": "VE-0001",
     },
     "weekly-report": {
         "steps": ["汇总本周完成", "整理下周计划", "标注风险项"],
         "demo_prompt": "生成本周费用周报",
+        "owner_employee": "RPA-0001",
     },
     "purchase-request": {
         "steps": ["采购申请", "三家比价", "采购下单", "资产入库"],
         "demo_prompt": "采购两台显示器",
+        "owner_employee": "VE-0004",
     },
     "rpa-report": {
         "steps": ["拉取数据", "生成报表", "归档"],
         "demo_prompt": "生成入职权限报表",
+        "owner_employee": "RPA-0001",
     },
 }
 

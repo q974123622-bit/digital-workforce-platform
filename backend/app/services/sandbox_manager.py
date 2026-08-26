@@ -71,8 +71,12 @@ class SandboxManager:
         cmd = [
             "docker", "run", "--rm", "--name", container_name,
             "--network", "none",
+            "--cpus", "1",
+            "--memory", "256m",
+            "--pids-limit", "64",
             "-v", f"{workspace}:/workspace/{employee_id}",
             DOCKER_IMAGE,
+            "/bin/sh", "-lc",
             safe_command,
         ]
         try:

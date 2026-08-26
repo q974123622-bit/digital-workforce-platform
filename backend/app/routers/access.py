@@ -1,9 +1,4 @@
-"""Access Request API（P20）：L3 敏感资源白名单申请/审批。
-
-链路：正式员工发起申请 → 管理员审批 → 白名单 grant 写入 → 再次访问 allow → 审计可追溯。
-非正式员工（intern）发起申请 → 403 POLICY_DENIED（策略拒绝，不落申请单）。
-resource_type 枚举：knowledge | plugin | data（申请对象不限于知识库）。
-"""
+"""L3 敏感资源读取白名单申请与审批。"""
 
 from datetime import datetime
 
@@ -20,23 +15,38 @@ from ..services.policy import DECISION_ALLOW, DECISION_DENY
 
 router = APIRouter(prefix="/access-requests", tags=["access"])
 
-TERMINAL_STATUSES = {"approved", "granted", "rejected"}
+TERMINAL_STATUSES = {"granted", "rejected"}
 
 
-def _resolve_grant_plugin(db: Session, resource_type: str, resource_id: str) -> tuple[str, str | None]:
-    """返回 (plugin_id, knowledge_base_id or None)；资源不存在 → 404。"""
+def _resolve_resource(db: Session, resource_type: str, resource_id: str) -> tuple[str, str | None]:
+    """解析白名单对应的 read grant；只允许登记过的 L3 资源。"""
     if resource_type == "knowledge":
         kb = resolve_kb(db, resource_id)
         if kb is None:
             raise HTTPException(status_code=404, detail={"message": "知识库资源不存在", "resource_id": resource_id})
+        if kb.data_level != "L3":
+            raise HTTPException(status_code=400, detail="只有 L3 知识库需要白名单申请")
         return plugin_id_for_level(kb.data_level), kb.id
-    if resource_type == "plugin":
-        plugin = db.get(models.Plugin, resource_id)
-        if plugin is None:
-            raise HTTPException(status_code=404, detail={"message": "插件不存在", "resource_id": resource_id})
-        return plugin.id, None
-    # data：本期无独立数据资源登记，按 resource_id 作为插件映射（预留）
-    return resource_id, None
+    plugin = db.get(models.Plugin, resource_id)
+    if plugin is None:
+        raise HTTPException(status_code=404, detail={"message": "插件不存在", "resource_id": resource_id})
+    if plugin.data_level != "L3":
+        raise HTTPException(status_code=400, detail="只有 L3 插件需要白名单申请")
+    return plugin.id, None
+
+
+def _formal_subject(db: Session, employee_no: str, *, approver: bool = False):
+    subject = resolve_identity(db, employee_no)
+    if subject is None:
+        raise HTTPException(status_code=404, detail={"message": "数字员工不存在", "employee_no": employee_no})
+    allowed = subject.employment_type == "formal" and (not approver or subject.employee_type == "twin")
+    if not allowed:
+        role = "正式员工数字分身" if approver else "正式员工"
+        raise HTTPException(
+            status_code=403,
+            detail={"message": "策略拒绝", "policy_id": "ACCESS-FORMAL-ONLY", "reason": f"仅{role}可执行该操作"},
+        )
+    return subject
 
 
 @router.post("", response_model=schemas.AccessRequestOut, status_code=201)
@@ -45,154 +55,107 @@ def create_request(
     applicant_no: str = Query(..., description="申请人数字员工工号"),
     db: Session = Depends(get_db),
 ):
-    """发起敏感资源访问申请；仅 employment_type=formal 可申请，实习生 403 且不落申请单。"""
-    subject = resolve_identity(db, applicant_no)
-    if subject is None:
-        raise HTTPException(status_code=404, detail={"message": "数字员工不存在", "employee_no": applicant_no})
-    plugin_id, kb_id = _resolve_grant_plugin(db, payload.resource_type, payload.resource_id)
-    if subject.employment_type != "formal":
-        write_audit(
-            db,
-            trace_id=f"ARQ-{applicant_no}-deny",
-            employee_id=applicant_no,
-            plugin_id=plugin_id,
-            action="access_apply",
-            decision=DECISION_DENY,
-            knowledge_base_id=kb_id,
-            reason="非正式员工不可发起敏感资源申请（仅 formal 可申请）",
-            result_summary="denied: intern 不可申请敏感资源",
+    plugin_id, kb_id = _resolve_resource(db, payload.resource_type, payload.resource_id)
+    try:
+        _formal_subject(db, applicant_no)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            write_audit(
+                db, trace_id=f"ARQ-{applicant_no}-deny", employee_id=applicant_no,
+                plugin_id=plugin_id, knowledge_base_id=kb_id, action="access_apply",
+                decision=DECISION_DENY, reason="非正式员工不可发起敏感资源申请",
+                result_summary="denied",
+            )
+        raise
+
+    duplicate = db.scalar(
+        select(models.AccessRequest).where(
+            models.AccessRequest.applicant_no == applicant_no,
+            models.AccessRequest.resource_type == payload.resource_type,
+            models.AccessRequest.resource_id == payload.resource_id,
+            models.AccessRequest.status == "pending",
         )
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "message": "策略拒绝",
-                "policy_id": "ACCESS-FORMAL-ONLY",
-                "reason": "仅正式员工可发起敏感资源申请",
-            },
-        )
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail={"message": "相同资源已有待审批申请", "request_id": duplicate.id})
+
     request = models.AccessRequest(
-        applicant_no=applicant_no,
-        resource_type=payload.resource_type,
-        resource_id=payload.resource_id,
-        reason=payload.reason,
-        status="pending",
-        approval_chain=[],
+        applicant_no=applicant_no, resource_type=payload.resource_type,
+        resource_id=payload.resource_id, reason=payload.reason,
+        status="pending", approval_chain=[],
     )
     db.add(request)
     db.commit()
     db.refresh(request)
     write_audit(
-        db,
-        trace_id=f"ARQ-{request.id}",
-        employee_id=applicant_no,
-        plugin_id=plugin_id,
-        action="access_apply",
-        decision="pending",
-        knowledge_base_id=kb_id,
-        reason=f"{payload.resource_type}:{payload.resource_id}",
-        result_summary="申请已发起 status=pending",
+        db, trace_id=f"ARQ-{request.id}", employee_id=applicant_no,
+        plugin_id=plugin_id, knowledge_base_id=kb_id, action="access_apply",
+        decision="pending", reason=f"{payload.resource_type}:{payload.resource_id}",
+        result_summary="status=pending",
     )
     return request
 
 
 @router.post("/{request_id}/approve", response_model=schemas.AccessRequestOut)
-def approve_request(
-    request_id: int,
-    payload: schemas.AccessRequestApproveIn,
-    db: Session = Depends(get_db),
-):
-    """管理员一键通过/拒绝；通过时写白名单 grant（employee_plugin_grant, grant_source=whitelist）并置 granted。"""
+def approve_request(request_id: int, payload: schemas.AccessRequestApproveIn, db: Session = Depends(get_db)):
     request = db.get(models.AccessRequest, request_id)
     if request is None:
         raise HTTPException(status_code=404, detail={"message": "申请单不存在", "request_id": request_id})
     if request.status in TERMINAL_STATUSES:
-        raise HTTPException(
-            status_code=409,
-            detail={"message": "申请单已终态，不可重复审批", "status": request.status},
-        )
-    actor = resolve_identity(db, payload.actor_no)
-    if actor is None:
-        raise HTTPException(status_code=404, detail={"message": "审批人不存在", "actor_no": payload.actor_no})
-    if actor.employment_type != "formal":
-        raise HTTPException(
-            status_code=403,
-            detail={"message": "策略拒绝", "policy_id": "ACCESS-FORMAL-ONLY", "reason": "仅正式员工可审批"},
-        )
-    plugin_id, kb_id = _resolve_grant_plugin(db, request.resource_type, request.resource_id)
+        raise HTTPException(status_code=409, detail={"message": "申请单已终态，不可重复审批", "status": request.status})
+    _formal_subject(db, payload.actor_no, approver=True)
+    plugin_id, kb_id = _resolve_resource(db, request.resource_type, request.resource_id)
     trace_id = f"ARQ-{request.id}"
+
+    request.decided_by = payload.actor_no
+    request.decided_at = datetime.now()
+    request.approval_chain = [{"actor_no": payload.actor_no, "decision": "approve" if payload.approve else "reject"}]
     if payload.approve:
         grant = db.scalar(
             select(models.EmployeePluginGrant).where(
                 models.EmployeePluginGrant.employee_id == request.applicant_no,
                 models.EmployeePluginGrant.plugin_id == plugin_id,
+                models.EmployeePluginGrant.action == "read",
             )
         )
         if grant is None:
             grant = models.EmployeePluginGrant(
-                employee_id=request.applicant_no,
-                plugin_id=plugin_id,
-                action="read",
-                decision_mode=DECISION_ALLOW,
-                grant_source="whitelist",
+                employee_id=request.applicant_no, plugin_id=plugin_id, action="read",
+                decision_mode=DECISION_ALLOW, grant_source="whitelist",
             )
             db.add(grant)
         else:
-            grant.action = "read"
             grant.decision_mode = DECISION_ALLOW
             grant.grant_source = "whitelist"
         request.status = "granted"
-        request.decided_by = payload.actor_no
-        request.decided_at = datetime.now()
-        db.commit()
-        write_audit(
-            db,
-            trace_id=trace_id,
-            employee_id=request.applicant_no,
-            plugin_id=plugin_id,
-            action="access_approve",
-            decision=DECISION_ALLOW,
-            knowledge_base_id=kb_id,
-            reason=f"审批通过 by {payload.actor_no}",
-            result_summary="status=granted",
-        )
-        write_audit(
-            db,
-            trace_id=trace_id,
-            employee_id=request.applicant_no,
-            plugin_id=plugin_id,
-            action="access_grant",
-            decision=DECISION_ALLOW,
-            knowledge_base_id=kb_id,
-            reason="白名单授权写入",
-            result_summary="grant_source=whitelist",
-        )
+        decision = DECISION_ALLOW
     else:
         request.status = "rejected"
-        request.decided_by = payload.actor_no
-        request.decided_at = datetime.now()
-        db.commit()
-        write_audit(
-            db,
-            trace_id=trace_id,
-            employee_id=request.applicant_no,
-            plugin_id=plugin_id,
-            action="access_approve",
-            decision=DECISION_DENY,
-            knowledge_base_id=kb_id,
-            reason=f"审批拒绝 by {payload.actor_no}",
-            result_summary="status=rejected",
-        )
+        decision = DECISION_DENY
+    db.commit()
     db.refresh(request)
+
+    write_audit(
+        db, trace_id=trace_id, employee_id=request.applicant_no,
+        plugin_id=plugin_id, knowledge_base_id=kb_id, action="access_approve",
+        decision=decision, reason=f"{'审批通过' if payload.approve else '审批拒绝'} by {payload.actor_no}",
+        result_summary=f"status={request.status}",
+    )
+    if payload.approve:
+        write_audit(
+            db, trace_id=trace_id, employee_id=request.applicant_no,
+            plugin_id=plugin_id, knowledge_base_id=kb_id, action="access_grant",
+            decision=DECISION_ALLOW, reason="L3 读取白名单授权写入",
+            result_summary="action=read, grant_source=whitelist",
+        )
     return request
 
 
 @router.get("", response_model=list[schemas.AccessRequestOut])
 def list_requests(
-    applicant_no: str | None = Query(None, description="按申请人过滤"),
-    status: str | None = Query(None, description="按状态过滤：pending|approved|rejected|granted"),
+    applicant_no: str | None = Query(None), status: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    """查询申请单（含待审批列表）；按 applicant_no / status 过滤。"""
     query = select(models.AccessRequest).order_by(models.AccessRequest.id.desc())
     if applicant_no:
         query = query.where(models.AccessRequest.applicant_no == applicant_no)

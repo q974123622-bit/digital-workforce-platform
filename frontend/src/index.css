@@ -651,6 +651,31 @@ body {
   padding: 6px 0 10px;
 }
 
+.wp-sidebar-foot {
+  flex-shrink: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid #eef1f6;
+  background: #fff;
+}
+
+.wp-guide-tag {
+  margin: 0;
+  user-select: none;
+}
+
+.wp-guide-trigger {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.wp-guide-trigger:focus-visible {
+  outline: 2px solid #91caff;
+  outline-offset: 2px;
+}
+
 .wp-row {
   display: flex;
   align-items: center;
@@ -745,6 +770,50 @@ body {
   background: #f7f9fc;
 }
 
+.wp-employee-row {
+  cursor: default;
+}
+
+.wp-contact-name-link {
+  display: block;
+  color: #1f2733;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wp-contact-name-link:hover {
+  color: #2f54eb;
+}
+
+.wp-contact-actions {
+  flex-shrink: 0;
+  opacity: 0.72;
+  transition: opacity 0.2s ease;
+}
+
+.wp-employee-row:hover .wp-contact-actions,
+.wp-contact-actions:focus-within {
+  opacity: 1;
+}
+
+.wp-contact-actions .ant-btn {
+  color: #7c8799;
+}
+
+.wp-contact-actions .wp-chat-action {
+  color: #2f54eb;
+  background: #eef4ff;
+}
+
+.wp-contact-actions .wp-chat-action:hover {
+  color: #fff !important;
+  background: #2f54eb !important;
+}
+
 .wp-modal-contacts {
   max-height: 48vh;
   overflow-y: auto;
@@ -835,6 +904,20 @@ body {
   font-size: 12px;
   color: #8a94a6;
   margin-bottom: 4px;
+}
+
+.wp-feedback-ok {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #52c41a;
+  font-weight: 500;
+}
+
+.wp-feedback-run {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #1677ff;
+  font-weight: 500;
 }
 
 .wp-bubble {
@@ -1047,6 +1130,154 @@ body {
 .wp-skill > div:first-child {
   flex: 1;
   min-width: 0;
+}
+
+/* ==================== 数字员工详情页头 ==================== */
+.employee-hero .ant-card-body {
+  padding: 26px 30px;
+}
+
+.employee-hero-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(520px, 1.25fr);
+  align-items: center;
+  gap: 32px;
+}
+
+.employee-profile-main {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+
+.employee-profile-avatar {
+  flex-shrink: 0;
+  color: #fff;
+  background: #3158e8;
+  font-size: 29px;
+  font-weight: 500;
+}
+
+.employee-profile-info {
+  min-width: 0;
+}
+
+.employee-profile-name.ant-typography {
+  margin: 0 0 4px;
+  color: #1f2733;
+}
+
+.employee-profile-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #7c8799;
+  font-size: 13px;
+}
+
+.employee-meta-dot {
+  color: #c1c8d3;
+}
+
+.employee-profile-tags {
+  margin-top: 10px;
+}
+
+.employee-profile-tags .ant-tag {
+  margin-inline-end: 0;
+}
+
+.employee-workspace-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  padding: 7px 14px;
+  border-radius: 7px;
+  color: #fff;
+  background: #3158e8;
+  font-size: 13px;
+  line-height: 20px;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.employee-workspace-link:hover {
+  color: #fff;
+  background: #2448cf;
+  box-shadow: 0 4px 12px rgba(49, 88, 232, 0.22);
+}
+
+.employee-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(105px, 1fr));
+  padding: 4px 0;
+  border-left: 1px solid #edf0f5;
+}
+
+.employee-metric {
+  display: flex;
+  min-width: 0;
+  min-height: 68px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 20px;
+  border-right: 1px solid #edf0f5;
+}
+
+.employee-metric:last-child {
+  border-right: 0;
+}
+
+.employee-metric-label,
+.employee-metric-note {
+  color: #98a2b3;
+  font-size: 12px;
+}
+
+.employee-metric strong {
+  color: #273142;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.employee-metric .ant-tag {
+  margin-inline-end: 0;
+}
+
+@media (max-width: 1180px) {
+  .employee-hero-layout {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  .employee-metrics {
+    padding-top: 18px;
+    border-top: 1px solid #edf0f5;
+    border-left: 0;
+  }
+}
+
+@media (max-width: 680px) {
+  .employee-hero .ant-card-body {
+    padding: 20px;
+  }
+
+  .employee-profile-main {
+    align-items: flex-start;
+  }
+
+  .employee-metrics {
+    grid-template-columns: repeat(2, 1fr);
+    row-gap: 18px;
+  }
+
+  .employee-metric:nth-child(2) {
+    border-right: 0;
+  }
 }
 
 @media (max-width: 900px) {
