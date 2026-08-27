@@ -164,11 +164,11 @@ def test_new_it_service_kb_l2_formal_allow_intern_deny(client):
 
 
 def test_all_resources_have_three_level_classification(client):
-    """P21 分级完整性：9 知识库 + 12 插件全部带 L1/L2/L3 等级。"""
+    """P21 分级完整性：9 知识库 + 13 插件全部带 L1/L2/L3 等级。"""
     kbs = client.get("/api/v1/knowledge-bases").json()
     plugins = client.get("/api/v1/plugins").json()
     assert len(kbs) == 9
-    assert len(plugins) == 12
+    assert len(plugins) == 13
     assert all(kb["data_level"] in {"L1", "L2", "L3"} for kb in kbs)
     assert all(p["data_level"] in {"L1", "L2", "L3"} for p in plugins)
     levels = {kb["id"]: kb["data_level"] for kb in kbs}

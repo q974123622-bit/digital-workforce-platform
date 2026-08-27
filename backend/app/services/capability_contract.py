@@ -13,13 +13,24 @@ from .. import models
 from .adapters import REGISTRY
 
 CONTRACT_VERSION = "1.0"
-PLUGIN_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http"}
+PLUGIN_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http", "memory"}
 PLUGIN_ACTIONS = {
     "knowledge": ["read"],
     "mcp": ["execute"],
     "workflow": ["execute"],
     "rpa": ["execute"],
     "http": ["search"],
+    "memory": ["search"],
+}
+
+_MEMORY_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "minLength": 1},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
+    },
+    "required": ["query"],
+    "additionalProperties": False,
 }
 
 
@@ -47,11 +58,15 @@ class CapabilityContract:
 
 
 def _default_plugin_meta(plugin: models.Plugin) -> dict[str, Any]:
-    primary = "adapter" if plugin.type == "knowledge" else "harness"
+    primary = "adapter" if plugin.type in {"knowledge", "memory"} else "harness"
     return {
         "contract_version": CONTRACT_VERSION,
         "actions": PLUGIN_ACTIONS.get(plugin.type, ["execute"]),
-        "input_schema": {"type": "object", "additionalProperties": True},
+        "input_schema": (
+            _MEMORY_INPUT_SCHEMA.copy()
+            if plugin.type == "memory"
+            else {"type": "object", "additionalProperties": True}
+        ),
         "executor": {
             "primary": primary,
             "adapter_ref": plugin.endpoint_ref,
@@ -80,10 +95,12 @@ def plugin_contract(plugin: models.Plugin) -> CapabilityContract:
         issues.append(f"不支持的执行器：{primary}")
     if adapter_ref != plugin.endpoint_ref:
         issues.append("executor.adapter_ref 必须与 plugin.endpoint_ref 一致")
+    if plugin.type == "memory" and adapter_ref != "memory://agent-local":
+        issues.append("memory 插件必须使用逻辑 endpoint：memory://agent-local")
     if not meta.get("actions"):
         issues.append("actions 不能为空")
     needs_adapter = primary == "adapter" or meta["executor"].get("tool") == "adapter"
-    if plugin.type != "knowledge" and needs_adapter and adapter_ref not in REGISTRY:
+    if plugin.type not in {"knowledge", "memory"} and needs_adapter and adapter_ref not in REGISTRY:
         issues.append(f"Adapter 未注册：{adapter_ref}")
 
     return CapabilityContract(

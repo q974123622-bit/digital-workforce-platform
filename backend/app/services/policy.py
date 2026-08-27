@@ -28,7 +28,7 @@ DECISION_DENY = "deny"
 DECISION_APPROVAL = "approval"
 
 # 插件类资源（需检查 employee_plugin_grant）；sandbox 等执行资源只走规则
-PLUGIN_RESOURCE_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http"}
+PLUGIN_RESOURCE_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http", "memory"}
 
 
 @dataclass(frozen=True)
