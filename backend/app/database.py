@@ -42,6 +42,35 @@ def ensure_schema_compatibility() -> None:
             connection.execute(
                 text("ALTER TABLE employee_plugin_grant ADD COLUMN grant_source VARCHAR NOT NULL DEFAULT ''")
             )
+    table_names = set(inspector.get_table_names())
+    if "memory_entry" not in table_names:
+        return
+    memory_columns = {column["name"] for column in inspector.get_columns("memory_entry")}
+    with engine.begin() as connection:
+        if "source_type" not in memory_columns:
+            connection.execute(
+                text("ALTER TABLE memory_entry ADD COLUMN source_type VARCHAR NOT NULL DEFAULT 'manual'")
+            )
+        if "source_session_id" not in memory_columns:
+            connection.execute(
+                text("ALTER TABLE memory_entry ADD COLUMN source_session_id VARCHAR")
+            )
+        if "source_ref" not in memory_columns:
+            connection.execute(
+                text("ALTER TABLE memory_entry ADD COLUMN source_ref VARCHAR")
+            )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_memory_entry_source_session_id "
+                "ON memory_entry (source_session_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_memory_entry_source_ref "
+                "ON memory_entry (source_ref)"
+            )
+        )
 
 
 def get_db():
