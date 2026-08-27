@@ -95,7 +95,7 @@ def plugin_contract(plugin: models.Plugin) -> CapabilityContract:
         issues.append(f"不支持的插件类型：{plugin.type}")
     adapter_ref = str(meta["executor"].get("adapter_ref") or plugin.endpoint_ref)
     primary = meta["executor"].get("primary")
-    if primary not in {"adapter", "harness"}:
+    if not isinstance(primary, str) or primary not in {"adapter", "harness"}:
         issues.append(f"不支持的执行器：{primary}")
     if adapter_ref != plugin.endpoint_ref:
         issues.append("executor.adapter_ref 必须与 plugin.endpoint_ref 一致")

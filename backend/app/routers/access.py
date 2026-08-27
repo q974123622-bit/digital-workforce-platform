@@ -18,21 +18,22 @@ router = APIRouter(prefix="/access-requests", tags=["access"])
 TERMINAL_STATUSES = {"granted", "rejected"}
 
 
-def _resolve_resource(db: Session, resource_type: str, resource_id: str) -> tuple[str, str | None]:
-    """解析白名单对应的 read grant；只允许登记过的 L3 资源。"""
+def _resolve_resource(db: Session, resource_type: str, resource_id: str) -> tuple[str, str | None, str]:
+    """解析白名单对应的 grant；只允许登记过的 L3 资源。"""
     if resource_type == "knowledge":
         kb = resolve_kb(db, resource_id)
         if kb is None:
             raise HTTPException(status_code=404, detail={"message": "知识库资源不存在", "resource_id": resource_id})
         if kb.data_level != "L3":
             raise HTTPException(status_code=400, detail="只有 L3 知识库需要白名单申请")
-        return plugin_id_for_level(kb.data_level), kb.id
+        return plugin_id_for_level(kb.data_level), kb.id, "read"
     plugin = db.get(models.Plugin, resource_id)
     if plugin is None:
         raise HTTPException(status_code=404, detail={"message": "插件不存在", "resource_id": resource_id})
     if plugin.data_level != "L3":
         raise HTTPException(status_code=400, detail="只有 L3 插件需要白名单申请")
-    return plugin.id, None
+    grant_action = "search" if plugin.type == "memory" else "read"
+    return plugin.id, None, grant_action
 
 
 def _formal_subject(db: Session, employee_no: str, *, approver: bool = False):
@@ -55,7 +56,7 @@ def create_request(
     applicant_no: str = Query(..., description="申请人数字员工工号"),
     db: Session = Depends(get_db),
 ):
-    plugin_id, kb_id = _resolve_resource(db, payload.resource_type, payload.resource_id)
+    plugin_id, kb_id, _ = _resolve_resource(db, payload.resource_type, payload.resource_id)
     try:
         _formal_subject(db, applicant_no)
     except HTTPException as exc:
@@ -104,7 +105,7 @@ def approve_request(request_id: int, payload: schemas.AccessRequestApproveIn, db
     if request.status in TERMINAL_STATUSES:
         raise HTTPException(status_code=409, detail={"message": "申请单已终态，不可重复审批", "status": request.status})
     _formal_subject(db, payload.actor_no, approver=True)
-    plugin_id, kb_id = _resolve_resource(db, request.resource_type, request.resource_id)
+    plugin_id, kb_id, grant_action = _resolve_resource(db, request.resource_type, request.resource_id)
     trace_id = f"ARQ-{request.id}"
 
     request.decided_by = payload.actor_no
@@ -115,12 +116,12 @@ def approve_request(request_id: int, payload: schemas.AccessRequestApproveIn, db
             select(models.EmployeePluginGrant).where(
                 models.EmployeePluginGrant.employee_id == request.applicant_no,
                 models.EmployeePluginGrant.plugin_id == plugin_id,
-                models.EmployeePluginGrant.action == "read",
+                models.EmployeePluginGrant.action == grant_action,
             )
         )
         if grant is None:
             grant = models.EmployeePluginGrant(
-                employee_id=request.applicant_no, plugin_id=plugin_id, action="read",
+                employee_id=request.applicant_no, plugin_id=plugin_id, action=grant_action,
                 decision_mode=DECISION_ALLOW, grant_source="whitelist",
             )
             db.add(grant)
@@ -146,7 +147,7 @@ def approve_request(request_id: int, payload: schemas.AccessRequestApproveIn, db
             db, trace_id=trace_id, employee_id=request.applicant_no,
             plugin_id=plugin_id, knowledge_base_id=kb_id, action="access_grant",
             decision=DECISION_ALLOW, reason="L3 读取白名单授权写入",
-            result_summary="action=read, grant_source=whitelist",
+            result_summary=f"action={grant_action}, grant_source=whitelist",
         )
     return request
 

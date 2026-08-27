@@ -48,6 +48,24 @@ def test_memory_plugin_contract_rejects_an_unknown_endpoint(db_session):
     assert any("endpoint" in issue for issue in contract.issues or [])
 
 
+@pytest.mark.parametrize("primary", [[], {}])
+def test_memory_plugin_contract_handles_invalid_primary_type(db_session, primary):
+    plugin = models.Plugin(
+        id="agent-memory-invalid-primary",
+        name="错误执行器类型测试",
+        type="memory",
+        endpoint_ref="memory://agent-local",
+        data_level="L2",
+        status="active",
+        runtime_meta={"executor": {"primary": primary}},
+    )
+
+    contract = plugin_contract(plugin)
+
+    assert contract.ready is False
+    assert any("执行器" in issue for issue in contract.issues or [])
+
+
 def test_memory_plugin_contract_cannot_be_reconfigured_as_a_general_tool(db_session):
     plugin = models.Plugin(
         id="agent-memory-invalid-meta",
