@@ -185,3 +185,86 @@ def test_group_memory_capture_idempotent_on_same_seq(db_session):
     )
     assert first == second
     assert len(_conversation_memories(db_session)) == 1
+
+
+# ---- Task 8: 复用规则与审计可观测性 ----
+
+
+def test_workplace_router_reuses_shared_pipeline():
+    """企业微信（若接入）复用职场会话链路；当前无独立 WeCom 服务模块。"""
+    import pkgutil
+
+    from app import services
+    from app.routers import workplace
+
+    assert workplace.process_conversation_async is not None
+    module_names = [m.name for m in pkgutil.iter_modules(services.__path__)]
+    assert not any("wecom" in name.lower() for name in module_names)
+
+
+def test_memory_audit_read_metadata_only(db_session):
+    """读取审计只记录命中数量、IDs 和字符数，不复制记忆正文。"""
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+    from app.services.memory_service import capture_turn
+
+    capture_turn(
+        db_session,
+        owner_employee_no="DT-E10281",
+        source_type="chat",
+        source_session_id="S-OLD",
+        source_ref="chat:S-OLD:assistant:2",
+        user_text="张三的 IT 账号怎么样？",
+        assistant_text="HR 材料已完成，IT 账号仍待开通。",
+        trace_id="T-OLD",
+    )
+    fake = _FakeLLM([LLMResponse(content="HR 材料已完成。")])
+    ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="DT-E10281",
+        message="上次张三的账号处理好了吗？",
+        session_id=None,
+    )
+
+    reads = list(
+        db_session.scalars(
+            select(models.AuditEvent).where(models.AuditEvent.action == "memory.read_auto")
+        )
+    )
+    assert reads
+    for event in reads:
+        summary = event.result_summary or ""
+        assert "hits=" in summary
+        assert "ids=" in summary
+        assert "chars=" in summary
+        assert "HR 材料已完成" not in summary
+        assert "张三" not in summary
+
+
+def test_memory_audit_capture_metadata_only(db_session):
+    """写入审计只记录 memory_id 与 source_ref，不复制记忆正文。"""
+    conv = _direct_conversation(db_session)
+    fake = _FakeLLM([LLMResponse(content="HR 材料已完成，IT 账号仍待开通。")])
+    send_conversation_message(
+        db_session,
+        conversation=conv,
+        actor_no="E10281",
+        content="张三的账号处理好了吗？",
+        provider=fake,
+    )
+
+    captures = list(
+        db_session.scalars(
+            select(models.AuditEvent).where(
+                models.AuditEvent.action == "memory.capture",
+                models.AuditEvent.decision == "allow",
+            )
+        )
+    )
+    assert captures
+    for event in captures:
+        summary = event.result_summary or ""
+        assert "memory_id=" in summary
+        assert "source_ref=" in summary
+        assert "HR 材料已完成" not in summary
+        assert "张三的账号处理好了吗？" not in summary
