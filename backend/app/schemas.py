@@ -376,6 +376,9 @@ class MemoryCreate(BaseModel):
     related_subject_no: str | None = None
     trace_id: str | None = None
     file_ref: str | None = None
+    source_type: str = "manual"
+    source_session_id: str | None = None
+    source_ref: str | None = None
     visibility: str = "personal"  # public | personal | shared | confidential
     data_level: str = "L1"  # L1 | L2 | L3
     lifecycle: str = "active"  # active | summarized
@@ -393,6 +396,9 @@ class MemoryOut(BaseModel):
     related_subject_no: str | None
     trace_id: str | None
     file_ref: str | None
+    source_type: str
+    source_session_id: str | None
+    source_ref: str | None
     visibility: str
     data_level: str
     lifecycle: str

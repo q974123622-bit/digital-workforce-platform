@@ -186,6 +186,10 @@ class MemoryEntry(Base):
     related_subject_no: Mapped[str | None] = mapped_column(String, nullable=True)  # 和谁交互产生
     trace_id: Mapped[str | None] = mapped_column(String, nullable=True)  # 关联审计/操作
     file_ref: Mapped[str | None] = mapped_column(String, nullable=True)  # 附件路径（kind=attachment）
+    # 自动聊天记忆来源；source_ref 用于重复请求、回填和重试的幂等处理
+    source_type: Mapped[str] = mapped_column(String, default="manual")  # manual | chat | conversation | task
+    source_session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    source_ref: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
     # 控制
     visibility: Mapped[str] = mapped_column(String, default="personal")  # public | personal | shared | confidential
     data_level: Mapped[str] = mapped_column(String, default="L1")  # L1 | L2 | L3

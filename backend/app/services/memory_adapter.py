@@ -6,11 +6,13 @@
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
+from .memory_service import MemoryHit, render_prompt_context
 from .memory_permission import can_read_memory
 
 _KIND_LABEL = {
@@ -33,10 +35,17 @@ class MemoryRecall:
     @property
     def context(self) -> str:
         """把召回的记忆格式化成可注入 agent 上下文的文本。"""
-        if not self.entries:
-            return "（暂无相关记忆）"
-        parts = [f"[{_KIND_LABEL.get(m.kind, m.kind)}] {m.content}" for m in self.entries]
-        return "\n".join(parts)
+        hits = [
+            MemoryHit(
+                memory_id=entry.id or 0,
+                content=f"[{_KIND_LABEL.get(entry.kind, entry.kind)}] {entry.content}",
+                created_at=entry.created_at or datetime.now(),
+                score=0,
+                kind=entry.kind,
+            )
+            for entry in self.entries
+        ]
+        return render_prompt_context(hits)
 
 
 class MemoryAdapter:
