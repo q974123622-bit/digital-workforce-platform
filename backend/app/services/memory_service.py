@@ -21,6 +21,19 @@ _ERROR_RESPONSE_PREFIXES = (
 )
 _RECALL_INTENT_TERMS = ("上次", "之前", "以前", "还记得", "前几天", "当时")
 _CHAT_MEMORY_SOURCES = ("chat", "conversation")
+_PREFERENCE_INTENT_TERMS = ("以后", "今后", "后续", "请记住", "我喜欢", "我不喜欢", "我偏好", "请一直", "始终")
+_PREFERENCE_STYLE_TERMS = (
+    "表格",
+    "简洁",
+    "详细",
+    "格式",
+    "回复",
+    "回答",
+    "展示",
+    "称呼",
+    "语气",
+)
+_MAX_PREFERENCE_HITS = 2
 
 
 @dataclass(frozen=True)
@@ -55,6 +68,7 @@ def capture_turn(
         or assistant_text.startswith(_ERROR_RESPONSE_PREFIXES)
     ):
         return None
+    preference_content = _extract_explicit_preference(user_text)
 
     try:
         existing = db.scalar(
@@ -63,6 +77,15 @@ def capture_turn(
             )
         )
         if existing is not None:
+            if preference_content:
+                capture_preference(
+                    db,
+                    owner_employee_no=owner_employee_no,
+                    content=preference_content,
+                    source_ref=f"{source_ref}:preference",
+                    source_type=source_type or "chat",
+                    source_session_id=source_session_id,
+                )
             return existing.id
 
         employee = db.get(models.DigitalEmployee, owner_employee_no)
@@ -86,6 +109,15 @@ def capture_turn(
         db.add(entry)
         db.commit()
         db.refresh(entry)
+        if preference_content:
+            capture_preference(
+                db,
+                owner_employee_no=owner_employee_no,
+                content=preference_content,
+                source_ref=f"{source_ref}:preference",
+                source_type=source_type or "chat",
+                source_session_id=source_session_id,
+            )
         return entry.id
     except SQLAlchemyError:
         db.rollback()
@@ -150,11 +182,15 @@ def retrieve_for_prompt(
         )
         for entry in candidates
     ]
-    hits = [hit for hit in scored if hit.score > 0]
-    if hits:
-        hits.sort(key=lambda hit: (hit.score, hit.created_at), reverse=True)
+    preference_hits = [hit for hit in scored if hit.kind == "preference"]
+    preference_hits.sort(key=lambda hit: (hit.score, hit.created_at), reverse=True)
+    preference_hits = preference_hits[:_MAX_PREFERENCE_HITS]
+    relevant_hits = [hit for hit in scored if hit.kind != "preference" and hit.score > 0]
+    relevant_hits.sort(key=lambda hit: (hit.score, hit.created_at), reverse=True)
+    if relevant_hits:
+        hits = preference_hits + relevant_hits
     elif _has_recall_intent(query):
-        hits = [
+        fallback_hits = [
             MemoryHit(
                 memory_id=entry.id,
                 content=entry.content,
@@ -163,7 +199,11 @@ def retrieve_for_prompt(
                 kind=entry.kind,
             )
             for entry in candidates[:2]
+            if entry.kind != "preference"
         ]
+        hits = preference_hits + fallback_hits
+    elif preference_hits:
+        hits = preference_hits
     else:
         return []
 
@@ -200,9 +240,12 @@ def render_prompt_context(
     parts = [header]
     used_chars = len(header)
     for hit in hits:
+        content = hit.content.strip()
+        if hit.kind == "preference":
+            content = f"[用户画像] {content}"
         item = (
             f"\n[M-{hit.memory_id} | {hit.created_at:%Y-%m-%d}]\n"
-            f"{hit.content.strip()}\n"
+            f"{content}\n"
         )
         remaining = max_chars - used_chars
         if remaining <= 0:
@@ -227,6 +270,8 @@ def capture_preference(
     owner_employee_no: str,
     content: str,
     source_ref: str,
+    source_type: str = "manual",
+    source_session_id: str | None = None,
 ) -> int | None:
     """保存用户明确表达的偏好，第一版只允许写入其 own twin。"""
     content = content.strip()
@@ -251,7 +296,8 @@ def capture_preference(
             kind="preference",
             content=content[:300],
             content_type="text",
-            source_type="manual",
+            source_type=source_type or "manual",
+            source_session_id=source_session_id or None,
             source_ref=source_ref,
             visibility="personal",
             data_level="L2",
@@ -273,6 +319,18 @@ def capture_preference(
         except SQLAlchemyError:
             db.rollback()
             return None
+
+
+def _extract_explicit_preference(user_text: str) -> str | None:
+    """只接受用户明确、长期且与回答方式相关的偏好，不推断画像。"""
+    content = user_text.strip()
+    if not content or len(content) > 300:
+        return None
+    if not any(term in content for term in _PREFERENCE_INTENT_TERMS):
+        return None
+    if not any(term in content for term in _PREFERENCE_STYLE_TERMS):
+        return None
+    return content
 
 
 def _tokenize(text: str) -> set[str]:

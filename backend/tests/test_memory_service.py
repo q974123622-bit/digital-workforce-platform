@@ -327,3 +327,102 @@ def test_capture_preference_rejects_non_twin_owner(db_session):
         content="用表格展示。",
         source_ref="manual:VE-0001:preference:1",
     ) is None
+
+
+def test_capture_turn_persists_one_explicit_preference_for_its_owner_twin(db_session):
+    """成功聊天中的明确长期偏好应随问答记忆一次性、幂等地写入 own twin。"""
+    from sqlalchemy import select
+
+    from app import models
+    from app.services.memory_service import capture_turn
+
+    args = {
+        "owner_employee_no": "DT-E10281",
+        "source_type": "chat",
+        "source_session_id": "S-PREFERENCE",
+        "source_ref": "chat:S-PREFERENCE:assistant:2",
+        "user_text": "以后给我的项目进度都用简短表格展示。",
+        "assistant_text": "好的，之后我会优先用简短表格展示项目进度。",
+    }
+
+    assert capture_turn(db_session, **args) is not None
+    assert capture_turn(db_session, **args) is not None
+
+    preferences = list(
+        db_session.scalars(
+            select(models.MemoryEntry).where(
+                models.MemoryEntry.source_ref == "chat:S-PREFERENCE:assistant:2:preference"
+            )
+        )
+    )
+    assert len(preferences) == 1
+    assert preferences[0].subject_no == "DT-E10281"
+    assert preferences[0].kind == "preference"
+    assert preferences[0].content == "以后给我的项目进度都用简短表格展示。"
+
+
+def test_retrieve_for_prompt_keeps_owner_twin_preference_without_keyword_match(db_session):
+    """长期表达偏好不能因为当前问题词汇不同而丢失。"""
+    from app.services.memory_service import capture_preference, retrieve_for_prompt
+
+    preference_id = capture_preference(
+        db_session,
+        owner_employee_no="DT-E10281",
+        content="以后回答时请保持简洁，优先使用表格。",
+        source_ref="manual:DT-E10281:preference:unrelated-query",
+    )
+
+    hits = retrieve_for_prompt(
+        db_session,
+        owner_employee_no="DT-E10281",
+        query="今天上海天气如何？",
+        current_session_id="S-NOW",
+    )
+
+    assert preference_id is not None
+    assert any(hit.memory_id == preference_id and hit.kind == "preference" for hit in hits)
+
+
+def test_capture_turn_does_not_infer_preference_from_future_business_fact(db_session):
+    """带“以后”的业务计划不是用户画像，不能被自动推断为偏好。"""
+    from sqlalchemy import select
+
+    from app import models
+    from app.services.memory_service import capture_turn
+
+    source_ref = "chat:S-FACT:assistant:2"
+    assert capture_turn(
+        db_session,
+        owner_employee_no="DT-E10281",
+        source_type="chat",
+        source_session_id="S-FACT",
+        source_ref=source_ref,
+        user_text="以后我会用张三提交的资料继续办理 IT 账号。",
+        assistant_text="好的，我会记录该账号办理安排。",
+    ) is not None
+
+    preference = db_session.scalar(
+        select(models.MemoryEntry).where(
+            models.MemoryEntry.source_ref == f"{source_ref}:preference"
+        )
+    )
+    assert preference is None
+
+
+def test_render_prompt_context_labels_preference_as_user_profile():
+    """模型必须能分辨长期偏好与普通历史对话。"""
+    from app.services.memory_service import MemoryHit, render_prompt_context
+
+    context = render_prompt_context(
+        [
+            MemoryHit(
+                memory_id=103,
+                content="以后回答时请保持简洁，优先使用表格。",
+                created_at=datetime(2026, 8, 27, 10, 0),
+                score=0,
+                kind="preference",
+            )
+        ]
+    )
+
+    assert "[用户画像] 以后回答时请保持简洁，优先使用表格。" in context
