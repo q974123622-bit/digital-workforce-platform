@@ -52,6 +52,7 @@ TEAM_BACKEND = "DWP_TEAM_BACKEND"  # auto | builtin（默认 auto）
 MEMORY_ENABLED = "DWP_MEMORY_ENABLED"
 MEMORY_MAX_ITEMS = "DWP_MEMORY_MAX_ITEMS"
 MEMORY_MAX_CHARS = "DWP_MEMORY_MAX_CHARS"
+MEMORY_TOOL_ENABLED = "DWP_MEMORY_TOOL_ENABLED"  # search_memory 工具开关（Round 2）
 
 
 def team_backend_mode() -> str:
@@ -159,3 +160,12 @@ def memory_max_items() -> int:
 def memory_max_chars() -> int:
     """记忆上下文字符预算：200～4000，非法值回退默认 1200。"""
     return _bounded_int(MEMORY_MAX_CHARS, default=1200, low=200, high=4000)
+
+
+def memory_tool_enabled() -> bool:
+    """search_memory 工具开关（Round 2）：只关模型主动检索，不影响自动检索。
+    仅显式 0/false/no/off 视为关闭，默认开启；非法值回退默认 True。"""
+    raw = os.environ.get(MEMORY_TOOL_ENABLED)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}

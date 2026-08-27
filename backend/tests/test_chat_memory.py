@@ -95,6 +95,36 @@ def test_memory_config_bounds(monkeypatch):
     assert config.memory_max_chars() == 4000
 
 
+# ---- Round 2 Task B3: memory tool 开关配置 ----
+
+TOOL_ENABLED_ENV = "DWP_MEMORY_TOOL_ENABLED"
+
+
+def test_memory_tool_config_default_true(monkeypatch):
+    """未设置时工具开关默认开启（与总开关独立）。"""
+    monkeypatch.delenv(TOOL_ENABLED_ENV, raising=False)
+    assert config.memory_tool_enabled() is True
+
+
+def test_memory_tool_config_disabled(monkeypatch):
+    monkeypatch.setenv(TOOL_ENABLED_ENV, "0")
+    assert config.memory_tool_enabled() is False
+
+
+def test_memory_tool_config_invalid_falls_back(monkeypatch):
+    """非法值回退默认 True；关闭只认显式 0/false/no/off。"""
+    monkeypatch.setenv(TOOL_ENABLED_ENV, "abc")
+    assert config.memory_tool_enabled() is True
+
+
+def test_memory_tool_independent_of_memory_enabled(monkeypatch):
+    """工具开关独立于总开关：总开关关闭时工具开关仍可单独查询（组合逻辑由调用方负责）。"""
+    monkeypatch.setenv("DWP_MEMORY_ENABLED", "0")
+    monkeypatch.setenv(TOOL_ENABLED_ENV, "1")
+    assert config.memory_enabled() is False
+    assert config.memory_tool_enabled() is True
+
+
 # ---- Task 4: session_owner ----
 
 
