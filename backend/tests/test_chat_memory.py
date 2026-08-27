@@ -477,6 +477,51 @@ def test_memory_direct_capture_once_after_tool_multi_round(db_session):
     assert len(entries) == 1
 
 
+def test_memory_read_failure_e2e_chat_still_answers(db_session, monkeypatch):
+    """§17 #11 E2E：A 的 retrieve_for_prompt 异常时，chat 全链路仍正常回答且不注入记忆。"""
+    from app.services import memory_runtime
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+
+    def boom(db, **kwargs):
+        raise RuntimeError("mock memory read failed")
+
+    monkeypatch.setattr(memory_runtime, "retrieve_for_prompt", boom)
+
+    fake = _FakeLLM([LLMResponse(content="HR 材料已完成，IT 账号仍待开通。")])
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="上次张三的账号处理好了吗？",
+        session_id=None,
+    )
+    assert "HR 材料已完成" in result.message
+    user_payload = fake.calls[0][-1]["content"]
+    assert user_payload == "上次张三的账号处理好了吗？"
+    assert "【本地相关记忆】" not in user_payload
+
+
+def test_memory_write_failure_e2e_reply_still_returns(db_session, monkeypatch):
+    """§17 #12 E2E：A 的 capture_turn 异常时，回答仍正常返回，不阻断聊天。"""
+    from app.services import memory_runtime
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+
+    def boom(db, **kwargs):
+        raise RuntimeError("mock memory write failed")
+
+    monkeypatch.setattr(memory_runtime, "capture_turn", boom)
+
+    fake = _FakeLLM([LLMResponse(content="HR 材料已完成，IT 账号仍待开通。")])
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="上次张三的账号处理好了吗？",
+        session_id=None,
+    )
+    assert "HR 材料已完成" in result.message
+
+
 def test_memory_direct_capture_idempotent_on_same_source_ref(db_session):
     from sqlalchemy import select
 
