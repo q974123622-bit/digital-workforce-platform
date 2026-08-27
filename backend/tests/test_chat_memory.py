@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.services import config
+from app.services.llm import LLMProvider
 from app.services.session import get_or_create
 from tests.memory_contract_stub import MemoryContractStub
 
@@ -244,3 +245,99 @@ def test_memory_runtime_capture_write_error_degrades(db_session, monkeypatch):
         trace_id="T-2",
     )
     assert result is None
+
+
+# ---- Task 5: direct_recall ----
+
+
+class _FakeLLM(LLMProvider):
+    """可编程假 LLM：按调用顺序返回预设响应，并记录调用历史。"""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+
+    def chat(self, messages, tools=None):
+        self.calls.append(messages)
+        return self.script.pop(0)
+
+    def tool_call(self, messages, tools):
+        return self.chat(messages, tools)
+
+    def structured_output(self, messages, schema):
+        return {}
+
+
+def _seed_old_memory(db_session, owner="VE-0001", session="S-OLD", ref="chat:S-OLD:assistant:2"):
+    from app.services.memory_service import capture_turn
+
+    assert capture_turn(
+        db_session,
+        owner_employee_no=owner,
+        source_type="chat",
+        source_session_id=session,
+        source_ref=ref,
+        user_text="张三的 IT 账号怎么样？",
+        assistant_text="张三的 HR 材料已完成，IT 账号仍待开通。",
+        trace_id="T-OLD",
+    ) is not None
+
+
+def test_memory_direct_recall_injects_and_keeps_db_original(db_session):
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+    from app.services.session import history
+
+    _seed_old_memory(db_session)
+
+    fake = _FakeLLM([LLMResponse(content="HR 材料已完成，IT 账号仍待开通。")])
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="上次张三的账号处理好了吗？",
+        session_id=None,
+    )
+
+    user_payload = fake.calls[0][-1]["content"]
+    assert "【本地相关记忆】" in user_payload
+    assert "上次张三的账号处理好了吗？" in user_payload
+    stored = history(db_session, result.session_id)
+    assert stored[0].content == "上次张三的账号处理好了吗？"
+    assert "【本地相关记忆】" not in stored[0].content
+
+
+def test_memory_direct_recall_no_hits_no_injection(db_session):
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+
+    fake = _FakeLLM([LLMResponse(content="今天天气如何？")])
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="今天天气如何？",
+        session_id=None,
+    )
+
+    user_payload = fake.calls[0][-1]["content"]
+    assert user_payload == "今天天气如何？"
+    assert "【本地相关记忆】" not in user_payload
+
+
+def test_memory_direct_recall_disabled_no_injection(db_session, monkeypatch):
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+
+    _seed_old_memory(db_session)
+    monkeypatch.setenv("DWP_MEMORY_ENABLED", "0")
+
+    fake = _FakeLLM([LLMResponse(content="HR 材料已完成。")])
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="上次张三的账号处理好了吗？",
+        session_id=None,
+    )
+
+    user_payload = fake.calls[0][-1]["content"]
+    assert user_payload == "上次张三的账号处理好了吗？"
+    assert "【本地相关记忆】" not in user_payload

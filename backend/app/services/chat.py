@@ -21,6 +21,7 @@ from .identity import resolve_identity
 from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
 from .knowledge_registry import accessible_knowledge_bases
 from .llm import LLMProvider, LLMUnavailableError
+from .memory_runtime import prepare_memory_context
 from .session import add_message, get_or_create, history
 
 MAX_TOOL_ROUNDS = 3
@@ -114,6 +115,20 @@ class ChatOrchestrator:
             active_session_id = session_id or f"G-{uuid4().hex[:12]}"
             active_trace_id = trace_id or f"T-GRP-{uuid4().hex[:12]}"
 
+        # 本地记忆：模型调用前自动检索当前数字员工的旧会话记忆（失败降级为空）
+        prepared_memory = prepare_memory_context(
+            db,
+            owner_employee_no=subject.employee_id,
+            query=message,
+            current_session_id=active_session_id,
+            trace_id=active_trace_id,
+        )
+        effective_user_message = (
+            f"{prepared_memory.text}\n\n【当前用户请求】\n{message}"
+            if prepared_memory.text
+            else message
+        )
+
         messages: list[dict] = [
             {"role": "system", "content": self._system_prompt(db, subject), "source": "demo"},
         ]
@@ -121,12 +136,15 @@ class ChatOrchestrator:
             messages.append({"role": "system", "content": system_context, "source": "demo"})
         if history_override is not None:
             messages.extend(history_override)
-            if not messages or messages[-1].get("role") != "user":
-                messages.append({"role": "user", "content": message, "source": "demo"})
+            # 记忆上下文只替换当前用户消息的模型副本，不改数据库原文、不重复追加
+            if messages and messages[-1].get("role") == "user":
+                messages[-1] = {"role": "user", "content": effective_user_message, "source": "demo"}
+            else:
+                messages.append({"role": "user", "content": effective_user_message, "source": "demo"})
         else:
             for msg in history(db, active_session_id)[:-1]:
                 messages.append({"role": msg.role, "content": msg.content, "source": "demo"})
-            messages.append({"role": "user", "content": message, "source": "demo"})
+            messages.append({"role": "user", "content": effective_user_message, "source": "demo"})
 
         tool_cards: list[ToolCard] = []
         policy_denied: ToolCard | None = None
