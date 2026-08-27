@@ -479,3 +479,15 @@ def test_memory_direct_capture_idempotent_on_same_source_ref(db_session):
         db_session.scalars(select(models.MemoryEntry).where(models.MemoryEntry.source_ref == ref))
     )
     assert len(entries) == 1
+
+
+# ---- Task 9: 真实 A 实现联调 ----
+
+
+def test_memory_runtime_uses_real_a_contract():
+    """联调：memory_runtime 直接绑定 A 的真实 memory_service 实现，不再依赖行为假设。"""
+    from app.services import memory_runtime, memory_service
+
+    assert memory_runtime.capture_turn is memory_service.capture_turn
+    assert memory_runtime.retrieve_for_prompt is memory_service.retrieve_for_prompt
+    assert memory_runtime.render_prompt_context is memory_service.render_prompt_context
