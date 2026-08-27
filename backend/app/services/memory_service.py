@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import re
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,15 @@ _PREFERENCE_STYLE_TERMS = (
     "展示",
     "称呼",
     "语气",
+)
+_PREFERENCE_PERSONAL_TERMS = (
+    "给我的",
+    "称呼我",
+    "回复我",
+    "回答我",
+    "我喜欢",
+    "我不喜欢",
+    "我偏好",
 )
 _MAX_PREFERENCE_HITS = 2
 
@@ -107,17 +116,18 @@ def capture_turn(
             lifecycle="active",
         )
         db.add(entry)
+        if preference_content and employee.type == "twin":
+            db.add(
+                _new_preference_entry(
+                    owner_employee_no=owner_employee_no,
+                    content=preference_content,
+                    source_ref=f"{source_ref}:preference",
+                    source_type=source_type or "chat",
+                    source_session_id=source_session_id,
+                )
+            )
         db.commit()
         db.refresh(entry)
-        if preference_content:
-            capture_preference(
-                db,
-                owner_employee_no=owner_employee_no,
-                content=preference_content,
-                source_ref=f"{source_ref}:preference",
-                source_type=source_type or "chat",
-                source_session_id=source_session_id,
-            )
         return entry.id
     except SQLAlchemyError:
         db.rollback()
@@ -149,20 +159,29 @@ def retrieve_for_prompt(
         return []
 
     try:
-        candidates = list(
+        preference_candidates = list(
             db.scalars(
                 select(models.MemoryEntry)
                 .where(
                     models.MemoryEntry.subject_no == owner_employee_no,
                     models.MemoryEntry.lifecycle == "active",
-                    or_(
-                        and_(
-                            models.MemoryEntry.source_type.in_(_CHAT_MEMORY_SOURCES),
-                            models.MemoryEntry.source_session_id.is_not(None),
-                            models.MemoryEntry.source_session_id != current_session_id,
-                        ),
-                        models.MemoryEntry.kind == "preference",
-                    ),
+                    models.MemoryEntry.subject_type == "twin",
+                    models.MemoryEntry.kind == "preference",
+                )
+                .order_by(models.MemoryEntry.created_at.desc())
+                .limit(_MAX_PREFERENCE_HITS)
+            )
+        )
+        conversation_candidates = list(
+            db.scalars(
+                select(models.MemoryEntry)
+                .where(
+                    models.MemoryEntry.subject_no == owner_employee_no,
+                    models.MemoryEntry.lifecycle == "active",
+                    models.MemoryEntry.source_type.in_(_CHAT_MEMORY_SOURCES),
+                    models.MemoryEntry.source_session_id.is_not(None),
+                    models.MemoryEntry.source_session_id != current_session_id,
+                    models.MemoryEntry.kind != "preference",
                 )
                 .order_by(models.MemoryEntry.created_at.desc())
                 .limit(100)
@@ -172,6 +191,7 @@ def retrieve_for_prompt(
         db.rollback()
         return []
 
+    candidates = preference_candidates + conversation_candidates
     scored = [
         MemoryHit(
             memory_id=entry.id,
@@ -290,18 +310,12 @@ def capture_preference(
         if employee is None or employee.type != "twin":
             return None
 
-        entry = models.MemoryEntry(
-            subject_type="twin",
-            subject_no=owner_employee_no,
-            kind="preference",
-            content=content[:300],
-            content_type="text",
-            source_type=source_type or "manual",
-            source_session_id=source_session_id or None,
+        entry = _new_preference_entry(
+            owner_employee_no=owner_employee_no,
+            content=content,
             source_ref=source_ref,
-            visibility="personal",
-            data_level="L2",
-            lifecycle="active",
+            source_type=source_type,
+            source_session_id=source_session_id,
         )
         db.add(entry)
         db.commit()
@@ -328,9 +342,34 @@ def _extract_explicit_preference(user_text: str) -> str | None:
         return None
     if not any(term in content for term in _PREFERENCE_INTENT_TERMS):
         return None
+    if not any(term in content for term in _PREFERENCE_PERSONAL_TERMS):
+        return None
     if not any(term in content for term in _PREFERENCE_STYLE_TERMS):
         return None
     return content
+
+
+def _new_preference_entry(
+    *,
+    owner_employee_no: str,
+    content: str,
+    source_ref: str,
+    source_type: str,
+    source_session_id: str | None,
+) -> models.MemoryEntry:
+    return models.MemoryEntry(
+        subject_type="twin",
+        subject_no=owner_employee_no,
+        kind="preference",
+        content=content[:300],
+        content_type="text",
+        source_type=source_type or "manual",
+        source_session_id=source_session_id or None,
+        source_ref=source_ref,
+        visibility="personal",
+        data_level="L2",
+        lifecycle="active",
+    )
 
 
 def _tokenize(text: str) -> set[str]:

@@ -204,24 +204,34 @@ def test_upload_attachment(client):
 # ---- Step 8：用户画像 ----
 
 
-def test_generate_profile(client):
-    """生成用户画像：从记忆提炼画像，存 kind=profile。"""
-    # 先写几条记忆
+def test_profile_generation_endpoint_is_disabled_for_local_only_mvp(client):
+    """v4 不允许把整段记忆交给云端模型自动推断画像。"""
+    # 写入记忆后，旧入口仍不得读取并上传它们生成画像。
     client.post("/api/v1/memory", json={"subject_type": "human", "subject_no": "E10021", "kind": "fact", "content": "偏好周五下午开会"})
     client.post("/api/v1/memory", json={"subject_type": "human", "subject_no": "E10021", "kind": "fact", "content": "沟通风格简洁直接"})
 
-    # 生成画像
     resp = client.post("/api/v1/memory/profile/E10021")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["kind"] == "profile"
-    assert body["subject_no"] == "E10021"
-    assert body["content"]  # 画像内容非空
+    assert resp.status_code == 409
+    assert "本地偏好" in resp.json()["error"]["message"]
 
-    # 能查到画像
     profiles = client.get("/api/v1/memory", params={"kind": "profile"}).json()
-    assert len(profiles) == 1
-    assert profiles[0]["subject_no"] == "E10021"
+    assert profiles == []
+
+
+def test_memory_api_rejects_preference_for_virtual_employee(client):
+    """最小用户画像只能归属 twin，不能由通用接口写给下游 virtual 员工。"""
+    response = client.post(
+        "/api/v1/memory",
+        json={
+            "subject_type": "virtual",
+            "subject_no": "VE-0001",
+            "kind": "preference",
+            "content": "以后回答都用表格。",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "twin" in response.json()["error"]["message"]
 
 
 # ---- Step 9：MemoryAdapter（统一记忆访问接口） ----

@@ -5,7 +5,7 @@
 - GET  /memory        查询记忆（支持按主体/类型/对方/可见性/等级 多条件过滤，时间倒序）
 """
 
-from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,7 +14,6 @@ from ..database import get_db
 from ..services.memory_attachment import save_attachment
 from ..services.memory_compress import compress_expired_sessions
 from ..services.memory_permission import can_read_memory
-from ..services.memory_profile import generate_profile
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -22,6 +21,10 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 @router.post("", response_model=schemas.MemoryOut, status_code=201)
 def add_memory(payload: schemas.MemoryCreate, db: Session = Depends(get_db)):
     """写入一条记忆：主体是谁、类型是什么、内容、可见性、等级、生命周期等。"""
+    if payload.kind == "preference":
+        employee = db.get(models.DigitalEmployee, payload.subject_no)
+        if payload.subject_type != "twin" or employee is None or employee.type != "twin":
+            raise HTTPException(status_code=422, detail="preference 只能归属实际类型为 twin 的数字员工")
     mem = models.MemoryEntry(**payload.model_dump())
     db.add(mem)
     db.commit()
@@ -36,10 +39,13 @@ def summarize(db: Session = Depends(get_db)):
     return {"summarized": count}
 
 
-@router.post("/profile/{subject_no}", response_model=schemas.MemoryOut)
-def profile(subject_no: str, db: Session = Depends(get_db)):
-    """生成/刷新某用户的画像（Step 8），返回画像记忆。"""
-    return generate_profile(db, subject_no=subject_no)
+@router.post("/profile/{subject_no}")
+def profile(subject_no: str):
+    """v4 不提供从完整记忆自动推断画像的能力。"""
+    raise HTTPException(
+        status_code=409,
+        detail="v4 仅保存用户明确表达的本地偏好，不自动生成画像",
+    )
 
 
 @router.post("/attachments", response_model=schemas.MemoryOut, status_code=201)

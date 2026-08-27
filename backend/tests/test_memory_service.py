@@ -1,6 +1,6 @@
 """本地聊天记忆服务的接口契约测试。"""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def test_memory_service_contract_is_importable():
@@ -426,3 +426,108 @@ def test_render_prompt_context_labels_preference_as_user_profile():
     )
 
     assert "[用户画像] 以后回答时请保持简洁，优先使用表格。" in context
+
+
+def test_retrieve_for_prompt_keeps_old_preference_when_recent_conversations_exceed_scan_limit(db_session):
+    """长期画像不能被超过候选上限的新聊天记录挤出。"""
+    from app import models
+    from app.services.memory_service import retrieve_for_prompt
+
+    preference = models.MemoryEntry(
+        subject_type="twin",
+        subject_no="DT-E10281",
+        kind="preference",
+        content="以后给我的项目进度都用简短表格展示。",
+        source_ref="manual:DT-E10281:preference:old",
+        created_at=datetime(2026, 1, 1),
+    )
+    db_session.add(preference)
+    db_session.add_all(
+        [
+            models.MemoryEntry(
+                subject_type="twin",
+                subject_no="DT-E10281",
+                kind="conversation",
+                content=f"用户：历史消息 {index}\\n数字员工：已记录。",
+                source_type="chat",
+                source_session_id=f"S-OLD-{index}",
+                source_ref=f"chat:S-OLD-{index}:assistant:2",
+                created_at=datetime(2026, 8, 1) + timedelta(minutes=index),
+            )
+            for index in range(101)
+        ]
+    )
+    db_session.commit()
+
+    hits = retrieve_for_prompt(
+        db_session,
+        owner_employee_no="DT-E10281",
+        query="今天上海天气如何？",
+        current_session_id="S-NOW",
+    )
+
+    assert any(hit.memory_id == preference.id and hit.kind == "preference" for hit in hits)
+
+
+def test_capture_turn_does_not_treat_customer_work_instruction_as_user_preference(db_session):
+    """面向客户的业务格式要求不等于用户自己的长期沟通偏好。"""
+    from sqlalchemy import select
+
+    from app import models
+    from app.services.memory_service import capture_turn
+
+    source_ref = "chat:S-CUSTOMER:assistant:2"
+    assert capture_turn(
+        db_session,
+        owner_employee_no="DT-E10281",
+        source_type="chat",
+        source_session_id="S-CUSTOMER",
+        source_ref=source_ref,
+        user_text="以后给我回复客户时，按合同格式展示报价。",
+        assistant_text="好的，我会按合同格式准备报价回复。",
+    ) is not None
+
+    preference = db_session.scalar(
+        select(models.MemoryEntry).where(
+            models.MemoryEntry.source_ref == f"{source_ref}:preference"
+        )
+    )
+    assert preference is None
+
+
+def test_capture_turn_rolls_back_conversation_when_its_preference_write_fails(db_session):
+    """自动偏好写入失败时，不能留下半成功的一轮记忆。"""
+    from sqlalchemy import event, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app import models
+    from app.services.memory_service import capture_turn
+
+    source_ref = "chat:S-ATOMIC:assistant:2"
+
+    def reject_preference(session, _flush_context, _instances):
+        if any(
+            isinstance(entry, models.MemoryEntry)
+            and entry.source_ref == f"{source_ref}:preference"
+            for entry in session.new
+        ):
+            raise SQLAlchemyError("simulate preference persistence failure")
+
+    event.listen(db_session, "before_flush", reject_preference)
+    try:
+        assert capture_turn(
+            db_session,
+            owner_employee_no="DT-E10281",
+            source_type="chat",
+            source_session_id="S-ATOMIC",
+            source_ref=source_ref,
+            user_text="以后给我的项目进度都用简短表格展示。",
+            assistant_text="好的，后续会优先使用简短表格。",
+        ) is None
+    finally:
+        event.remove(db_session, "before_flush", reject_preference)
+
+    conversation = db_session.scalar(
+        select(models.MemoryEntry).where(models.MemoryEntry.source_ref == source_ref)
+    )
+    assert conversation is None
