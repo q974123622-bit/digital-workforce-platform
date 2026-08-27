@@ -1,7 +1,9 @@
+import pytest
 from sqlalchemy import select
 
 from app import models
 from app.services.capability_contract import plugin_contract
+from app.services.capability_executor import execute_capability
 from app.services.identity import resolve_identity
 from app.services.memory_service import capture_turn, retrieve_for_prompt
 from app.services.policy import DECISION_ALLOW, DECISION_DENY, ResourceRef, evaluate
@@ -44,6 +46,70 @@ def test_memory_plugin_contract_rejects_an_unknown_endpoint(db_session):
 
     assert contract.ready is False
     assert any("endpoint" in issue for issue in contract.issues or [])
+
+
+def test_memory_plugin_contract_cannot_be_reconfigured_as_a_general_tool(db_session):
+    plugin = models.Plugin(
+        id="agent-memory-invalid-meta",
+        name="被覆盖的记忆测试",
+        type="memory",
+        endpoint_ref="memory://agent-local",
+        data_level="L2",
+        status="active",
+        runtime_meta={
+            "actions": ["write"],
+            "executor": {"primary": "harness", "tool": "http", "fallback": "demo_adapter"},
+        },
+    )
+
+    contract = plugin_contract(plugin)
+
+    assert contract.ready is False
+    assert any("memory" in issue for issue in contract.issues or [])
+
+
+def test_l3_memory_search_requires_a_search_whitelist(db_session):
+    subject = resolve_identity(db_session, "VE-0003")
+    assert subject is not None
+    resource = ResourceRef(type="memory", id="agent-memory-l3", data_level="L3")
+
+    db_session.add(
+        models.EmployeePluginGrant(
+            employee_id="VE-0003",
+            plugin_id="agent-memory-l3",
+            action="search",
+            decision_mode=DECISION_ALLOW,
+            grant_source="seed",
+        )
+    )
+    db_session.flush()
+
+    denied = evaluate(db_session, subject, resource, "search")
+    assert denied.decision == DECISION_DENY
+    assert denied.policy_id == "P-DATA-003"
+
+    db_session.add(
+        models.EmployeePluginGrant(
+            employee_id="VE-0003",
+            plugin_id="agent-memory-l3",
+            action="search",
+            decision_mode=DECISION_ALLOW,
+            grant_source="whitelist",
+        )
+    )
+    db_session.flush()
+
+    allowed = evaluate(db_session, subject, resource, "search")
+    assert allowed.decision == DECISION_ALLOW
+    assert allowed.policy_id == "P-DATA-003"
+
+
+def test_generic_capability_executor_cannot_bypass_memory_gateway(db_session):
+    plugin = db_session.get(models.Plugin, "agent-memory")
+    assert plugin is not None
+
+    with pytest.raises(RuntimeError, match="Gateway"):
+        execute_capability(plugin, {"query": "张三"}, trace_id="trace-r2-memory", context=None)
 
 
 def test_memory_is_a_policy_resource_and_grant_controls_access(db_session):

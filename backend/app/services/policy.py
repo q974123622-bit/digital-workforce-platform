@@ -130,13 +130,17 @@ def evaluate(
 ) -> EvaluationResult:
     """四维评估：subject / resource / action / environment（environment 取自 subject 绑定配置）。"""
     # L3 读取使用显式白名单，且只认访问审批链写入的 whitelist grant。
+    # memory.search 与 knowledge.read 一样会把敏感内容带入后续处理，
+    # 因此也必须走同一条白名单链路。
     # L3 执行类动作继续由 POLICY-005 控制，白名单不得绕过人工审批。
-    if resource.data_level == "L3" and action == "read":
+    is_l3_read = action == "read" or (resource.type == "memory" and action == "search")
+    if resource.data_level == "L3" and is_l3_read:
+        whitelist_action = "search" if resource.type == "memory" else "read"
         whitelist = db.scalar(
             select(models.EmployeePluginGrant).where(
                 models.EmployeePluginGrant.employee_id == subject.employee_id,
                 models.EmployeePluginGrant.plugin_id == resource.id,
-                models.EmployeePluginGrant.action == "read",
+                models.EmployeePluginGrant.action == whitelist_action,
                 models.EmployeePluginGrant.decision_mode == DECISION_ALLOW,
                 models.EmployeePluginGrant.grant_source == "whitelist",
             )
