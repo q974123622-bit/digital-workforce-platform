@@ -10,8 +10,10 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from app.services import config
+from app.services.session import get_or_create
 from tests.memory_contract_stub import MemoryContractStub
 
 
@@ -90,3 +92,14 @@ def test_memory_config_bounds(monkeypatch):
     monkeypatch.setenv("DWP_MEMORY_MAX_CHARS", "4000")
     assert config.memory_max_items() == 10
     assert config.memory_max_chars() == 4000
+
+
+# ---- Task 4: session_owner ----
+
+
+def test_session_owner_mismatch_rejected(db_session):
+    session, created = get_or_create(db_session, None, "VE-0001")
+    assert created is True
+    with pytest.raises(HTTPException) as exc:
+        get_or_create(db_session, session.session_id, "VE-0002")
+    assert exc.value.status_code == 409

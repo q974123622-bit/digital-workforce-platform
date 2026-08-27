@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,8 @@ def get_or_create(db: Session, session_id: str | None, employee_id: str) -> tupl
     if session_id:
         session = db.scalar(select(models.ChatSession).where(models.ChatSession.session_id == session_id))
         if session is not None:
+            if session.employee_id != employee_id:
+                raise HTTPException(status_code=409, detail="会话归属数字员工不一致")
             return session, False
     session = models.ChatSession(session_id=session_id or new_session_id(), employee_id=employee_id, trace_id=f"T-{uuid4().hex[:12]}")
     db.add(session)
