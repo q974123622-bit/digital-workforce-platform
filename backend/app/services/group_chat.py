@@ -28,6 +28,7 @@ from .chat import ChatOrchestrator
 from .gateway import write_audit
 from .identity import resolve_identity
 from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
+from .memory_runtime import capture_turn_safely
 from .team_orchestrator import TeamTaskOrchestrator, extract_employee_name
 from .runtime_adapter import DockerHarnessRuntimeAdapter, NoopRuntimeAdapter
 
@@ -228,6 +229,17 @@ def member_replies(
                     seq=_next_seq(db, conversation.id),
                     tool_cards=cards,
                 )
+            )
+            # 成功落库后沉淀本轮问答记忆；owner 必须是实际回答的数字员工
+            capture_turn_safely(
+                db,
+                owner_employee_no=employee_no,
+                source_type="conversation",
+                source_session_id=conversation.id,
+                source_ref=f"conversation:{conversation.id}:assistant:{appended[-1].seq}",
+                user_text=content,
+                assistant_text=result.message,
+                trace_id=f"T-GRP-{conversation.id}-{employee_no}",
             )
         except LLMUnavailableError:
             failed += 1
