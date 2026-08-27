@@ -341,3 +341,141 @@ def test_memory_direct_recall_disabled_no_injection(db_session, monkeypatch):
     user_payload = fake.calls[0][-1]["content"]
     assert user_payload == "上次张三的账号处理好了吗？"
     assert "【本地相关记忆】" not in user_payload
+
+
+# ---- Task 6: direct_capture ----
+
+
+def test_memory_direct_capture_after_successful_reply(db_session):
+    from sqlalchemy import select
+
+    from app import models
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+
+    fake = _FakeLLM([LLMResponse(content="HR 材料已完成，IT 账号仍待开通。")])
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="张三的账号处理好了吗？",
+        session_id=None,
+    )
+
+    assistant_msg = db_session.scalar(
+        select(models.ChatMessage).where(
+            models.ChatMessage.session_id == result.session_id,
+            models.ChatMessage.role == "assistant",
+        )
+    )
+    entries = list(
+        db_session.scalars(
+            select(models.MemoryEntry).where(
+                models.MemoryEntry.subject_no == "VE-0001",
+                models.MemoryEntry.kind == "conversation",
+            )
+        )
+    )
+    assert len(entries) == 1
+    assert entries[0].source_type == "chat"
+    assert entries[0].source_session_id == result.session_id
+    assert entries[0].source_ref == f"chat:{result.session_id}:assistant:{assistant_msg.id}"
+    assert "张三的账号处理好了吗？" in entries[0].content
+    assert "HR 材料已完成，IT 账号仍待开通。" in entries[0].content
+
+
+def test_memory_direct_capture_skipped_on_llm_failure(db_session, monkeypatch):
+    from sqlalchemy import select
+
+    from app import models
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMUnavailableError
+
+    def boom(messages, tools=None):
+        raise LLMUnavailableError("模拟不可用")
+
+    fake = _FakeLLM([])
+    monkeypatch.setattr(fake, "chat", boom)
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="张三的账号处理好了吗？",
+        session_id=None,
+    )
+    assert "LLM 暂不可用" in result.message
+    entries = list(
+        db_session.scalars(
+            select(models.MemoryEntry).where(models.MemoryEntry.kind == "conversation")
+        )
+    )
+    assert entries == []
+
+
+def test_memory_direct_capture_once_after_tool_multi_round(db_session):
+    from sqlalchemy import select
+
+    from app import models
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse, ToolCall
+
+    fake = _FakeLLM(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="tc-1",
+                        name="search_knowledge",
+                        arguments={"knowledge_base_id": "KB-ONBOARD", "query": "第一天做什么"},
+                    )
+                ],
+            ),
+            LLMResponse(content="第一天先到 HR 报到，签署合同。"),
+        ]
+    )
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="新员工第一天要做什么？",
+        session_id=None,
+    )
+    assert "报到" in result.message
+    entries = list(
+        db_session.scalars(
+            select(models.MemoryEntry).where(models.MemoryEntry.kind == "conversation")
+        )
+    )
+    assert len(entries) == 1
+
+
+def test_memory_direct_capture_idempotent_on_same_source_ref(db_session):
+    from sqlalchemy import select
+
+    from app import models
+    from app.services import memory_runtime
+
+    ref = "chat:S-1:assistant:2"
+    first = memory_runtime.capture_turn_safely(
+        db_session,
+        owner_employee_no="VE-0001",
+        source_type="chat",
+        source_session_id="S-1",
+        source_ref=ref,
+        user_text="q",
+        assistant_text="a",
+        trace_id="T",
+    )
+    second = memory_runtime.capture_turn_safely(
+        db_session,
+        owner_employee_no="VE-0001",
+        source_type="chat",
+        source_session_id="S-1",
+        source_ref=ref,
+        user_text="q",
+        assistant_text="a",
+        trace_id="T",
+    )
+    assert first == second
+    entries = list(
+        db_session.scalars(select(models.MemoryEntry).where(models.MemoryEntry.source_ref == ref))
+    )
+    assert len(entries) == 1

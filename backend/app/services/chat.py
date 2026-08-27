@@ -21,7 +21,7 @@ from .identity import resolve_identity
 from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
 from .knowledge_registry import accessible_knowledge_bases
 from .llm import LLMProvider, LLMUnavailableError
-from .memory_runtime import prepare_memory_context
+from .memory_runtime import capture_turn_safely, prepare_memory_context
 from .session import add_message, get_or_create, history
 
 MAX_TOOL_ROUNDS = 3
@@ -165,13 +165,25 @@ class ChatOrchestrator:
                         # 兜底轮后仍未调用工具：不得凭记忆作答，返回明确无权限/无法确认文案
                         final_text = SAFE_NO_TOOL_FALLBACK
                     if persist:
-                        add_message(
+                        assistant_msg = add_message(
                             db,
                             session_id=active_session_id,
                             role="assistant",
                             content=final_text,
                             tool_cards=[self._card_dict(c) for c in tool_cards],
                         )
+                        if final_text:
+                            # 只在正常最终回答落库后沉淀记忆；空回答/降级路径不写
+                            capture_turn_safely(
+                                db,
+                                owner_employee_no=subject.employee_id,
+                                source_type="chat",
+                                source_session_id=active_session_id,
+                                source_ref=f"chat:{active_session_id}:assistant:{assistant_msg.id}",
+                                user_text=message,
+                                assistant_text=final_text,
+                                trace_id=active_trace_id,
+                            )
                     return ChatResult(
                         session_id=active_session_id,
                         trace_id=active_trace_id,
