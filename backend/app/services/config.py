@@ -48,6 +48,11 @@ AGENTTEAMS_WORKER_MODEL = "AGENTTEAMS_WORKER_MODEL"
 AGENTTEAMS_WORKER_RUNTIME = "AGENTTEAMS_WORKER_RUNTIME"
 TEAM_BACKEND = "DWP_TEAM_BACKEND"  # auto | builtin（默认 auto）
 
+# 本地记忆（工作线 B 运行配置；检索算法与表结构由工作线 A 负责）
+MEMORY_ENABLED = "DWP_MEMORY_ENABLED"
+MEMORY_MAX_ITEMS = "DWP_MEMORY_MAX_ITEMS"
+MEMORY_MAX_CHARS = "DWP_MEMORY_MAX_CHARS"
+
 
 def team_backend_mode() -> str:
     """团队协作后端：auto（AgentTeams 优先，失败降级内置）或 builtin。"""
@@ -122,3 +127,35 @@ def embedding_dimensions() -> int:
         return int(os.environ.get(EMBED_DIMENSIONS) or "1024")
     except (TypeError, ValueError):
         return 1024
+
+
+def _bounded_int(name: str, default: int, low: int, high: int) -> int:
+    """读取整数环境变量；非法值或超出 [low, high] 一律回退默认值。"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if not (low <= value <= high):
+        return default
+    return value
+
+
+def memory_enabled() -> bool:
+    """本地记忆自动检索/写入总开关；仅显式 0/false/no/off 视为关闭，默认开启。"""
+    raw = os.environ.get(MEMORY_ENABLED)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def memory_max_items() -> int:
+    """记忆注入条数上限：1～10，非法值回退默认 3。"""
+    return _bounded_int(MEMORY_MAX_ITEMS, default=3, low=1, high=10)
+
+
+def memory_max_chars() -> int:
+    """记忆上下文字符预算：200～4000，非法值回退默认 1200。"""
+    return _bounded_int(MEMORY_MAX_CHARS, default=1200, low=200, high=4000)

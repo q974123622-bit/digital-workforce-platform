@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services import config
 from tests.memory_contract_stub import MemoryContractStub
 
 
@@ -52,3 +53,40 @@ def test_contract_stub_write_failure_raises():
     stub = MemoryContractStub(fail_write=True)
     with pytest.raises(RuntimeError):
         stub.capture_turn()
+
+
+# ---- Task 2: memory_config ----
+
+
+def test_memory_config_defaults(monkeypatch):
+    for k in ("DWP_MEMORY_ENABLED", "DWP_MEMORY_MAX_ITEMS", "DWP_MEMORY_MAX_CHARS"):
+        monkeypatch.delenv(k, raising=False)
+    assert config.memory_enabled() is True
+    assert config.memory_max_items() == 3
+    assert config.memory_max_chars() == 1200
+
+
+def test_memory_config_disabled(monkeypatch):
+    monkeypatch.setenv("DWP_MEMORY_ENABLED", "0")
+    assert config.memory_enabled() is False
+
+
+def test_memory_config_invalid_falls_back(monkeypatch):
+    monkeypatch.setenv("DWP_MEMORY_MAX_ITEMS", "abc")
+    monkeypatch.setenv("DWP_MEMORY_MAX_CHARS", "not-a-number")
+    assert config.memory_max_items() == 3
+    assert config.memory_max_chars() == 1200
+
+
+def test_memory_config_negative_falls_back(monkeypatch):
+    monkeypatch.setenv("DWP_MEMORY_MAX_ITEMS", "-1")
+    monkeypatch.setenv("DWP_MEMORY_MAX_CHARS", "-5")
+    assert config.memory_max_items() == 3
+    assert config.memory_max_chars() == 1200
+
+
+def test_memory_config_bounds(monkeypatch):
+    monkeypatch.setenv("DWP_MEMORY_MAX_ITEMS", "10")
+    monkeypatch.setenv("DWP_MEMORY_MAX_CHARS", "4000")
+    assert config.memory_max_items() == 10
+    assert config.memory_max_chars() == 4000
