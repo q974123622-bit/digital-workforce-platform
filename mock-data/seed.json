@@ -31,7 +31,7 @@
       "runtime_type": "demo",
       "location": "remote",
       "internet": "deny",
-      "max_data_level": "L1",
+      "max_data_level": "L2",
       "allowed_domains": ["PUB"]
     },
     {

@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import select
 
 from app import models
+from app.services import policy
 from app.services.capability_contract import plugin_contract
 from app.services.capability_executor import execute_capability
 from app.services.identity import resolve_identity
@@ -153,6 +154,23 @@ def test_memory_is_a_policy_resource_and_grant_controls_access(db_session):
     assert allowed.decision == DECISION_ALLOW
 
 
+def test_can_use_memory_tool_allows_an_authorized_l2_employee(db_session):
+    assert policy.can_use_memory_tool(db_session, "DT-E10281") is True
+
+
+def test_can_use_memory_tool_rejects_a_granted_employee_below_plugin_data_level(db_session):
+    employee = db_session.get(models.DigitalEmployee, "DT-E10281")
+    assert employee is not None
+    employee.max_data_level = "L1"
+    db_session.flush()
+
+    assert policy.can_use_memory_tool(db_session, "DT-E10281") is False
+
+
+def test_can_use_memory_tool_rejects_an_unknown_employee(db_session):
+    assert policy.can_use_memory_tool(db_session, "UNKNOWN") is False
+
+
 def test_agent_memory_seed_uses_l2_and_grants_demo_employees(db_session):
     plugin = db_session.get(models.Plugin, "agent-memory")
 
@@ -169,6 +187,11 @@ def test_agent_memory_seed_uses_l2_and_grants_demo_employees(db_session):
         )
     ).all()
     assert {grant.employee_id for grant in grants} >= {"DT-E10281", "DT-E20999", "VE-0001", "VE-0002"}
+
+    intern_twin = db_session.get(models.DigitalEmployee, "DT-E20999")
+    assert intern_twin is not None
+    assert intern_twin.max_data_level == "L2"
+    assert policy.can_use_memory_tool(db_session, "DT-E20999") is True
 
 
 def test_retrieved_memory_exposes_the_real_data_level(db_session):
