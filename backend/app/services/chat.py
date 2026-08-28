@@ -8,6 +8,7 @@
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -16,16 +17,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
-from .gateway import search_knowledge
+from . import config
+from .gateway import search_knowledge, search_memory
 from .identity import resolve_identity
 from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
 from .knowledge_registry import accessible_knowledge_bases
 from .llm import LLMProvider, LLMUnavailableError
 from .memory_runtime import capture_turn_safely, prepare_memory_context
+from .policy import can_use_memory_tool
 from .session import add_message, get_or_create, history
 
 MAX_TOOL_ROUNDS = 3
 MAX_SKILL_CHARS = 4000
+# 记忆工具治理（Round 2 B2）：每轮最多执行 2 次记忆检索；规范化 query 去重
+MAX_MEMORY_TOOL_CALLS_PER_TURN = 2
 
 # 聊天守卫（P21）：命中查询意图但未调用工具时的兜底轮与安全文案
 QUERY_INTENT_KEYWORDS = ("查询", "知识库", "制度", "流程", "业务", "部门", "帮我查", "有没有")
@@ -60,6 +65,36 @@ TOOLS = [
         },
     }
 ]
+
+# search_memory 工具（Round 2 B2）：是否暴露给模型由配置 + can_use_memory_tool 决定
+SEARCH_MEMORY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_memory",
+        "description": "按需二次检索当前数字员工自己的历史记忆（自动检索之外的补充，仅当自动检索信息不足时使用；调用前会经过策略授权）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索关键词/问题"},
+                "limit": {"type": "integer", "description": "返回条数上限（1-10，默认 3）"},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+@dataclass
+class _MemoryToolRunState:
+    """单轮（一次 handle_message）内的记忆工具治理状态：调用次数与规范化 query 去重。"""
+
+    calls: int = 0
+    seen_queries: set[str] = field(default_factory=set)
+
+
+def _normalize_query(query: str) -> str:
+    """规范化 query：去空白、统一大小写，用于同轮去重。"""
+    return re.sub(r"\s+", " ", query.strip().lower())
 
 
 @dataclass
@@ -150,10 +185,13 @@ class ChatOrchestrator:
         policy_denied: ToolCard | None = None
         guard_retried = False
         needs_guard = self._is_query_intent(message)
+        # 每轮记忆工具治理（调用次数 + 规范化 query 去重）与动态工具列表
+        memory_run_state = _MemoryToolRunState()
+        tools = self._build_tools(db, subject)
 
         try:
             for _round in range(MAX_TOOL_ROUNDS):
-                resp = self.provider.chat(messages, tools=TOOLS)
+                resp = self.provider.chat(messages, tools=tools)
                 if not resp.tool_calls:
                     if needs_guard and not tool_cards and not guard_retried:
                         # 未调工具兜底轮：提示模型必须检索知识库后再回答（最多 1 次）
@@ -207,7 +245,15 @@ class ChatOrchestrator:
                 }
                 messages.append(assistant_msg)
                 for tc in resp.tool_calls:
-                    card, tool_message = self._execute_tool(db, subject, tc.arguments, active_trace_id)
+                    card, tool_message = self._execute_tool(
+                        db,
+                        subject,
+                        tc.name,
+                        tc.arguments,
+                        active_trace_id,
+                        session_id=active_session_id,
+                        memory_run_state=memory_run_state,
+                    )
                     tool_cards.append(card)
                     if card.decision == "deny" and policy_denied is None:
                         policy_denied = card
@@ -276,7 +322,41 @@ class ChatOrchestrator:
         """命中查询/知识库/制度/流程/业务/部门/帮我查/有没有 等关键词即视为查询意图。"""
         return any(keyword in message for keyword in QUERY_INTENT_KEYWORDS)
 
-    def _execute_tool(self, db: Session, subject, arguments: dict, trace_id: str) -> tuple[ToolCard, str]:
+    def _build_tools(self, db: Session, subject) -> list[dict]:
+        """组装模型工具列表：search_knowledge 始终提供；search_memory 按配置 + 授权动态暴露。"""
+        tools: list[dict] = list(TOOLS)
+        if (
+            config.memory_enabled()
+            and config.memory_tool_enabled()
+            and can_use_memory_tool(db, subject.employee_id)
+        ):
+            tools.append(SEARCH_MEMORY_TOOL)
+        return tools
+
+    def _execute_tool(
+        self,
+        db: Session,
+        subject,
+        name: str,
+        arguments: dict,
+        trace_id: str,
+        *,
+        session_id: str | None = None,
+        memory_run_state: _MemoryToolRunState | None = None,
+    ) -> tuple[ToolCard, str]:
+        """按工具名分发；工具调用一律经 gateway（含 Policy 评估与审计）。"""
+        if name == "search_memory":
+            return self._execute_memory_tool(
+                db,
+                subject,
+                arguments,
+                trace_id,
+                session_id=session_id,
+                run_state=memory_run_state or _MemoryToolRunState(),
+            )
+        return self._execute_knowledge_tool(db, subject, arguments, trace_id)
+
+    def _execute_knowledge_tool(self, db: Session, subject, arguments: dict, trace_id: str) -> tuple[ToolCard, str]:
         kb_id = str(arguments.get("knowledge_base_id", ""))
         query = str(arguments.get("query", ""))
         try:
@@ -306,6 +386,76 @@ class ChatOrchestrator:
                 )
                 return card, "POLICY_DENIED（source=demo）：当前身份无权访问该知识库，请如实告知用户。"
             raise
+
+    def _execute_memory_tool(
+        self,
+        db: Session,
+        subject,
+        arguments: dict,
+        trace_id: str,
+        *,
+        session_id: str | None,
+        run_state: _MemoryToolRunState,
+    ) -> tuple[ToolCard, str]:
+        """search_memory 分发：参数预检 → 次数/去重治理 → Gateway（owner/会话服务端注入）。
+
+        结果按五态语义转成模型可见文案（§4.8）；current_session_id 由编排层注入，
+        模型参数里不存在 owner/会话字段。
+        """
+        card = ToolCard(plugin_id="agent-memory", name="search_memory", decision="allow")
+        query = arguments.get("query")
+        limit = arguments.get("limit", 3)
+
+        if not isinstance(query, str) or not query.strip():
+            card.decision = "parameter_error"
+            card.reason = "query_required"
+            return card, "本次记忆检索参数无效，请基于当前会话回答"
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            card.decision = "parameter_error"
+            card.reason = "limit_invalid"
+            return card, "本次记忆检索参数无效，请基于当前会话回答"
+
+        if run_state.calls >= MAX_MEMORY_TOOL_CALLS_PER_TURN:
+            card.decision = "limit"
+            card.reason = "call_limit"
+            return card, "本轮记忆检索次数已达上限，请基于现有信息回答"
+        normalized = _normalize_query(query)
+        if normalized in run_state.seen_queries:
+            card.decision = "duplicate_query"
+            card.reason = "duplicate_query"
+            return card, "该关键词本轮已检索过，请换关键词或基于现有信息回答"
+
+        run_state.calls += 1
+        run_state.seen_queries.add(normalized)
+
+        try:
+            result = search_memory(
+                db,
+                employee_id=subject.employee_id,
+                query=query,
+                limit=limit,
+                current_session_id=session_id,
+                trace_id=trace_id,
+            )
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                card.decision = "deny"
+                card.policy_id = detail.get("policy_id")
+                card.reason = detail.get("reason")
+                return card, "当前身份无权检索历史记忆"
+            raise
+
+        decision = result.get("decision")
+        if decision == "empty":
+            card.decision = "empty"
+            return card, "没有找到相关记忆"
+        if decision != "allow":
+            card.decision = "error"
+            card.reason = result.get("error")
+            return card, "记忆检索失败，请基于当前会话回答"
+        text = (result.get("data") or {}).get("text") or ""
+        return card, f"工具结果（source=demo）：{text}"
 
     def _system_prompt(self, db: Session, subject) -> str:
         role_label = "正式员工" if subject.employment_type == "formal" else "实习生"
