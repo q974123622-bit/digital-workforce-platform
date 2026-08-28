@@ -227,12 +227,19 @@ def test_search_memory_owner_is_injected_and_isolated(db_session):
 
 
 def test_search_memory_filters_hits_above_subject_max_data_level(db_session):
-    memory_id = _seed_memory(db_session, "DT-E20999", "S-LV-A", "chat:S-LV-A:a:1", "张三的 IT 账号还没有开通")
+    # A3 已把演示员工 DT-E20999 提到 L2；这里显式构造一个 max_data_level=L1 的员工，
+    # 不依赖 seed 值，验证"发送前按员工数据级别过滤"仍生效。
+    employee = db_session.get(models.DigitalEmployee, "DT-E10281")
+    assert employee is not None
+    employee.max_data_level = "L1"
+    db_session.flush()
+
+    memory_id = _seed_memory(db_session, "DT-E10281", "S-LV-A", "chat:S-LV-A:a:1", "张三的 IT 账号还没有开通")
 
     # 直接检索能命中（L2 记忆确实存在），证明下面 gateway 的 empty 是数据级别过滤所致
     direct_hits = retrieve_for_prompt(
         db_session,
-        owner_employee_no="DT-E20999",
+        owner_employee_no="DT-E10281",
         query="张三 IT 账号",
         current_session_id="S-LV-B",
     )
@@ -241,7 +248,7 @@ def test_search_memory_filters_hits_above_subject_max_data_level(db_session):
 
     result = gateway.search_memory(
         db_session,
-        employee_id="DT-E20999",
+        employee_id="DT-E10281",
         query="张三 IT 账号",
         current_session_id="S-LV-B",
         trace_id="T-GW-LV",
