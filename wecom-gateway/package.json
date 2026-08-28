@@ -1,0 +1,18 @@
+{
+  "name": "@digital-workforce/wecom-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "企业微信智能机器人长连接接入服务",
+  "scripts": {
+    "check": "node --check src/index.js && node --check src/platform.js && node --check src/routing.js",
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "dependencies": {
+    "@wecom/aibot-node-sdk": "^1.0.6"
+  }
+}

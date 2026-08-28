@@ -1,6 +1,7 @@
 packages:
   - "frontend"
   - "shared-schema"
+  - "wecom-gateway"
 
 allowBuilds:
   esbuild: true
