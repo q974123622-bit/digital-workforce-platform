@@ -1,0 +1,236 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "id": "relevant_cn_account",
+      "tags": ["relevant", "chinese"],
+      "entries": [
+        {"owner_employee_no": "EVAL-01", "source_ref": "eval-01-account", "source_session_id": "OLD-01", "content": "张三的 HR 材料已完成，IT 账号仍待开通。", "created_at": "2026-08-25T10:00:00"},
+        {"owner_employee_no": "EVAL-01", "source_ref": "eval-01-meeting", "source_session_id": "OLD-02", "content": "周一上午十点召开例会。", "created_at": "2026-08-24T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-01", "query": "张三账号处理好了吗", "current_session_id": "NOW-01", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-01-account"], "must_not_hit": ["eval-01-meeting"], "expect_empty": false, "expected_data_levels": {"eval-01-account": "L2"}}
+    },
+    {
+      "id": "relevant_exact_phrase",
+      "tags": ["relevant", "phrase"],
+      "entries": [
+        {"owner_employee_no": "EVAL-02", "source_ref": "eval-02-onboarding", "source_session_id": "OLD-01", "content": "新员工入职材料已由 HR 审核完成。", "created_at": "2026-08-26T09:00:00"},
+        {"owner_employee_no": "EVAL-02", "source_ref": "eval-02-leave", "source_session_id": "OLD-02", "content": "李四下周计划休假三天。", "created_at": "2026-08-20T09:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-02", "query": "新员工入职材料", "current_session_id": "NOW-02", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-02-onboarding"], "must_not_hit": ["eval-02-leave"], "expect_empty": false, "expected_data_levels": {"eval-02-onboarding": "L2"}}
+    },
+    {
+      "id": "irrelevant_question_returns_empty",
+      "tags": ["irrelevant", "false_positive"],
+      "entries": [
+        {"owner_employee_no": "EVAL-03", "source_ref": "eval-03-account", "source_session_id": "OLD-01", "content": "张三的 IT 账号仍待开通。", "created_at": "2026-08-25T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-03", "query": "今天上海天气如何", "current_session_id": "NOW-03", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": [], "must_not_hit": ["eval-03-account"], "expect_empty": true, "expected_data_levels": {}}
+    },
+    {
+      "id": "current_session_is_excluded",
+      "tags": ["isolation", "current_session"],
+      "entries": [
+        {"owner_employee_no": "EVAL-04", "source_ref": "eval-04-old", "source_session_id": "OLD-01", "content": "张三账号仍待 IT 开通。", "created_at": "2026-08-23T10:00:00"},
+        {"owner_employee_no": "EVAL-04", "source_ref": "eval-04-current", "source_session_id": "NOW-04", "content": "张三账号已经在当前会话中讨论。", "created_at": "2026-08-27T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-04", "query": "张三账号", "current_session_id": "NOW-04", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-04-old"], "must_not_hit": ["eval-04-current"], "expect_empty": false, "expected_data_levels": {"eval-04-old": "L2"}}
+    },
+    {
+      "id": "cross_owner_isolation",
+      "tags": ["isolation", "owner"],
+      "entries": [
+        {"owner_employee_no": "EVAL-05-A", "source_ref": "eval-05-own", "source_session_id": "OLD-01", "content": "王五的报销单已经提交财务。", "created_at": "2026-08-26T10:00:00"},
+        {"owner_employee_no": "EVAL-05-B", "source_ref": "eval-05-other", "source_session_id": "OLD-02", "content": "王五的报销单已被另一个数字员工拒绝。", "created_at": "2026-08-27T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-05-A", "query": "王五报销单", "current_session_id": "NOW-05", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-05-own"], "must_not_hit": ["eval-05-other"], "expect_empty": false, "expected_data_levels": {"eval-05-own": "L2"}}
+    },
+    {
+      "id": "recall_intent_falls_back_to_two_recent_entries",
+      "tags": ["relevant", "recall_fallback"],
+      "entries": [
+        {"owner_employee_no": "EVAL-06", "source_ref": "eval-06-old", "source_session_id": "OLD-01", "content": "历史记录甲。", "created_at": "2026-08-10T10:00:00"},
+        {"owner_employee_no": "EVAL-06", "source_ref": "eval-06-middle", "source_session_id": "OLD-02", "content": "历史记录乙。", "created_at": "2026-08-20T10:00:00"},
+        {"owner_employee_no": "EVAL-06", "source_ref": "eval-06-new", "source_session_id": "OLD-03", "content": "历史记录丙。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-06", "query": "你还记得上次说的内容吗", "current_session_id": "NOW-06", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-06-middle", "eval-06-new"], "must_not_hit": ["eval-06-old"], "expect_empty": false, "expected_data_levels": {"eval-06-middle": "L2", "eval-06-new": "L2"}}
+    },
+    {
+      "id": "english_kpi_terms",
+      "tags": ["relevant", "english"],
+      "entries": [
+        {"owner_employee_no": "EVAL-07", "source_ref": "eval-07-kpi", "source_session_id": "OLD-01", "content": "FY2026 Q3 KPI 已完成 80%。", "created_at": "2026-08-26T10:00:00"},
+        {"owner_employee_no": "EVAL-07", "source_ref": "eval-07-payroll", "source_session_id": "OLD-02", "content": "8 月工资将在月底发放。", "created_at": "2026-08-24T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-07", "query": "FY2026 Q3 KPI", "current_session_id": "NOW-07", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-07-kpi"], "must_not_hit": ["eval-07-payroll"], "expect_empty": false, "expected_data_levels": {"eval-07-kpi": "L2"}}
+    },
+    {
+      "id": "numeric_ticket_terms",
+      "tags": ["relevant", "number"],
+      "entries": [
+        {"owner_employee_no": "EVAL-08", "source_ref": "eval-08-ticket", "source_session_id": "OLD-01", "content": "工单 2026-1234 正在等待 IT 处理。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-08", "query": "2026-1234 工单状态", "current_session_id": "NOW-08", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-08-ticket"], "must_not_hit": [], "expect_empty": false, "expected_data_levels": {"eval-08-ticket": "L2"}}
+    },
+    {
+      "id": "manual_source_is_not_chat_memory",
+      "tags": ["irrelevant", "source_filter"],
+      "entries": [
+        {"owner_employee_no": "EVAL-09", "source_ref": "eval-09-manual", "source_type": "manual", "source_session_id": "OLD-01", "content": "张三账号仍待开通。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-09", "query": "张三账号", "current_session_id": "NOW-09", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": [], "must_not_hit": ["eval-09-manual"], "expect_empty": true, "expected_data_levels": {}}
+    },
+    {
+      "id": "conversation_without_session_is_not_cross_session_memory",
+      "tags": ["irrelevant", "source_filter"],
+      "entries": [
+        {"owner_employee_no": "EVAL-10", "source_ref": "eval-10-no-session", "source_session_id": null, "content": "张三账号仍待开通。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-10", "query": "张三账号", "current_session_id": "NOW-10", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": [], "must_not_hit": ["eval-10-no-session"], "expect_empty": true, "expected_data_levels": {}}
+    },
+    {
+      "id": "summarized_conversation_is_retired",
+      "tags": ["irrelevant", "expired", "lifecycle"],
+      "entries": [
+        {"owner_employee_no": "EVAL-11", "source_ref": "eval-11-retired", "source_session_id": "OLD-01", "content": "旧合同价格为 100 元。", "lifecycle": "summarized", "created_at": "2026-08-01T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-11", "query": "旧合同价格", "current_session_id": "NOW-11", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": [], "must_not_hit": ["eval-11-retired"], "expect_empty": true, "expected_data_levels": {}}
+    },
+    {
+      "id": "active_preference_is_kept_without_keyword_overlap",
+      "tags": ["preference", "relevant"],
+      "entries": [
+        {"owner_employee_no": "EVAL-12", "subject_type": "twin", "kind": "preference", "source_ref": "eval-12-style", "source_session_id": "OLD-01", "content": "以后给我的项目进度都用简短表格展示。", "created_at": "2026-08-25T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-12", "query": "今天上海天气如何", "current_session_id": "NOW-12", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-12-style"], "must_not_hit": [], "expect_empty": false, "expected_data_levels": {"eval-12-style": "L2"}}
+    },
+    {
+      "id": "preference_isolated_to_its_owner",
+      "tags": ["preference", "isolation"],
+      "entries": [
+        {"owner_employee_no": "EVAL-13-OTHER", "subject_type": "twin", "kind": "preference", "source_ref": "eval-13-other-pref", "source_session_id": "OLD-01", "content": "以后回答时请保持简洁。", "created_at": "2026-08-25T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-13-OWNER", "query": "今天上海天气如何", "current_session_id": "NOW-13", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": [], "must_not_hit": ["eval-13-other-pref"], "expect_empty": true, "expected_data_levels": {}}
+    },
+    {
+      "id": "summarized_conflicting_preference_is_not_returned",
+      "tags": ["preference", "conflict", "expired"],
+      "entries": [
+        {"owner_employee_no": "EVAL-14", "subject_type": "twin", "kind": "preference", "source_ref": "eval-14-old-detail", "source_session_id": "OLD-01", "content": "以后回答请尽量详细。", "lifecycle": "summarized", "created_at": "2026-08-01T10:00:00"},
+        {"owner_employee_no": "EVAL-14", "subject_type": "twin", "kind": "preference", "source_ref": "eval-14-new-brief", "source_session_id": "OLD-02", "content": "以后回答请保持简洁。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-14", "query": "今天上海天气如何", "current_session_id": "NOW-14", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-14-new-brief"], "must_not_hit": ["eval-14-old-detail"], "expect_empty": false, "expected_data_levels": {"eval-14-new-brief": "L2"}}
+    },
+    {
+      "id": "retrieval_preserves_each_memory_data_level",
+      "tags": ["data_level", "relevant"],
+      "entries": [
+        {"owner_employee_no": "EVAL-15", "source_ref": "eval-15-l1", "source_session_id": "OLD-01", "content": "客户合同 L1 摘要。", "data_level": "L1", "created_at": "2026-08-25T10:00:00"},
+        {"owner_employee_no": "EVAL-15", "source_ref": "eval-15-l2", "source_session_id": "OLD-02", "content": "客户合同 L2 办理记录。", "data_level": "L2", "created_at": "2026-08-26T10:00:00"},
+        {"owner_employee_no": "EVAL-15", "source_ref": "eval-15-l3", "source_session_id": "OLD-03", "content": "客户合同 L3 敏感附件。", "data_level": "L3", "created_at": "2026-08-27T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-15", "query": "客户合同", "current_session_id": "NOW-15", "limit": 3, "max_chars": 500},
+      "expect": {"must_hit": ["eval-15-l1", "eval-15-l2", "eval-15-l3"], "must_not_hit": [], "expect_empty": false, "expected_data_levels": {"eval-15-l1": "L1", "eval-15-l2": "L2", "eval-15-l3": "L3"}}
+    },
+    {
+      "id": "limit_prefers_the_newer_relevant_memory",
+      "tags": ["relevant", "limit", "freshness"],
+      "entries": [
+        {"owner_employee_no": "EVAL-16", "source_ref": "eval-16-old", "source_session_id": "OLD-01", "content": "李四报销审批仍在等待。", "created_at": "2026-08-10T10:00:00"},
+        {"owner_employee_no": "EVAL-16", "source_ref": "eval-16-new", "source_session_id": "OLD-02", "content": "李四报销审批已经通过。", "created_at": "2026-08-27T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-16", "query": "李四报销审批", "current_session_id": "NOW-16", "limit": 1, "max_chars": 300},
+      "expect": {"must_hit": ["eval-16-new"], "must_not_hit": ["eval-16-old"], "expect_empty": false, "expected_data_levels": {"eval-16-new": "L2"}}
+    },
+    {
+      "id": "retrieval_skips_oversize_hit_under_character_budget",
+      "tags": ["relevant", "budget"],
+      "entries": [
+        {"owner_employee_no": "EVAL-17", "source_ref": "eval-17-oversize", "source_session_id": "OLD-01", "content": "张三账号需要补充身份证复印件、工牌照片、审批记录、工单说明、权限清单、确认邮件、网络配置、设备申请、负责人签字和历史沟通记录。", "created_at": "2026-08-27T10:00:00"},
+        {"owner_employee_no": "EVAL-17", "source_ref": "eval-17-short", "source_session_id": "OLD-02", "content": "张三账号待开通。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-17", "query": "张三账号", "current_session_id": "NOW-17", "limit": 2, "max_chars": 60},
+      "expect": {"must_hit": ["eval-17-short"], "must_not_hit": ["eval-17-oversize"], "expect_empty": false, "expected_data_levels": {"eval-17-short": "L2"}}
+    },
+    {
+      "id": "chinese_bigram_terms",
+      "tags": ["relevant", "chinese"],
+      "entries": [
+        {"owner_employee_no": "EVAL-18", "source_ref": "eval-18-onboarding", "source_session_id": "OLD-01", "content": "入职流程已完成 HR 审核。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-18", "query": "入职流程", "current_session_id": "NOW-18", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-18-onboarding"], "must_not_hit": [], "expect_empty": false, "expected_data_levels": {"eval-18-onboarding": "L2"}}
+    },
+    {
+      "id": "preference_and_relevant_conversation_can_coexist",
+      "tags": ["preference", "relevant"],
+      "entries": [
+        {"owner_employee_no": "EVAL-19", "subject_type": "twin", "kind": "preference", "source_ref": "eval-19-pref", "source_session_id": "OLD-01", "content": "以后给我的进度请用表格展示。", "created_at": "2026-08-25T10:00:00"},
+        {"owner_employee_no": "EVAL-19", "subject_type": "twin", "source_ref": "eval-19-budget", "source_session_id": "OLD-02", "content": "预算审批已提交财务复核。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-19", "query": "预算审批", "current_session_id": "NOW-19", "limit": 2, "max_chars": 400},
+      "expect": {"must_hit": ["eval-19-pref", "eval-19-budget"], "must_not_hit": [], "expect_empty": false, "expected_data_levels": {"eval-19-pref": "L2", "eval-19-budget": "L2"}}
+    },
+    {
+      "id": "l3_memory_is_reported_for_gateway_filtering",
+      "tags": ["data_level", "relevant"],
+      "entries": [
+        {"owner_employee_no": "EVAL-20", "source_ref": "eval-20-l3", "source_session_id": "OLD-01", "content": "客户敏感资料需要白名单审批。", "data_level": "L3", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-20", "query": "客户敏感资料", "current_session_id": "NOW-20", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-20-l3"], "must_not_hit": [], "expect_empty": false, "expected_data_levels": {"eval-20-l3": "L3"}}
+    },
+    {
+      "id": "conversation_source_type_is_supported",
+      "tags": ["relevant", "source_filter"],
+      "entries": [
+        {"owner_employee_no": "EVAL-21", "source_ref": "eval-21-conversation", "source_type": "conversation", "source_session_id": "OLD-01", "content": "采购流程正在等待供应商报价。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-21", "query": "采购流程报价", "current_session_id": "NOW-21", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-21-conversation"], "must_not_hit": [], "expect_empty": false, "expected_data_levels": {"eval-21-conversation": "L2"}}
+    },
+    {
+      "id": "nearby_but_unrelated_chinese_terms_do_not_match",
+      "tags": ["irrelevant", "false_positive", "chinese"],
+      "entries": [
+        {"owner_employee_no": "EVAL-22", "source_ref": "eval-22-expense", "source_session_id": "OLD-01", "content": "费用报销单等待财务审核。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-22", "query": "会议纪要何时完成", "current_session_id": "NOW-22", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": [], "must_not_hit": ["eval-22-expense"], "expect_empty": true, "expected_data_levels": {}}
+    },
+    {
+      "id": "limit_two_keeps_two_newest_relevant_memories",
+      "tags": ["relevant", "limit", "freshness"],
+      "entries": [
+        {"owner_employee_no": "EVAL-23", "source_ref": "eval-23-old", "source_session_id": "OLD-01", "content": "招聘审批记录一。", "created_at": "2026-08-10T10:00:00"},
+        {"owner_employee_no": "EVAL-23", "source_ref": "eval-23-middle", "source_session_id": "OLD-02", "content": "招聘审批记录二。", "created_at": "2026-08-20T10:00:00"},
+        {"owner_employee_no": "EVAL-23", "source_ref": "eval-23-new", "source_session_id": "OLD-03", "content": "招聘审批记录三。", "created_at": "2026-08-27T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-23", "query": "招聘审批记录", "current_session_id": "NOW-23", "limit": 2, "max_chars": 300},
+      "expect": {"must_hit": ["eval-23-middle", "eval-23-new"], "must_not_hit": ["eval-23-old"], "expect_empty": false, "expected_data_levels": {"eval-23-middle": "L2", "eval-23-new": "L2"}}
+    },
+    {
+      "id": "punctuated_alphanumeric_ticket",
+      "tags": ["relevant", "english", "number"],
+      "entries": [
+        {"owner_employee_no": "EVAL-24", "source_ref": "eval-24-ticket", "source_session_id": "OLD-01", "content": "工单 A-100 已由 IT 完成处理。", "created_at": "2026-08-26T10:00:00"}
+      ],
+      "request": {"owner_employee_no": "EVAL-24", "query": "A-100 工单", "current_session_id": "NOW-24", "limit": 3, "max_chars": 300},
+      "expect": {"must_hit": ["eval-24-ticket"], "must_not_hit": [], "expect_empty": false, "expected_data_levels": {"eval-24-ticket": "L2"}}
+    }
+  ]
+}
