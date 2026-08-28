@@ -40,7 +40,7 @@ class Plugin(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String)
-    type: Mapped[str] = mapped_column(String)  # knowledge | mcp | workflow | rpa | http
+    type: Mapped[str] = mapped_column(String)  # knowledge | mcp | workflow | rpa | http | memory
     endpoint_ref: Mapped[str] = mapped_column(String, default="mock://")
     data_level: Mapped[str] = mapped_column(String, default="L1")
     status: Mapped[str] = mapped_column(String, default="active")

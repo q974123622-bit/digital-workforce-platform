@@ -73,7 +73,7 @@ class EmployeeRuntimeOut(BaseModel):
 
 class PluginBase(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    type: Literal["knowledge", "mcp", "workflow", "rpa", "http"]
+    type: Literal["knowledge", "mcp", "workflow", "rpa", "http", "memory"]
     endpoint_ref: str = "mock://"
     data_level: Literal["L1", "L2", "L3"] = "L1"
     status: Literal["active", "disabled"] = "active"
@@ -87,7 +87,7 @@ class PluginCreate(PluginBase):
 
 class PluginUpdate(BaseModel):
     name: str | None = None
-    type: Literal["knowledge", "mcp", "workflow", "rpa", "http"] | None = None
+    type: Literal["knowledge", "mcp", "workflow", "rpa", "http", "memory"] | None = None
     endpoint_ref: str | None = None
     data_level: Literal["L1", "L2", "L3"] | None = None
     status: Literal["active", "disabled"] | None = None

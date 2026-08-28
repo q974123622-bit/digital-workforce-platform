@@ -37,6 +37,32 @@ def test_l3_read_requires_whitelist_then_allows(client, db_session):
     assert _search(client, trace_id=f"ARQ-{request_id}").status_code == 200
 
 
+def test_l3_memory_approval_writes_search_whitelist(client, db_session):
+    plugin = db_session.get(models.Plugin, "agent-memory")
+    assert plugin is not None
+    plugin.data_level = "L3"
+    db_session.commit()
+
+    request = client.post(
+        "/api/v1/access-requests",
+        params={"applicant_no": "DT-E10281"},
+        json={"resource_type": "plugin", "resource_id": "agent-memory", "reason": "测试记忆白名单"},
+    )
+    assert request.status_code == 201
+    request_id = request.json()["id"]
+
+    approved = client.post(
+        f"/api/v1/access-requests/{request_id}/approve",
+        json={"approve": True, "actor_no": "DT-E10281"},
+    )
+    assert approved.status_code == 200
+
+    grant = db_session.query(models.EmployeePluginGrant).filter_by(
+        employee_id="DT-E10281", plugin_id="agent-memory", action="search"
+    ).one()
+    assert grant.grant_source == "whitelist"
+
+
 def test_intern_cannot_apply_and_virtual_cannot_approve(client):
     denied = _apply(client, "DT-E20999")
     assert denied.status_code == 403
