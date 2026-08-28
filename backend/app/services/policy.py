@@ -21,14 +21,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
-from .identity import EmployeeIdentity
+from .capability_contract import plugin_contract
+from .identity import EmployeeIdentity, resolve_identity
 
 DECISION_ALLOW = "allow"
 DECISION_DENY = "deny"
 DECISION_APPROVAL = "approval"
 
 # 插件类资源（需检查 employee_plugin_grant）；sandbox 等执行资源只走规则
-PLUGIN_RESOURCE_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http"}
+PLUGIN_RESOURCE_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http", "memory"}
+_DATA_LEVEL_RANK = {"L1": 1, "L2": 2, "L3": 3}
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,34 @@ def _best(matched: list[Rule]) -> Rule:
     return max(matched, key=lambda r: r.priority)
 
 
+def can_use_memory_tool(db: Session, employee_id: str) -> bool:
+    """Return whether the employee may be shown the ``agent-memory/search`` tool.
+
+    This is an exposure check for the model tool list.  Gateway still applies
+    per-hit data-level filtering after a search, because individual memories
+    can be more sensitive than the L2 plugin itself.
+    """
+    subject = resolve_identity(db, employee_id)
+    plugin = db.get(models.Plugin, "agent-memory")
+    if subject is None or plugin is None:
+        return False
+    if plugin.type != "memory" or plugin.status != "active" or not plugin_contract(plugin).ready:
+        return False
+
+    subject_level = _DATA_LEVEL_RANK.get(subject.max_data_level)
+    plugin_level = _DATA_LEVEL_RANK.get(plugin.data_level)
+    if subject_level is None or plugin_level is None or subject_level < plugin_level:
+        return False
+
+    decision = evaluate(
+        db,
+        subject,
+        ResourceRef(type=plugin.type, id=plugin.id, data_level=plugin.data_level),
+        "search",
+    )
+    return decision.decision == DECISION_ALLOW
+
+
 def evaluate(
     db: Session,
     subject: EmployeeIdentity,
@@ -130,13 +160,17 @@ def evaluate(
 ) -> EvaluationResult:
     """四维评估：subject / resource / action / environment（environment 取自 subject 绑定配置）。"""
     # L3 读取使用显式白名单，且只认访问审批链写入的 whitelist grant。
+    # memory.search 与 knowledge.read 一样会把敏感内容带入后续处理，
+    # 因此也必须走同一条白名单链路。
     # L3 执行类动作继续由 POLICY-005 控制，白名单不得绕过人工审批。
-    if resource.data_level == "L3" and action == "read":
+    is_l3_read = action == "read" or (resource.type == "memory" and action == "search")
+    if resource.data_level == "L3" and is_l3_read:
+        whitelist_action = "search" if resource.type == "memory" else "read"
         whitelist = db.scalar(
             select(models.EmployeePluginGrant).where(
                 models.EmployeePluginGrant.employee_id == subject.employee_id,
                 models.EmployeePluginGrant.plugin_id == resource.id,
-                models.EmployeePluginGrant.action == "read",
+                models.EmployeePluginGrant.action == whitelist_action,
                 models.EmployeePluginGrant.decision_mode == DECISION_ALLOW,
                 models.EmployeePluginGrant.grant_source == "whitelist",
             )

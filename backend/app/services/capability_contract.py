@@ -13,13 +13,24 @@ from .. import models
 from .adapters import REGISTRY
 
 CONTRACT_VERSION = "1.0"
-PLUGIN_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http"}
+PLUGIN_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http", "memory"}
 PLUGIN_ACTIONS = {
     "knowledge": ["read"],
     "mcp": ["execute"],
     "workflow": ["execute"],
     "rpa": ["execute"],
     "http": ["search"],
+    "memory": ["search"],
+}
+
+_MEMORY_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "minLength": 1},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3},
+    },
+    "required": ["query"],
+    "additionalProperties": False,
 }
 
 
@@ -47,11 +58,15 @@ class CapabilityContract:
 
 
 def _default_plugin_meta(plugin: models.Plugin) -> dict[str, Any]:
-    primary = "adapter" if plugin.type == "knowledge" else "harness"
+    primary = "adapter" if plugin.type in {"knowledge", "memory"} else "harness"
     return {
         "contract_version": CONTRACT_VERSION,
         "actions": PLUGIN_ACTIONS.get(plugin.type, ["execute"]),
-        "input_schema": {"type": "object", "additionalProperties": True},
+        "input_schema": (
+            _MEMORY_INPUT_SCHEMA.copy()
+            if plugin.type == "memory"
+            else {"type": "object", "additionalProperties": True}
+        ),
         "executor": {
             "primary": primary,
             "adapter_ref": plugin.endpoint_ref,
@@ -67,23 +82,50 @@ def plugin_contract(plugin: models.Plugin) -> CapabilityContract:
     for key in ("contract_version", "actions", "input_schema"):
         if key in supplied:
             meta[key] = supplied[key]
-    meta["executor"].update(supplied.get("executor") or {})
-
+    supplied_executor = supplied.get("executor")
     issues: list[str] = []
+    if supplied_executor is not None and not isinstance(supplied_executor, dict):
+        issues.append("executor 必须是对象")
+    elif supplied_executor:
+        meta["executor"].update(supplied_executor)
+
     if str(meta["contract_version"]) != CONTRACT_VERSION:
         issues.append(f"不支持的契约版本：{meta['contract_version']}")
     if plugin.type not in PLUGIN_TYPES:
         issues.append(f"不支持的插件类型：{plugin.type}")
     adapter_ref = str(meta["executor"].get("adapter_ref") or plugin.endpoint_ref)
     primary = meta["executor"].get("primary")
-    if primary not in {"adapter", "harness"}:
+    if not isinstance(primary, str) or primary not in {"adapter", "harness"}:
         issues.append(f"不支持的执行器：{primary}")
     if adapter_ref != plugin.endpoint_ref:
         issues.append("executor.adapter_ref 必须与 plugin.endpoint_ref 一致")
+    if plugin.type == "memory" and adapter_ref != "memory://agent-local":
+        issues.append("memory 插件必须使用逻辑 endpoint：memory://agent-local")
     if not meta.get("actions"):
         issues.append("actions 不能为空")
+
+    # memory 是平台保留能力，不能通过 runtime_meta 伪装成通用工具。
+    # 发现覆盖时既标记契约未就绪，也恢复安全默认值，避免下游忽略 ready 时
+    # 仍然暴露 write/http/harness 等未授权入口。
+    if plugin.type == "memory":
+        if meta.get("actions") != ["search"]:
+            issues.append("memory 插件只支持 search action")
+            meta["actions"] = ["search"]
+        if primary != "adapter":
+            issues.append("memory 插件必须使用 adapter 执行器")
+            meta["executor"]["primary"] = "adapter"
+        if meta["executor"].get("tool") != "adapter":
+            issues.append("memory 插件必须使用 adapter tool")
+            meta["executor"]["tool"] = "adapter"
+        if meta["executor"].get("fallback") not in (None, "none"):
+            issues.append("memory 插件不允许配置 fallback 执行器")
+            meta["executor"]["fallback"] = "none"
+        if meta.get("input_schema") != _MEMORY_INPUT_SCHEMA:
+            issues.append("memory 插件 input_schema 不可覆盖")
+            meta["input_schema"] = _MEMORY_INPUT_SCHEMA.copy()
+
     needs_adapter = primary == "adapter" or meta["executor"].get("tool") == "adapter"
-    if plugin.type != "knowledge" and needs_adapter and adapter_ref not in REGISTRY:
+    if plugin.type not in {"knowledge", "memory"} and needs_adapter and adapter_ref not in REGISTRY:
         issues.append(f"Adapter 未注册：{adapter_ref}")
 
     return CapabilityContract(

@@ -54,6 +54,8 @@ class MemoryHit:
     created_at: datetime
     score: float
     kind: str
+    # None 仅为兼容旧调用方手工构造的 MemoryHit；数据库检索结果必须携带真实等级。
+    data_level: str | None = None
 
 
 def capture_turn(
@@ -199,6 +201,7 @@ def retrieve_for_prompt(
             created_at=entry.created_at,
             score=_score(query, entry.content, entry.kind, entry.created_at),
             kind=entry.kind,
+            data_level=entry.data_level,
         )
         for entry in candidates
     ]
@@ -217,6 +220,7 @@ def retrieve_for_prompt(
                 created_at=entry.created_at,
                 score=0,
                 kind=entry.kind,
+                data_level=entry.data_level,
             )
             for entry in candidates[:2]
             if entry.kind != "preference"

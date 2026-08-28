@@ -57,6 +57,8 @@ def execute_capability(
     contract = plugin_contract(plugin)
     if not contract.ready:
         raise RuntimeError("；".join(contract.issues or ["能力契约未就绪"]))
+    if plugin.type == "memory":
+        raise RuntimeError("memory 插件必须由 Plugin Gateway 的 memory 分支执行")
 
     harness_enabled = runtime is not None or config.get("DWP_HARNESS_ENABLED") == "1"
     runtime_summary = ""

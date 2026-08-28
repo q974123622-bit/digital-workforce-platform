@@ -95,6 +95,36 @@ def test_memory_config_bounds(monkeypatch):
     assert config.memory_max_chars() == 4000
 
 
+# ---- Round 2 Task B3: memory tool 开关配置 ----
+
+TOOL_ENABLED_ENV = "DWP_MEMORY_TOOL_ENABLED"
+
+
+def test_memory_tool_config_default_true(monkeypatch):
+    """未设置时工具开关默认开启（与总开关独立）。"""
+    monkeypatch.delenv(TOOL_ENABLED_ENV, raising=False)
+    assert config.memory_tool_enabled() is True
+
+
+def test_memory_tool_config_disabled(monkeypatch):
+    monkeypatch.setenv(TOOL_ENABLED_ENV, "0")
+    assert config.memory_tool_enabled() is False
+
+
+def test_memory_tool_config_invalid_falls_back(monkeypatch):
+    """非法值回退默认 True；关闭只认显式 0/false/no/off。"""
+    monkeypatch.setenv(TOOL_ENABLED_ENV, "abc")
+    assert config.memory_tool_enabled() is True
+
+
+def test_memory_tool_independent_of_memory_enabled(monkeypatch):
+    """工具开关独立于总开关：总开关关闭时工具开关仍可单独查询（组合逻辑由调用方负责）。"""
+    monkeypatch.setenv("DWP_MEMORY_ENABLED", "0")
+    monkeypatch.setenv(TOOL_ENABLED_ENV, "1")
+    assert config.memory_enabled() is False
+    assert config.memory_tool_enabled() is True
+
+
 # ---- Task 4: session_owner ----
 
 
@@ -445,6 +475,51 @@ def test_memory_direct_capture_once_after_tool_multi_round(db_session):
         )
     )
     assert len(entries) == 1
+
+
+def test_memory_read_failure_e2e_chat_still_answers(db_session, monkeypatch):
+    """§17 #11 E2E：A 的 retrieve_for_prompt 异常时，chat 全链路仍正常回答且不注入记忆。"""
+    from app.services import memory_runtime
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+
+    def boom(db, **kwargs):
+        raise RuntimeError("mock memory read failed")
+
+    monkeypatch.setattr(memory_runtime, "retrieve_for_prompt", boom)
+
+    fake = _FakeLLM([LLMResponse(content="HR 材料已完成，IT 账号仍待开通。")])
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="上次张三的账号处理好了吗？",
+        session_id=None,
+    )
+    assert "HR 材料已完成" in result.message
+    user_payload = fake.calls[0][-1]["content"]
+    assert user_payload == "上次张三的账号处理好了吗？"
+    assert "【本地相关记忆】" not in user_payload
+
+
+def test_memory_write_failure_e2e_reply_still_returns(db_session, monkeypatch):
+    """§17 #12 E2E：A 的 capture_turn 异常时，回答仍正常返回，不阻断聊天。"""
+    from app.services import memory_runtime
+    from app.services.chat import ChatOrchestrator
+    from app.services.llm import LLMResponse
+
+    def boom(db, **kwargs):
+        raise RuntimeError("mock memory write failed")
+
+    monkeypatch.setattr(memory_runtime, "capture_turn", boom)
+
+    fake = _FakeLLM([LLMResponse(content="HR 材料已完成，IT 账号仍待开通。")])
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="VE-0001",
+        message="上次张三的账号处理好了吗？",
+        session_id=None,
+    )
+    assert "HR 材料已完成" in result.message
 
 
 def test_memory_direct_capture_idempotent_on_same_source_ref(db_session):

@@ -268,3 +268,35 @@ def test_memory_audit_capture_metadata_only(db_session):
         assert "source_ref=" in summary
         assert "HR 材料已完成" not in summary
         assert "张三的账号处理好了吗？" not in summary
+
+
+def test_group_memory_workplace_cross_conversation_recall(db_session):
+    """§17 #15 E2E：职场私聊会话 A 沉淀记忆，新会话 B 同一数字员工可自动召回。"""
+    from app.services.llm import LLMResponse
+
+    # 会话 A：DT-E10281 沉淀一条职场私聊记忆
+    conv_a = _direct_conversation(db_session, conversation_id="CONV-RECALL-A")
+    fake_a = _FakeLLM([LLMResponse(content="HR 材料已完成，IT 账号仍待开通。")])
+    send_conversation_message(
+        db_session,
+        conversation=conv_a,
+        actor_no="E10281",
+        content="张三的账号处理好了吗？",
+        provider=fake_a,
+    )
+    assert len(_conversation_memories(db_session, owner="DT-E10281")) == 1
+
+    # 会话 B：新会话，同一数字员工提问，应自动召回会话 A 的记忆
+    conv_b = _direct_conversation(db_session, conversation_id="CONV-RECALL-B")
+    fake_b = _FakeLLM([LLMResponse(content="HR 材料已完成，IT 账号仍待开通。")])
+    send_conversation_message(
+        db_session,
+        conversation=conv_b,
+        actor_no="E10281",
+        content="上次张三的账号处理好了吗？",
+        provider=fake_b,
+    )
+    # DT-E10281 收到的最后一条 user 消息应包含自动检索的旧记忆
+    user_payload = fake_b.calls[0][-1]["content"]
+    assert "【本地相关记忆】" in user_payload
+    assert "HR 材料已完成" in user_payload

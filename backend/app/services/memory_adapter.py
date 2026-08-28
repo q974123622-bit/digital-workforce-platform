@@ -42,6 +42,7 @@ class MemoryRecall:
                 created_at=entry.created_at or datetime.now(),
                 score=0,
                 kind=entry.kind,
+                data_level=entry.data_level,
             )
             for entry in self.entries
         ]

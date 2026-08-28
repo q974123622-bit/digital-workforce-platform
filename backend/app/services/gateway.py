@@ -11,13 +11,18 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models
+from . import config
 from .capability_contract import plugin_contract
 from .capability_executor import execute_capability
 from .identity import resolve_identity
 from .knowledge_adapter import select_adapter
 from .knowledge_registry import plugin_id_for_level, resolve as resolve_knowledge_base
+from .memory_service import render_prompt_context, retrieve_for_prompt
 from .policy import DECISION_ALLOW, DECISION_APPROVAL, DECISION_DENY, ResourceRef, evaluate
 from .runtime_adapter import HarnessExecutionContext, RuntimeAdapter
+
+# 数据级别排序：用于发送前过滤（hit.data_level 超过员工 max_data_level 不发送）。
+_DATA_LEVEL_RANK = {"L1": 1, "L2": 2, "L3": 3}
 
 
 def write_audit(
@@ -47,6 +52,114 @@ def write_audit(
     db.commit()
     db.refresh(event)
     return event.id
+
+
+def _invoke_memory_search(
+    db: Session,
+    *,
+    subject,
+    plugin,
+    params: dict,
+    trace_id: str,
+    execution_context: dict | None,
+) -> dict:
+    """memory.search 专用执行分支（Round 2 B1）。
+
+    与通用执行器互斥：owner / current_session_id 由 Gateway 注入，不接受模型参数；
+    检索结果按 ``subject.max_data_level`` 过滤后渲染，审计只记 hits/ids/chars，不记正文。
+    """
+    query = params.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return {
+            "ok": False,
+            "data": None,
+            "decision": "parameter_error",
+            "error": "query_required",
+        }
+
+    limit_raw = params.get("limit", 3)
+    if isinstance(limit_raw, bool) or not isinstance(limit_raw, int):
+        return {
+            "ok": False,
+            "data": None,
+            "decision": "parameter_error",
+            "error": "limit_invalid",
+        }
+    if limit_raw <= 0:
+        return {
+            "ok": False,
+            "data": None,
+            "decision": "parameter_error",
+            "error": "limit_invalid",
+        }
+    limit = min(limit_raw, 10)
+
+    owner_employee_no = subject.employee_id
+    current_session_id = str((execution_context or {}).get("current_session_id") or "")
+
+    try:
+        hits = retrieve_for_prompt(
+            db,
+            owner_employee_no=owner_employee_no,
+            query=query,
+            current_session_id=current_session_id,
+            limit=limit,
+            max_chars=config.memory_max_chars(),
+        )
+        max_rank = _DATA_LEVEL_RANK.get(subject.max_data_level, 0)
+        hits = [
+            hit
+            for hit in hits
+            if _DATA_LEVEL_RANK.get(hit.data_level, 0) <= max_rank
+        ]
+        text = render_prompt_context(hits, max_chars=config.memory_max_chars())
+    except Exception as exc:  # noqa: BLE001 —— 降级为 error 态，不阻断聊天
+        audit_id = write_audit(
+            db,
+            trace_id=trace_id,
+            employee_id=owner_employee_no,
+            plugin_id=plugin.id,
+            action="search",
+            decision="error",
+            reason=f"memory.search 异常：{type(exc).__name__}",
+            result_summary=f"error={type(exc).__name__}",
+        )
+        return {
+            "ok": False,
+            "data": None,
+            "decision": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "audit_ids": [audit_id],
+        }
+
+    result_summary = f"hits={len(hits)} ids={[h.memory_id for h in hits]} chars={len(text)}"
+    audit_id = write_audit(
+        db,
+        trace_id=trace_id,
+        employee_id=owner_employee_no,
+        plugin_id=plugin.id,
+        action="search",
+        decision="allow",
+        result_summary=result_summary,
+    )
+    return {
+        "ok": True,
+        "data": {
+            "text": text,
+            "hits": [
+                {
+                    "memory_id": h.memory_id,
+                    "kind": h.kind,
+                    "data_level": h.data_level,
+                    "score": h.score,
+                }
+                for h in hits
+            ],
+            "memory_ids": [h.memory_id for h in hits],
+        },
+        "decision": "allow" if hits else "empty",
+        "audit_ids": [audit_id],
+    }
 
 
 def invoke_plugin(
@@ -156,6 +269,18 @@ def invoke_plugin(
             "tool_type": plugin.type,
         }
 
+    # memory 是平台保留能力：契约已锁定 search + adapter 执行器，
+    # 由 Gateway 专用分支执行（owner/会话服务端注入、数据级别过滤、元数据审计），不进通用执行器。
+    if plugin.type == "memory":
+        return _invoke_memory_search(
+            db,
+            subject=subject,
+            plugin=plugin,
+            params=params,
+            trace_id=trace_id,
+            execution_context=execution_context,
+        )
+
     # ALLOW，或已由任务状态机完成一次性人工审批：Harness 规划后执行 Adapter 工具。
     # approval_granted 只能由服务端任务状态机传入，HTTP Gateway DTO 不暴露该字段。
     if knowledge_base_id is not None:
@@ -256,4 +381,28 @@ def search_knowledge(
         params={"query": query, "knowledge_base_id": knowledge_base_id},
         trace_id=trace_id,
         knowledge_base_id=knowledge_base_id,
+    )
+
+
+def search_memory(
+    db: Session,
+    *,
+    employee_id: str,
+    query: str,
+    current_session_id: str | None,
+    trace_id: str,
+    limit: int = 3,
+) -> dict:
+    """记忆检索专用入口：统一经 Plugin Gateway 的 memory 分支执行，不绕过 Policy / 审计。
+
+    owner_employee_no 恒为当前数字员工，不接受模型/前端参数；current_session_id 由编排层注入。
+    """
+    return invoke_plugin(
+        db,
+        employee_id=employee_id,
+        plugin_id="agent-memory",
+        action="search",
+        params={"query": query, "limit": limit},
+        trace_id=trace_id,
+        execution_context={"current_session_id": current_session_id},
     )
