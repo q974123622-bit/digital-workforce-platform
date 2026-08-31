@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, LargeBinary, String
+from sqlalchemy import JSON, DateTime, LargeBinary, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -279,3 +279,87 @@ class AgentTeamsEventSeen(Base):
     event_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     conversation_id: Mapped[str] = mapped_column(String, index=True, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AgentTaskNode(Base):
+    __tablename__ = "agent_task_node"
+    __table_args__ = (UniqueConstraint("parent_task_id", "client_task_key"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    root_task_id: Mapped[str] = mapped_column(String, index=True)
+    parent_task_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    client_task_key: Mapped[str] = mapped_column(String)
+    trace_id: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String)
+    instruction: Mapped[str] = mapped_column(String)
+    coordinator_agent_id: Mapped[str] = mapped_column(String, index=True)
+    assignee_agent_id: Mapped[str] = mapped_column(String, index=True)
+    capability: Mapped[str] = mapped_column(String, default="")
+    depth: Mapped[int] = mapped_column(default=0)
+    required: Mapped[bool] = mapped_column(default=True)
+    status: Mapped[str] = mapped_column(String, default="submitted")
+    progress: Mapped[int] = mapped_column(default=0)
+    input_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str] = mapped_column(String, default="")
+    error_message: Mapped[str] = mapped_column(String, default="")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class AgentTaskDependency(Base):
+    __tablename__ = "agent_task_dependency"
+    __table_args__ = (UniqueConstraint("task_id", "depends_on_task_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    root_task_id: Mapped[str] = mapped_column(String, index=True)
+    task_id: Mapped[str] = mapped_column(String, index=True)
+    depends_on_task_id: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_message"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    root_task_id: Mapped[str] = mapped_column(String, index=True)
+    task_id: Mapped[str] = mapped_column(String, index=True)
+    parent_task_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    message_type: Mapped[str] = mapped_column(String, index=True)
+    sender_agent_id: Mapped[str] = mapped_column(String, index=True)
+    receiver_agent_id: Mapped[str] = mapped_column(String, index=True)
+    body: Mapped[str] = mapped_column(String)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    matrix_room_id: Mapped[str] = mapped_column(String, index=True)
+    matrix_event_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String, unique=True, index=True)
+    direction: Mapped[str] = mapped_column(String)
+    delivery_status: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AgentTaskEvent(Base):
+    __tablename__ = "agent_task_event"
+    __table_args__ = (UniqueConstraint("root_task_id", "event_seq"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    root_task_id: Mapped[str] = mapped_column(String, index=True)
+    task_id: Mapped[str] = mapped_column(String, index=True)
+    event_seq: Mapped[int] = mapped_column()
+    event_type: Mapped[str] = mapped_column(String, index=True)
+    actor_agent_id: Mapped[str] = mapped_column(String, index=True)
+    target_agent_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    summary: Mapped[str] = mapped_column(String)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AgentMatrixCursor(Base):
+    __tablename__ = "agent_matrix_cursor"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String, unique=True, index=True)
+    cursor: Mapped[str] = mapped_column(String, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)

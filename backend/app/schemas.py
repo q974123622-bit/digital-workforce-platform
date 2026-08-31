@@ -619,3 +619,107 @@ class WorkflowOut(BaseModel):
 
 class ClearConversationOut(BaseModel):
     ok: bool
+
+
+class AgentCollaborationTaskCreateIn(BaseModel):
+    team_id: str
+    leader_agent_id: str
+    title: str
+    instruction: str
+    material: dict = Field(default_factory=dict)
+
+
+class AgentTaskNodeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    root_task_id: str
+    parent_task_id: str | None
+    title: str
+    coordinator_agent_id: str
+    assignee_agent_id: str
+    status: str
+    progress: int
+    depth: int
+    required: bool
+    output_payload: dict
+    error_code: str
+    error_message: str
+
+
+class AgentTaskEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    root_task_id: str
+    task_id: str
+    event_seq: int
+    event_type: str
+    actor_agent_id: str
+    target_agent_id: str | None
+    summary: str
+    detail: dict
+    created_at: datetime
+
+
+class AgentMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    root_task_id: str
+    task_id: str
+    parent_task_id: str | None
+    message_type: str
+    sender_agent_id: str
+    receiver_agent_id: str
+    body: str
+    payload: dict
+    matrix_room_id: str
+    matrix_event_id: str | None
+    direction: str
+    delivery_status: str
+    created_at: datetime
+
+
+class AgentTaskGraphOut(BaseModel):
+    nodes: list[AgentTaskNodeOut] = Field(default_factory=list)
+    parent_edges: list[dict] = Field(default_factory=list)
+    dependency_edges: list[dict] = Field(default_factory=list)
+    communication_edges: list[dict] = Field(default_factory=list)
+
+
+class AgentCollaborationTaskOut(BaseModel):
+    id: str
+    team_id: str
+    trace_id: str
+    title: str
+    instruction: str
+    status: str
+    source: Literal["agentteams"]
+    summary: str
+    nodes: list[AgentTaskNodeOut] = Field(default_factory=list)
+    latest_event_id: int
+    created_at: datetime
+
+
+class AgentWorkerHealthOut(BaseModel):
+    agent_id: str
+    matrix_user_id: str
+    status: str
+
+
+class AgentCollaborationHealthOut(BaseModel):
+    enabled: bool
+    ready_for_demo: bool
+    reason: str
+    matrix: str
+    room: str
+    manager: str
+    workers: list[AgentWorkerHealthOut] = Field(default_factory=list)
+
+
+class AgentFinalResultOut(BaseModel):
+    task_id: str
+    status: str
+    summary: str
+    node_results: list[AgentTaskNodeOut] = Field(default_factory=list)
