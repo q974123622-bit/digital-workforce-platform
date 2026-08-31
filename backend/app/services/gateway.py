@@ -49,6 +49,21 @@ def write_audit(
     return event.id
 
 
+def _result_summary(data: object) -> str:
+    if isinstance(data, dict) and data.get("source") == "internal":
+        hits = data.get("hits")
+        hit_count = len(hits) if isinstance(hits, list) else 0
+        return json.dumps(
+            {
+                "source": "internal",
+                "knowledge_base_id": data.get("knowledge_base_id"),
+                "hit_count": hit_count,
+            },
+            ensure_ascii=False,
+        )
+    return json.dumps(data, ensure_ascii=False)[:200]
+
+
 def invoke_plugin(
     db: Session,
     *,
@@ -204,7 +219,7 @@ def invoke_plugin(
         tool_type = execution.tool_type
         runtime_summary = execution.runtime_summary
         runtime_context_id = execution.context_id
-    summary = json.dumps(data, ensure_ascii=False)[:200]
+    summary = _result_summary(data)
     audit_id = write_audit(
         db,
         trace_id=trace_id,

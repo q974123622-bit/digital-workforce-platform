@@ -226,7 +226,9 @@ class ChatOrchestrator:
                 decision="allow",
                 policy_id=result.get("policy_id"),
             )
-            return card, f"工具结果（source=demo）：{json.dumps(result.get('data', {}), ensure_ascii=False)}"
+            data = result.get("data", {})
+            source = data.get("source", "unknown") if isinstance(data, dict) else "unknown"
+            return card, f"工具结果（source={source}）：{json.dumps(data, ensure_ascii=False)}"
         except HTTPException as exc:
             if exc.status_code == 403:
                 detail = exc.detail if isinstance(exc.detail, dict) else {}

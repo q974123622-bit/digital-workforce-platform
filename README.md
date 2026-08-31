@@ -90,7 +90,11 @@ pnpm --filter frontend dev
 | `DEEPSEEK_API_KEY` | DeepSeek Key（问答/汇总必需） |
 | `DEEPSEEK_MODEL` | 模型名（官方接口用 `deepseek-chat`；`v4-flash` 为预留） |
 | `DWP_EMBED_API_KEY`（兼容 `DASHSCOPE_API_KEY`） | 阿里百炼 Key（RAG 向量检索必需） |
-| `DWP_KB_MODE` | `mock` / `rag` / `internal`（默认 rag，失败自动降级 mock） |
+| `DWP_KB_MODE` | `mock` / `rag` / `internal`（默认 mock；rag 嵌入失败自动降级 mock） |
+| `DWP_INTERNAL_KB_BASE_URL` | 内部知识引擎基础地址（仅 `internal` 模式） |
+| `DWP_INTERNAL_KB_X_ORG` / `DWP_INTERNAL_KB_X_TENANT` / `DWP_INTERNAL_KB_X_USER` | 内部知识引擎身份上下文 |
+| `DWP_INTERNAL_KB_AUTHORIZATION` | 内部知识引擎认证值，仅通过受控环境或部署 Secret 注入 |
+| `DWP_INTERNAL_KB_ID_MAP` | 平台知识库 ID 到内部数字 ID 的 JSON 映射，例如 `{"KB-IT-SERVICE":751}` |
 | `DWP_HARNESS_ENABLED` | `1` 启用 Harness（需 dwp-dsh 镜像），`0` 用 demo 模式（演示稳定） |
 | `DWP_TEAM_BACKEND` | `auto` 启用 AgentTeams 协作；`builtin` 仅运行平台编排 |
 | `AGENTTEAMS_COLLAB_TIMEOUT` | AgentTeams 协作等待秒数（5-120，默认 30） |
@@ -101,8 +105,11 @@ pnpm --filter frontend dev
 完整的环境准备、自动化命令、UI 样例、验收标准和故障排查见：
 [测试指南](docs/TESTING_GUIDE.md)。
 
+内部知识引擎的配置、只读探测、正式链路验证、增加知识库及 AI 员工权限注意事项见：
+[内部知识检索接入交接手册](docs/INTERNAL_KB_INTEGRATION_HANDOFF.md)。
+
 ```powershell
-# 后端 149 项
+# 后端 182 项
 cd backend
 .\\.venv\\Scripts\\python.exe -m pytest tests -q
 
@@ -130,6 +137,7 @@ cd backend
 
 - 所有数据均为虚构（见 `mock-data/`），知识库文件内容同样为虚构示例。
 - 真实 Key（DeepSeek / 阿里百炼）只存本地 gitignored `backend/.env` 或环境变量，绝不入库。
+- 内部知识引擎配置只存 `backend/.env`、受控环境变量或部署 Secret；`internal` 模式强制保留平台 Policy 与内部 `enable_filters=true`，审计不记录命中片段。
 - RAG 向量化调用阿里公网 embedding 服务，内容全部为虚构 mock 文档（符合 SAFEMODE `source=demo`）。
 - 外部依赖 `deepseek-harness/`、`higress/` 不入库（见 `.gitignore`）。
 - 契约文档：`docs/API_CONTRACT.md`；共享类型：`shared-schema/types.ts`（与后端 OpenAPI 手动同步）。
