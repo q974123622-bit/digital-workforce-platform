@@ -3,6 +3,7 @@ import json
 import pytest
 
 from app import models
+from app.services import config
 from app.services.agentteams_protocol import AgentProtocolMessage
 
 
@@ -27,6 +28,10 @@ def _protocol(*, root_id, task_id, sender, receiver, type, key, payload, parent_
     )
 
 
+def _matrix_sender(runtime_ref):
+    return runtime_ref if runtime_ref.startswith("@") else f"@{runtime_ref}:{config.agentteams_matrix_domain()}"
+
+
 def _create_run(db_session):
     from app.services.agentteams_collaboration import create_task
 
@@ -49,7 +54,7 @@ def _delegate(db_session, run, sender, matrix_sender, subtasks, key="delegate-1"
 
     return apply_message(
         db_session,
-        matrix_sender=matrix_sender,
+        matrix_sender=_matrix_sender(matrix_sender),
         message=_protocol(
             root_id=run.id,
             task_id=parent.id if parent is not None else run.id,
@@ -80,7 +85,7 @@ def _apply_node_message(db_session, run, node, *, type, key, payload):
     employee = db_session.get(models.DigitalEmployee, node.assignee_agent_id)
     return apply_message(
         db_session,
-        matrix_sender=employee.runtime_ref,
+        matrix_sender=_matrix_sender(employee.runtime_ref),
         message=_protocol(
             root_id=run.id,
             task_id=node.id,
@@ -443,3 +448,73 @@ def test_build_graph_and_result_are_serializable(db_session):
     assert graph["parent_edges"] == [{"parent_task_id": run.id, "task_id": graph["nodes"][1]["id"]}]
     assert result["status"] == "waiting_children"
     json.dumps({"graph": graph, "result": result})
+
+
+def test_inbound_idempotency_key_cannot_block_summary_outbox(db_session):
+    from app.services.agentteams_collaboration import apply_message
+
+    run, leader = _create_run(db_session)
+    apply_message(
+        db_session,
+        matrix_sender=leader.runtime_ref,
+        message=_protocol(
+            root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="VE-0002",
+            type="agent.message", key=f"{run.id}:task.summary.request", payload={"text": "collision"},
+        ),
+    )
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")])
+    policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, policy)
+
+    _apply_node_message(db_session, run, policy, type="task.result", key="result", payload={"result": "done"})
+
+    summary_outbox = db_session.query(models.AgentMessage).filter_by(
+        idempotency_key=f"{run.id}:task.summary.request", direction="outbound",
+    ).one()
+    assert summary_outbox.message_type == "task.summary"
+
+
+def test_duplicate_runtime_ref_rejects_borrowed_root_delegation(db_session):
+    from app.services.agentteams_collaboration import CollaborationConflict
+
+    run, leader = _create_run(db_session)
+    worker = db_session.get(models.DigitalEmployee, "VE-0002")
+    worker.runtime_ref = leader.runtime_ref
+    db_session.flush()
+
+    with pytest.raises(CollaborationConflict, match="matrix_sender_ambiguous"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")])
+
+    assert db_session.get(models.AgentTaskNode, run.id).status == "planning"
+
+
+def test_worker_name_runtime_ref_accepts_only_configured_matrix_domain(db_session):
+    from app.services.agentteams_collaboration import CollaborationConflict, apply_message
+
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")])
+    policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    worker = db_session.get(models.DigitalEmployee, "VE-0002")
+
+    apply_message(
+        db_session,
+        matrix_sender=_matrix_sender(worker.runtime_ref),
+        message=_protocol(
+            root_id=run.id, task_id=policy.id, parent_id=run.id,
+            sender="VE-0002", receiver="platform", type="task.accepted",
+            key=f"{run.id}:worker-mxid-accepted", payload={},
+        ),
+    )
+
+    with pytest.raises(CollaborationConflict, match="matrix_sender_mismatch"):
+        apply_message(
+            db_session,
+            matrix_sender=f"@{worker.runtime_ref}:evil.example",
+            message=_protocol(
+                root_id=run.id, task_id=policy.id, parent_id=run.id,
+                sender="VE-0002", receiver="platform", type="task.progress",
+                key=f"{run.id}:wrong-domain", payload={"progress": 30},
+            ),
+        )
+
+    assert policy.status == "accepted"

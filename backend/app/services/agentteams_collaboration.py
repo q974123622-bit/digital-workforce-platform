@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
+from . import config
 from .agentteams_protocol import AgentProtocolMessage
 
 
@@ -30,6 +31,7 @@ ALLOWED: dict[str, set[str]] = {
     "waiting_children": {"summarizing", "failed", "timed_out", "cancelled"},
     "summarizing": {"completed", "failed", "timed_out", "cancelled"},
 }
+_INBOUND_IDEMPOTENCY_PREFIX = "in:"
 
 
 class AgentTeamsCollaborationService:
@@ -512,14 +514,13 @@ class AgentTeamsCollaborationService:
         *,
         roles: set[str],
     ) -> None:
-        employee = db.get(models.DigitalEmployee, message.sender)
-        if employee is None or not self._is_team_member(db, run.team_id, message.sender):
-            raise CollaborationConflict("invalid_sender")
-        runtime_ref = self._runtime_ref(employee)
-        if runtime_ref is None:
-            raise CollaborationConflict("missing_runtime_ref")
-        if matrix_sender != runtime_ref:
+        employee = self._employee_for_matrix_sender(db, matrix_sender)
+        if employee is None:
             raise CollaborationConflict("matrix_sender_mismatch")
+        if employee.employee_no != message.sender:
+            raise CollaborationConflict("matrix_sender_mismatch")
+        if not self._is_team_member(db, run.team_id, employee.employee_no):
+            raise CollaborationConflict("invalid_sender")
         allowed = set()
         if "assignee" in roles:
             allowed.add(node.assignee_agent_id)
@@ -682,7 +683,7 @@ class AgentTeamsCollaborationService:
             payload=message.model_dump(mode="json"),
             matrix_room_id="",
             matrix_event_id=None,
-            idempotency_key=message.idempotency_key,
+            idempotency_key=AgentTeamsCollaborationService._inbound_idempotency_key(message.idempotency_key),
             direction="inbound",
             delivery_status="received",
         ))
@@ -690,8 +691,52 @@ class AgentTeamsCollaborationService:
     @staticmethod
     def _protocol_seen(db: Session, idempotency_key: str) -> bool:
         return db.scalar(
-            select(models.AgentMessage.id).where(models.AgentMessage.idempotency_key == idempotency_key)
+            select(models.AgentMessage.id).where(
+                models.AgentMessage.idempotency_key
+                == AgentTeamsCollaborationService._inbound_idempotency_key(idempotency_key),
+                models.AgentMessage.direction == "inbound",
+            )
         ) is not None
+
+    @staticmethod
+    def _inbound_idempotency_key(protocol_key: str) -> str:
+        return f"{_INBOUND_IDEMPOTENCY_PREFIX}{protocol_key}"
+
+    def _employee_for_matrix_sender(
+        self, db: Session, matrix_sender: str
+    ) -> models.DigitalEmployee | None:
+        matches = [
+            employee
+            for employee in db.scalars(select(models.DigitalEmployee))
+            if self._matrix_user_id_for_runtime(self._runtime_ref(employee)) == matrix_sender
+        ]
+        if len(matches) > 1:
+            raise CollaborationConflict("matrix_sender_ambiguous")
+        return matches[0] if matches else None
+
+    @staticmethod
+    def _matrix_user_id_for_runtime(runtime_ref: str | None) -> str | None:
+        """Resolve a stored worker name to its exact Matrix ID without fuzzy matching."""
+        if runtime_ref is None:
+            return None
+        reference = runtime_ref.strip()
+        if not reference:
+            return None
+        if reference.startswith("@"):
+            localpart, separator, domain = reference[1:].partition(":")
+            if not separator or not localpart or not domain or any(char.isspace() for char in reference):
+                return None
+            return reference
+        domain = config.agentteams_matrix_domain().strip()
+        if (
+            not domain
+            or any(char.isspace() for char in reference)
+            or any(char.isspace() for char in domain)
+            or any(char in reference for char in "@:/")
+            or "@" in domain
+        ):
+            return None
+        return f"@{reference}:{domain}"
 
     @staticmethod
     def _runtime_ref(employee: models.DigitalEmployee) -> str | None:
