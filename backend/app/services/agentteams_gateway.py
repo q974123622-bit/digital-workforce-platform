@@ -27,6 +27,21 @@ class AgentTeamsResult:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class MatrixEvent:
+    event_id: str
+    room_id: str
+    sender: str
+    body: str
+    ts: int
+
+
+@dataclass(frozen=True)
+class MatrixSyncBatch:
+    events: list[MatrixEvent]
+    next_cursor: str
+
+
 class AgentTeamsGateway:
     """Matrix 客户端：login → send_message → poll_messages → parse_completion。"""
 
@@ -83,6 +98,14 @@ class AgentTeamsGateway:
             raise AgentTeamsUnavailableError(f"joined_rooms 失败：HTTP {resp.status_code}")
         return list(resp.json().get("joined_rooms", []))
 
+    def health(self, room_id: str) -> AgentTeamsResult:
+        rooms = self.joined_rooms()
+        return AgentTeamsResult(
+            ok=room_id in rooms,
+            mode="agentteams",
+            detail="ready" if room_id in rooms else "room_not_joined",
+        )
+
     # ---------- 消息 ----------
 
     def send_message(self, room_id: str, text: str) -> str:
@@ -96,6 +119,42 @@ class AgentTeamsGateway:
         if resp.status_code != 200:
             raise AgentTeamsUnavailableError(f"发送房间消息失败：HTTP {resp.status_code}")
         return str(resp.json().get("event_id", ""))
+
+    def send_protocol_message(self, room_id: str, text: str, protocol_line: str) -> str:
+        return self.send_message(room_id, f"{text.rstrip()}\n\n{protocol_line}")
+
+    def sync_messages(
+        self, since: str | None, room_ids: set[str], timeout_ms: int = 0
+    ) -> MatrixSyncBatch:
+        token = self.login()
+        params = {"timeout": str(timeout_ms)}
+        if since:
+            params["since"] = since
+        response = self._client.get(
+            f"{self.base_url}/_matrix/client/v3/sync",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+        )
+        if response.status_code != 200:
+            raise AgentTeamsUnavailableError(f"sync失败：HTTP {response.status_code}")
+        data = response.json()
+        events = []
+        for room_id, room_data in (data.get("rooms", {}).get("join", {})).items():
+            if room_id not in room_ids:
+                continue
+            for event in room_data.get("timeline", {}).get("events", []):
+                content = event.get("content") or {}
+                if event.get("type") == "m.room.message" and content.get("msgtype") == "m.text":
+                    events.append(
+                        MatrixEvent(
+                            event_id=str(event.get("event_id", "")),
+                            room_id=room_id,
+                            sender=str(event.get("sender", "")),
+                            body=str(content.get("body", "")),
+                            ts=int(event.get("origin_server_ts", 0)),
+                        )
+                    )
+        return MatrixSyncBatch(events=events, next_cursor=str(data.get("next_batch", "")))
 
     def poll_messages(self, room_id: str, since: str | None = None, limit: int = 30) -> list[dict]:
         token = self.login()

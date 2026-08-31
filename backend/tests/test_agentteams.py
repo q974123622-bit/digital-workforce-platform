@@ -190,6 +190,39 @@ def test_gateway_legacy_send_message_keeps_m_text():
     gateway.close()
 
 
+def test_gateway_send_protocol_message_and_sync(monkeypatch):
+    """协议发送与同步投影应返回指定房间内的文本 Matrix 事件。"""
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "PUT":
+            return httpx.Response(200, json={"event_id": "$sent"})
+        if request.url.path.endswith("/sync"):
+            return httpx.Response(200, json={
+                "next_batch": "s2",
+                "rooms": {"join": {"!room:test": {"timeline": {"events": [{
+                    "type": "m.room.message", "event_id": "$reply",
+                    "sender": "@worker:test", "origin_server_ts": 100,
+                    "content": {"msgtype": "m.text", "body": "DWP_EVENT {}"},
+                }]}}}},
+            })
+        if request.url.path.endswith("/joined_rooms"):
+            return httpx.Response(200, json={"joined_rooms": ["!room:test"]})
+        return httpx.Response(404)
+
+    gateway = AgentTeamsGateway(
+        base_url="http://matrix.test", matrix_token="token", timeout=2
+    )
+    gateway._client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert gateway.send_protocol_message("!room:test", "任务", "DWP_EVENT {}") == "$sent"
+    batch = gateway.sync_messages(since="s1", room_ids={"!room:test"})
+    assert batch.next_cursor == "s2"
+    assert batch.events[0].event_id == "$reply"
+    assert batch.events[0].room_id == "!room:test"
+    gateway.close()
+
+
 def test_parse_completion_prefers_task_id():
     msgs = [
         {"sender": "@m", "body": "【完成】上一个任务已办妥（旧任务回执）", "ts": 1111111111111},
