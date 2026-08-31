@@ -174,6 +174,22 @@ def test_gateway_send_poll_parse():
     g.close()
 
 
+def test_gateway_legacy_send_message_keeps_m_text():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(__import__("json").loads(request.content))
+        return httpx.Response(200, json={"event_id": "$legacy"})
+
+    gateway = AgentTeamsGateway(
+        base_url="http://matrix.test", matrix_token="token", timeout=2
+    )
+    gateway._client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert gateway.send_message("!room:test", "普通群聊消息") == "$legacy"
+    assert captured == {"msgtype": "m.text", "body": "普通群聊消息"}
+    gateway.close()
+
+
 def test_parse_completion_prefers_task_id():
     msgs = [
         {"sender": "@m", "body": "【完成】上一个任务已办妥（旧任务回执）", "ts": 1111111111111},
