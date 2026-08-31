@@ -48,6 +48,49 @@ AGENTTEAMS_WORKER_MODEL = "AGENTTEAMS_WORKER_MODEL"
 AGENTTEAMS_WORKER_RUNTIME = "AGENTTEAMS_WORKER_RUNTIME"
 TEAM_BACKEND = "DWP_TEAM_BACKEND"  # auto | builtin（默认 auto）
 
+# 独立 AgentTeams 协作循环。默认关闭，生命周期接入由后续任务负责。
+DWP_AGENTTEAMS_COLLAB_ENABLED = "DWP_AGENTTEAMS_COLLAB_ENABLED"
+DWP_AGENTTEAMS_COLLAB_POLL_SECONDS = "DWP_AGENTTEAMS_COLLAB_POLL_SECONDS"
+DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS = "DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS"
+DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS = "DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS"
+DWP_AGENTTEAMS_MAX_DEPTH = "DWP_AGENTTEAMS_MAX_DEPTH"
+DWP_AGENTTEAMS_MAX_CHILDREN = "DWP_AGENTTEAMS_MAX_CHILDREN"
+
+
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    """Read an untrusted numeric environment value without unsafe extremes."""
+    try:
+        value = int(os.environ.get(name) or str(default))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(value, maximum))
+
+
+def agentteams_collaboration_enabled() -> bool:
+    """The persisted collaboration loop is opt-in; only literal ``1`` enables it."""
+    return os.environ.get(DWP_AGENTTEAMS_COLLAB_ENABLED, "0") == "1"
+
+
+def agentteams_collaboration_poll_seconds() -> int:
+    """Polling cannot be configured to spin or wait indefinitely."""
+    return _bounded_int(DWP_AGENTTEAMS_COLLAB_POLL_SECONDS, 1, 1, 60)
+
+
+def agentteams_task_timeout_seconds() -> int:
+    return _bounded_int(DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS, 600, 10, 86_400)
+
+
+def agentteams_accept_timeout_seconds() -> int:
+    return _bounded_int(DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS, 60, 1, 3_600)
+
+
+def agentteams_max_depth() -> int:
+    return _bounded_int(DWP_AGENTTEAMS_MAX_DEPTH, 3, 1, 10)
+
+
+def agentteams_max_children() -> int:
+    return _bounded_int(DWP_AGENTTEAMS_MAX_CHILDREN, 5, 1, 50)
+
 
 def team_backend_mode() -> str:
     """团队协作后端：auto（AgentTeams 优先，失败降级内置）或 builtin。"""
