@@ -1,0 +1,50 @@
+# Knowledge-only Agent profile. Platform tools are supplied over authenticated MCP.
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-report
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-str-replace-editor
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: system-prompt
+  config:
+    persona: >-
+      You are an enterprise knowledge employee. Follow the supplied identity,
+      authorization catalog and task envelope. Use only the platform tools.
+- insert:
+    - id: dwp-platform-tools
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: dwp
+        transport: streamable-http
+        url: !!js process.env.DWP_PLATFORM_TOOL_URL
+        toolCallTimeoutMs: 135000
+        headers:
+          Authorization: !!js '`Bearer ${process.env.DWP_AGENT_TOOL_TOKEN}`'

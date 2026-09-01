@@ -234,6 +234,47 @@ class ConversationMessage(Base):
     seq: Mapped[int] = mapped_column(default=0)
 
 
+class AgentExecution(Base):
+    """Durable, user-visible execution state; never stores hidden model reasoning."""
+
+    __tablename__ = "agent_execution"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True)
+    trigger_message_seq: Mapped[int] = mapped_column(index=True)
+    trace_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    primary_employee_id: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="queued")
+    stage: Mapped[str] = mapped_column(String, default="queued")
+    error_code: Mapped[str] = mapped_column(String, default="")
+    error_message: Mapped[str] = mapped_column(String, default="")
+    retryable: Mapped[bool] = mapped_column(default=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AgentExecutionEvent(Base):
+    """Sanitized progress event and replayable answer chunk for SSE clients."""
+
+    __tablename__ = "agent_execution_event"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_id: Mapped[str] = mapped_column(String, index=True)
+    event_seq: Mapped[int] = mapped_column(index=True)
+    event_type: Mapped[str] = mapped_column(String)
+    actor_employee_id: Mapped[str] = mapped_column(String, default="")
+    stage: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="running")
+    title: Mapped[str] = mapped_column(String, default="")
+    detail: Mapped[str] = mapped_column(String, default="")
+    knowledge_base_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    hit_count: Mapped[int | None] = mapped_column(nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class AgentTeamsEventSeen(Base):
     """已回传过的 AgentTeams 房间事件（持久化去重，避免重启后重放）。"""
 
@@ -242,4 +283,113 @@ class AgentTeamsEventSeen(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     conversation_id: Mapped[str] = mapped_column(String, index=True, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+# ---- Knowledge-first MVP: identity, colleague directory and bounded delegation ----
+
+
+class Account(Base):
+    """Local login account. External directory identities bind to the same human record later."""
+
+    __tablename__ = "account"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String)
+    human_employee_no: Mapped[str] = mapped_column(String, index=True)
+    roles: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String, default="active")
+    must_change_password: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_session"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class DirectoryBinding(Base):
+    """Stable identity mapping used by the mock directory and the future WeCom adapter."""
+
+    __tablename__ = "directory_binding"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String, default="mock")
+    corp_id: Mapped[str] = mapped_column(String, default="demo-corp")
+    external_user_id: Mapped[str] = mapped_column(String, index=True)
+    human_employee_no: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, default="active")
+
+
+class AgentProfile(Base):
+    """Business identity of an AI colleague; runtime concerns deliberately live elsewhere."""
+
+    __tablename__ = "agent_profile"
+
+    employee_id: Mapped[str] = mapped_column(String, primary_key=True)
+    identity_kind: Mapped[str] = mapped_column(String)  # human_twin | role_employee
+    responsibilities: Mapped[list] = mapped_column(JSON, default=list)
+    knowledge_domains: Mapped[list] = mapped_column(JSON, default=list)
+    accepts_tasks: Mapped[list] = mapped_column(JSON, default=list)
+    delegation_policy: Mapped[str] = mapped_column(String, default="none")  # bounded_single | none
+    fallback_employee_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    persona_status: Mapped[str] = mapped_column(String, default="published")
+    persona_version: Mapped[int] = mapped_column(default=1)
+
+
+class AgentRuntime(Base):
+    __tablename__ = "agent_runtime"
+
+    employee_id: Mapped[str] = mapped_column(String, primary_key=True)
+    engine: Mapped[str] = mapped_column(String, default="harness")
+    container_name: Mapped[str] = mapped_column(String, unique=True)
+    state: Mapped[str] = mapped_column(String, default="stopped")
+    workspace_ref: Mapped[str] = mapped_column(String, default="")
+    last_error: Mapped[str] = mapped_column(String, default="")
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AgentKnowledgeGrant(Base):
+    __tablename__ = "agent_knowledge_grant"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    employee_id: Mapped[str] = mapped_column(String, index=True)
+    knowledge_base_id: Mapped[str] = mapped_column(String, index=True)
+    action: Mapped[str] = mapped_column(String, default="read")
+    status: Mapped[str] = mapped_column(String, default="active")
+
+
+class PersonaVersion(Base):
+    __tablename__ = "persona_version"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    employee_id: Mapped[str] = mapped_column(String, index=True)
+    version: Mapped[int] = mapped_column(default=1)
+    status: Mapped[str] = mapped_column(String, default="draft")  # draft | published | superseded
+    content: Mapped[str] = mapped_column(String, default="")
+    source_refs: Mapped[list] = mapped_column(JSON, default=list)
+    reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class DelegationRun(Base):
+    __tablename__ = "delegation_run"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    trace_id: Mapped[str] = mapped_column(String, index=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True)
+    requester_human_no: Mapped[str] = mapped_column(String, index=True)
+    sender_employee_id: Mapped[str] = mapped_column(String)
+    recipient_employee_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    action: Mapped[str] = mapped_column(String)  # answer_self | delegate | clarify | refuse
+    goal: Mapped[str] = mapped_column(String, default="")
+    reason: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="planned")
+    evidence: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

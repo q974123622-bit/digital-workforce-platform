@@ -1,11 +1,11 @@
 import type { ThemeConfig } from 'antd';
 
 /** 品牌主色：券商风格的深靛蓝 */
-export const BRAND_PRIMARY = '#2f54eb';
+export const BRAND_PRIMARY = '#165dff';
 /** 侧栏深海军蓝背景 */
 export const SIDER_BG = '#0d1b3e';
 /** 页面浅灰蓝背景 */
-export const PAGE_BG = '#f5f7fa';
+export const PAGE_BG = '#f2f3f5';
 
 /** 全局设计 token，供 ConfigProvider 统一消费 */
 export const themeConfig: ThemeConfig = {
@@ -16,7 +16,7 @@ export const themeConfig: ThemeConfig = {
     colorTextBase: '#1f2733',
     colorTextSecondary: '#5c6b83',
     colorBorderSecondary: '#eef1f6',
-    borderRadius: 8,
+    borderRadius: 4,
     fontFamily: [
       '-apple-system',
       'BlinkMacSystemFont',
@@ -49,8 +49,8 @@ export const themeConfig: ThemeConfig = {
       itemHeight: 44,
     },
     Card: {
-      borderRadiusLG: 12,
-      boxShadowTertiary: '0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06)',
+      borderRadiusLG: 6,
+      boxShadowTertiary: 'none',
     },
     Table: {
       headerBg: '#fafbfd',

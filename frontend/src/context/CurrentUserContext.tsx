@@ -22,21 +22,22 @@ interface CurrentUserContextValue {
 
 const CurrentUserContext = createContext<CurrentUserContextValue | null>(null);
 
-export function CurrentUserProvider({ children }: { children: ReactNode }) {
+export function CurrentUserProvider({ children, authenticatedUser }: { children: ReactNode; authenticatedUser?: CurrentUserOption }) {
   const [employeeNo, setEmployeeNo] = useState<string>(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     return saved && CURRENT_USERS.some((user) => user.employee_no === saved) ? saved : CURRENT_USERS[0].employee_no;
   });
 
   const actor = useMemo(
-    () => CURRENT_USERS.find((user) => user.employee_no === employeeNo) ?? CURRENT_USERS[0],
-    [employeeNo],
+    () => authenticatedUser ?? CURRENT_USERS.find((user) => user.employee_no === employeeNo) ?? CURRENT_USERS[0],
+    [authenticatedUser, employeeNo],
   );
 
   const value = useMemo<CurrentUserContextValue>(
     () => ({
       actor,
       setActor: (no: string) => {
+        if (authenticatedUser) return;
         setEmployeeNo(no);
         localStorage.setItem(STORAGE_KEY, no);
       },

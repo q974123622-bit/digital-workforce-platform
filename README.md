@@ -2,23 +2,19 @@
 
 面向券商内部汇报的「数字员工平台」PoC。本仓库 **只包含虚构演示数据**，不包含任何真实内部数据、真实 Token 或真实内部端点。
 
-## 当前状态（Sprint 1-13 + RAG + 协同执行链路）
+## 当前 MVP
 
-- **Sprint 1/1.5**：前后端骨架、五层架构、API 契约 v1.1 冻结、目录整理。
-- **Sprint 2（Core Control Plane）**：Employee Identity、Policy Engine（四维评估，POLICY-001~005）、Plugin Gateway、Mock Adapter、全决策审计。
-- **Sprint 3（Enterprise Resource & Security）**：Knowledge Adapter（Mock + Stub + 多格式解析）、Resource Registry（9 个知识库）、Sandbox Policy + Mock Executor、Secret/Config 环境变量引用。
-- **权限治理**：L3 读取采用“正式员工申请 → 正式员工数字分身审批 → 只读白名单”；L3 执行/导出/删除仍由 POLICY-005 人工审批，聊天仅注入当前身份可访问的知识库清单。
-- **Sprint 4（Chat + DeepSeek）**：LLMProvider（chat/tool_call/structured_output + SAFEMODE）、Session Manager、Chat Orchestrator（≤3 轮工具，Deny 卡片）。
-- **Sprint 5（Team）**：TeamTaskOrchestrator（模板拆解 + Worker 执行 + 审批 + LLM 汇总）、DeepSeek Harness Docker 接入（`DWP_HARNESS_ENABLED=1` 启用）。
-- **Sprint 6（工作台）**：前端聊天页 + 员工工作台面板（角色配色 / 插件授权 / 知识库权限 / 安全策略）+ 人设注入（role_prompt 进 system prompt）+ 前端 Team 任务页。
-- **Sprint 7（职场会话台）**：以消息、通讯录为主入口；流程目录收敛为使用指南；通讯录展示数字员工工号、部门和负责人；群聊分发（分身判断任务/闲聊）、SubtaskExecutor、SandboxManager Docker 真启动。
-- **Sprint 8-12（协同执行）**：先持久化唯一 TaskRun；AgentTeams 负责讨论、认领与风险提示；Identity → Policy/Gateway → 员工 DeepSeek Harness → Plugin Adapter Tool 负责受控执行；审批通过后才执行原子任务。协作事件按 `task_id`、发送者和时间窗口隔离，超时不会再复制任务或触发双重副作用。
-- **Sprint 13（统一能力契约）**：Skill 明确为 instruction capability，Plugin 声明统一 actions/input_schema/executor；每个数字员工由独立 Harness 上下文驱动，Plugin Adapter 作为受控工具调用。Harness 不可用时 UI 明确显示 `Demo Adapter 降级`。
-- **Sprint 7（我的职场）**：企业微信式个人工作中心——会话列表（我的分身置顶）/ 通讯录 / 微信气泡对话 / 技能上传（文本/Markdown 注入分身人设）/ 工作流目录卡片（点击查看步骤与授权成员）；私聊与群聊统一由 Conversation 承载。群聊消息由分身判断「任务/闲聊」：任务型接入 TeamTaskOrchestrator（拆解→指派→Gateway 执行→审批→Leader 汇总，任务卡片内联到触发消息之后，子任务结果可读化，同请求自动去重，支持一键清空会话），闲聊仅一位成员回复；执行器为 SubtaskExecutor 接口（默认 Gateway，真实 RPA/Workflow 后续接入）。
-- **RAG 检索**：Qwen Embedding（qwen3.7-text-embedding）+ kb_chunk 向量索引 + 余弦 top-k，`DWP_KB_MODE=rag` 时启用，失败自动降级 Mock。
-- **黄金链路联调（T3-02）**：`scripts/golden_chain.py` 8/8 通过——问答 → RAG → 团队任务 → 审批 → 审计。
+- **用户端与管理端分离**：`/` 是嵌入聊天工具风格的用户端，`/admin/` 是账号、AI 同事、知识授权、运行状态和人设管理端。UI 使用 Tailwind CSS + Ant Design，移动端可作为卡片式 H5 使用。
+- **账号登录**：服务端 Session + HttpOnly Cookie；会话接口校验登录身份，管理员接口校验角色。Mock 账号 `E10281`，初始密码 `Demo@123456`（仅本地演示，可用 `DWP_DEMO_PASSWORD` 覆盖）。
+- **三类主体**：真实员工、每人一个数字分身、可复用的岗位型 AI 员工。当前核心 AI 员工为“AI员工平台”和“投资分析AI员工”。
+- **分身自主委派**：分身先判断能否自己回答；需要专业知识时，由模型在可用 AI 员工清单中选择一名同事并委派。V1 每次最多一跳、一个子员工，禁止子员工继续委派，以规避循环等待、消息风暴和死锁。
+- **知识域强隔离**：“AI员工平台”授权内规、外规、IT 服务等通用知识；“投资分析AI员工”授权证券业务、投行咨询等投资知识。工具清单由实时授权动态生成，不能凭提示词越权访问。
+- **企微统一入口预留**：Mock 通讯录和回调路由已具备；按 `corp_id + external_user_id` 映射到本人分身，不为每个分身创建企微机器人。后续可在一个企微应用入口中使用不同身份键路由。
+- **独立 Harness 注册表**：每个分身/AI 员工有稳定容器名、工作区和 `stopped/ready/busy/failed` 状态，管理端可启停。当前完成的是运行时管理边界和状态机，真实容器镜像拉起仍需测试环境确定镜像与网络策略。
+- **知识库适配层**：默认读取 `mock-data/kb`。已预留 `volcengine_mcp` 模式，未来通过 MCP 调用火山引擎；未配置端点或服务契约时会失败关闭，不伪造生产结果。
+- **Agent Teams 延后**：旧协作代码保留为实验能力，但 V1 用户界面不开放群聊编排与复杂 Team 工作流，先验证知识问答、身份、权限、委派和部署。
 
-Mock 数据：正式员工 2、实习生 2、数字分身 2、通用虚拟员工 4、RPA 员工 1、插件 12（含 L3 敏感知识入口）、策略 9、虚构知识库资源 9、团队 1、技能 5（张三 4 + 陈晓萌 1）、职场会话 2。角色已拆分为入职协调、HR、IT、采购和报表自动化，避免 IT/HR 身份越界代办采购或 RPA。
+仓库只包含虚构种子账号、人物、知识库与业务数据，不包含真实内部数据和真实密钥。
 
 ## 目录结构
 
@@ -59,7 +55,7 @@ logicalNpc/
 .\scripts\run_demo.ps1 -Docker      # 启用 Harness Docker 模式（构建 dwp-dsh 镜像，Team 子任务真实容器执行）
 ```
 
-启动后访问 <http://localhost:5173>。
+启动后访问用户端 <http://localhost:5173>，管理端 <http://localhost:5173/admin/>。
 
 ## 手动启动
 
@@ -88,9 +84,12 @@ pnpm --filter frontend dev
 | 变量 | 说明 |
 |---|---|
 | `DEEPSEEK_API_KEY` | DeepSeek Key（问答/汇总必需） |
-| `DEEPSEEK_MODEL` | 模型名（官方接口用 `deepseek-chat`；`v4-flash` 为预留） |
+| `DEEPSEEK_MODEL` | 模型名；本次已用 `deepseek-v4-flash` 完成真实链路验证 |
 | `DWP_EMBED_API_KEY`（兼容 `DASHSCOPE_API_KEY`） | 阿里百炼 Key（RAG 向量检索必需） |
-| `DWP_KB_MODE` | `mock` / `rag` / `internal`（默认 rag，失败自动降级 mock） |
+| `DWP_KB_MODE` | `mock` / `rag` / `internal` / `volcengine_mcp`；MVP 使用 `mock` |
+| `DWP_VOLCENGINE_MCP_ENDPOINT` | 火山引擎 MCP 服务地址（后续接入） |
+| `DWP_VOLCENGINE_MCP_CREDENTIAL_REF` | 凭据引用名，只保存引用，不保存明文凭据 |
+| `DWP_REQUIRE_AUTH` | `1` 强制登录（部署默认），测试兼容模式可设为 `0` |
 | `DWP_HARNESS_ENABLED` | `1` 启用 Harness（需 dwp-dsh 镜像），`0` 用 demo 模式（演示稳定） |
 | `DWP_TEAM_BACKEND` | `auto` 启用 AgentTeams 协作；`builtin` 仅运行平台编排 |
 | `AGENTTEAMS_COLLAB_TIMEOUT` | AgentTeams 协作等待秒数（5-120，默认 30） |
@@ -102,11 +101,11 @@ pnpm --filter frontend dev
 [测试指南](docs/TESTING_GUIDE.md)。
 
 ```powershell
-# 后端 149 项
+# 后端 162 项
 cd backend
 .\\.venv\\Scripts\\python.exe -m pytest tests -q
 
-# 回到仓库根目录后执行前端（类型检查 + 单测 21 项 + 生产构建）
+# 回到仓库根目录后执行前端（类型检查 + V1 单测 + 生产构建）
 cd ..
 pnpm --filter frontend typecheck
 pnpm --filter frontend test

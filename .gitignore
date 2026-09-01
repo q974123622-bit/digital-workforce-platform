@@ -49,3 +49,9 @@ mock-data/kb/*.zip
 .vscode/
 .idea/
 .DS_Store
+
+# 离线部署产物与运行时密钥/数据
+release/
+deploy/offline/secrets/
+deploy/offline/data/
+deploy/offline/backups/

@@ -31,8 +31,9 @@ def test_registry_resources(client):
         "KB-IT-SERVICE",
         "KB-SECURITIES",
         "KB-REG-INTERNAL",
-        "KB-REG-EXTERNAL",
-    }
+            "KB-REG-EXTERNAL",
+            "KB-INVESTMENT-BANKING",
+        }
     assert kbs["KB-PUBLIC"]["data_level"] == "L1"
     assert kbs["KB-PUBLIC"]["allowed_employment_type"] == ["formal", "intern"]
     assert kbs["KB-ONBOARD"]["name"] == "入职 Demo 知识库"

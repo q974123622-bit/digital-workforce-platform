@@ -8,12 +8,13 @@ from sqlalchemy.orm.attributes import flag_modified
 from .. import models, schemas
 from ..database import get_db
 from ..services.chat import ChatOrchestrator
+from ..services.harness_agent import run_agent
 from ..services.identity import resolve_identity
 from ..services.knowledge_registry import plugin_id_for_level
 from ..services.llm import DeepSeekProvider, LLMUnavailableError
 from ..services.policy import ResourceRef, evaluate
 from ..services.agentteams_gateway import AgentTeamsUnavailableError
-from ..services import agentteams_lifecycle as at_lifecycle
+from ..services import agentteams_lifecycle as at_lifecycle, config
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -305,14 +306,21 @@ def get_employee_runtime(employee_no: str, db: Session = Depends(get_db)):
 @router.post("/{employee_no}/chat", response_model=schemas.ChatResponse)
 def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(get_db)):
     """一对一问答（Sprint 4）：User → Employee → LLM → Policy → Gateway → Adapter → LLM → Answer。"""
-    orchestrator = ChatOrchestrator(DeepSeekProvider())
     try:
-        result = orchestrator.handle_message(
-            db,
-            employee_no=employee_no,
-            message=payload.message,
-            session_id=payload.session_id,
-        )
+        employee = db.get(models.DigitalEmployee, employee_no)
+        if employee and employee_no in {"AI-GENERAL", "AI-INVESTMENT", "DT-E10281", "DT-E20999"} and (
+            config.get("DWP_AGENT_EXECUTION_MODE", "harness") or "harness"
+        ) == "harness":
+            result = run_agent(
+                db, employee_id=employee_no,
+                requester_human_no=employee.owner_human_no or "E10281",
+                message=payload.message, history=[],
+            )
+        else:
+            result = ChatOrchestrator(DeepSeekProvider()).handle_message(
+                db, employee_no=employee_no, message=payload.message,
+                session_id=payload.session_id,
+            )
     except LLMUnavailableError as exc:
         raise HTTPException(status_code=503, detail=f"LLM_UNAVAILABLE：{exc}") from exc
 
@@ -365,6 +373,14 @@ def get_workspace(employee_no: str, db: Session = Depends(get_db)):
     ]
 
     kbs: list[schemas.WorkspaceKbOut] = []
+    explicit_kb_grants = {
+        row.knowledge_base_id
+        for row in db.scalars(select(models.AgentKnowledgeGrant).where(
+            models.AgentKnowledgeGrant.employee_id == employee_no,
+            models.AgentKnowledgeGrant.action == "read",
+            models.AgentKnowledgeGrant.status == "active",
+        )).all()
+    }
     for kb in db.scalars(select(models.KnowledgeBase).order_by(models.KnowledgeBase.id)).all():
         plugin_id = plugin_id_for_level(kb.data_level)
         result = evaluate(db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read")
@@ -374,8 +390,8 @@ def get_workspace(employee_no: str, db: Session = Depends(get_db)):
                 name=kb.name,
                 data_level=kb.data_level,
                 description=kb.description,
-                accessible=result.decision in ("allow", "approval"),
-                decision=result.decision,
+                accessible=kb.id in explicit_kb_grants and result.decision in ("allow", "approval"),
+                decision=result.decision if kb.id in explicit_kb_grants else "deny",
             )
         )
 

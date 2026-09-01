@@ -129,10 +129,9 @@ def test_workplace_aggregate(client):
     body = home.json()
     assert body["actor"]["employee_no"] == "E10281"
     assert body["twin"]["employee_no"] == "DT-E10281"
-    assert all(e["type"] in ("virtual", "rpa") for e in body["available_employees"])
-    assert not any(e["type"] == "twin" for e in body["available_employees"])
+    assert {e["employee_no"] for e in body["available_employees"]} == {"AI-GENERAL", "AI-INVESTMENT"}
     assert any(s["name"] == "报销制度速答" for s in body["skills"])
-    assert len(body["recent_conversations"]) >= 2
+    assert len(body["recent_conversations"]) >= 1
 
 
 def test_workplace_aggregate_unknown_actor(client):
@@ -145,12 +144,12 @@ def test_workplace_aggregate_unknown_actor(client):
 def test_direct_conversation_idempotent(client):
     first = client.post(
         "/api/v1/conversations",
-        json={"actor_no": "E10281", "kind": "direct", "participant_employee_nos": ["VE-0001"]},
+        json={"actor_no": "E10281", "kind": "direct", "participant_employee_nos": ["AI-GENERAL"]},
     )
     assert first.status_code == 201
     second = client.post(
         "/api/v1/conversations",
-        json={"actor_no": "E10281", "kind": "direct", "participant_employee_nos": ["VE-0001"]},
+        json={"actor_no": "E10281", "kind": "direct", "participant_employee_nos": ["AI-GENERAL"]},
     )
     assert second.status_code == 201
     assert first.json()["id"] == second.json()["id"]
@@ -159,20 +158,20 @@ def test_direct_conversation_idempotent(client):
 def test_group_conversation_auto_organizer(client):
     resp = client.post(
         "/api/v1/conversations",
-        json={"actor_no": "E10281", "kind": "group", "title": "测试协作", "participant_employee_nos": ["VE-0001", "VE-0003"]},
+        json={"actor_no": "E10281", "kind": "group", "title": "测试协作", "participant_employee_nos": ["AI-GENERAL", "AI-INVESTMENT"]},
     )
     assert resp.status_code == 201
     body = resp.json()
     participants = body["participants"]
     assert participants[0]["employee_no"] == "DT-E10281"
     assert participants[0]["role"] == "organizer"
-    assert {p["employee_no"] for p in participants} == {"DT-E10281", "VE-0001", "VE-0003"}
+    assert {p["employee_no"] for p in participants} == {"DT-E10281", "AI-GENERAL", "AI-INVESTMENT"}
 
 
 def test_group_conversation_rejects_duplicate_and_unknown(client):
     dup = client.post(
         "/api/v1/conversations",
-        json={"actor_no": "E10281", "kind": "group", "participant_employee_nos": ["VE-0001", "VE-0001"]},
+        json={"actor_no": "E10281", "kind": "group", "participant_employee_nos": ["AI-GENERAL", "AI-GENERAL"]},
     )
     assert dup.status_code == 400
     unknown = client.post(
@@ -193,12 +192,12 @@ def test_direct_with_other_twin_rejected(client):
 def test_add_participant_to_group(client):
     conv = client.post(
         "/api/v1/conversations",
-        json={"actor_no": "E10281", "kind": "group", "participant_employee_nos": ["VE-0001"]},
+        json={"actor_no": "E10281", "kind": "group", "participant_employee_nos": ["AI-GENERAL"]},
     ).json()
-    resp = client.post(f"/api/v1/conversations/{conv['id']}/participants", json={"employee_no": "VE-0003"})
+    resp = client.post(f"/api/v1/conversations/{conv['id']}/participants", json={"employee_no": "AI-INVESTMENT"})
     assert resp.status_code == 200
-    assert "VE-0003" in {p["employee_no"] for p in resp.json()["participants"]}
-    again = client.post(f"/api/v1/conversations/{conv['id']}/participants", json={"employee_no": "VE-0003"})
+    assert "AI-INVESTMENT" in {p["employee_no"] for p in resp.json()["participants"]}
+    again = client.post(f"/api/v1/conversations/{conv['id']}/participants", json={"employee_no": "AI-INVESTMENT"})
     assert again.status_code == 400
 
 
@@ -548,10 +547,9 @@ def test_clear_conversation(client):
     assert body["tasks"] == []
 
 
-def test_conversation_summary_preview_uses_task_status(client):
+def test_conversation_list_hides_retired_demo_employee_history(client):
     body = client.get("/api/v1/conversations?actor_no=E10281").json()
-    conv = next(c for c in body if c["id"] == "CONV-0002")
-    assert conv["last_message"].startswith("协作任务")
+    assert "CONV-0002" not in {conversation["id"] for conversation in body}
 
 
 def test_send_message_forbidden_for_other_actor(client):

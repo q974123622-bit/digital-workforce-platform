@@ -271,6 +271,48 @@ export interface ConversationSummary {
   updated_at: string;
 }
 
+export interface AgentExecution {
+  id: string;
+  conversation_id: string;
+  trigger_message_seq: number;
+  trace_id: string;
+  primary_employee_id: string;
+  status: 'queued' | 'running' | 'streaming' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
+  stage: string;
+  error_code: string;
+  error_message: string;
+  retryable: boolean;
+  started_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface ConversationRunReply {
+  execution_id: string;
+  trigger_message_seq: number;
+  conversation: Conversation;
+}
+
+export interface AgentExecutionEvent {
+  event_seq: number;
+  event_type: string;
+  actor_employee_id: string;
+  stage: string;
+  status: string;
+  title: string;
+  detail: string;
+  knowledge_base_id: string | null;
+  target_agent_id: string | null;
+  hit_count: number | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AgentExecutionDetail {
+  execution: AgentExecution;
+  events: AgentExecutionEvent[];
+}
+
 export interface WorkplaceHome {
   actor: WorkplaceActor;
   twin: Employee;
@@ -315,4 +357,49 @@ export interface ChatReply {
     policy_id: string | null;
     reason: string | null;
   } | null;
+}
+
+export interface Account {
+  username: string;
+  employee_no: string;
+  name: string;
+  department: string;
+  employment_type: 'formal' | 'intern';
+  roles: string[];
+  must_change_password: boolean;
+}
+
+export interface LoginReply {
+  account: Account;
+  expires_at: string;
+}
+
+export interface AgentProfile {
+  employee_id: string;
+  display_name: string;
+  identity_kind: 'human_twin' | 'role_employee';
+  owner_human_no: string;
+  department: string;
+  responsibilities: string[];
+  knowledge_domains: string[];
+  accepts_tasks: string[];
+  delegation_policy: 'bounded_single' | 'none';
+  fallback_employee_id: string | null;
+  persona_status: string;
+  persona_version: number;
+  runtime_engine: 'harness';
+  runtime_state: string;
+  container_name: string;
+  knowledge_base_ids: string[];
+}
+
+export interface DirectoryUser {
+  provider: string;
+  external_user_id: string;
+  employee_no: string;
+  name: string;
+  department: string;
+  employment_type: string;
+  status: string;
+  default_twin_id: string | null;
 }

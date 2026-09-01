@@ -1,18 +1,258 @@
-"""内部接口（服务间，不暴露前端）：Policy Evaluate / Gateway Invoke。"""
+"""内部接口（服务间，不暴露前端）：Policy / Gateway / Harness tools。"""
 
-from fastapi import APIRouter, Depends, HTTPException
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import schemas
+from .. import models, schemas
 from ..database import get_db
 from ..services.gateway import invoke_plugin, search_knowledge, write_audit
+from ..services.harness_token import HarnessClaims, verify_token
 from ..services.identity import resolve_identity
 from ..services.policy import DECISION_ALLOW, DECISION_DENY, ResourceRef, evaluate
 from ..services.runtime_adapter import DockerHarnessRuntimeAdapter, RuntimeResult
 from ..services.sandbox_manager import SandboxManager
 from ..services.sandbox_policy import from_identity
+from ..services import execution_events
 
 router = APIRouter(prefix="/internal", tags=["internal"])
+
+
+class AgentKnowledgeToolIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge_base_id: str
+    query: str
+
+
+class AgentDelegateToolIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_agent_id: str
+    question: str
+
+
+def _claims(authorization: str | None = Header(default=None)) -> HarnessClaims:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少 Harness 工具令牌")
+    try:
+        return verify_token(authorization[7:].strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def _can_delegate(db: Session, claims: HarnessClaims) -> bool:
+    profile = db.get(models.AgentProfile, claims.employee_id)
+    return bool(profile and profile.identity_kind == "human_twin" and claims.depth == 0)
+
+
+def _agent_search(
+    db: Session, claims: HarnessClaims, payload: AgentKnowledgeToolIn,
+) -> dict:
+    execution = execution_events.execution_for_trace(db, claims.trace_id)
+    kb = db.get(models.KnowledgeBase, payload.knowledge_base_id)
+    kb_name = kb.name if kb is not None else payload.knowledge_base_id
+    if execution is not None:
+        execution_events.emit(
+            db, execution.id, event_type="knowledge_started", stage="knowledge_search",
+            status="running", actor_employee_id=claims.employee_id,
+            knowledge_base_id=payload.knowledge_base_id,
+            title=f"正在检索 {kb_name}", detail="正在通过授权知识接口查找相关资料",
+        )
+    used = db.scalar(
+        select(func.count(models.AuditEvent.id)).where(
+            models.AuditEvent.trace_id == claims.trace_id,
+            models.AuditEvent.employee_id == claims.employee_id,
+            models.AuditEvent.action == "read",
+        )
+    ) or 0
+    if used >= 5:
+        raise HTTPException(status_code=429, detail="单次任务最多检索五次")
+    try:
+        out = search_knowledge(
+            db,
+            employee_id=claims.employee_id,
+            knowledge_base_id=payload.knowledge_base_id,
+            query=payload.query,
+            trace_id=claims.trace_id,
+            requester_human_no=claims.requester_human_no,
+        )
+    except Exception:
+        if execution is not None:
+            execution_events.emit(
+                db, execution.id, event_type="knowledge_completed", stage="knowledge_search",
+                status="running", actor_employee_id=claims.employee_id,
+                knowledge_base_id=payload.knowledge_base_id,
+                title=f"{kb_name} 检索未完成", detail="知识接口返回安全错误，数字员工正在判断后续步骤",
+            )
+        raise
+    data = out.get("data") or {}
+    hits = data.get("hits", [])
+    if execution is not None:
+        execution_events.emit(
+            db, execution.id, event_type="knowledge_completed", stage="knowledge_search",
+            status="running", actor_employee_id=claims.employee_id,
+            knowledge_base_id=payload.knowledge_base_id, hit_count=len(hits),
+            title=f"{kb_name} 检索完成", detail=f"共找到 {len(hits)} 条可用资料，正在检查证据充分性",
+        )
+    return {
+        "source": "mock" if data.get("source") == "demo" else data.get("source", "mock"),
+        "knowledge_base_id": payload.knowledge_base_id,
+        "hits": hits,
+        "decision": out.get("decision", "deny"),
+        "trace_id": claims.trace_id,
+    }
+
+
+def _agent_delegate(
+    db: Session, claims: HarnessClaims, payload: AgentDelegateToolIn,
+) -> dict:
+    if not _can_delegate(db, claims):
+        raise HTTPException(status_code=403, detail="当前数字员工不能委派")
+    target_profile = db.get(models.AgentProfile, payload.target_agent_id)
+    target = db.get(models.DigitalEmployee, payload.target_agent_id)
+    if not target_profile or not target or target.status != "active" or target_profile.identity_kind != "role_employee":
+        raise HTTPException(status_code=403, detail="委派目标不是可用的岗位数字员工")
+    existing = db.scalar(
+        select(func.count(models.DelegationRun.id)).where(
+            models.DelegationRun.trace_id == claims.trace_id,
+            models.DelegationRun.sender_employee_id == claims.employee_id,
+        )
+    ) or 0
+    if existing:
+        raise HTTPException(status_code=409, detail="单次任务只能委派一次")
+    run = models.DelegationRun(
+        id=f"D-{uuid4().hex[:12].upper()}", trace_id=claims.trace_id,
+        conversation_id="harness", requester_human_no=claims.requester_human_no,
+        sender_employee_id=claims.employee_id, recipient_employee_id=payload.target_agent_id,
+        action="delegate", goal="", reason="Harness 自主委派", status="running",
+    )
+    db.add(run)
+    db.commit()
+    execution = execution_events.execution_for_trace(db, claims.trace_id)
+    if execution is not None:
+        execution_events.emit(
+            db, execution.id, event_type="delegation_started", stage="delegation",
+            status="running", actor_employee_id=claims.employee_id,
+            target_agent_id=payload.target_agent_id,
+            title=f"正在向 {target.name} 咨询", detail="已按一次委派限制交由岗位数字员工处理",
+        )
+    try:
+        from ..services.harness_agent import run_agent
+
+        result = run_agent(
+            db, employee_id=payload.target_agent_id,
+            requester_human_no=claims.requester_human_no,
+            message=payload.question, history=[], trace_id=claims.trace_id, depth=1,
+        )
+        run.status = "completed"
+        run.evidence = [card.plugin_id for card in result.tool_cards]
+        db.add(run)
+        db.commit()
+        if execution is not None:
+            execution_events.emit(
+                db, execution.id, event_type="delegation_completed", stage="delegation",
+                status="running", actor_employee_id=claims.employee_id,
+                target_agent_id=payload.target_agent_id,
+                title=f"{target.name} 已完成协助", detail="委派结果已返回，数字分身正在整合答复",
+            )
+        return {
+            "target_agent_id": payload.target_agent_id,
+            "answer": result.message,
+            "decision": "allow",
+            "trace_id": claims.trace_id,
+        }
+    except Exception:
+        run.status = "failed"
+        db.add(run)
+        db.commit()
+        if execution is not None:
+            execution_events.emit(
+                db, execution.id, event_type="delegation_completed", stage="delegation",
+                status="running", actor_employee_id=claims.employee_id,
+                target_agent_id=payload.target_agent_id,
+                title=f"{target.name} 暂时无法协助", detail="委派未完成，数字分身正在判断是否可独立答复",
+            )
+        raise
+
+
+@router.post("/agent-tools/knowledge/search")
+def agent_knowledge_search(
+    payload: AgentKnowledgeToolIn, claims: HarnessClaims = Depends(_claims), db: Session = Depends(get_db),
+):
+    return _agent_search(db, claims, payload)
+
+
+@router.post("/agent-tools/delegate")
+def agent_delegate(
+    payload: AgentDelegateToolIn, claims: HarnessClaims = Depends(_claims), db: Session = Depends(get_db),
+):
+    return _agent_delegate(db, claims, payload)
+
+
+@router.post("/agent-tools/mcp")
+async def agent_tools_mcp(
+    request: Request, claims: HarnessClaims = Depends(_claims), db: Session = Depends(get_db),
+):
+    """Minimal stateless Streamable HTTP MCP endpoint for the DSH profile."""
+    body = await request.json()
+    method = body.get("method")
+    request_id = body.get("id")
+    if method == "initialize":
+        result = {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": "dwp-platform-tools", "version": "0.1.0"},
+        }
+    elif method == "notifications/initialized":
+        return {"jsonrpc": "2.0", "result": {}}
+    elif method == "tools/list":
+        tools = [{
+            "name": "search_knowledge",
+            "description": "在当前数字员工已授权的一个知识库中检索，每次只能检索一库。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "knowledge_base_id": {"type": "string"},
+                    "query": {"type": "string"},
+                },
+                "required": ["knowledge_base_id", "query"],
+            },
+        }]
+        if _can_delegate(db, claims):
+            tools.append({
+                "name": "ask_digital_employee",
+                "description": "向一名岗位数字员工求助一次，对方不能继续委派。",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_agent_id": {"type": "string", "enum": ["AI-GENERAL", "AI-INVESTMENT"]},
+                        "question": {"type": "string"},
+                    },
+                    "required": ["target_agent_id", "question"],
+                },
+            })
+        result = {"tools": tools}
+    elif method == "tools/call":
+        params = body.get("params") or {}
+        arguments = params.get("arguments") or {}
+        try:
+            if params.get("name") == "search_knowledge":
+                data = _agent_search(db, claims, AgentKnowledgeToolIn.model_validate(arguments))
+            elif params.get("name") == "ask_digital_employee":
+                data = _agent_delegate(db, claims, AgentDelegateToolIn.model_validate(arguments))
+            else:
+                raise HTTPException(status_code=404, detail="未知工具")
+            result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
+        except Exception as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else "工具执行失败"
+            result = {"isError": True, "content": [{"type": "text", "text": str(detail)}]}
+    else:
+        return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found"}}
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
 @router.post("/policy/evaluate", response_model=schemas.PolicyEvaluateOut)

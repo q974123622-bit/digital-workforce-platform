@@ -12,7 +12,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config
+from . import config, runtime_manager
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -150,11 +150,7 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
 
 
 class DockerHarnessRuntimeAdapter(RuntimeAdapter):
-    """DeepSeek Harness 容器后端（推荐）：`docker run --rm dwp-dsh <task>`。
-
-    Linux 容器环境绕开 Windows 无控制台导致的 headless 挂起（见 PLANS S5-02）。
-    Key 通过临时 env 文件注入（--env-file），不出现在命令行/日志。
-    """
+    """Execute inside the employee's stable Harness container."""
 
     def __init__(self, image: str = "dwp-dsh:rc6", timeout: int = 120):
         self.image = image
@@ -167,46 +163,32 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
         task_prompt: str,
         trace_id: str,
         context: HarnessExecutionContext | None = None,
+        tool_token: str = "",
+        tool_base_url: str = "",
     ) -> RuntimeResult:
-        api_key = config.get("DEEPSEEK_API_KEY")
         docker_bin = shutil.which("docker")
-        if not api_key:
+        if not config.get("DEEPSEEK_API_KEY"):
             return RuntimeResult(mode="demo", ok=False, result="DEEPSEEK_API_KEY 未配置")
         if not docker_bin:
             return RuntimeResult(mode="demo", ok=False, result="docker 不可用")
-
         env_path = None
-        safe_employee = "".join(ch.lower() if ch.isalnum() else "-" for ch in employee_id).strip("-")
-        context_root = REPO_ROOT / "backend" / "harness-workspaces" / safe_employee
-        dsh_home = context_root / "dsh-home"
-        workspace = context_root / "workspace"
-        dsh_home.mkdir(parents=True, exist_ok=True)
-        workspace.mkdir(parents=True, exist_ok=True)
         try:
-            with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False, encoding="utf-8") as f:
-                f.write(
-                    f"DEEPSEEK_API_KEY={api_key}\n"
-                    "DSH_PERMISSION_MODE=danger-full-access\n"
-                    "DSH_HOME=/dsh-home\n"
-                )
-                env_path = f.name
+            name = runtime_manager.ensure_container(employee_id)
+            with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False, encoding="utf-8") as env_file:
+                for key, value in (
+                    ("DEEPSEEK_API_KEY", config.get("DEEPSEEK_API_KEY") or ""),
+                    ("DEEPSEEK_BASE_URL", config.get("DEEPSEEK_BASE_URL") or ""),
+                    ("DEEPSEEK_MODEL", config.get("DEEPSEEK_MODEL", "deepseek-v4-flash") or "deepseek-v4-flash"),
+                    ("DWP_AGENT_TOOL_TOKEN", tool_token),
+                    ("DWP_PLATFORM_TOOL_URL", f"{tool_base_url.rstrip('/')}/internal/agent-tools/mcp"),
+                ):
+                    env_file.write(f"{key}={value.replace(chr(10), '').replace(chr(13), '')}\n")
+                env_path = env_file.name
             proc = subprocess.run(
                 [
-                    docker_bin,
-                    "run",
-                    "--rm",
-                    "--env-file",
-                    env_path,
-                    "--mount",
-                    f"type=bind,source={dsh_home.resolve()},target=/dsh-home",
-                    "--mount",
-                    f"type=bind,source={workspace.resolve()},target=/workspace",
-                    "--workdir",
-                    "/workspace",
-                    self.image,
-                    "--profile",
-                    "headless",
-                    task_prompt,
+                    docker_bin, "exec", "--workdir", "/workspace",
+                    "--env-file", env_path,
+                    name, "dsh", "--profile", "dwp-knowledge-agent-v2", task_prompt,
                 ],
                 capture_output=True,
                 text=True,
@@ -215,8 +197,8 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
                 timeout=self.timeout,
                 stdin=subprocess.DEVNULL,
             )
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            return RuntimeResult(mode="demo", ok=False, result=f"Harness 容器不可用：{exc.__class__.__name__}")
+        except (subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
+            return RuntimeResult(mode="harness", ok=False, result=f"Harness 容器不可用：{exc.__class__.__name__}")
         finally:
             if env_path:
                 try:
@@ -225,8 +207,8 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
                     pass
 
         if proc.returncode != 0:
-            return RuntimeResult(mode="demo", ok=False, result=(proc.stderr or proc.stdout or "").strip()[:200])
+            return RuntimeResult(mode="harness", ok=False, result=(proc.stderr or proc.stdout or "").strip()[:500])
         output = proc.stdout.strip()
         if not output:
-            return RuntimeResult(mode="demo", ok=False)
+            return RuntimeResult(mode="harness", ok=False, result="Harness 未返回内容")
         return RuntimeResult(mode="harness", ok=True, result=output)

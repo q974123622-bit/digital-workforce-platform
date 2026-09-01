@@ -135,7 +135,7 @@ describe('Dashboard', () => {
     expect(screen.getAllByText('数字分身').length).toBeGreaterThan(0);
     expect(screen.getAllByText('虚拟员工').length).toBeGreaterThan(0);
     expect(screen.getAllByText('RPA').length).toBeGreaterThan(0);
-    expect(screen.getByText('插件中心')).toBeInTheDocument();
+    expect(screen.getByText('数字员工')).toBeInTheDocument();
     expect(await screen.findByText('最近审计动态')).toBeInTheDocument();
     expect(screen.getByText(/已授权/)).toBeInTheDocument();
   });

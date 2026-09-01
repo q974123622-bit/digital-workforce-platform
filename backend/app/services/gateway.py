@@ -8,9 +8,11 @@ Gateway 不做授权决策（只转发评估结果），每次调用落一条审
 import json
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
+from . import config
 from .capability_contract import plugin_contract
 from .capability_executor import execute_capability
 from .identity import resolve_identity
@@ -47,6 +49,21 @@ def write_audit(
     db.commit()
     db.refresh(event)
     return event.id
+
+
+def _result_summary(data: object) -> str:
+    """Internal retrieval audits contain metadata only, never query or hit content."""
+    if isinstance(data, dict) and data.get("source") in {"internal", "mock", "demo", "rag", "volcengine_mcp"} and "knowledge_base_id" in data:
+        hits = data.get("hits")
+        return json.dumps(
+            {
+                "source": "mock" if data.get("source") == "demo" else data.get("source"),
+                "knowledge_base_id": data.get("knowledge_base_id"),
+                "hit_count": len(hits) if isinstance(hits, list) else 0,
+            },
+            ensure_ascii=False,
+        )
+    return json.dumps(data, ensure_ascii=False)[:200]
 
 
 def invoke_plugin(
@@ -160,12 +177,28 @@ def invoke_plugin(
     # approval_granted 只能由服务端任务状态机传入，HTTP Gateway DTO 不暴露该字段。
     if knowledge_base_id is not None:
         kb = resolve_knowledge_base(db, knowledge_base_id)
-        data = select_adapter(plugin, kb).search(
-            employee_id=employee_id,
-            knowledge_base_id=knowledge_base_id,
-            query=str(params.get("query", "")),
-            trace_id=trace_id,
-        )
+        try:
+            data = select_adapter(plugin, kb).search(
+                employee_id=employee_id,
+                knowledge_base_id=knowledge_base_id,
+                query=str(params.get("query", "")),
+                trace_id=trace_id,
+            )
+        except RuntimeError as exc:
+            if config.kb_mode() != "internal":
+                raise
+            audit_id = write_audit(
+                db, trace_id=trace_id, employee_id=employee_id, plugin_id=plugin_id,
+                action=action, decision=DECISION_DENY, knowledge_base_id=knowledge_base_id,
+                reason=str(exc), result_summary=json.dumps({
+                    "source": "internal", "knowledge_base_id": knowledge_base_id,
+                    "hit_count": 0, "status": "failed",
+                }, ensure_ascii=False),
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={"message": str(exc), "retryable": True, "audit_id": audit_id},
+            ) from exc
         runtime_mode = "knowledge_adapter"
         tool_name = plugin.name
         tool_type = plugin.type
@@ -204,7 +237,7 @@ def invoke_plugin(
         tool_type = execution.tool_type
         runtime_summary = execution.runtime_summary
         runtime_context_id = execution.context_id
-    summary = json.dumps(data, ensure_ascii=False)[:200]
+    summary = _result_summary(data)
     audit_id = write_audit(
         db,
         trace_id=trace_id,
@@ -242,12 +275,57 @@ def search_knowledge(
     knowledge_base_id: str,
     query: str,
     trace_id: str,
+    requester_human_no: str | None = None,
 ) -> dict:
     """知识库专用入口：仍统一经过 Policy → Gateway → Adapter 管线，不绕过。"""
     kb = resolve_knowledge_base(db, knowledge_base_id)
     if kb is None:
         raise HTTPException(status_code=404, detail="知识库资源不存在")
+    if kb.status != "active":
+        raise HTTPException(status_code=403, detail={"reason": "知识库当前未启用"})
+    subject = resolve_identity(db, employee_id)
+    if subject is None:
+        raise HTTPException(status_code=404, detail="数字员工不存在")
+    if requester_human_no:
+        requester = db.get(models.HumanEmployee, requester_human_no)
+        if requester is None:
+            raise HTTPException(status_code=403, detail={"reason": "请求用户身份不存在"})
+        if kb.allowed_employment_type and requester.employment_type not in kb.allowed_employment_type:
+            raise HTTPException(status_code=403, detail={"reason": "请求用户不在知识库允许的员工范围内"})
+        if kb.department_scope and "*" not in kb.department_scope and requester.department not in kb.department_scope:
+            raise HTTPException(status_code=403, detail={"reason": "请求用户不在知识库允许的部门范围内"})
     plugin_id = plugin_id_for_level(kb.data_level)
+    # Preserve the platform Policy decision (and its audit) before applying the
+    # more specific employee-to-knowledge-base grant.
+    base_policy = evaluate(
+        db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read"
+    )
+    if base_policy.decision != DECISION_ALLOW:
+        return invoke_plugin(
+            db, employee_id=employee_id, plugin_id=plugin_id, action="read",
+            params={"query": query, "knowledge_base_id": knowledge_base_id},
+            trace_id=trace_id, knowledge_base_id=knowledge_base_id,
+        )
+    explicit_grants = db.scalars(
+        select(models.AgentKnowledgeGrant).where(
+            models.AgentKnowledgeGrant.employee_id == employee_id,
+            models.AgentKnowledgeGrant.action == "read",
+            models.AgentKnowledgeGrant.status == "active",
+        )
+    ).all()
+    if knowledge_base_id not in {grant.knowledge_base_id for grant in explicit_grants}:
+        audit_id = write_audit(
+            db, trace_id=trace_id, employee_id=employee_id, plugin_id=plugin_id,
+            action="read", decision=DECISION_DENY, knowledge_base_id=knowledge_base_id,
+            reason="该数字员工未获授权访问此知识库",
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "reason": "该数字员工未获授权访问此知识库",
+                "policy_id": "AGENT-KB-GRANT", "audit_id": audit_id,
+            },
+        )
     return invoke_plugin(
         db,
         employee_id=employee_id,

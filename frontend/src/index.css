@@ -774,9 +774,29 @@ body {
   cursor: default;
 }
 
+.wp-contact-avatar-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.wp-contact-avatar-button:focus-visible {
+  outline: 2px solid #2f54eb;
+  outline-offset: 2px;
+}
+
 .wp-contact-name-link {
   display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: #1f2733;
+  cursor: pointer;
   font-size: 14px;
   font-weight: 600;
   line-height: 20px;
@@ -1295,3 +1315,142 @@ body {
     height: 65vh;
   }
 }
+
+/* Knowledge-first portal: ordinary enterprise chat/H5 surfaces, deliberately restrained. */
+.workplace {
+  gap: 1px;
+  height: calc(100vh - 88px);
+  border: 1px solid #e5e6eb;
+  background: #e5e6eb;
+}
+
+.wp-sidebar,
+.wp-chat {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.wp-sidebar-head,
+.wp-chat-head,
+.wp-chat-scroll,
+.wp-row.pinned,
+.wp-task-head,
+.wp-wf-demo {
+  background: #fff;
+}
+
+.wp-row.active {
+  background: #f2f3f5;
+  box-shadow: inset 3px 0 #165dff;
+}
+
+.wp-bubble,
+.wp-task-card,
+.wp-skill,
+.wp-modal-contacts {
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.wp-bubble.me {
+  background: #dceaff;
+}
+
+.wp-persona {
+  border-left-color: #165dff;
+  background: #f7f8fa;
+}
+
+@media (max-width: 640px) {
+  .workplace {
+    height: calc(100vh - 56px);
+    min-height: 0;
+    border-width: 0;
+  }
+
+  .wp-sidebar {
+    display: none;
+  }
+
+  .wp-chat {
+    height: 100%;
+  }
+
+  .wp-chat-scroll {
+    padding: 16px 12px;
+  }
+
+  .wp-chat-input {
+    padding: 10px 12px;
+  }
+}
+
+.execution-card {
+  width: min(720px, calc(100% - 48px));
+  margin: 14px 0 18px 48px;
+  overflow: hidden;
+  border: 1px solid #d9e2f1;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(31, 56, 88, 0.08);
+}
+
+.execution-card.running {
+  border-color: #b7ccf5;
+  background: linear-gradient(135deg, #fff 55%, #f4f8ff);
+}
+
+.execution-card.failed { border-color: #ffccc7; }
+
+.execution-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 15px;
+  border: 0;
+  background: transparent;
+  color: #1d2939;
+  text-align: left;
+  cursor: pointer;
+}
+
+.execution-brand {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 9px;
+  background: #eaf2ff;
+  color: #165dff;
+}
+
+.execution-heading { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.execution-heading span { color: #667085; font-size: 12px; }
+.execution-body { padding: 0 16px 15px; border-top: 1px solid #eef1f5; }
+.execution-safety-note { padding: 10px 0 6px; color: #98a2b3; font-size: 11px; }
+.execution-timeline { padding: 3px 0 3px 4px; }
+.execution-step { position: relative; display: grid; grid-template-columns: 26px 1fr; min-height: 50px; color: #344054; }
+.execution-step:not(:last-child)::after { position: absolute; top: 23px; bottom: 1px; left: 9px; width: 1px; background: #dfe6ef; content: ''; }
+.execution-dot { position: relative; z-index: 1; display: grid; width: 19px; height: 19px; place-items: center; border-radius: 50%; background: #edf4ff; color: #2468d8; font-size: 11px; }
+.execution-step-title { margin-bottom: 2px; font-size: 13px; font-weight: 600; }
+.execution-step-detail { margin-bottom: 5px; color: #667085; font-size: 12px; }
+.execution-answer { margin: 0 16px 16px 42px; padding: 12px 14px; border-radius: 7px; background: #f6f8fb; }
+.execution-answer-name { margin-bottom: 6px; color: #667085; font-size: 11px; }
+.execution-answer-text { color: #1f2937; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.stream-caret { display: inline-block; width: 2px; height: 1em; margin-left: 2px; background: #165dff; vertical-align: -2px; animation: stream-caret 0.8s steps(1) infinite; }
+.scroll-bottom { position: sticky; bottom: 8px; left: 50%; z-index: 4; display: block; margin: 8px auto 0; border-color: #b8c8df; box-shadow: 0 5px 16px rgba(31, 56, 88, 0.16); }
+
+@keyframes stream-caret { 50% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-caret { animation: none; }
+  .execution-card * { transition: none !important; }
+}
+
+@media (max-width: 640px) {
+  .execution-card { width: 100%; margin-left: 0; }
+}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

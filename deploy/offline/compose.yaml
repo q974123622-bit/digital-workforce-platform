@@ -1,0 +1,47 @@
+name: dwp-demo
+
+services:
+  backend:
+    image: dwp-backend:0.1.0-offline
+    pull_policy: never
+    restart: unless-stopped
+    user: "${DWP_UID:-1000}:${DWP_GID:-1000}"
+    environment:
+      DATABASE_URL: sqlite:////data/dwp.db
+      DEEPSEEK_BASE_URL: http://api.llmxt.cisctest:8002/v1
+      DEEPSEEK_MODEL: ascend-deepseek-v4-flash
+      DWP_KB_MODE: mock
+      DWP_HARNESS_ENABLED: "0"
+      DWP_TEAM_BACKEND: builtin
+      DWP_REQUIRE_AUTH: "1"
+    secrets:
+      - llm_api_key
+    volumes:
+      - ./data:/data
+      - ./backups:/backups
+    networks:
+      - dwp
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    image: dwp-frontend:0.1.0-offline
+    pull_policy: never
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${DWP_HTTP_PORT:-8080}:8080"
+    networks:
+      - dwp
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  llm_api_key:
+    file: ./secrets/llm_api_key
+
+networks:
+  dwp:
+    driver: bridge

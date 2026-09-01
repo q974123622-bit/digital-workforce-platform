@@ -11,7 +11,7 @@ import {
   UserSwitchOutlined,
 } from '@ant-design/icons';
 import { Card, Col, Empty, List, Row, Space, Statistic, Typography } from 'antd';
-import type { AuditEvent, Employee, EmployeeType, Plugin, Team } from '@dwp/shared-schema';
+import type { AuditEvent, Employee, EmployeeType, Plugin } from '@dwp/shared-schema';
 import { api } from '../api/client';
 import { DecisionTag, TYPE_META } from '../components/tags';
 import { ErrorState, LoadingState } from '../components/PageState';
@@ -22,7 +22,6 @@ const formatTime = (ts?: string | null) => (ts ? new Date(ts).toLocaleString() :
 interface DashboardData {
   employees: Employee[];
   plugins: Plugin[];
-  teams: Team[];
   audit: AuditEvent[];
 }
 
@@ -30,8 +29,8 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const fetcher = useCallback(
     () =>
-      Promise.all([api.listEmployees(), api.listPlugins(), api.listTeams(), api.listAudit()]).then(
-        ([employees, plugins, teams, audit]) => ({ employees, plugins, teams, audit }),
+      Promise.all([api.listEmployees(), api.listPlugins(), api.listAudit()]).then(
+        ([employees, plugins, audit]) => ({ employees, plugins, audit }),
       ),
     [],
   );
@@ -42,7 +41,6 @@ export default function Dashboard() {
 
   const employees = data?.employees ?? [];
   const plugins = data?.plugins ?? [];
-  const teams = data?.teams ?? [];
   const audit = data?.audit ?? [];
 
   const count = (type: string) => employees.filter((employee) => employee.type === type).length;
@@ -58,17 +56,17 @@ export default function Dashboard() {
 
   const entries = [
     {
-      key: '/employees',
+      key: '/agents',
       title: '数字员工',
-      desc: `管理数字分身、虚拟员工与 RPA · 共 ${employees.length} 名`,
+      desc: `管理数字分身、岗位员工与 Harness · 共 ${employees.length} 名`,
       icon: <RobotOutlined />,
       hex: '#2f54eb',
       bg: '#eef4ff',
     },
     {
       key: '/plugins',
-      title: '插件中心',
-      desc: `插件统一登记与授权管理 · 共 ${plugins.length} 个`,
+      title: '知识与能力',
+      desc: `Mock 知识库、MCP 接口与授权 · 共 ${plugins.length} 个`,
       icon: <AppstoreOutlined />,
       hex: '#722ed1',
       bg: '#f9f0ff',
@@ -81,14 +79,6 @@ export default function Dashboard() {
       hex: '#cf1322',
       bg: '#fff1f0',
     },
-    {
-      key: '/teams',
-      title: '协作团队',
-      desc: `团队任务协作与审批 · 共 ${teams.length} 个`,
-      icon: <TeamOutlined />,
-      hex: '#13c2c2',
-      bg: '#e6fffb',
-    },
   ];
 
   const openEntry = (key: string) => {
@@ -98,22 +88,22 @@ export default function Dashboard() {
   return (
     <div>
       <Card
-        style={{ marginBottom: 16, borderRadius: 16, border: 'none' }}
+        style={{ marginBottom: 16, borderRadius: 6, border: '1px solid #e5e6eb' }}
         styles={{
           body: {
             padding: '28px 32px',
-            background: 'linear-gradient(120deg, #0d1b3e 0%, #1d3f9e 60%, #2f54eb 100%)',
-            borderRadius: 16,
+            background: '#ffffff',
+            borderRadius: 6,
           },
         }}
       >
         <Row align="middle" justify="space-between" gutter={[16, 16]}>
           <Col>
-            <Typography.Title level={2} style={{ color: '#fff', margin: 0 }}>
-              数字员工平台
+            <Typography.Title level={2} style={{ color: '#1d2129', margin: 0 }}>
+              数字员工工作台
             </Typography.Title>
-            <Typography.Paragraph style={{ color: 'rgba(255,255,255,0.72)', margin: '8px 0 0' }}>
-              面向券商内部场景的数字员工 PoC · 统一管理数字分身、虚拟员工与 RPA
+            <Typography.Paragraph style={{ color: '#4e5969', margin: '8px 0 0' }}>
+              知识问答 MVP · 管理数字分身、岗位型数字员工、知识授权与独立 Harness 运行环境
             </Typography.Paragraph>
           </Col>
           <Col>
@@ -123,8 +113,8 @@ export default function Dashboard() {
                 alt="数字员工平台"
                 style={{ height: 36, width: 'auto', objectFit: 'contain', marginBottom: 12 }}
               />
-              <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>当前在线</div>
-              <div style={{ color: '#fff', fontSize: 30, fontWeight: 700, lineHeight: 1.2 }}>
+              <div style={{ color: '#86909c', fontSize: 12 }}>已登记数字员工</div>
+              <div style={{ color: '#1d2129', fontSize: 30, fontWeight: 600, lineHeight: 1.2 }}>
                 {total}
                 <span style={{ fontSize: 14, fontWeight: 400, marginLeft: 4 }}>名</span>
               </div>

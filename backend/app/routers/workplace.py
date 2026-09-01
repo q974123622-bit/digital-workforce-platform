@@ -4,16 +4,22 @@
 私聊与群聊统一由 Conversation 承载，消息发送走 services/group_chat 编排。
 """
 
+import asyncio
+import json
+import time
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
 from ..services.adapters import WORKFLOW_META
+from ..services.auth import enforce_actor, optional_account
 from ..services.group_chat import append_user_message, process_conversation_async
+from ..services import config, execution_events
 from ..services.team_orchestrator import TeamTaskOrchestrator
 from .employees import _to_out as _employee_out
 
@@ -133,6 +139,18 @@ def _summary_out(db: Session, conv: models.Conversation) -> schemas.Conversation
     )
 
 
+def _conversation_is_active(db: Session, conv: models.Conversation) -> bool:
+    """Keep history in storage but hide conversations for retired demo identities."""
+    participants = conv.participants or []
+    if not participants:
+        return False
+    for participant in participants:
+        employee = db.get(models.DigitalEmployee, participant.get("employee_no"))
+        if employee is None or employee.status != "active":
+            return False
+    return True
+
+
 def _next_skill_id(db: Session) -> str:
     rows = db.scalars(select(models.Skill.id).where(models.Skill.id.like("SK-%"))).all()
     max_n = max((int(no.split("-")[1]) for no in rows if "-" in no), default=0)
@@ -162,8 +180,13 @@ def _find_direct(db: Session, actor_no: str, employee_no: str) -> models.Convers
 
 
 @workplace_router.get("", response_model=schemas.WorkplaceHomeOut)
-def workplace_home(actor_no: str = Query(...), db: Session = Depends(get_db)):
+def workplace_home(
+    actor_no: str = Query(...),
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
     """员工登录后的职场首页：本人信息 + 我的分身 + 可用数字员工 + 技能 + 最近会话。"""
+    enforce_actor(account, actor_no)
     actor = _get_actor(db, actor_no)
     twin = db.scalar(
         select(models.DigitalEmployee).where(
@@ -189,8 +212,8 @@ def workplace_home(actor_no: str = Query(...), db: Session = Depends(get_db)):
         select(models.Conversation)
         .where(models.Conversation.owner_human_no == actor_no)
         .order_by(models.Conversation.updated_at.desc())
-        .limit(5)
     ).all()
+    conversations = [conv for conv in conversations if _conversation_is_active(db, conv)][:5]
 
     return schemas.WorkplaceHomeOut(
         actor=schemas.ActorOut(
@@ -210,7 +233,12 @@ def workplace_home(actor_no: str = Query(...), db: Session = Depends(get_db)):
 
 
 @skills_router.post("", response_model=schemas.SkillOut, status_code=201)
-def create_skill(payload: schemas.SkillCreate, db: Session = Depends(get_db)):
+def create_skill(
+    payload: schemas.SkillCreate,
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    enforce_actor(account, payload.actor_no)
     _get_actor(db, payload.actor_no)
     skill = models.Skill(
         id=_next_skill_id(db),
@@ -227,7 +255,12 @@ def create_skill(payload: schemas.SkillCreate, db: Session = Depends(get_db)):
 
 
 @skills_router.get("", response_model=list[schemas.SkillOut])
-def list_skills(actor_no: str = Query(...), db: Session = Depends(get_db)):
+def list_skills(
+    actor_no: str = Query(...),
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    enforce_actor(account, actor_no)
     _get_actor(db, actor_no)
     return db.scalars(
         select(models.Skill).where(models.Skill.owner_human_no == actor_no).order_by(models.Skill.created_at)
@@ -239,8 +272,10 @@ def update_skill(
     skill_id: str,
     payload: schemas.SkillUpdate,
     actor_no: str = Query(...),
+    account: models.Account | None = Depends(optional_account),
     db: Session = Depends(get_db),
 ):
+    enforce_actor(account, actor_no)
     _get_actor(db, actor_no)
     skill = db.get(models.Skill, skill_id)
     if skill is None:
@@ -258,8 +293,10 @@ def update_skill(
 def delete_skill(
     skill_id: str,
     actor_no: str = Query(...),
+    account: models.Account | None = Depends(optional_account),
     db: Session = Depends(get_db),
 ):
+    enforce_actor(account, actor_no)
     _get_actor(db, actor_no)
     skill = db.get(models.Skill, skill_id)
     if skill is None:
@@ -274,7 +311,12 @@ def delete_skill(
 
 
 @conversations_router.post("", response_model=schemas.ConversationOut, status_code=201)
-def create_conversation(payload: schemas.ConversationCreate, db: Session = Depends(get_db)):
+def create_conversation(
+    payload: schemas.ConversationCreate,
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    enforce_actor(account, payload.actor_no)
     actor = _get_actor(db, payload.actor_no)
     twin = db.scalar(
         select(models.DigitalEmployee).where(
@@ -329,21 +371,32 @@ def create_conversation(payload: schemas.ConversationCreate, db: Session = Depen
 
 
 @conversations_router.get("", response_model=list[schemas.ConversationSummaryOut])
-def list_conversations(actor_no: str = Query(...), db: Session = Depends(get_db)):
+def list_conversations(
+    actor_no: str = Query(...),
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    enforce_actor(account, actor_no)
     _get_actor(db, actor_no)
     rows = db.scalars(
         select(models.Conversation)
         .where(models.Conversation.owner_human_no == actor_no)
         .order_by(models.Conversation.updated_at.desc())
     ).all()
-    return [_summary_out(db, conv) for conv in rows]
+    return [_summary_out(db, conv) for conv in rows if _conversation_is_active(db, conv)]
 
 
 @conversations_router.get("/{conversation_id}", response_model=schemas.ConversationOut)
-def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
+def get_conversation(
+    conversation_id: str,
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
     conv = db.get(models.Conversation, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    if account is not None and conv.owner_human_no != account.human_employee_no:
+        raise HTTPException(status_code=403, detail="无权查看该会话")
     return _conversation_out(db, conv)
 
 
@@ -352,11 +405,13 @@ def send_message(
     conversation_id: str,
     payload: schemas.ConversationSendIn,
     background_tasks: BackgroundTasks,
+    account: models.Account | None = Depends(optional_account),
     db: Session = Depends(get_db),
 ):
     conv = db.get(models.Conversation, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    enforce_actor(account, payload.actor_no)
     if conv.owner_human_no != payload.actor_no:
         raise HTTPException(status_code=403, detail="无权向该会话发送消息")
     content = payload.content.strip()
@@ -378,15 +433,256 @@ def send_message(
     return _conversation_out(db, conv)
 
 
-@conversations_router.post("/{conversation_id}/participants", response_model=schemas.ConversationOut)
-def add_participant(
+@conversations_router.post("/{conversation_id}/runs", response_model=schemas.ConversationRunOut)
+def start_conversation_run(
     conversation_id: str,
-    payload: schemas.ConversationAddParticipantIn,
+    payload: schemas.ConversationSendIn,
+    background_tasks: BackgroundTasks,
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    """Start one durable conversation execution; progress is consumed over SSE."""
+    conv = db.get(models.Conversation, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    enforce_actor(account, payload.actor_no)
+    if conv.owner_human_no != payload.actor_no:
+        raise HTTPException(status_code=403, detail="无权向该会话发送消息")
+    active = execution_events.active_execution(db, conversation_id)
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "当前会话已有任务正在执行", "retryable": True, "execution_id": active.id},
+        )
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="消息不能为空")
+    user_message = append_user_message(db, conversation=conv, actor_no=payload.actor_no, content=content)
+    primary = (conv.participants or [{}])[0].get("employee_no", "")
+    execution = execution_events.create_execution(
+        db,
+        conversation_id=conversation_id,
+        trigger_message_seq=user_message.seq,
+        primary_employee_id=primary,
+    )
+    conv.updated_at = datetime.now()
+    db.add(conv)
+    db.commit()
+    background_tasks.add_task(
+        process_conversation_async,
+        conv.id,
+        payload.actor_no,
+        content,
+        user_message.seq,
+        execution.id,
+    )
+    return schemas.ConversationRunOut(
+        execution_id=execution.id,
+        trigger_message_seq=user_message.seq,
+        conversation=_conversation_out(db, conv),
+    )
+
+
+@conversations_router.get("/{conversation_id}/runs/active", response_model=schemas.AgentExecutionOut | None)
+def get_active_conversation_run(
+    conversation_id: str,
+    account: models.Account | None = Depends(optional_account),
     db: Session = Depends(get_db),
 ):
     conv = db.get(models.Conversation, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    if account is not None and conv.owner_human_no != account.human_employee_no:
+        raise HTTPException(status_code=403, detail="无权查看该会话")
+    return execution_events.active_execution(db, conversation_id)
+
+
+@conversations_router.get("/{conversation_id}/runs/latest", response_model=schemas.AgentExecutionDetailOut | None)
+def get_latest_conversation_run(
+    conversation_id: str,
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    """Return the latest durable execution and its sanitized, replayable events."""
+    conv = db.get(models.Conversation, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if account is not None and conv.owner_human_no != account.human_employee_no:
+        raise HTTPException(status_code=403, detail="无权查看该会话")
+    execution = db.scalar(
+        select(models.AgentExecution).where(
+            models.AgentExecution.conversation_id == conversation_id,
+        ).order_by(models.AgentExecution.started_at.desc()).limit(1)
+    )
+    if execution is None:
+        return None
+    events = db.scalars(
+        select(models.AgentExecutionEvent).where(
+            models.AgentExecutionEvent.execution_id == execution.id,
+        ).order_by(models.AgentExecutionEvent.event_seq)
+    ).all()
+    return schemas.AgentExecutionDetailOut(execution=execution, events=events)
+
+
+@conversations_router.get("/{conversation_id}/runs/history", response_model=list[schemas.AgentExecutionDetailOut])
+def get_conversation_run_history(
+    conversation_id: str,
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    """Return durable safe execution traces for every retained turn in a conversation."""
+    conv = db.get(models.Conversation, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if account is not None and conv.owner_human_no != account.human_employee_no:
+        raise HTTPException(status_code=403, detail="无权查看该会话")
+    executions = db.scalars(
+        select(models.AgentExecution).where(
+            models.AgentExecution.conversation_id == conversation_id,
+        ).order_by(models.AgentExecution.started_at)
+    ).all()
+    if not executions:
+        return []
+    execution_ids = [execution.id for execution in executions]
+    event_rows = db.scalars(
+        select(models.AgentExecutionEvent).where(
+            models.AgentExecutionEvent.execution_id.in_(execution_ids),
+        ).order_by(models.AgentExecutionEvent.execution_id, models.AgentExecutionEvent.event_seq)
+    ).all()
+    grouped: dict[str, list[models.AgentExecutionEvent]] = {execution_id: [] for execution_id in execution_ids}
+    for event in event_rows:
+        grouped[event.execution_id].append(event)
+    return [
+        schemas.AgentExecutionDetailOut(execution=execution, events=grouped[execution.id])
+        for execution in executions
+    ]
+
+
+def _sse(event: str, event_id: str, data: dict) -> str:
+    return f"id: {event_id}\nevent: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _stream_char_delay() -> float:
+    try:
+        milliseconds = int(config.get("DWP_STREAM_CHAR_DELAY_MS", "16") or "16")
+    except ValueError:
+        milliseconds = 16
+    return max(0, min(milliseconds, 100)) / 1000
+
+
+@conversations_router.get("/{conversation_id}/runs/{execution_id}/events")
+async def stream_conversation_run(
+    conversation_id: str,
+    execution_id: str,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    after_event_id: str | None = Query(default=None),
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    conv = db.get(models.Conversation, conversation_id)
+    execution = db.get(models.AgentExecution, execution_id)
+    if conv is None or execution is None or execution.conversation_id != conversation_id:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    if account is not None and conv.owner_human_no != account.human_employee_no:
+        raise HTTPException(status_code=403, detail="无权查看该执行记录")
+
+    try:
+        raw_seq, _, raw_char = (last_event_id or after_event_id or "0").partition(".")
+        cursor_seq = max(0, int(raw_seq or "0"))
+        cursor_char = int(raw_char) if raw_char else -1
+    except ValueError:
+        cursor_seq, cursor_char = 0, -1
+
+    async def generate():
+        from ..database import SessionLocal
+
+        nonlocal cursor_seq, cursor_char
+        last_activity = time.monotonic()
+        while True:
+            stream_db = SessionLocal()
+            try:
+                current = stream_db.get(models.AgentExecution, execution_id)
+                seq_filter = (
+                    models.AgentExecutionEvent.event_seq >= cursor_seq
+                    if cursor_char >= 0 else
+                    models.AgentExecutionEvent.event_seq > cursor_seq
+                )
+                query = select(models.AgentExecutionEvent).where(
+                    models.AgentExecutionEvent.execution_id == execution_id,
+                    seq_filter,
+                ).order_by(models.AgentExecutionEvent.event_seq)
+                events = stream_db.scalars(query).all()
+            finally:
+                stream_db.close()
+            if current is not None and current.status == "cancelled":
+                break
+            emitted = False
+            for row in events:
+                if row.event_type == "answer_chunk":
+                    text = str((row.payload or {}).get("text", ""))
+                    start = cursor_char + 1 if row.event_seq == cursor_seq and cursor_char >= 0 else 0
+                    base_offset = int((row.payload or {}).get("offset", 0))
+                    for index in range(start, len(text)):
+                        cursor_seq, cursor_char = row.event_seq, index
+                        yield _sse("answer_delta", f"{row.event_seq}.{index}", {
+                            "execution_id": execution_id,
+                            "employee_id": row.actor_employee_id,
+                            "delta": text[index],
+                            "offset": base_offset + index,
+                        })
+                        emitted = True
+                        last_activity = time.monotonic()
+                        await asyncio.sleep(_stream_char_delay())
+                    cursor_seq, cursor_char = row.event_seq, -1
+                else:
+                    cursor_seq, cursor_char = row.event_seq, -1
+                    data = {
+                        "execution_id": execution_id,
+                        "stage": row.stage,
+                        "status": row.status,
+                        "title": row.title,
+                        "detail": row.detail,
+                        "employee_id": row.actor_employee_id,
+                        "knowledge_base_id": row.knowledge_base_id,
+                        "target_agent_id": row.target_agent_id,
+                        "hit_count": row.hit_count,
+                        "created_at": row.created_at.isoformat(),
+                        **(row.payload or {}),
+                    }
+                    event_name = row.event_type if row.event_type in {"error", "answer_done"} else "progress"
+                    yield _sse(event_name, str(row.event_seq), data)
+                    emitted = True
+                    last_activity = time.monotonic()
+            if current is None or (current.status in execution_events.TERMINAL_STATUSES and not events):
+                break
+            if not emitted and time.monotonic() - last_activity >= 15:
+                yield ": heartbeat\n\n"
+                last_activity = time.monotonic()
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@conversations_router.post("/{conversation_id}/participants", response_model=schemas.ConversationOut)
+def add_participant(
+    conversation_id: str,
+    payload: schemas.ConversationAddParticipantIn,
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    conv = db.get(models.Conversation, conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if account is not None and conv.owner_human_no != account.human_employee_no:
+        raise HTTPException(status_code=403, detail="无权修改该会话")
     if conv.kind != "group":
         raise HTTPException(status_code=400, detail="只有群聊可以添加成员")
     emp = _get_digital_employee(db, payload.employee_no)
@@ -406,14 +702,17 @@ def add_participant(
 def clear_conversation(
     conversation_id: str,
     actor_no: str = Query(...),
+    account: models.Account | None = Depends(optional_account),
     db: Session = Depends(get_db),
 ):
     """清空本地会话数据；后台任务通过触发消息存在性检测自动取消。"""
     conv = db.get(models.Conversation, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    enforce_actor(account, actor_no)
     if conv.owner_human_no != actor_no:
         raise HTTPException(status_code=403, detail="无权清空该会话")
+    execution_events.cancel_for_conversation(db, conversation_id)
     db.query(models.ConversationMessage).filter(
         models.ConversationMessage.conversation_id == conversation_id
     ).delete()

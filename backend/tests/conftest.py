@@ -5,6 +5,9 @@ os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["DWP_KB_MODE"] = "mock"
 # 测试默认走内置编排，避免加载真实 .env 后连 Matrix/AgentTeams（AgentTeams 路径由专门测试 mock 覆盖）
 os.environ["DWP_TEAM_BACKEND"] = "builtin"
+os.environ["DWP_HARNESS_ENABLED"] = "0"
+# 旧版接口测试保留兼容模式；正式部署默认要求登录。
+os.environ["DWP_REQUIRE_AUTH"] = "0"
 
 import pytest
 from fastapi.testclient import TestClient

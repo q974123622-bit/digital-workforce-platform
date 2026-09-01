@@ -92,6 +92,7 @@ class ChatOrchestrator:
         history_override: list[dict] | None = None,
         persist: bool = True,
         trace_id: str | None = None,
+        requester_human_no: str | None = None,
     ) -> ChatResult:
         subject = resolve_identity(db, employee_no)
         if subject is None:
@@ -108,7 +109,7 @@ class ChatOrchestrator:
             active_trace_id = trace_id or f"T-GRP-{uuid4().hex[:12]}"
 
         messages: list[dict] = [
-            {"role": "system", "content": self._system_prompt(db, subject), "source": "demo"},
+            {"role": "system", "content": self._system_prompt(db, subject, requester_human_no), "source": "demo"},
         ]
         if system_context:
             messages.append({"role": "system", "content": system_context, "source": "demo"})
@@ -125,9 +126,10 @@ class ChatOrchestrator:
         policy_denied: ToolCard | None = None
         guard_retried = False
         needs_guard = self._is_query_intent(message)
+        active_tools = self._tools_for_subject(db, subject, requester_human_no)
 
         for _round in range(MAX_TOOL_ROUNDS):
-            resp = self.provider.chat(messages, tools=TOOLS)
+            resp = self.provider.chat(messages, tools=active_tools)
             if not resp.tool_calls:
                 if needs_guard and not tool_cards and not guard_retried:
                     guard_retried = True
@@ -167,7 +169,9 @@ class ChatOrchestrator:
             }
             messages.append(assistant_msg)
             for tc in resp.tool_calls:
-                card, tool_message = self._execute_tool(db, subject, tc.arguments, active_trace_id)
+                card, tool_message = self._execute_tool(
+                    db, subject, tc.arguments, active_trace_id, requester_human_no=requester_human_no
+                )
                 tool_cards.append(card)
                 if card.decision == "deny" and policy_denied is None:
                     policy_denied = card
@@ -205,7 +209,25 @@ class ChatOrchestrator:
     def _is_query_intent(message: str) -> bool:
         return any(keyword in message for keyword in QUERY_INTENT_KEYWORDS)
 
-    def _execute_tool(self, db: Session, subject, arguments: dict, trace_id: str) -> tuple[ToolCard, str]:
+    @staticmethod
+    def _tools_for_subject(db: Session, subject, requester_human_no: str | None = None) -> list[dict]:
+        """Build tool metadata from live grants instead of maintaining an intent/KB prompt table."""
+        tools = json.loads(json.dumps(TOOLS, ensure_ascii=False))
+        resources = accessible_knowledge_bases(db, subject, requester_human_no)
+        if resources:
+            catalog = "；".join(
+                f"{item['id']}={item['name']}（领域：{item.get('domain') or '通用'}，{item['data_level']}）"
+                for item in resources
+            )
+            description = f"只能从以下已授权知识库选择：{catalog}"
+        else:
+            description = "当前没有已授权知识库；不要调用此工具"
+        tools[0]["function"]["parameters"]["properties"]["knowledge_base_id"]["description"] = description
+        return tools
+
+    def _execute_tool(
+        self, db: Session, subject, arguments: dict, trace_id: str, requester_human_no: str | None = None
+    ) -> tuple[ToolCard, str]:
         kb_id = str(arguments.get("knowledge_base_id", ""))
         query = str(arguments.get("query", ""))
         try:
@@ -215,6 +237,7 @@ class ChatOrchestrator:
                 knowledge_base_id=kb_id,
                 query=query,
                 trace_id=trace_id,
+                requester_human_no=requester_human_no,
             )
             card = ToolCard(
                 plugin_id=f"knowledge:{kb_id}",
@@ -236,9 +259,9 @@ class ChatOrchestrator:
                 return card, "POLICY_DENIED（source=demo）：当前身份无权访问该知识库，请如实告知用户。"
             raise
 
-    def _system_prompt(self, db: Session, subject) -> str:
+    def _system_prompt(self, db: Session, subject, requester_human_no: str | None = None) -> str:
         role_label = "正式员工" if subject.employment_type == "formal" else "实习生"
-        accessible = accessible_knowledge_bases(db, subject)
+        accessible = accessible_knowledge_bases(db, subject, requester_human_no)
         if accessible:
             kb_desc = "、".join(f"{item['name']}（{item['data_level']}）" for item in accessible)
             kb_access = f"你能访问的知识库只有：{kb_desc}。其余平台知识库无权限，不得声称可以访问，也不得凭记忆描述其内容。"

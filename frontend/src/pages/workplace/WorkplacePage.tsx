@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Link } from 'react-router-dom';
 import {
   CheckCircleOutlined,
   CommentOutlined,
@@ -8,8 +7,8 @@ import {
   DeleteOutlined,
   DownOutlined,
   ExperimentOutlined,
+  LoadingOutlined,
   PlusOutlined,
-  QuestionCircleOutlined,
   RobotOutlined,
   SendOutlined,
   StopOutlined,
@@ -30,7 +29,6 @@ import {
   Input,
   Modal,
   Popconfirm,
-  Radio,
   Space,
   Switch,
   Tag,
@@ -41,6 +39,8 @@ import {
 } from 'antd';
 import type {
   Conversation,
+  AgentExecution,
+  AgentExecutionDetail,
   ConversationSummary,
   Skill,
   TaskRun,
@@ -64,7 +64,7 @@ interface ContactMeta {
 
 const GROUP_META: Record<string, ContactMeta> = {
   twin: { label: '我的分身', emoji: '⭐', color: '#2f54eb', bg: '#eef4ff' },
-  virtual: { label: '智能助理', emoji: '🤖', color: '#722ed1', bg: '#f9f0ff' },
+  virtual: { label: '数字员工', emoji: '员', color: '#165dff', bg: '#e8f3ff' },
   rpa: { label: '自动化小助手', emoji: '⚙️', color: '#fa8c16', bg: '#fff7e6' },
 };
 
@@ -118,6 +118,140 @@ interface TaskCardProps {
   metaOf: (employeeNo: string) => ContactMeta;
   onApprove: (task: TaskRun, approve: boolean) => void;
   acting: boolean;
+}
+
+interface ExecutionStep {
+  id: string;
+  stage: string;
+  title: string;
+  detail: string;
+  status: string;
+  employeeId: string;
+  knowledgeBaseId?: string;
+  targetAgentId?: string;
+  hitCount?: number;
+}
+
+interface LiveExecution {
+  id: string;
+  triggerSeq: number;
+  employeeId: string;
+  status: AgentExecution['status'];
+  startedAt: number;
+  finishedAt?: number;
+  expanded: boolean;
+  steps: ExecutionStep[];
+  answers: Record<string, string>;
+  error?: string;
+  retryable?: boolean;
+  resumeAfter?: string;
+}
+
+const executionIsActive = (status: AgentExecution['status']) =>
+  ['queued', 'running', 'streaming', 'waiting_approval'].includes(status);
+
+function restoreExecution(detail: AgentExecutionDetail): LiveExecution {
+  const { execution: run, events } = detail;
+  const active = executionIsActive(run.status);
+  const steps: ExecutionStep[] = events
+    .filter((event) => !['answer_chunk', 'answer_done', 'error'].includes(event.event_type) && event.title)
+    .map((event) => ({
+      id: String(event.event_seq),
+      stage: event.stage,
+      title: event.title,
+      detail: event.detail,
+      status: event.status,
+      employeeId: event.actor_employee_id,
+      knowledgeBaseId: event.knowledge_base_id ?? undefined,
+      targetAgentId: event.target_agent_id ?? undefined,
+      hitCount: event.hit_count ?? undefined,
+    }));
+  const answers: Record<string, string> = {};
+  if (active) {
+    events.filter((event) => event.event_type === 'answer_chunk').forEach((event) => {
+      const text = typeof event.payload.text === 'string' ? event.payload.text : '';
+      answers[event.actor_employee_id] = (answers[event.actor_employee_id] ?? '') + text;
+    });
+  }
+  const failure = [...events].reverse().find((event) => event.event_type === 'error');
+  const lastEvent = events.length ? events[events.length - 1] : undefined;
+  return {
+    id: run.id,
+    triggerSeq: run.trigger_message_seq,
+    employeeId: run.primary_employee_id,
+    status: run.status,
+    startedAt: new Date(run.started_at).getTime(),
+    finishedAt: run.completed_at ? new Date(run.completed_at).getTime() : undefined,
+    expanded: active || run.status === 'failed',
+    steps,
+    answers,
+    error: failure?.detail || run.error_message || undefined,
+    retryable: active ? run.retryable : false,
+    resumeAfter: active && lastEvent ? String(lastEvent.event_seq) : undefined,
+  };
+}
+
+function ExecutionCard({ run, employeeName, onToggle, onRetry }: {
+  run: LiveExecution;
+  employeeName: (id: string) => string;
+  onToggle: () => void;
+  onRetry: () => void;
+}) {
+  const running = ['queued', 'running', 'streaming', 'waiting_approval'].includes(run.status);
+  const failed = run.status === 'failed';
+  const elapsed = Math.max(0, Math.round(((run.finishedAt ?? Date.now()) - run.startedAt) / 1000));
+  return (
+    <section className={`execution-card ${failed ? 'failed' : running ? 'running' : 'completed'}`}>
+      <button className="execution-head" type="button" onClick={onToggle}>
+        <span className="execution-brand"><RobotOutlined /></span>
+        <span className="execution-heading">
+          <strong>{employeeName(run.employeeId) || '数字员工'}</strong>
+          <span>{running ? 'Harness 正在运行' : failed ? '执行未完成' : `已完成 ${run.steps.length} 个步骤 · 用时 ${elapsed} 秒`}</span>
+        </span>
+        <Tag color={failed ? 'error' : running ? 'processing' : 'success'}>
+          {running ? <><LoadingOutlined /> 执行中</> : failed ? '失败' : '已完成'}
+        </Tag>
+        {run.expanded ? <UpOutlined /> : <DownOutlined />}
+      </button>
+      {run.expanded && (
+        <div className="execution-body">
+          <div className="execution-safety-note">展示可审计的操作轨迹，不包含模型隐藏推理或知识原文</div>
+          <div className="execution-timeline">
+            {run.steps.map((step, index) => (
+              <div className={`execution-step ${step.status}`} key={step.id}>
+                <span className="execution-dot">
+                  {step.status === 'failed' ? <StopOutlined /> : index === run.steps.length - 1 && running ? <LoadingOutlined /> : <CheckCircleOutlined />}
+                </span>
+                <div>
+                  <div className="execution-step-title">{step.title}</div>
+                  {step.detail && <div className="execution-step-detail">{step.detail}</div>}
+                  <Space size={4} wrap>
+                    {step.knowledgeBaseId && <Tag>{step.knowledgeBaseId}</Tag>}
+                    {step.hitCount != null && <Tag color="blue">命中 {step.hitCount} 条</Tag>}
+                    {step.targetAgentId && <Tag color="geekblue">委派至 {employeeName(step.targetAgentId)}</Tag>}
+                  </Space>
+                </div>
+              </div>
+            ))}
+          </div>
+          {failed && (
+            <Alert
+              type="error"
+              showIcon
+              message={run.error ?? '数字员工执行失败，可稍后重试'}
+              action={run.retryable ? <Button size="small" onClick={onRetry}>重新执行</Button> : undefined}
+            />
+          )}
+        </div>
+      )}
+      {Object.entries(run.answers).map(([employeeId, answer]) => answer ? (
+        <div className="execution-answer" key={employeeId}>
+          <div className="execution-answer-name">{employeeName(employeeId)}</div>
+          <div className="execution-answer-text">{answer}<span className={running ? 'stream-caret' : ''} /></div>
+        </div>
+      ) : null)}
+    </section>
+  );
 }
 
 function TaskCard({ task, workerName, metaOf, onApprove, acting }: TaskCardProps) {
@@ -312,9 +446,16 @@ export default function WorkplacePage() {
   const pendingReply = pendingAfterSeq !== null;
   const [chatError, setChatError] = useState<string>();
   const [acting, setActing] = useState(false);
+  const [liveExecution, setLiveExecution] = useState<LiveExecution | null>(null);
+  const [savedExecutions, setSavedExecutions] = useState<LiveExecution[]>([]);
+  const executionEventIds = useRef(new Set<string>());
+  const connectedExecutionId = useRef<string>();
+  const lastPrompt = useRef('');
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
 
   const [newChatOpen, setNewChatOpen] = useState(false);
-  const [chatMode, setChatMode] = useState<'direct' | 'group'>('direct');
+  const [chatMode] = useState<'direct' | 'group'>('direct');
   const [groupTitle, setGroupTitle] = useState('');
   const [selectedNos, setSelectedNos] = useState<string[]>([]);
 
@@ -331,6 +472,8 @@ export default function WorkplacePage() {
     setSelected(null);
     setInput('');
     setPendingAfterSeq(null);
+    setLiveExecution(null);
+    setSavedExecutions([]);
   }, [actorNo]);
 
   useEffect(() => {
@@ -351,6 +494,118 @@ export default function WorkplacePage() {
       active = false;
     };
   }, [selectedId]);
+
+  // 页面切换或刷新后恢复该会话每一轮的安全执行轨迹。
+  useEffect(() => {
+    if (!selectedId) {
+      setLiveExecution(null);
+      setSavedExecutions([]);
+      return;
+    }
+    let cancelled = false;
+    api.getConversationRunHistory(selectedId).then((details) => {
+      if (cancelled) return;
+      const restored = details.map(restoreExecution);
+      const activeRun = [...restored].reverse().find((run) => executionIsActive(run.status)) ?? null;
+      connectedExecutionId.current = activeRun?.id;
+      executionEventIds.current.clear();
+      setLiveExecution(activeRun);
+      setSavedExecutions(restored.filter((run) => !executionIsActive(run.status)));
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId || !liveExecution || ['completed', 'failed', 'cancelled'].includes(liveExecution.status)) return;
+    if (connectedExecutionId.current !== liveExecution.id) {
+      connectedExecutionId.current = liveExecution.id;
+      executionEventIds.current.clear();
+    }
+    const source = new EventSource(
+      api.conversationRunEventUrl(selectedId, liveExecution.id, liveExecution.resumeAfter),
+      { withCredentials: true },
+    );
+    const progress = (event: MessageEvent) => {
+      if (event.lastEventId && executionEventIds.current.has(event.lastEventId)) return;
+      if (event.lastEventId) executionEventIds.current.add(event.lastEventId);
+      const data = JSON.parse(event.data) as Record<string, unknown>;
+      setLiveExecution((current) => {
+        if (!current || current.id !== liveExecution.id) return current;
+        const step: ExecutionStep = {
+          id: event.lastEventId || `${Date.now()}-${current.steps.length}`,
+          stage: String(data.stage ?? ''),
+          title: String(data.title ?? '正在执行'),
+          detail: String(data.detail ?? ''),
+          status: String(data.status ?? 'running'),
+          employeeId: String(data.employee_id ?? current.employeeId),
+          knowledgeBaseId: data.knowledge_base_id ? String(data.knowledge_base_id) : undefined,
+          targetAgentId: data.target_agent_id ? String(data.target_agent_id) : undefined,
+          hitCount: typeof data.hit_count === 'number' ? data.hit_count : undefined,
+        };
+        return {
+          ...current, status: 'running', expanded: true,
+          steps: [...current.steps, step], resumeAfter: event.lastEventId || current.resumeAfter,
+        };
+      });
+    };
+    const delta = (event: MessageEvent) => {
+      if (event.lastEventId && executionEventIds.current.has(event.lastEventId)) return;
+      if (event.lastEventId) executionEventIds.current.add(event.lastEventId);
+      const data = JSON.parse(event.data) as { employee_id?: string; delta?: string };
+      setLiveExecution((current) => {
+        if (!current || current.id !== liveExecution.id) return current;
+        const employeeId = data.employee_id || current.employeeId;
+        return {
+          ...current,
+          status: 'streaming',
+          resumeAfter: event.lastEventId || current.resumeAfter,
+          answers: { ...current.answers, [employeeId]: (current.answers[employeeId] ?? '') + (data.delta ?? '') },
+        };
+      });
+    };
+    const done = () => {
+      source.close();
+      setLiveExecution((current) => current?.id === liveExecution.id ? {
+        ...current, status: 'completed', expanded: false, finishedAt: Date.now(), answers: {},
+      } : current);
+      api.getConversation(selectedId).then(setSelected).catch(() => undefined);
+      void refreshConversations();
+    };
+    const failed = (event: Event) => {
+      if (!(event instanceof MessageEvent) || !event.data) return;
+      source.close();
+      const data = JSON.parse(event.data) as { message?: string; retryable?: boolean };
+      setLiveExecution((current) => current?.id === liveExecution.id ? {
+        ...current, status: 'failed', expanded: true, finishedAt: Date.now(),
+        error: data.message, retryable: data.retryable,
+      } : current);
+    };
+    source.addEventListener('progress', progress);
+    source.addEventListener('answer_delta', delta);
+    source.addEventListener('answer_done', done);
+    source.addEventListener('error', failed);
+    return () => source.close();
+  }, [liveExecution?.id, liveExecution?.status, refreshConversations, selectedId]);
+
+  useEffect(() => {
+    if (!liveExecution || executionIsActive(liveExecution.status)) return;
+    setSavedExecutions((current) => [
+      ...current.filter((run) => run.id !== liveExecution.id),
+      liveExecution,
+    ]);
+  }, [liveExecution]);
+
+  const streamedLength = liveExecution
+    ? Object.values(liveExecution.answers).reduce((total, answer) => total + answer.length, 0)
+    : 0;
+  useEffect(() => {
+    if (userScrolledUp) return;
+    const frame = requestAnimationFrame(() => {
+      const node = chatScrollRef.current;
+      if (node) node.scrollTop = node.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [selected?.messages.length, streamedLength, userScrolledUp]);
 
   // 等待后台回复，或任务尚未进入 completed / approval / failed / denied 时持续轮询。
   const hasPollableTask = selected?.tasks.some((task) =>
@@ -418,7 +673,7 @@ export default function WorkplacePage() {
     if (!home) return [];
     return [
       { key: 'twin', label: '我的分身', items: [home.twin] },
-      { key: 'virtual', label: '智能助理', items: home.available_employees.filter((e) => e.type === 'virtual') },
+      { key: 'virtual', label: '数字员工', items: home.available_employees.filter((e) => e.type === 'virtual') },
       { key: 'rpa', label: '自动化小助手', items: home.available_employees.filter((e) => e.type === 'rpa') },
     ]
       .map((group) => ({
@@ -446,7 +701,10 @@ export default function WorkplacePage() {
         : undefined,
     [conversations, twin],
   );
-  const otherConvs = useMemo(() => conversations.filter((conv) => conv.id !== twinConv?.id), [conversations, twinConv]);
+  const otherConvs = useMemo(
+    () => conversations.filter((conv) => conv.id !== twinConv?.id && conv.kind === 'direct'),
+    [conversations, twinConv],
+  );
   const visibleConvs = useMemo(
     () =>
       keyword
@@ -480,6 +738,7 @@ export default function WorkplacePage() {
   };
 
   const openDirect = async (employeeNo: string) => {
+    setTab('messages');
     const existing = conversations.find(
       (conv) => conv.kind === 'direct' && conv.participants.some((p) => p.employee_no === employeeNo),
     );
@@ -500,9 +759,10 @@ export default function WorkplacePage() {
     }
   };
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || sending || !selectedId) return;
+  const send = async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
+    if (!text || sending || (liveExecution && ['queued', 'running', 'streaming', 'waiting_approval'].includes(liveExecution.status)) || !selectedId) return;
+    lastPrompt.current = text;
     setInput('');
     setSending(true);
     setChatError(undefined);
@@ -528,12 +788,22 @@ export default function WorkplacePage() {
       };
     });
     try {
-      const conv = await api.sendConversationMessage(selectedId, actorNo, text);
-      setSelected(conv);
-      const triggerSeq = conv.messages
-        .filter((m) => m.role === 'user')
-        .reduce((max, m) => Math.max(max, m.seq), 0);
-      setPendingAfterSeq(triggerSeq || null);
+      const run = await api.startConversationRun(selectedId, actorNo, text);
+      setSelected(run.conversation);
+      setPendingAfterSeq(null);
+      executionEventIds.current.clear();
+      connectedExecutionId.current = run.execution_id;
+      const primary = run.conversation.participants[0]?.employee_no ?? '';
+      setLiveExecution({
+        id: run.execution_id,
+        triggerSeq: run.trigger_message_seq,
+        employeeId: primary,
+        status: 'queued',
+        startedAt: Date.now(),
+        expanded: true,
+        steps: [],
+        answers: {},
+      });
       await refreshConversations();
     } catch (err) {
       setInput(text);
@@ -575,6 +845,8 @@ export default function WorkplacePage() {
     try {
       await api.clearConversation(selectedId, actorNo);
       setPendingAfterSeq(null);
+      setLiveExecution(null);
+      setSavedExecutions([]);
       const conv = await api.getConversation(selectedId);
       setSelected(conv);
       await refreshConversations();
@@ -834,10 +1106,10 @@ export default function WorkplacePage() {
             <>
               <div className="wp-contacts-head">
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  选择联系人，点击「私聊」或勾选后发起群聊
+                  选择一位同事开始知识问答
                 </Text>
                 <Button size="small" type="link" onClick={() => setNewChatOpen(true)}>
-                  发起群聊
+                  新会话
                 </Button>
               </div>
               {contactGroups.map((group) => (
@@ -847,13 +1119,24 @@ export default function WorkplacePage() {
                     const meta = metaOf(emp.employee_no);
                     return (
                       <div key={emp.employee_no} className="wp-contact-row wp-employee-row">
-                        <Avatar size={38} style={{ background: meta.bg, color: meta.color }}>
-                          {meta.emoji}
-                        </Avatar>
+                        <button
+                          type="button"
+                          className="wp-contact-avatar-button"
+                          aria-label={`与${emp.name}聊天`}
+                          onClick={() => void openDirect(emp.employee_no)}
+                        >
+                          <Avatar size={38} style={{ background: meta.bg, color: meta.color }}>
+                            {meta.emoji}
+                          </Avatar>
+                        </button>
                         <div className="wp-row-main">
-                          <Link className="wp-contact-name-link" to={`/employees/${emp.employee_no}`}>
+                          <button
+                            type="button"
+                            className="wp-contact-name-link"
+                            onClick={() => void openDirect(emp.employee_no)}
+                          >
                             {emp.name}
-                          </Link>
+                          </button>
                           <div className="wp-row-preview">
                             {emp.employee_no} · {emp.department || '未设置部门'}
                           </div>
@@ -941,25 +1224,6 @@ export default function WorkplacePage() {
             </>
           )}
         </div>
-        <div className="wp-sidebar-foot">
-          <button
-            type="button"
-            className="wp-guide-trigger"
-            aria-label="使用指南"
-            onClick={() => {
-              setTab('guide');
-              setKeyword('');
-            }}
-          >
-            <Tag
-              icon={<QuestionCircleOutlined />}
-              color={tab === 'guide' ? 'blue' : undefined}
-              className="wp-guide-tag"
-            >
-              使用指南
-            </Tag>
-          </button>
-        </div>
       </aside>
 
       {/* 右栏：对话窗口 */}
@@ -1003,7 +1267,14 @@ export default function WorkplacePage() {
               )}
             </div>
 
-            <div className="wp-chat-scroll">
+            <div
+              className="wp-chat-scroll"
+              ref={chatScrollRef}
+              onScroll={(event) => {
+                const node = event.currentTarget;
+                setUserScrolledUp(node.scrollHeight - node.scrollTop - node.clientHeight > 80);
+              }}
+            >
               {selected.messages.length === 0 && (
                 <div className="wp-empty">
                   <div className="wp-empty-emoji">{isGroup ? '🤝' : selectedMeta.emoji}</div>
@@ -1012,6 +1283,9 @@ export default function WorkplacePage() {
               )}
               {selected.messages.map((msg) => {
                 const mine = msg.role === 'user';
+                const messageExecution =
+                  (liveExecution?.triggerSeq === msg.seq ? liveExecution : undefined) ??
+                  savedExecutions.find((run) => run.triggerSeq === msg.seq);
                 return (
                   <div key={msg.id}>
                     <div className={`wp-msg ${mine ? 'me' : ''}`}>
@@ -1062,13 +1336,29 @@ export default function WorkplacePage() {
                             acting={acting}
                           />
                         ))}
+                    {messageExecution && (
+                      <ExecutionCard
+                        run={messageExecution}
+                        employeeName={workerName}
+                        onToggle={() => {
+                          if (liveExecution?.id === messageExecution.id) {
+                            setLiveExecution((current) => current ? { ...current, expanded: !current.expanded } : current);
+                          } else {
+                            setSavedExecutions((current) => current.map((run) =>
+                              run.id === messageExecution.id ? { ...run, expanded: !run.expanded } : run,
+                            ));
+                          }
+                        }}
+                        onRetry={() => void send(lastPrompt.current)}
+                      />
+                    )}
                   </div>
                 );
               })}
               {sending && (
                 <div className="wp-thinking">
                   <RobotOutlined spin />
-                  成员们正在思考…
+                  正在安全提交任务…
                 </div>
               )}
               {isGroup && unattachedTasks.length > 0 && (
@@ -1088,6 +1378,19 @@ export default function WorkplacePage() {
               {chatError && (
                 <div className="wp-chat-error">发送失败：{chatError}，消息已保留在输入框</div>
               )}
+              {userScrolledUp && (
+                <Button
+                  className="scroll-bottom"
+                  size="small"
+                  onClick={() => {
+                    const node = chatScrollRef.current;
+                    if (node) node.scrollTop = node.scrollHeight;
+                    setUserScrolledUp(false);
+                  }}
+                >
+                  回到底部
+                </Button>
+              )}
             </div>
 
             <div className="wp-chat-input">
@@ -1102,8 +1405,15 @@ export default function WorkplacePage() {
                 }}
                 placeholder={isGroup ? '描述一个任务，我来拆解安排给同事们…' : '发消息…'}
                 autoSize={{ minRows: 1, maxRows: 4 }}
+                disabled={Boolean(liveExecution && ['queued', 'running', 'streaming', 'waiting_approval'].includes(liveExecution.status))}
               />
-              <Button type="primary" icon={<SendOutlined />} onClick={() => void send()} loading={sending}>
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                onClick={() => void send()}
+                loading={sending}
+                disabled={Boolean(liveExecution && ['queued', 'running', 'streaming', 'waiting_approval'].includes(liveExecution.status))}
+              >
                 发送
               </Button>
             </div>
@@ -1121,8 +1431,8 @@ export default function WorkplacePage() {
                   和我的分身聊聊
                 </Button>
               )}
-              <Button icon={<TeamOutlined />} onClick={() => setNewChatOpen(true)}>
-                发起协作
+              <Button icon={<CommentOutlined />} onClick={() => setNewChatOpen(true)}>
+                查找数字员工
               </Button>
             </Space>
           </div>
@@ -1141,25 +1451,9 @@ export default function WorkplacePage() {
         onOk={() => void submitNewChat()}
         okText="创建"
       >
-        <Radio.Group
-          value={chatMode}
-          onChange={(e) => {
-            setChatMode(e.target.value);
-            setSelectedNos([]);
-          }}
-          style={{ marginBottom: 14 }}
-        >
-          <Radio.Button value="direct">私聊</Radio.Button>
-          <Radio.Button value="group">群聊</Radio.Button>
-        </Radio.Group>
-        {chatMode === 'group' && (
-          <Input
-            placeholder="群聊名称（可选）"
-            value={groupTitle}
-            onChange={(e) => setGroupTitle(e.target.value)}
-            style={{ marginBottom: 12 }}
-          />
-        )}
+        <Paragraph type="secondary">
+          首版一次只与一位数字员工对话；你的数字分身会在需要时自主向专业数字员工求助。
+        </Paragraph>
         <div className="wp-modal-contacts">
           {contactGroups.map((group) => (
             <div key={group.key} className="wp-contact-group">

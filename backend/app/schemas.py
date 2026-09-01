@@ -510,6 +510,52 @@ class ConversationSendIn(BaseModel):
     content: str
 
 
+class AgentExecutionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    conversation_id: str
+    trigger_message_seq: int
+    trace_id: str
+    primary_employee_id: str
+    status: str
+    stage: str
+    error_code: str = ""
+    error_message: str = ""
+    retryable: bool = False
+    started_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
+
+
+class ConversationRunOut(BaseModel):
+    execution_id: str
+    trigger_message_seq: int
+    conversation: ConversationOut
+
+
+class AgentExecutionEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    event_seq: int
+    event_type: str
+    actor_employee_id: str
+    stage: str
+    status: str
+    title: str
+    detail: str
+    knowledge_base_id: str | None = None
+    target_agent_id: str | None = None
+    hit_count: int | None = None
+    payload: dict = Field(default_factory=dict)
+    created_at: datetime
+
+
+class AgentExecutionDetailOut(BaseModel):
+    execution: AgentExecutionOut
+    events: list[AgentExecutionEventOut] = Field(default_factory=list)
+
+
 class ConversationAddParticipantIn(BaseModel):
     employee_no: str
 
@@ -542,3 +588,102 @@ class WorkflowOut(BaseModel):
 
 class ClearConversationOut(BaseModel):
     ok: bool
+
+
+# ---- Knowledge-first MVP contracts ----
+
+
+class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=8, max_length=200)
+
+
+class AccountOut(BaseModel):
+    username: str
+    employee_no: str
+    name: str
+    department: str
+    employment_type: str
+    roles: list[str] = []
+    must_change_password: bool = False
+
+
+class LoginOut(BaseModel):
+    account: AccountOut
+    expires_at: datetime
+
+
+class DirectoryUserOut(BaseModel):
+    provider: str = "mock"
+    external_user_id: str
+    employee_no: str
+    name: str
+    department: str
+    employment_type: str
+    status: str
+    default_twin_id: str | None = None
+
+
+class AgentProfileOut(BaseModel):
+    employee_id: str
+    display_name: str
+    identity_kind: str
+    owner_human_no: str
+    department: str
+    responsibilities: list[str] = []
+    knowledge_domains: list[str] = []
+    accepts_tasks: list[str] = []
+    delegation_policy: str
+    fallback_employee_id: str | None = None
+    persona_status: str
+    persona_version: int
+    runtime_engine: str
+    runtime_state: str
+    container_name: str
+    knowledge_base_ids: list[str] = []
+
+
+class AgentRuntimeOutV1(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    employee_id: str
+    engine: str
+    container_name: str
+    state: str
+    workspace_ref: str
+    last_error: str
+    last_active_at: datetime | None = None
+
+
+class PersonaDraftIn(BaseModel):
+    source_refs: list[str] = []
+    responsibilities: list[str] = []
+    project_context: str = Field(default="", max_length=20_000)
+
+
+class PersonaVersionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    employee_id: str
+    version: int
+    status: str
+    content: str
+    source_refs: list[str] = []
+    reviewed_by: str | None = None
+    created_at: datetime
+
+
+class WeComMockIn(BaseModel):
+    corp_id: str = "demo-corp"
+    wecom_user_id: str
+    content: str = Field(min_length=1, max_length=10_000)
+    target_agent_id: str | None = None
+
+
+class WeComRouteOut(BaseModel):
+    employee_no: str
+    human_name: str
+    target_agent_id: str
+    target_agent_name: str
+    content: str

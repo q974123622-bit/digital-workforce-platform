@@ -348,7 +348,7 @@ describe('WorkplacePage', () => {
     expect(screen.getByText('你好呀，需要我帮忙吗？')).toBeInTheDocument();
   });
 
-  it('通讯录分组与搜索，点击私聊发起会话', async () => {
+  it('通讯录分组与搜索，点击数字员工头像发起会话且不跳转白屏', async () => {
     const fetchMock = stubFetch({
       '/api/v1/workplace?actor_no=E10281': home,
       '/api/v1/conversations?actor_no=E10281': [],
@@ -359,7 +359,7 @@ describe('WorkplacePage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '通讯录' }));
     expect(screen.getByText('我的分身')).toBeInTheDocument();
-    expect(screen.getByText('智能助理')).toBeInTheDocument();
+    expect(screen.getByText('数字员工')).toBeInTheDocument();
     expect(screen.getByText('自动化小助手')).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('搜索联系人'), { target: { value: '报表' } });
@@ -367,7 +367,7 @@ describe('WorkplacePage', () => {
     expect(screen.queryByText('新员工入职助手')).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('搜索联系人'), { target: { value: '入职' } });
-    fireEvent.click(screen.getByRole('button', { name: '私聊' }));
+    fireEvent.click(screen.getByRole('button', { name: '与新员工入职助手聊天' }));
 
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/conversations') && init?.method === 'POST');
@@ -383,11 +383,47 @@ describe('WorkplacePage', () => {
   });
 
   it('发送消息：微信式气泡渲染 + 调用消息接口', async () => {
+    class MockEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      readyState = 1;
+      withCredentials = true;
+      url: string;
+      listeners = new Map<string, Array<(event: MessageEvent) => void>>();
+      constructor(url: string | URL) {
+        this.url = String(url);
+        setTimeout(() => {
+          '收到，马上帮你处理。'.split('').forEach((delta, index) => this.emit('answer_delta', {
+            employee_id: 'VE-0001', delta, offset: index,
+          }, `3.${index}`));
+          this.emit('answer_done', { message_id: 3, trace_id: 'T-TEST', tool_cards: [] }, '4');
+        }, 0);
+      }
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        const callback = typeof listener === 'function' ? listener : listener.handleEvent.bind(listener);
+        this.listeners.set(type, [...(this.listeners.get(type) ?? []), callback as (event: MessageEvent) => void]);
+      }
+      removeEventListener() {}
+      dispatchEvent() { return true; }
+      close() { this.readyState = 2; }
+      emit(type: string, data: unknown, id: string) {
+        const event = new MessageEvent(type, { data: JSON.stringify(data), lastEventId: id });
+        (this.listeners.get(type) ?? []).forEach((listener) => listener(event));
+      }
+    }
+    vi.stubGlobal('EventSource', MockEventSource);
+    let conversationReads = 0;
     const fetchMock = stubFetch({
       '/api/v1/workplace?actor_no=E10281': home,
       '/api/v1/conversations?actor_no=E10281': [conv1Summary],
-      '/api/v1/conversations/CONV-1': conv1,
-      '/api/v1/conversations/CONV-1/messages': conv1WithReply,
+      '/api/v1/conversations/CONV-1/runs/active': null,
+      '/api/v1/conversations/CONV-1': () => (++conversationReads >= 2 ? conv1WithReply : conv1),
+      '/api/v1/conversations/CONV-1/runs': {
+        execution_id: 'EX-TEST',
+        trigger_message_seq: 3,
+        conversation: conv1,
+      },
     });
     const view = renderPage();
 
@@ -407,10 +443,53 @@ describe('WorkplacePage', () => {
       expect(view.container.querySelector('strong')?.textContent).toBe('马上');
     });
     const call = fetchMock.mock.calls.find(([inputUrl]) =>
-      String(inputUrl).endsWith('/api/v1/conversations/CONV-1/messages'),
+      String(inputUrl).endsWith('/api/v1/conversations/CONV-1/runs'),
     );
     const body = (call as [RequestInfo | URL, RequestInit | undefined] | undefined)?.[1]?.body;
     expect(JSON.parse(String(body))).toEqual({ actor_no: 'E10281', content: '帮我准备入职' });
+  });
+
+  it('重新进入会话后保留已完成的执行轨迹', async () => {
+    stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [conv1Summary],
+      '/api/v1/conversations/CONV-1/runs/history': [{
+        execution: {
+          id: 'EX-DONE', conversation_id: 'CONV-1', trigger_message_seq: 1,
+          trace_id: 'T-DONE', primary_employee_id: 'VE-0001', status: 'completed',
+          stage: 'completed', error_code: '', error_message: '', retryable: false,
+          started_at: '2026-08-19T09:00:00', updated_at: '2026-08-19T09:00:03',
+          completed_at: '2026-08-19T09:00:03',
+        },
+        events: [
+          {
+            event_seq: 1, event_type: 'queued', actor_employee_id: 'VE-0001',
+            stage: 'queued', status: 'queued', title: '任务已进入执行队列', detail: '等待接收',
+            knowledge_base_id: null, target_agent_id: null, hit_count: null, payload: {},
+            created_at: '2026-08-19T09:00:00',
+          },
+          {
+            event_seq: 2, event_type: 'knowledge_completed', actor_employee_id: 'VE-0001',
+            stage: 'knowledge_search', status: 'running', title: '知识库检索完成', detail: '找到 2 条资料',
+            knowledge_base_id: 'KB-IT-SERVICE', target_agent_id: null, hit_count: 2, payload: {},
+            created_at: '2026-08-19T09:00:02',
+          },
+          {
+            event_seq: 3, event_type: 'answer_done', actor_employee_id: 'VE-0001',
+            stage: 'completed', status: 'completed', title: '执行完成', detail: '',
+            knowledge_base_id: null, target_agent_id: null, hit_count: null, payload: {},
+            created_at: '2026-08-19T09:00:03',
+          },
+        ],
+      }],
+      '/api/v1/conversations/CONV-1': conv1,
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText('新员工入职助手'));
+    expect(await screen.findByText(/已完成 2 个步骤/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /已完成 2 个步骤/ }));
+    expect(screen.getByText('知识库检索完成')).toBeInTheDocument();
+    expect(screen.getByText('找到 2 条资料')).toBeInTheDocument();
   });
 
   it('技能抽屉：上传技能与启停开关', async () => {
@@ -457,7 +536,19 @@ describe('WorkplacePage', () => {
     });
   });
 
-  it('群聊任务卡片：子任务/审批警示/审批按钮与汇总', async () => {
+  it('知识问答 MVP 不暴露群聊 Agent Teams 入口', async () => {
+    stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [groupSummary],
+    });
+    renderPage();
+
+    expect(await screen.findByText('张三的数字分身')).toBeInTheDocument();
+    expect(screen.queryByText('新员工入职协作（3）')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '使用指南' })).not.toBeInTheDocument();
+  });
+
+  it.skip('群聊任务卡片：V1 暂不开放 Agent Teams', async () => {
     let state: Conversation = groupConv;
     const fetchMock = stubFetch({
       '/api/v1/workplace?actor_no=E10281': home,
@@ -496,7 +587,7 @@ describe('WorkplacePage', () => {
     expect(screen.getAllByText('已完成').length).toBeGreaterThan(0);
   });
 
-  it('群聊发送：先渲染用户气泡，再展示任务卡片', async () => {
+  it.skip('群聊发送：V1 暂不开放 Agent Teams', async () => {
     const fetchMock = stubFetch({
       '/api/v1/workplace?actor_no=E10281': home,
       '/api/v1/conversations?actor_no=E10281': [groupSummary],
@@ -524,7 +615,7 @@ describe('WorkplacePage', () => {
     expect(call).toBeTruthy();
   });
 
-  it('后台首次无结果时持续轮询，直到对应任务完成', async () => {
+  it.skip('后台群任务轮询：V1 暂不开放 Agent Teams', async () => {
     const triggerSeq = 20;
     const waitingConv: Conversation = {
       ...groupConvEmpty,
@@ -586,7 +677,7 @@ describe('WorkplacePage', () => {
     expect(pollsAfterSend).toBeGreaterThanOrEqual(3);
   }, 15000);
 
-  it('清空会话：确认后删除消息与任务', async () => {
+  it.skip('群聊清空：V1 暂不开放 Agent Teams', async () => {
     let state: Conversation = groupConv;
     const fetchMock = stubFetch({
       '/api/v1/workplace?actor_no=E10281': home,
@@ -615,7 +706,7 @@ describe('WorkplacePage', () => {
     expect(screen.queryByText('整理新员工入职准备清单')).not.toBeInTheDocument();
   });
 
-  it('使用指南：点击查看步骤/授权成员/示例指令', async () => {
+  it.skip('工作流使用指南：V1 聚焦知识问答，暂不开放', async () => {
     const workflows: Workflow[] = [
       {
         plugin_id: 'expense-claim',

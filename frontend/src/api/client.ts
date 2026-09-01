@@ -17,6 +17,13 @@ import type {
   Workflow,
   Workspace,
   WorkplaceHome,
+  Account,
+  AgentProfile,
+  AgentExecution,
+  AgentExecutionDetail,
+  ConversationRunReply,
+  DirectoryUser,
+  LoginReply,
 } from '@dwp/shared-schema';
 
 const BASE = '/api/v1';
@@ -32,6 +39,7 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   try {
     res = await fetch(url, {
       headers: { 'Content-Type': 'application/json', ...(fetchInit.headers ?? {}) },
+      credentials: 'include',
       ...fetchInit,
       signal: controller.signal,
     });
@@ -47,7 +55,8 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
     let message = `${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
-      message = body?.error?.message ?? body?.detail ?? message;
+      const detail = body?.error?.message ?? body?.detail;
+      message = typeof detail === 'string' ? detail : detail?.message ?? message;
     } catch {
       // 保留默认错误信息
     }
@@ -65,6 +74,17 @@ function qs(params?: Record<string, string | undefined>): string {
 
 export const api = {
   health: () => request<{ status: string }>('/health', { absolute: true }),
+  login: (username: string, password: string) =>
+    request<LoginReply>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  me: () => request<Account>('/auth/me'),
+  logout: () => request<void>('/auth/logout', { method: 'POST' }),
+  listAgents: () => request<AgentProfile[]>('/agents'),
+  startAgentRuntime: (employeeId: string) =>
+    request(`/agents/${encodeURIComponent(employeeId)}/runtime/start`, { method: 'POST' }),
+  stopAgentRuntime: (employeeId: string) =>
+    request(`/agents/${encodeURIComponent(employeeId)}/runtime/stop`, { method: 'POST' }),
+  listDirectoryUsers: () => request<DirectoryUser[]>('/directory/users'),
+  syncDirectory: () => request<DirectoryUser[]>('/directory/sync', { method: 'POST' }),
   listEmployees: (params?: { type?: string }) => request<Employee[]>(`/employees${qs(params)}`),
   getEmployee: (employeeNo: string) => request<Employee>(`/employees/${encodeURIComponent(employeeNo)}`),
   listPlugins: () => request<Plugin[]>('/plugins'),
@@ -135,6 +155,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ actor_no: actorNo, content }),
     }),
+  startConversationRun: (conversationId: string, actorNo: string, content: string) =>
+    request<ConversationRunReply>(`/conversations/${encodeURIComponent(conversationId)}/runs`, {
+      method: 'POST',
+      body: JSON.stringify({ actor_no: actorNo, content }),
+    }),
+  getActiveConversationRun: (conversationId: string) =>
+    request<AgentExecution | null>(`/conversations/${encodeURIComponent(conversationId)}/runs/active`),
+  getLatestConversationRun: (conversationId: string) =>
+    request<AgentExecutionDetail | null>(`/conversations/${encodeURIComponent(conversationId)}/runs/latest`),
+  getConversationRunHistory: (conversationId: string) =>
+    request<AgentExecutionDetail[]>(`/conversations/${encodeURIComponent(conversationId)}/runs/history`),
+  conversationRunEventUrl: (conversationId: string, executionId: string, afterEventId?: string) =>
+    `${BASE}/conversations/${encodeURIComponent(conversationId)}/runs/${encodeURIComponent(executionId)}/events${
+      afterEventId ? `?after_event_id=${encodeURIComponent(afterEventId)}` : ''
+    }`,
   addConversationParticipant: (conversationId: string, employeeNo: string) =>
     request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}/participants`, {
       method: 'POST',

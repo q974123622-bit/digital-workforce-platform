@@ -26,14 +26,36 @@ def plugin_id_for_level(data_level: str) -> str:
     return {"L1": "knowledge-l1", "L2": "knowledge-l2", "L3": "knowledge-l3"}.get(data_level, "knowledge-l3")
 
 
-def accessible_knowledge_bases(db: Session, subject) -> list[dict]:
+def accessible_knowledge_bases(db: Session, subject, requester_human_no: str | None = None) -> list[dict]:
     """返回当前主体实际可读的知识库，不泄露不可访问资源的名称。"""
     from .policy import DECISION_ALLOW, ResourceRef, evaluate
 
+    explicit_grants = {
+        row.knowledge_base_id
+        for row in db.query(models.AgentKnowledgeGrant).filter(
+            models.AgentKnowledgeGrant.employee_id == subject.employee_id,
+            models.AgentKnowledgeGrant.action == "read",
+            models.AgentKnowledgeGrant.status == "active",
+        )
+    }
     result: list[dict] = []
+    requester = db.get(models.HumanEmployee, requester_human_no) if requester_human_no else None
     for kb in list_resources(db):
+        if kb.status != "active":
+            continue
+        if kb.id not in explicit_grants:
+            continue
+        if kb.allowed_employment_type and subject.employment_type not in kb.allowed_employment_type:
+            continue
+        if kb.department_scope and "*" not in kb.department_scope and subject.department not in kb.department_scope:
+            continue
+        if requester is not None:
+            if kb.allowed_employment_type and requester.employment_type not in kb.allowed_employment_type:
+                continue
+            if kb.department_scope and "*" not in kb.department_scope and requester.department not in kb.department_scope:
+                continue
         plugin_id = plugin_id_for_level(kb.data_level)
         decision = evaluate(db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read")
         if decision.decision == DECISION_ALLOW:
-            result.append({"id": kb.id, "name": kb.name, "data_level": kb.data_level})
+            result.append({"id": kb.id, "name": kb.name, "data_level": kb.data_level, "domain": kb.domain})
     return result

@@ -54,7 +54,7 @@ if ($Docker) {
     if (-not $img) {
         Write-Host "[3/6] 构建 Harness Docker 镜像（dwp-dsh:rc6，约 8 分钟）..."
         Push-Location $root
-        docker build -f docker\Dockerfile.dsh -t dwp-dsh:rc6 docker\
+        docker build -f docker\Dockerfile.dsh -t dwp-dsh:rc6 .
         Pop-Location
     } else {
         Write-Host "[3/6] Harness 镜像已存在"
@@ -84,10 +84,21 @@ if (-not $NoReset) {
     Write-Host "[4/6] 跳过重置（-NoReset）"
 }
 
+# Docker 模式必须在服务启动前为每个启用的数字员工/分身创建或复用独立实例。
+if ($Docker) {
+    Write-Host "      校验并拉起每个数字员工/分身的 Harness 实例 ..."
+    Push-Location $backend
+    & $venvPy -m app.services.runtime_manager ensure-all
+    Pop-Location
+    if ($LASTEXITCODE -ne 0) {
+        throw "Harness 实例未全部就绪，平台已停止启动。"
+    }
+}
+
 # 5) 启动后端
 Write-Host "[5/6] 启动后端（端口 8000）..."
 Stop-Port 8000
-Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app.main:app", "--port", "8000" -WorkingDirectory $backend -WindowStyle Hidden -RedirectStandardOutput (Join-Path $backend "uvicorn-out.log") -RedirectStandardError (Join-Path $backend "uvicorn-err.log")
+Start-Process -FilePath $venvPy -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000" -WorkingDirectory $backend -WindowStyle Hidden -RedirectStandardOutput (Join-Path $backend "uvicorn-out.log") -RedirectStandardError (Join-Path $backend "uvicorn-err.log")
 
 # 6) 启动前端
 Write-Host "[6/6] 启动前端（端口 5173）..."

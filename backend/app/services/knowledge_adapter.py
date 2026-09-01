@@ -226,6 +226,37 @@ class InternalKnowledgeAdapterStub(KnowledgeAdapter):
         }
 
 
+class VolcengineMcpKnowledgeAdapter(KnowledgeAdapter):
+    """Future Volcengine knowledge MCP boundary.
+
+    The real MCP transport is intentionally not guessed before the corporate server contract
+    is available. In this mode missing configuration fails closed instead of returning demo data.
+    """
+
+    def __init__(self):
+        self.endpoint_ref = config.get(config.VOLCENGINE_MCP_ENDPOINT)
+        self.credential_ref = config.credential_ref(config.VOLCENGINE_MCP_CREDENTIAL_REF)
+        self.tool_name = config.get(config.VOLCENGINE_MCP_TOOL, "knowledge_search")
+
+    def search(
+        self,
+        *,
+        employee_id: str,
+        knowledge_base_id: str,
+        query: str,
+        trace_id: str,
+    ) -> dict:
+        if not self.endpoint_ref or not self.credential_ref:
+            raise RuntimeError("火山引擎 MCP 知识源未配置，禁止降级为 Mock 结果")
+        return {
+            "source": "volcengine_mcp",
+            "status": "contract_pending",
+            "knowledge_base_id": knowledge_base_id,
+            "tool": self.tool_name,
+            "message": "火山引擎 MCP 接口边界已就绪，待正式服务契约接入后启用传输层",
+        }
+
+
 class _RagWithFallback(KnowledgeAdapter):
     """rag 模式兜底：嵌入不可用（缺 Key/超时/网络失败）→ 降级 Mock 检索，
     写降级审计并保持 Demo 可用，不向调用方抛 5xx。"""
@@ -280,16 +311,22 @@ def select_adapter(plugin: models.Plugin, kb: models.KnowledgeBase | None) -> Kn
     """按 DWP_KB_MODE 路由 Knowledge Adapter：
     - mock（默认）：原 MockKnowledgeAdapter；
     - rag：RAGKnowledgeAdapter（嵌入失败自动降级 Mock，写降级审计）；
-    - internal：受控内部端点 Stub（真实端点仅在 Secure Overlay 正式环境配置，仓库内不接入）。
-    internal:// 插件或 resource_type=internal 的资源始终走 Stub，防止绕过安全边界。
+    - internal：配置完整时调用受控只读 Adapter，配置或调用失败都不降级。
+    非 internal 模式下，历史 internal:// 配置仍保留 Stub 用于界面兼容。
     """
     mode = config.kb_mode()
+    if mode == "internal":
+        if not config.internal_kb_configured():
+            raise RuntimeError("内部知识引擎配置不完整，禁止降级为 Mock 或 Stub")
+        from .internal_knowledge_adapter import InternalKnowledgeAdapter
+
+        return InternalKnowledgeAdapter()
     if plugin.endpoint_ref.startswith("internal://") or (kb and kb.resource_type == "internal"):
         return InternalKnowledgeAdapterStub()
     if mode == "rag":
         from .rag_knowledge_adapter import RAGKnowledgeAdapter
 
         return _RagWithFallback(RAGKnowledgeAdapter(), MockKnowledgeAdapter(kb=kb), kb)
-    if mode == "internal":
-        return InternalKnowledgeAdapterStub()
+    if mode == "volcengine_mcp":
+        return VolcengineMcpKnowledgeAdapter()
     return MockKnowledgeAdapter(kb=kb)

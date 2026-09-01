@@ -22,10 +22,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from .. import models
-from . import config
+from . import config, execution_events
 from .agentteams_gateway import AgentTeamsGateway, AgentTeamsUnavailableError
 from .chat import ChatOrchestrator
+from .colleague_orchestrator import answer_as_twin
 from .gateway import write_audit
+from .harness_agent import run_agent
 from .identity import resolve_identity
 from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
 from .team_orchestrator import TeamTaskOrchestrator, extract_employee_name
@@ -162,6 +164,7 @@ def member_replies(
     content: str,
     provider: LLMProvider | None = None,
     only: str | None = None,
+    execution_id: str | None = None,
 ) -> list[models.ConversationMessage]:
     """让成员按顺序回应（假定用户消息已落库）；only 指定时仅该成员回复。
 
@@ -171,7 +174,13 @@ def member_replies(
     if not participants:
         raise HTTPException(status_code=400, detail="会话没有成员")
 
-    orchestrator = ChatOrchestrator(provider or DeepSeekProvider())
+    selected_provider = provider or DeepSeekProvider()
+    orchestrator = ChatOrchestrator(selected_provider)
+    use_harness = (
+        (config.get("DWP_AGENT_EXECUTION_MODE", "harness") or "harness") == "harness"
+        and provider is None
+        and selected_provider.__class__.__name__ == "DeepSeekProvider"
+    )
     member_names: dict[str, str] = {}
     for participant in participants:
         emp = db.get(models.DigitalEmployee, participant["employee_no"])
@@ -185,6 +194,7 @@ def member_replies(
     is_group = conversation.kind == "group"
     appended: list[models.ConversationMessage] = []
     failed = 0
+    execution = db.get(models.AgentExecution, execution_id) if execution_id else None
     for participant in targets:
         employee_no = participant["employee_no"]
         name = member_names.get(employee_no, employee_no)
@@ -197,16 +207,41 @@ def member_replies(
                 "不要写任何人的名字或【】前缀，不要使用任何 Markdown 符号。"
             )
         try:
-            result = orchestrator.handle_message(
-                db,
-                employee_no=employee_no,
-                message=content,
-                session_id=None,
-                system_context=system_context,
-                history_override=history,
-                persist=False,
-                trace_id=f"T-GRP-{conversation.id}-{employee_no}",
-            )
+            employee = db.get(models.DigitalEmployee, employee_no)
+            if use_harness and employee_no in {"AI-GENERAL", "AI-INVESTMENT", "DT-E10281", "DT-E20999"}:
+                result = run_agent(
+                    db,
+                    employee_id=employee_no,
+                    requester_human_no=actor_no,
+                    message=content,
+                    history=history,
+                    trace_id=(
+                        execution.trace_id if execution is not None else
+                        f"T-HAR-{conversation.id}-{employee_no}-{uuid4().hex[:8]}"
+                    ),
+                )
+            elif not is_group and employee is not None and employee.type == "twin":
+                result, _delegation = answer_as_twin(
+                    db,
+                    conversation_id=conversation.id,
+                    requester_human_no=actor_no,
+                    twin=employee,
+                    message=content,
+                    provider=orchestrator.provider,
+                    history=history,
+                )
+            else:
+                result = orchestrator.handle_message(
+                    db,
+                    employee_no=employee_no,
+                    message=content,
+                    session_id=None,
+                    system_context=system_context,
+                    history_override=history,
+                    persist=False,
+                    trace_id=f"T-GRP-{conversation.id}-{employee_no}",
+                    requester_human_no=actor_no,
+                )
             cards = [
                 {
                     "plugin_id": card.plugin_id,
@@ -385,12 +420,16 @@ def process_conversation(
     orchestrator: TeamTaskOrchestrator | None = None,
     classifier: Callable | None = None,
     trigger_seq: int | None = None,
+    execution_id: str | None = None,
 ) -> None:
     """执行"用户消息已落库"之后的完整编排：分类 → 任务/闲聊 → 写回结果。"""
     trigger_seq = trigger_seq if trigger_seq is not None else _latest_user_seq(db, conversation.id)
 
     if conversation.kind != "group":
-        member_replies(db, conversation=conversation, actor_no=actor_no, content=content, provider=provider)
+        member_replies(
+            db, conversation=conversation, actor_no=actor_no, content=content,
+            provider=provider, execution_id=execution_id,
+        )
     else:
         decide = classifier if classifier is not None else classify_task_request
         is_task = decide(db, conversation=conversation, content=content, provider=provider)
@@ -448,6 +487,7 @@ def process_conversation(
                 content=content,
                 provider=provider,
                 only=target,
+                execution_id=execution_id,
             )
 
 
@@ -456,6 +496,7 @@ def process_conversation_async(
     actor_no: str,
     content: str,
     trigger_seq: int,
+    execution_id: str | None = None,
 ) -> None:
     """后台异步执行会话编排（独立 DB session，供 FastAPI BackgroundTasks 调用）。"""
     from ..database import SessionLocal
@@ -474,18 +515,55 @@ def process_conversation_async(
             # 会话已被清空或触发消息已不存在：后台任务立即取消，不得复活数据。
             if conv is None or trigger is None or trigger.content != content:
                 return
+            execution = db.get(models.AgentExecution, execution_id) if execution_id else None
+            if execution is not None:
+                if execution.status == "cancelled":
+                    return
+                execution_events.emit(
+                    db, execution.id, event_type="agent_started", stage="agent_started",
+                    status="running", actor_employee_id=execution.primary_employee_id,
+                    title="数字员工已受理任务", detail="正在分析任务并确认可用能力",
+                )
             process_conversation(
                 db,
                 conv,
                 actor_no,
                 content,
                 trigger_seq=trigger_seq,
+                execution_id=execution_id,
             )
             conv.updated_at = datetime.now()
             db.add(conv)
             db.commit()
+            if execution_id:
+                execution = db.get(models.AgentExecution, execution_id)
+                if execution is None or execution.status == "cancelled":
+                    return
+                answers = db.scalars(
+                    select(models.ConversationMessage).where(
+                        models.ConversationMessage.conversation_id == conversation_id,
+                        models.ConversationMessage.role == "assistant",
+                        models.ConversationMessage.seq > trigger_seq,
+                    ).order_by(models.ConversationMessage.seq)
+                ).all()
+                for answer in answers:
+                    execution_events.emit_answer_chunks(
+                        db, execution_id,
+                        actor_employee_id=answer.participant_no,
+                        answer=answer.content,
+                    )
+                last = answers[-1] if answers else None
+                execution_events.complete(
+                    db, execution_id,
+                    actor_employee_id=(last.participant_no if last else execution.primary_employee_id),
+                    message_id=(last.id if last else None),
+                    trace_id=execution.trace_id,
+                    tool_cards=((last.tool_cards or []) if last else []),
+                )
         except Exception as exc:  # noqa: BLE001
             db.rollback()
+            if execution_id:
+                execution_events.fail(db, execution_id, exc)
             # 若任务记录已经建立，将其明确置为 failed；不让 UI 永久停在 running。
             run = db.scalar(
                 select(models.TaskRun).where(

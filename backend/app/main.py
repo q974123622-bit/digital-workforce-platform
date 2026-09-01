@@ -6,8 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .database import Base, engine, ensure_schema_compatibility
-from .routers import access, audit, chat, employees, internal, knowledge, plugins, policies, teams, workplace
+from .routers import access, agents, audit, auth, chat, directory, employees, internal, knowledge, plugins, policies, teams, workplace
 from .seed import seed_if_empty
+from .services import config, runtime_manager
 
 
 @asynccontextmanager
@@ -15,6 +16,14 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_schema_compatibility()
     seed_if_empty()
+    if config.get("DWP_HARNESS_ENABLED") == "1":
+        from .database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            runtime_manager.ensure_all_active(db)
+        finally:
+            db.close()
     yield
 
 
@@ -32,6 +41,7 @@ app.add_middleware(
 def _error_code(status_code: int) -> str:
     return {
         400: "VALIDATION_ERROR",
+        401: "UNAUTHENTICATED",
         403: "POLICY_DENIED",
         404: "NOT_FOUND",
         409: "STATE_CONFLICT",
@@ -76,6 +86,10 @@ def health():
 
 API_PREFIX = "/api/v1"
 app.include_router(employees.router, prefix=API_PREFIX)
+app.include_router(auth.router, prefix=API_PREFIX)
+app.include_router(agents.router, prefix=API_PREFIX)
+app.include_router(directory.router, prefix=API_PREFIX)
+app.include_router(directory.wecom_router, prefix=API_PREFIX)
 app.include_router(plugins.router, prefix=API_PREFIX)
 app.include_router(plugins.capabilities_router, prefix=API_PREFIX)
 app.include_router(policies.router, prefix=API_PREFIX)
