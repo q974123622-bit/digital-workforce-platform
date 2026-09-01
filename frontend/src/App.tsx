@@ -8,6 +8,7 @@ import Employees from './pages/Employees';
 import Plugins from './pages/Plugins';
 import Security from './pages/Security';
 import Teams from './pages/Teams';
+import AgentTeamsCollaborationPage from './pages/agentteams/AgentTeamsCollaborationPage';
 import WorkplacePage from './pages/workplace/WorkplacePage';
 
 export default function App() {
@@ -24,6 +25,7 @@ export default function App() {
           <Route path="/plugins" element={<Plugins />} />
           <Route path="/security" element={<Security />} />
           <Route path="/teams" element={<Teams />} />
+          <Route path="/agentteams-collaboration" element={<AgentTeamsCollaborationPage />} />
         </Route>
       </Routes>
     </ErrorBoundary>

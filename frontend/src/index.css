@@ -513,6 +513,332 @@ body {
   }
 }
 
+/* ==================== AgentTeams 协作演示 ==================== */
+.agentteams-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.at-page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.at-page-heading .ant-typography {
+  margin-bottom: 4px;
+}
+
+.at-page-heading > .ant-tag {
+  flex-shrink: 0;
+  margin-inline-end: 0;
+}
+
+.at-alert {
+  margin-bottom: 0;
+}
+
+.at-card {
+  height: 100%;
+  border-color: #e7edf7;
+  box-shadow: 0 6px 22px rgba(28, 55, 90, 0.06);
+}
+
+.at-form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.at-form-fields > label {
+  color: #344054;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.at-leader-text {
+  margin-top: -2px;
+}
+
+.at-task-list {
+  display: flex;
+  max-height: 306px;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.at-task-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #e9eef6;
+  border-radius: 10px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .18s ease, background .18s ease;
+}
+
+.at-task-row:hover,
+.at-task-row.selected {
+  border-color: #91caff;
+  background: #f0f7ff;
+}
+
+.at-task-row > span:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.at-task-row-meta {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.at-task-row .ant-tag {
+  flex-shrink: 0;
+  margin-inline-end: 0;
+}
+
+.at-task-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.at-tree-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.at-tree-wrap .ant-typography {
+  margin-bottom: 10px;
+}
+
+.at-tree,
+.at-tree-children {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.at-tree-children {
+  margin-top: 8px;
+  margin-left: 17px;
+  padding-left: 16px;
+  border-left: 2px solid #d6e4ff;
+}
+
+.at-tree-item + .at-tree-item {
+  margin-top: 8px;
+}
+
+.at-tree-node {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid #dfe8f4;
+  border-radius: 10px;
+  background: #fff;
+  color: #1f2937;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+
+.at-tree-node:hover,
+.at-tree-node.selected {
+  border-color: #69b1ff;
+  background: #f0f7ff;
+  box-shadow: 0 3px 10px rgba(22, 119, 255, .1);
+}
+
+.at-tree-node:focus-visible,
+.at-task-row:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
+}
+
+.at-tree-node-top,
+.at-tree-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.at-tree-title {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.at-tree-node .ant-tag {
+  flex-shrink: 0;
+}
+
+.at-tree-meta {
+  color: #7c8799;
+  font-size: 12px;
+}
+
+.at-tree-node .ant-progress {
+  line-height: 1;
+}
+
+.at-relationship-map {
+  padding: 14px;
+  border: 1px solid #e5edf8;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #fbfdff 0%, #f3f8ff 100%);
+}
+
+.at-relationship-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.at-relationship-group {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid #e2eaf5;
+  border-radius: 9px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.at-edge {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.at-edge-node {
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 5px;
+  border: 1px solid #cce0ff;
+  border-radius: 4px;
+  background: #f0f7ff;
+  color: #2454a6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.at-edge-line {
+  color: #5b8ff9;
+  font-weight: 700;
+}
+
+.at-edge .ant-tag {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.at-detail-card {
+  height: 100%;
+}
+
+.at-timeline-panels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.at-protocol-alert {
+  grid-column: 1 / -1;
+}
+
+.at-timeline-event {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.at-time {
+  font-size: 12px;
+}
+
+.at-message-row {
+  align-items: flex-start !important;
+}
+
+.at-message-content,
+.at-tool-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.at-message-summary.ant-typography {
+  margin: 0;
+  color: #475467;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.at-final-result .ant-typography {
+  margin-bottom: 0;
+}
+
+@media (max-width: 1100px) {
+  .at-timeline-panels {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .at-timeline-panels > .at-detail-card:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .at-page-heading {
+    flex-direction: column;
+  }
+
+  .at-relationship-grid,
+  .at-timeline-panels {
+    grid-template-columns: 1fr;
+  }
+
+  .at-timeline-panels > .at-detail-card:last-child {
+    grid-column: auto;
+  }
+
+  .at-task-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 /* ==================== Team 任务协作页（T2-04） ==================== */
 .task-panel {
   display: flex;

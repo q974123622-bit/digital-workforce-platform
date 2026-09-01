@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   AppstoreOutlined,
+  ApartmentOutlined,
   DashboardOutlined,
   DownOutlined,
   HomeOutlined,
@@ -32,6 +33,7 @@ const menuItems: MenuProps['items'] = [
       { key: '/plugins', icon: <AppstoreOutlined />, label: <Link to="/plugins">能力中心</Link> },
       { key: '/security', icon: <SafetyCertificateOutlined />, label: <Link to="/security">安全中心</Link> },
       { key: '/teams', icon: <TeamOutlined />, label: <Link to="/teams">协作团队</Link> },
+      { key: '/agentteams-collaboration', icon: <ApartmentOutlined />, label: <Link to="/agentteams-collaboration">Agent协作演示</Link> },
     ],
   },
 ];
@@ -43,6 +45,7 @@ const routeMeta: Record<string, string> = {
   '/plugins': '能力中心',
   '/security': '安全中心',
   '/teams': '协作团队',
+  '/agentteams-collaboration': 'Agent协作演示',
 };
 
 type HealthState = 'checking' | 'ok' | 'error';
@@ -55,7 +58,7 @@ export default function AppLayout() {
   const [keyword, setKeyword] = useState('');
   const [health, setHealth] = useState<HealthState>('checking');
 
-  const flatKeys = ['/workplace', '/admin', '/employees', '/plugins', '/security', '/teams'];
+  const flatKeys = ['/workplace', '/admin', '/employees', '/plugins', '/security', '/teams', '/agentteams-collaboration'];
   const selected =
     flatKeys
       .filter((key) => location.pathname.startsWith(key))
