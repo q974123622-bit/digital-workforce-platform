@@ -12,7 +12,7 @@ from app.services.agentteams_collaboration import (
     CollaborationConflict,
 )
 from app.services.agentteams_gateway import MatrixEvent, MatrixSyncBatch
-from app.services.agentteams_protocol import AgentProtocolMessage, render_protocol_line
+from app.services.agentteams_protocol import AgentProtocolMessage, parse_protocol_lines, render_protocol_line
 
 
 ROOM_ID = "!agentteams:test"
@@ -743,6 +743,31 @@ def test_runner_sends_pending_outbox(db_session):
     assert outbox.delivery_status == "sent"
     assert outbox.matrix_event_id == "$sent-1"
     assert gateway.sent and gateway.sent[0][0] == ROOM_ID
+
+
+def test_runner_suppresses_stale_submit_after_task_is_cancelled(db_session):
+    """A user cancellation must not let an earlier queued submission escape."""
+    from app.routers.agentteams_collaboration import cancel_task
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    service, run, _leader = _create_run(db_session)
+    cancel_task(run.id, db_session)
+    gateway = FakeGateway()
+
+    AgentTeamsCollaborationRunner(
+        gateway=gateway, service=service, room_id=ROOM_ID,
+    ).tick_once(db_session)
+
+    sent_types = [parse_protocol_lines(protocol_line)[0].type for _, _, protocol_line in gateway.sent]
+    submit = db_session.query(models.AgentMessage).filter_by(
+        root_task_id=run.id, message_type="task.submit",
+    ).one()
+    cancellation = db_session.query(models.AgentMessage).filter_by(
+        root_task_id=run.id, message_type="task.cancel",
+    ).one()
+    assert sent_types == ["task.cancel"]
+    assert submit.delivery_status == "cancelled"
+    assert cancellation.delivery_status == "sent"
 
 
 def test_runner_persists_valid_inbound_event_and_cursor(db_session):

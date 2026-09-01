@@ -96,6 +96,15 @@ class AgentTeamsCollaborationRunner:
             )
         )
         for outbound in pending:
+            if (
+                outbound.message_type != "task.cancel"
+                and self._root_is_cancelled(db, outbound.root_task_id)
+            ):
+                # A user cancellation is durable state, so an older queued
+                # submission/assignment must not be released afterwards.  Keep
+                # the cancellation notification itself eligible for delivery.
+                outbound.delivery_status = "cancelled"
+                continue
             try:
                 protocol = self._outbound_protocol(db, outbound)
                 matrix_event_id = self.gateway.send_protocol_message(
@@ -329,6 +338,16 @@ class AgentTeamsCollaborationRunner:
         return (
             (run is not None and run.source == "agentteams" and run.status in _TERMINAL_STATUSES)
             or (root is not None and root.status in _TERMINAL_STATUSES)
+        )
+
+    @staticmethod
+    def _root_is_cancelled(db: Session, root_task_id: str) -> bool:
+        """Suppress stale outbox work after a user has cancelled its root."""
+        run = db.get(models.TaskRun, root_task_id)
+        root = db.get(models.AgentTaskNode, root_task_id)
+        return (
+            (run is not None and run.source == "agentteams" and run.status == "cancelled")
+            or (root is not None and root.status == "cancelled")
         )
 
     def _record_raw_event(
