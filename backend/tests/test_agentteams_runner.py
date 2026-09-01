@@ -1,7 +1,10 @@
+import hashlib
+import json
 import logging
 from datetime import datetime, timedelta
 
 import pytest
+from fastapi import HTTPException
 
 from app import models
 from app.services.agentteams_collaboration import (
@@ -139,6 +142,284 @@ def _node_message(run, node, *, event_type, key, payload):
         idempotency_key=f"{run.id}:{node.id}:{key}",
         payload=payload,
     )
+
+
+def _tool_request_payload(**overrides):
+    payload = {
+        "plugin_id": "PLUGIN-TEST",
+        "action": "read",
+        "params": {"query": "员工入职制度"},
+        "knowledge_base_id": "KB-HR",
+        "context": "已完成制度核查",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _worker_matrix_sender(db_session, service, node):
+    worker = db_session.get(models.DigitalEmployee, node.assignee_agent_id)
+    assert worker is not None
+    matrix_sender = service._matrix_user_id_for_runtime(worker.runtime_ref)
+    assert matrix_sender is not None
+    return matrix_sender
+
+
+def test_tool_request_uses_platform_gateway(db_session, monkeypatch):
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+    calls = []
+
+    def fake_invoke_plugin(db, **kwargs):
+        calls.append((db, kwargs))
+        return {
+            "ok": True,
+            "decision": "allow",
+            "audit_ids": [41, 42],
+            "tool_name": "员工制度查询",
+            "tool_type": "knowledge",
+            "execution_mode": "knowledge_adapter",
+            "data": {
+                "answer": "制度已核查",
+                "sources": ["员工手册"],
+                "bounded": "x" * 600,
+            },
+        }
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fake_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="gateway",
+        payload=_tool_request_payload(employee_id=leader.employee_no),
+    )
+    runner = AgentTeamsCollaborationRunner(
+        gateway=FakeGateway([
+            MatrixSyncBatch(
+                events=[
+                    _event(
+                        "$tool-gateway",
+                        render_protocol_line(request),
+                        sender=_worker_matrix_sender(db_session, service, node),
+                    )
+                ],
+                next_cursor="s2",
+            )
+        ]),
+        service=service,
+        room_id=ROOM_ID,
+    )
+
+    runner.tick_once(db_session)
+
+    assert len(calls) == 1
+    call_db, kwargs = calls[0]
+    assert call_db is db_session
+    assert kwargs == {
+        "employee_id": node.assignee_agent_id,
+        "plugin_id": "PLUGIN-TEST",
+        "action": "read",
+        "params": {"query": "员工入职制度"},
+        "trace_id": node.trace_id,
+        "knowledge_base_id": "KB-HR",
+        "execution_context": {
+            "task_id": node.id,
+            "request": "协调完成入职准备",
+            "subtask": "核查制度",
+            "collaboration_summary": "已完成制度核查",
+        },
+    }
+    result = db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).one()
+    assert result.idempotency_key == (
+        f"{node.id}:tool.result:{hashlib.sha256(request.idempotency_key.encode()).hexdigest()[:32]}"
+    )
+    assert result.receiver_agent_id == node.assignee_agent_id
+    assert result.payload == {
+        "ok": True,
+        "decision": "allow",
+        "audit_ids": [41, 42],
+        "tool_name": "员工制度查询",
+        "tool_type": "knowledge",
+        "execution_mode": "knowledge_adapter",
+        "data": {
+            "answer": "制度已核查",
+            "sources": ["员工手册"],
+            "bounded": "x" * 512,
+        },
+    }
+
+
+def test_runner_keeps_cursor_atomic_when_gateway_commits(db_session, monkeypatch):
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+
+    def committing_invoke_plugin(db, **_kwargs):
+        db.commit()
+        return {"ok": True, "decision": "allow", "audit_ids": [54], "data": {"ok": "done"}}
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", committing_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="committing-gateway",
+        payload=_tool_request_payload(),
+    )
+    runner = AgentTeamsCollaborationRunner(
+        gateway=FakeGateway([
+            MatrixSyncBatch(
+                events=[
+                    _event(
+                        "$tool-committing-gateway",
+                        render_protocol_line(request),
+                        sender=_worker_matrix_sender(db_session, service, node),
+                    )
+                ],
+                next_cursor="s2",
+            )
+        ]),
+        service=service,
+        room_id=ROOM_ID,
+    )
+
+    runner.tick_once(db_session)
+
+    assert db_session.query(models.AgentMatrixCursor).one().cursor == "s2"
+    assert db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).count() == 1
+
+
+def test_tool_request_policy_denied_returns_denied_tool_result(db_session, monkeypatch):
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+
+    def deny_plugin(_db, **_kwargs):
+        raise HTTPException(
+            status_code=403,
+            detail={"audit_id": 73, "message": "策略拒绝", "token": "must-not-leak"},
+        )
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", deny_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="denied",
+        payload=_tool_request_payload(),
+    )
+    AgentTeamsCollaborationRunner(
+        gateway=FakeGateway([
+            MatrixSyncBatch(
+                events=[
+                    _event(
+                        "$tool-denied",
+                        render_protocol_line(request),
+                        sender=_worker_matrix_sender(db_session, service, node),
+                    )
+                ],
+                next_cursor="s2",
+            )
+        ]),
+        service=service,
+        room_id=ROOM_ID,
+    ).tick_once(db_session)
+
+    result = db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).one()
+    assert result.payload == {"ok": False, "decision": "deny", "audit_ids": [73]}
+    assert db_session.get(models.AgentTaskNode, node.id).status == "assigned"
+    assert db_session.get(models.TaskRun, run.id).status == "planning"
+
+
+def test_tool_request_cannot_impersonate_another_worker(db_session, monkeypatch):
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("unauthorized tool request must not reach the gateway")
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fail_if_called)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="impersonation",
+        payload=_tool_request_payload(),
+    )
+    request.sender = leader.employee_no
+
+    with pytest.raises(CollaborationConflict, match="unauthorized_sender"):
+        service.apply_message(db_session, matrix_sender=leader.runtime_ref, message=request)
+
+    assert db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).count() == 0
+    assert db_session.get(models.AgentTaskNode, node.id).status == "assigned"
+
+
+def test_tool_result_omits_secret_fields(db_session, monkeypatch):
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+
+    def fake_invoke_plugin(_db, **_kwargs):
+        return {
+            "ok": True,
+            "decision": "allow",
+            "audit_ids": [91],
+            "data": {
+                "visible": "正常结果",
+                "token": "token-value",
+                "ApiKey": "key-value",
+                "nested": {
+                    "Authorization": "Bearer hidden",
+                    "endpoint": "https://private.example/api",
+                    "traceback": "Traceback (most recent call last): hidden adapter detail",
+                    "keep": "可保留",
+                },
+                "items": [{"password": "hidden", "label": "保留标签"}],
+            },
+        }
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fake_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="sanitized",
+        payload=_tool_request_payload(),
+    )
+
+    service.apply_message(
+        db_session,
+        matrix_sender=_worker_matrix_sender(db_session, service, node),
+        message=request,
+    )
+
+    result = db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).one()
+    emitted = json.dumps(result.payload, ensure_ascii=False)
+    assert "token-value" not in emitted
+    assert "key-value" not in emitted
+    assert "Bearer hidden" not in emitted
+    assert "private.example" not in emitted
+    assert "Traceback" not in emitted
+    assert "password" not in emitted.casefold()
+    assert result.payload["data"] == {
+        "visible": "正常结果",
+        "nested": {"keep": "可保留"},
+        "items": [{"label": "保留标签"}],
+    }
 
 
 def test_runner_sends_pending_outbox(db_session):

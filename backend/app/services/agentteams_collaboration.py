@@ -7,16 +7,23 @@ outbox for a later runner to deliver.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime
+import hashlib
+import json
+import math
+import re
 from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
 from . import config
 from .agentteams_protocol import AgentProtocolMessage
+from .gateway import invoke_plugin
 
 
 class CollaborationConflict(RuntimeError):
@@ -32,6 +39,24 @@ ALLOWED: dict[str, set[str]] = {
     "summarizing": {"completed", "failed", "timed_out", "cancelled"},
 }
 _INBOUND_IDEMPOTENCY_PREFIX = "in:"
+_MAX_TOOL_RESULT_DEPTH = 4
+_MAX_TOOL_RESULT_ITEMS = 20
+_MAX_TOOL_RESULT_STRING_LENGTH = 512
+_MAX_TOOL_RESULT_BYTES = 4096
+_SECRET_FIELD_PATTERN = re.compile(
+    r"(?:password|passwd|pwd|token|secret|key|authorization|credential|cookie|header|endpoint|url|uri|"
+    r"stack|traceback|exception)",
+    re.IGNORECASE,
+)
+_URL_PATTERN = re.compile(r"(?i)\b(?:https?|wss?)://[^\s\"'<>]+")
+_SECRET_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)\b(?:password|passwd|pwd|token|secret|api[_-]?key|private[_-]?key|access[_-]?key|"
+    r"authorization|credential|cookie|header|endpoint)\s*[:=]\s*[^,\s]+"
+)
+_AUTH_VALUE_PATTERN = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/-]+=*")
+_STACK_TRACE_PATTERN = re.compile(
+    r"(?i)(?:traceback\s*\(|stack trace|exception\s*(?::|in thread)|(?:^|\n)\s*at\s+[\w.$<>]+\(.*:\d+\))"
+)
 
 
 class AgentTeamsCollaborationService:
@@ -147,6 +172,9 @@ class AgentTeamsCollaborationService:
         elif message.type == "task.summary":
             self._authorize(db, run, node, matrix_sender, message, roles={"coordinator"})
             events = self._apply_summary(db, run, node, message)
+        elif message.type == "tool.request":
+            self._authorize(db, run, node, matrix_sender, message, roles={"assignee"})
+            events = self._apply_tool_request(db, run, node, message)
         elif message.type == "agent.message":
             self._authorize(db, run, node, matrix_sender, message, roles={"assignee", "coordinator"})
             events = [
@@ -442,6 +470,179 @@ class AgentTeamsCollaborationService:
         else:
             events.extend(self._maybe_request_parent_summary(db, node, message.sender))
         return events
+
+    def _apply_tool_request(
+        self,
+        db: Session,
+        run: models.TaskRun,
+        node: models.AgentTaskNode,
+        message: AgentProtocolMessage,
+    ) -> list[models.AgentTaskEvent]:
+        """Execute an assigned worker request through the platform gateway only."""
+        root = db.get(models.AgentTaskNode, run.id)
+        if root is None or root.root_task_id != run.id:
+            raise CollaborationConflict("invalid_root_task")
+
+        event_type = "tool.result"
+        summary = "tool request completed"
+        try:
+            with self._gateway_transaction_guard(db):
+                result = invoke_plugin(
+                    db,
+                    employee_id=node.assignee_agent_id,
+                    plugin_id=str(message.payload["plugin_id"]),
+                    action=str(message.payload["action"]),
+                    params=dict(message.payload.get("params") or {}),
+                    trace_id=node.trace_id,
+                    knowledge_base_id=message.payload.get("knowledge_base_id"),
+                    execution_context={
+                        "task_id": node.id,
+                        "request": root.instruction,
+                        "subtask": node.instruction,
+                        "collaboration_summary": message.payload.get("context", ""),
+                    },
+                )
+            result_payload = self._safe_tool_result_payload(result)
+        except HTTPException as error:
+            result_payload = self._denied_tool_result_payload(error)
+            event_type = "tool.denied"
+            summary = "tool request denied"
+        except Exception:
+            # Unexpected gateway failures must not expose adapter details to Matrix
+            # or alter the task lifecycle.  The append-only event remains a safe
+            # operational signal for the platform.
+            result_payload = {"ok": False, "decision": "failed", "audit_ids": []}
+            event_type = "tool.failed"
+            summary = "tool request failed"
+
+        self._queue_outbound(
+            db,
+            root_task_id=node.root_task_id,
+            task_id=node.id,
+            parent_task_id=node.parent_task_id,
+            message_type="tool.result",
+            sender_agent_id="platform",
+            receiver_agent_id=node.assignee_agent_id,
+            body="tool result",
+            payload=result_payload,
+            idempotency_key=self._tool_result_idempotency_key(node, message),
+        )
+        return [
+            self._append_event(
+                db,
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                event_type=event_type,
+                actor_agent_id=message.sender,
+                target_agent_id=node.assignee_agent_id,
+                summary=summary,
+                detail={
+                    "decision": result_payload["decision"],
+                    "audit_ids": list(result_payload["audit_ids"]),
+                },
+            )
+        ]
+
+    @classmethod
+    def _safe_tool_result_payload(cls, result: Any) -> dict[str, Any]:
+        if not isinstance(result, Mapping):
+            return {"ok": False, "decision": "failed", "audit_ids": []}
+        decision = result.get("decision")
+        safe_decision = decision if decision in {"allow", "deny", "approval"} else "failed"
+        payload: dict[str, Any] = {
+            "ok": result.get("ok") is True,
+            "decision": safe_decision,
+            "audit_ids": cls._safe_audit_ids(result.get("audit_ids")),
+        }
+        for field in ("tool_name", "tool_type", "execution_mode", "runtime_mode"):
+            value = result.get(field)
+            if isinstance(value, str) and value:
+                payload[field] = cls._safe_tool_text(value)
+        if "data" in result:
+            payload["data"] = cls._sanitize_tool_result_data(result["data"])
+        return cls._bound_tool_result_payload(payload)
+
+    @classmethod
+    def _denied_tool_result_payload(cls, error: HTTPException) -> dict[str, Any]:
+        detail = error.detail
+        audit_values: Any = []
+        if isinstance(detail, Mapping):
+            audit_values = detail.get("audit_ids", detail.get("audit_id", []))
+        return {"ok": False, "decision": "deny", "audit_ids": cls._safe_audit_ids(audit_values)}
+
+    @classmethod
+    def _sanitize_tool_result_data(cls, value: Any, depth: int = 0) -> Any:
+        if depth >= _MAX_TOOL_RESULT_DEPTH:
+            return "[truncated]"
+        if value is None or isinstance(value, (bool, int)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, str):
+            return cls._safe_tool_text(value)
+        if isinstance(value, Mapping):
+            sanitized: dict[str, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= _MAX_TOOL_RESULT_ITEMS:
+                    sanitized["truncated"] = True
+                    break
+                key_text = str(key)[:80]
+                if cls._is_sensitive_tool_field(key_text):
+                    continue
+                sanitized[key_text] = cls._sanitize_tool_result_data(item, depth + 1)
+            return sanitized
+        if isinstance(value, (list, tuple)):
+            sanitized_items = [
+                cls._sanitize_tool_result_data(item, depth + 1)
+                for item in value[:_MAX_TOOL_RESULT_ITEMS]
+            ]
+            if len(value) > _MAX_TOOL_RESULT_ITEMS:
+                sanitized_items.append("[truncated]")
+            return sanitized_items
+        return "[unsupported result type]"
+
+    @classmethod
+    def _bound_tool_result_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) <= _MAX_TOOL_RESULT_BYTES:
+            return payload
+        bounded = dict(payload)
+        bounded["data"] = {"truncated": True}
+        return bounded
+
+    @staticmethod
+    def _safe_audit_ids(value: Any) -> list[int]:
+        values = value if isinstance(value, (list, tuple)) else [value]
+        return [item for item in values[:_MAX_TOOL_RESULT_ITEMS] if isinstance(item, int) and not isinstance(item, bool)]
+
+    @staticmethod
+    def _is_sensitive_tool_field(key: str) -> bool:
+        return _SECRET_FIELD_PATTERN.search(key) is not None
+
+    @staticmethod
+    def _safe_tool_text(value: str) -> str:
+        sanitized = _URL_PATTERN.sub("[redacted]", value)
+        sanitized = _SECRET_ASSIGNMENT_PATTERN.sub("[redacted]", sanitized)
+        sanitized = _AUTH_VALUE_PATTERN.sub("[redacted]", sanitized)
+        if _STACK_TRACE_PATTERN.search(sanitized):
+            return "[redacted]"
+        return sanitized[:_MAX_TOOL_RESULT_STRING_LENGTH]
+
+    @staticmethod
+    def _tool_result_idempotency_key(node: models.AgentTaskNode, message: AgentProtocolMessage) -> str:
+        digest = hashlib.sha256(message.idempotency_key.encode("utf-8", errors="ignore")).hexdigest()
+        return f"{node.id}:tool.result:{digest[:32]}"
+
+    @staticmethod
+    @contextmanager
+    def _gateway_transaction_guard(db: Session):
+        """Keep gateway audit writes inside the caller's transaction boundary."""
+        original_commit = db.commit
+        db.commit = db.flush  # type: ignore[method-assign]
+        try:
+            yield
+        finally:
+            db.commit = original_commit  # type: ignore[method-assign]
 
     def _maybe_request_parent_summary(
         self, db: Session, child: models.AgentTaskNode, actor_agent_id: str
