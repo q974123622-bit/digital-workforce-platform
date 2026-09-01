@@ -1,0 +1,35 @@
+schema: spec-driven
+githubCopilot:
+  cloudAgent: false
+
+context: |
+  Project: AI员工平台（前身为数字员工平台 Demo）。
+  Before creating or updating any artifact, read these project baselines in full:
+  - docs/project/CONSTITUTION.md
+  - docs/project/mission.md
+  - docs/project/tech-stack.md
+  - docs/project/roadmap.md
+  Treat them as upstream constraints rather than content to reproduce.
+  The current delivery focus is the internal test-server IT service employee MVP.
+  Distinguish repository reality, local verification, test-server verification, and future targets.
+  Do not treat Mock, demo fallback, or unmerged work as completed real capability.
+
+rules:
+  proposal:
+    - Identify the related Roadmap Feature, or explain why a new Feature is needed.
+    - State explicit non-goals and distinguish current facts from target behavior.
+    - Keep the proposal limited to one coherent change; do not restate the project baselines.
+  design:
+    - Respect the architecture, data, secret, environment, and extension boundaries in the project baselines.
+    - Explain any deviation from the default technical route and how it can be removed or rolled back.
+    - Preserve existing Demo behavior unless the approved change explicitly replaces it.
+  tasks:
+    - Map implementation work to the relevant Feature acceptance conditions.
+    - Include proportional tests and real failure scenarios.
+    - Never use Mock, demo data, or silent fallback as evidence that a real integration is complete.
+
+operations:
+  apply:
+    guidance:
+      - Stay within the approved Feature and change scope.
+      - Report baseline conflicts instead of modifying project direction implicitly.
