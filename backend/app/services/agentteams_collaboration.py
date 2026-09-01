@@ -24,6 +24,7 @@ from .. import models
 from . import config
 from .agentteams_protocol import AgentProtocolMessage
 from .gateway import invoke_plugin
+from .knowledge_registry import plugin_id_for_level, resolve as resolve_knowledge_base
 
 
 class CollaborationConflict(RuntimeError):
@@ -48,12 +49,12 @@ _SECRET_FIELD_PATTERN = re.compile(
     r"stack|traceback|exception)",
     re.IGNORECASE,
 )
-_URL_PATTERN = re.compile(r"(?i)\b(?:https?|wss?)://[^\s\"'<>]+")
+_URI_PATTERN = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,31}://[^\s\"'<>]+")
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
     r"(?i)\b(?:password|passwd|pwd|token|secret|api[_-]?key|private[_-]?key|access[_-]?key|"
     r"authorization|credential|cookie|header|endpoint)\s*[:=]\s*[^,\s]+"
 )
-_AUTH_VALUE_PATTERN = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/-]+=*")
+_AUTH_VALUE_PATTERN = re.compile(r"(?i)\b(?:bearer|basic|token)\s+[A-Za-z0-9._~+/-]+=*")
 _STACK_TRACE_PATTERN = re.compile(
     r"(?i)(?:traceback\s*\(|stack trace|exception\s*(?::|in thread)|(?:^|\n)\s*at\s+[\w.$<>]+\(.*:\d+\))"
 )
@@ -173,6 +174,8 @@ class AgentTeamsCollaborationService:
             self._authorize(db, run, node, matrix_sender, message, roles={"coordinator"})
             events = self._apply_summary(db, run, node, message)
         elif message.type == "tool.request":
+            if message.receiver != "platform":
+                raise CollaborationConflict("invalid_tool_receiver")
             self._authorize(db, run, node, matrix_sender, message, roles={"assignee"})
             events = self._apply_tool_request(db, run, node, message)
         elif message.type == "agent.message":
@@ -485,35 +488,55 @@ class AgentTeamsCollaborationService:
 
         event_type = "tool.result"
         summary = "tool request completed"
-        try:
-            with self._gateway_transaction_guard(db):
-                result = invoke_plugin(
-                    db,
-                    employee_id=node.assignee_agent_id,
-                    plugin_id=str(message.payload["plugin_id"]),
-                    action=str(message.payload["action"]),
-                    params=dict(message.payload.get("params") or {}),
-                    trace_id=node.trace_id,
-                    knowledge_base_id=message.payload.get("knowledge_base_id"),
-                    execution_context={
-                        "task_id": node.id,
-                        "request": root.instruction,
-                        "subtask": node.instruction,
-                        "collaboration_summary": message.payload.get("context", ""),
-                    },
-                )
-            result_payload = self._safe_tool_result_payload(result)
-        except HTTPException as error:
-            result_payload = self._denied_tool_result_payload(error)
+        detail: dict[str, Any] = {}
+        plugin_id, knowledge_base_id, denial_reason = self._resolve_tool_target(db, message)
+        if denial_reason is not None:
+            result_payload = {"ok": False, "decision": "deny", "audit_ids": []}
             event_type = "tool.denied"
             summary = "tool request denied"
-        except Exception:
-            # Unexpected gateway failures must not expose adapter details to Matrix
-            # or alter the task lifecycle.  The append-only event remains a safe
-            # operational signal for the platform.
-            result_payload = {"ok": False, "decision": "failed", "audit_ids": []}
-            event_type = "tool.failed"
-            summary = "tool request failed"
+            detail["reason"] = denial_reason
+        else:
+            policy_error: HTTPException | None = None
+            try:
+                # The nested savepoint bounds all ORM writes made through this
+                # Session by the gateway. It cannot roll back a runtime/adapter
+                # external side effect or an adapter-owned independent Session;
+                # it does keep this runner's outbox and cursor transaction safe.
+                with db.begin_nested():
+                    with self._gateway_transaction_guard(db):
+                        try:
+                            result = invoke_plugin(
+                                db,
+                                employee_id=node.assignee_agent_id,
+                                plugin_id=plugin_id,
+                                action=str(message.payload["action"]),
+                                params=dict(message.payload.get("params") or {}),
+                                trace_id=node.trace_id,
+                                knowledge_base_id=knowledge_base_id,
+                                execution_context={
+                                    "task_id": node.id,
+                                    "request": root.instruction,
+                                    "subtask": node.instruction,
+                                    "collaboration_summary": message.payload.get("context", ""),
+                                },
+                            )
+                        except HTTPException as error:
+                            # A policy response is a completed, auditable gateway
+                            # outcome, so retain its audit row and send a deny result.
+                            policy_error = error
+                if policy_error is None:
+                    result_payload = self._safe_tool_result_payload(result)
+                else:
+                    result_payload = self._denied_tool_result_payload(policy_error)
+                    event_type = "tool.denied"
+                    summary = "tool request denied"
+            except Exception:
+                # Any unexpected gateway exception exits the nested savepoint and
+                # rolls back same-session partial writes before this safe result is
+                # persisted outside it. No exception text reaches Matrix.
+                result_payload = {"ok": False, "decision": "failed", "audit_ids": []}
+                event_type = "tool.failed"
+                summary = "tool request failed"
 
         self._queue_outbound(
             db,
@@ -539,9 +562,35 @@ class AgentTeamsCollaborationService:
                 detail={
                     "decision": result_payload["decision"],
                     "audit_ids": list(result_payload["audit_ids"]),
+                    **detail,
                 },
             )
         ]
+
+    @staticmethod
+    def _resolve_tool_target(
+        db: Session, message: AgentProtocolMessage
+    ) -> tuple[str, str | None, str | None]:
+        """Bind knowledge requests to server-owned resource level and plugin."""
+        requested_plugin = message.payload.get("plugin_id")
+        plugin_id = str(requested_plugin) if requested_plugin is not None else ""
+        if "knowledge_base_id" not in message.payload:
+            return plugin_id, None, None
+
+        raw_kb_id = message.payload.get("knowledge_base_id")
+        if not isinstance(raw_kb_id, str) or not raw_kb_id.strip():
+            return plugin_id, None, "invalid_knowledge_base_id"
+        knowledge_base = resolve_knowledge_base(db, raw_kb_id)
+        if knowledge_base is None:
+            return plugin_id, None, "knowledge_base_not_found"
+        plugin = db.get(models.Plugin, plugin_id)
+        if (
+            plugin is None
+            or plugin.type != "knowledge"
+            or message.payload.get("action") != "read"
+        ):
+            return plugin_id, None, "knowledge_base_requires_knowledge_read"
+        return plugin_id_for_level(knowledge_base.data_level), knowledge_base.id, None
 
     @classmethod
     def _safe_tool_result_payload(cls, result: Any) -> dict[str, Any]:
@@ -603,17 +652,39 @@ class AgentTeamsCollaborationService:
 
     @classmethod
     def _bound_tool_result_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
-        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        if len(encoded) <= _MAX_TOOL_RESULT_BYTES:
+        if cls._serialized_tool_result_size(payload) <= _MAX_TOOL_RESULT_BYTES:
             return payload
-        bounded = dict(payload)
-        bounded["data"] = {"truncated": True}
-        return bounded
+        minimal = {
+            "ok": payload["ok"],
+            "decision": payload["decision"],
+            "audit_ids": payload["audit_ids"],
+            "truncated": True,
+        }
+        if cls._serialized_tool_result_size(minimal) <= _MAX_TOOL_RESULT_BYTES:
+            return minimal
+        return {
+            "ok": payload["ok"],
+            "decision": payload["decision"],
+            "audit_ids": [],
+            "truncated": True,
+        }
+
+    @staticmethod
+    def _serialized_tool_result_size(payload: dict[str, Any]) -> int:
+        try:
+            return len(json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+            ).encode("utf-8"))
+        except (TypeError, ValueError, UnicodeEncodeError):
+            return _MAX_TOOL_RESULT_BYTES + 1
 
     @staticmethod
     def _safe_audit_ids(value: Any) -> list[int]:
         values = value if isinstance(value, (list, tuple)) else [value]
-        return [item for item in values[:_MAX_TOOL_RESULT_ITEMS] if isinstance(item, int) and not isinstance(item, bool)]
+        return [
+            item for item in values[:_MAX_TOOL_RESULT_ITEMS]
+            if isinstance(item, int) and not isinstance(item, bool) and -(2 ** 63) <= item < 2 ** 63
+        ]
 
     @staticmethod
     def _is_sensitive_tool_field(key: str) -> bool:
@@ -621,7 +692,8 @@ class AgentTeamsCollaborationService:
 
     @staticmethod
     def _safe_tool_text(value: str) -> str:
-        sanitized = _URL_PATTERN.sub("[redacted]", value)
+        sanitized = value.encode("utf-8", errors="replace").decode("utf-8")
+        sanitized = _URI_PATTERN.sub("[redacted]", sanitized)
         sanitized = _SECRET_ASSIGNMENT_PATTERN.sub("[redacted]", sanitized)
         sanitized = _AUTH_VALUE_PATTERN.sub("[redacted]", sanitized)
         if _STACK_TRACE_PATTERN.search(sanitized):
@@ -636,7 +708,7 @@ class AgentTeamsCollaborationService:
     @staticmethod
     @contextmanager
     def _gateway_transaction_guard(db: Session):
-        """Keep gateway audit writes inside the caller's transaction boundary."""
+        """Keep legacy gateway commits within the caller-owned inner savepoint."""
         original_commit = db.commit
         db.commit = db.flush  # type: ignore[method-assign]
         try:

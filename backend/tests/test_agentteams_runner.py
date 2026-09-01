@@ -146,10 +146,10 @@ def _node_message(run, node, *, event_type, key, payload):
 
 def _tool_request_payload(**overrides):
     payload = {
-        "plugin_id": "PLUGIN-TEST",
+        "plugin_id": "knowledge-l1",
         "action": "read",
         "params": {"query": "员工入职制度"},
-        "knowledge_base_id": "KB-HR",
+        "knowledge_base_id": "KB-REG-EXTERNAL",
         "context": "已完成制度核查",
     }
     payload.update(overrides)
@@ -219,11 +219,11 @@ def test_tool_request_uses_platform_gateway(db_session, monkeypatch):
     assert call_db is db_session
     assert kwargs == {
         "employee_id": node.assignee_agent_id,
-        "plugin_id": "PLUGIN-TEST",
+        "plugin_id": "knowledge-l1",
         "action": "read",
         "params": {"query": "员工入职制度"},
         "trace_id": node.trace_id,
-        "knowledge_base_id": "KB-HR",
+        "knowledge_base_id": "KB-REG-EXTERNAL",
         "execution_context": {
             "task_id": node.id,
             "request": "协调完成入职准备",
@@ -251,6 +251,268 @@ def test_tool_request_uses_platform_gateway(db_session, monkeypatch):
             "bounded": "x" * 512,
         },
     }
+
+
+def test_tool_request_derives_knowledge_plugin_from_kb_level(db_session, monkeypatch):
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+    calls = []
+
+    def fake_invoke_plugin(_db, **kwargs):
+        calls.append(kwargs)
+        return {"ok": False, "decision": "deny", "audit_ids": [61], "data": None}
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fake_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="kb-level",
+        payload=_tool_request_payload(
+            plugin_id="knowledge-l1",
+            knowledge_base_id="KB-CUSTOMER-SENSITIVE",
+        ),
+    )
+
+    service.apply_message(
+        db_session,
+        matrix_sender=_worker_matrix_sender(db_session, service, node),
+        message=request,
+    )
+
+    assert calls[0]["plugin_id"] == "knowledge-l3"
+    assert calls[0]["knowledge_base_id"] == "KB-CUSTOMER-SENSITIVE"
+
+
+def test_tool_request_rejects_unknown_knowledge_base_without_gateway(db_session, monkeypatch):
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+    calls = []
+
+    def fake_invoke_plugin(_db, **kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "decision": "allow", "audit_ids": [62], "data": {}}
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fake_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="unknown-kb",
+        payload=_tool_request_payload(knowledge_base_id="KB-NOT-FOUND"),
+    )
+
+    events = service.apply_message(
+        db_session,
+        matrix_sender=_worker_matrix_sender(db_session, service, node),
+        message=request,
+    )
+
+    assert calls == []
+    assert events[0].event_type == "tool.denied"
+    assert events[0].detail["reason"] == "knowledge_base_not_found"
+    result = db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).one()
+    assert result.payload == {"ok": False, "decision": "deny", "audit_ids": []}
+
+
+def test_tool_request_rejects_non_knowledge_plugin_with_knowledge_base(db_session, monkeypatch):
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+    calls = []
+
+    def fake_invoke_plugin(_db, **kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "decision": "allow", "audit_ids": [63], "data": {}}
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fake_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="non-knowledge-kb",
+        payload=_tool_request_payload(plugin_id="hr-employee-mcp", action="execute"),
+    )
+
+    events = service.apply_message(
+        db_session,
+        matrix_sender=_worker_matrix_sender(db_session, service, node),
+        message=request,
+    )
+
+    assert calls == []
+    assert events[0].event_type == "tool.denied"
+    assert events[0].detail["reason"] == "knowledge_base_requires_knowledge_read"
+
+
+def test_tool_request_rejects_non_platform_receiver(db_session, monkeypatch):
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+    calls = []
+
+    def fake_invoke_plugin(_db, **kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "decision": "allow", "audit_ids": [64], "data": {}}
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fake_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="wrong-receiver",
+        payload=_tool_request_payload(),
+    )
+    request.receiver = node.coordinator_agent_id
+
+    with pytest.raises(CollaborationConflict, match="invalid_tool_receiver"):
+        service.apply_message(
+            db_session,
+            matrix_sender=_worker_matrix_sender(db_session, service, node),
+            message=request,
+        )
+
+    assert calls == []
+
+
+def test_tool_result_filters_non_http_uris_and_token_scheme(db_session, monkeypatch):
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+
+    def fake_invoke_plugin(_db, **_kwargs):
+        return {
+            "ok": True,
+            "decision": "allow",
+            "audit_ids": [65],
+            "data": {
+                "database": "postgresql://user:password@db.example/app",
+                "remote": "ssh://root@internal.example:22/home",
+                "local": "file:///private/secrets.txt",
+                "note": "Token abc.def.ghi",
+                "safe": "保留",
+            },
+        }
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fake_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="uri-sanitized",
+        payload=_tool_request_payload(),
+    )
+
+    service.apply_message(
+        db_session,
+        matrix_sender=_worker_matrix_sender(db_session, service, node),
+        message=request,
+    )
+
+    result = db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).one()
+    emitted = json.dumps(result.payload, ensure_ascii=False)
+    assert "postgresql://" not in emitted
+    assert "ssh://" not in emitted
+    assert "file://" not in emitted
+    assert "Token abc" not in emitted
+    assert result.payload["data"]["safe"] == "保留"
+
+
+def test_tool_result_payload_has_hard_utf8_byte_limit(db_session, monkeypatch):
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+    oversized_metadata = "汉" * 512
+
+    def fake_invoke_plugin(_db, **_kwargs):
+        return {
+            "ok": True,
+            "decision": "allow",
+            "audit_ids": [66],
+            "tool_name": oversized_metadata,
+            "tool_type": oversized_metadata,
+            "execution_mode": oversized_metadata,
+            "runtime_mode": oversized_metadata,
+            "data": {"result": "x" * 5000},
+        }
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fake_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="hard-limit",
+        payload=_tool_request_payload(),
+    )
+
+    service.apply_message(
+        db_session,
+        matrix_sender=_worker_matrix_sender(db_session, service, node),
+        message=request,
+    )
+
+    result = db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).one()
+    assert set(result.payload) == {"ok", "decision", "audit_ids", "truncated"}
+    assert result.payload["truncated"] is True
+    assert len(json.dumps(result.payload, ensure_ascii=False).encode("utf-8")) <= 4096
+
+
+def test_runner_rolls_back_gateway_writes_before_safe_failure_result(db_session, monkeypatch):
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+    before_audits = db_session.query(models.AuditEvent).count()
+
+    def failing_invoke_plugin(db, **_kwargs):
+        db.add(models.AuditEvent(
+            trace_id=node.trace_id,
+            actor=node.assignee_agent_id,
+            employee_id=node.assignee_agent_id,
+            plugin_id="knowledge-l1",
+            action="read",
+            decision="allow",
+            reason="must roll back",
+        ))
+        raise RuntimeError("Token abc postgresql://db.example/partial")
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", failing_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="gateway-rollback",
+        payload=_tool_request_payload(),
+    )
+    runner = AgentTeamsCollaborationRunner(
+        gateway=FakeGateway([
+            MatrixSyncBatch(
+                events=[
+                    _event(
+                        "$tool-gateway-rollback",
+                        render_protocol_line(request),
+                        sender=_worker_matrix_sender(db_session, service, node),
+                    )
+                ],
+                next_cursor="s2",
+            )
+        ]),
+        service=service,
+        room_id=ROOM_ID,
+    )
+
+    runner.tick_once(db_session)
+
+    assert db_session.query(models.AuditEvent).count() == before_audits
+    assert db_session.query(models.AgentMatrixCursor).one().cursor == "s2"
+    event = db_session.query(models.AgentTaskEvent).filter_by(task_id=node.id, event_type="tool.failed").one()
+    assert event.detail == {"decision": "failed", "audit_ids": []}
+    result = db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).one()
+    assert result.payload == {"ok": False, "decision": "failed", "audit_ids": []}
 
 
 def test_runner_keeps_cursor_atomic_when_gateway_commits(db_session, monkeypatch):
