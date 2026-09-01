@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CloseCircleOutlined,
   ReloadOutlined,
@@ -48,8 +48,22 @@ function mergeEvents(existing: AgentTaskEvent[], incoming: AgentTaskEvent[]) {
   return [...byId.values()].sort((left, right) => left.id - right.id);
 }
 
-function healthTag(label: string, status: string, ready: boolean) {
-  return <Tag color={ready ? 'success' : 'error'}>{ready ? `${label}已连接` : `${label}未就绪：${status || 'unknown'}`}</Tag>;
+function healthTag(label: string, status: string) {
+  if (status === 'ready') return <Tag color="success">{label}已连接</Tag>;
+  if (status === 'configured') return <Tag color="processing">{label}已配置/待实测</Tag>;
+  return <Tag color="error">{label}未就绪：{status || 'unknown'}</Tag>;
+}
+
+function workerHealthTag(workers: AgentCollaborationHealth['workers']) {
+  const readyWorkers = workers.filter((worker) => worker.status === 'ready').length;
+  const configuredWorkers = workers.filter((worker) => worker.status === 'configured').length;
+  if (configuredWorkers > 0) {
+    return <Tag color="processing">Worker 已配置/待实测：{configuredWorkers}/{workers.length}</Tag>;
+  }
+  if (readyWorkers > 0) {
+    return <Tag color="success">Worker 已就绪：{readyWorkers}/{workers.length}</Tag>;
+  }
+  return <Tag color="error">Worker 未就绪：0/{workers.length}</Tag>;
 }
 
 function statusTag(status: string) {
@@ -87,7 +101,12 @@ export default function AgentTeamsCollaborationPage() {
   const [loadError, setLoadError] = useState<string>();
   const [formError, setFormError] = useState<string>();
   const [actionError, setActionError] = useState<string>();
-
+  const taskSelectionVersionRef = useRef(0);
+  const selectTask = useCallback((taskId: string | null) => {
+    if (taskId === selectedTaskId) return;
+    taskSelectionVersionRef.current += 1;
+    setSelectedTaskId(taskId);
+  }, [selectedTaskId]);
   const selectedTeam = useMemo(() => teams.find((team) => team.id === teamId), [teamId, teams]);
   const selectedNode = useMemo(() => {
     const nodes = graph.nodes.length > 0 ? graph.nodes : selectedTask?.nodes ?? [];
@@ -115,7 +134,13 @@ export default function AgentTeamsCollaborationPage() {
     }
   }, []);
 
-  const loadTask = useCallback(async (taskId: string, afterEventId?: number): Promise<LoadedTask | null> => {
+  const loadTask = useCallback(async (
+    taskId: string,
+    requestVersion: number,
+    afterEventId?: number,
+  ): Promise<LoadedTask | null> => {
+    const isCurrentTask = () => taskSelectionVersionRef.current === requestVersion;
+    if (!isCurrentTask()) return null;
     setTaskLoading(true);
     try {
       const [task, nextGraph, nextEvents, nextMessages, nextResult] = await Promise.all([
@@ -125,6 +150,7 @@ export default function AgentTeamsCollaborationPage() {
         api.getAgentTeamsMessages(taskId),
         api.getAgentTeamsResult(taskId),
       ]);
+      if (!isCurrentTask()) return null;
       setSelectedTask(task);
       setGraph(nextGraph);
       setMessages(nextMessages);
@@ -134,10 +160,10 @@ export default function AgentTeamsCollaborationPage() {
       setSelectedNodeId((current) => current ?? task.id);
       return { task, graph: nextGraph, events: nextEvents, messages: nextMessages, result: nextResult };
     } catch (error) {
-      setActionError(`任务详情请求失败：${errorText(error)}`);
+      if (isCurrentTask()) setActionError(`任务详情请求失败：${errorText(error)}`);
       return null;
     } finally {
-      setTaskLoading(false);
+      if (isCurrentTask()) setTaskLoading(false);
     }
   }, []);
 
@@ -147,17 +173,19 @@ export default function AgentTeamsCollaborationPage() {
 
   useEffect(() => {
     if (!selectedTaskId) return;
+    const requestVersion = ++taskSelectionVersionRef.current;
     setEvents([]);
     setMessages([]);
     setResult(null);
     setSelectedNodeId(selectedTaskId);
-    void loadTask(selectedTaskId);
+    void loadTask(selectedTaskId, requestVersion);
   }, [loadTask, selectedTaskId]);
 
   useEffect(() => {
-    if (!selectedTaskId || !selectedTask || isTerminal(selectedTask.status)) return;
+    if (!selectedTaskId || selectedTask?.id !== selectedTaskId || isTerminal(selectedTask.status)) return;
+    const requestVersion = taskSelectionVersionRef.current;
     const timer = window.setTimeout(() => {
-      void loadTask(selectedTaskId, selectedTask.latest_event_id);
+      void loadTask(selectedTaskId, requestVersion, selectedTask.latest_event_id);
     }, 1000);
     return () => window.clearTimeout(timer);
   }, [loadTask, selectedTask, selectedTaskId]);
@@ -200,7 +228,7 @@ export default function AgentTeamsCollaborationPage() {
       setMessages([]);
       setResult(null);
       setSelectedNodeId(task.id);
-      setSelectedTaskId(task.id);
+      selectTask(task.id);
       setTitle('');
       setInstruction('');
       setMaterial('');
@@ -241,7 +269,7 @@ export default function AgentTeamsCollaborationPage() {
       setMessages([]);
       setResult(null);
       setSelectedNodeId(task.id);
-      setSelectedTaskId(task.id);
+      selectTask(task.id);
     } catch (error) {
       setActionError(`重试任务失败：${errorText(error)}`);
     } finally {
@@ -286,12 +314,10 @@ export default function AgentTeamsCollaborationPage() {
               description={
                 <Space direction="vertical" size={6}>
                   <Space size={[6, 6]} wrap>
-                    {healthTag('Matrix', health.matrix, health.matrix === 'ready')}
-                    {healthTag('房间', health.room, health.room === 'ready')}
-                    {healthTag('Manager', health.manager, health.manager === 'ready')}
-                    <Tag color={health.workers.filter((worker) => worker.status === 'ready').length >= 2 ? 'success' : 'error'}>
-                      Worker 就绪：{health.workers.filter((worker) => worker.status === 'ready').length}/{health.workers.length}
-                    </Tag>
+                    {healthTag('Matrix', health.matrix)}
+                    {healthTag('房间', health.room)}
+                    {healthTag('Manager', health.manager)}
+                    {workerHealthTag(health.workers)}
                   </Space>
                   <Space size={4}>
                     <Typography.Text>服务端原因：</Typography.Text>
@@ -369,7 +395,7 @@ export default function AgentTeamsCollaborationPage() {
                         key={task.id}
                         className={`at-task-row ${task.id === selectedTaskId ? 'selected' : ''}`}
                         aria-label={`查看协作任务 ${task.title}`}
-                        onClick={() => setSelectedTaskId(task.id)}
+                        onClick={() => selectTask(task.id)}
                       >
                         <span>
                           <Typography.Text strong>{task.title}</Typography.Text>

@@ -26,13 +26,13 @@ afterEach(() => {
 const readyHealth: AgentCollaborationHealth = {
   enabled: true,
   ready_for_demo: true,
-  reason: 'Matrix、房间、Manager 和 2 个 Worker 均已就绪',
+  reason: '',
   matrix: 'ready',
   room: 'ready',
-  manager: 'ready',
+  manager: 'configured',
   workers: [
-    { agent_id: 'VE-0001', matrix_user_id: '@ve-0001:matrix.test', status: 'ready' },
-    { agent_id: 'VE-0002', matrix_user_id: '@ve-0002:matrix.test', status: 'ready' },
+    { agent_id: 'VE-0001', matrix_user_id: '@ve-0001:matrix.test', status: 'configured' },
+    { agent_id: 'VE-0002', matrix_user_id: '@ve-0002:matrix.test', status: 'configured' },
   ],
 };
 
@@ -162,7 +162,15 @@ const completedResult: AgentFinalResult = {
   node_results: [rootNode, workerNode],
 };
 
-type MockRoute = unknown | ((init?: RequestInit) => unknown);
+type MockRoute = unknown | ((init?: RequestInit) => unknown | Promise<unknown>);
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 function mockPageApi(routes: Record<string, MockRoute>) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -170,7 +178,11 @@ function mockPageApi(routes: Record<string, MockRoute>) {
     const requestKey = `${method} ${String(input).split('?')[0]}`;
     const matching = Object.entries(routes).find(([key]) => requestKey.endsWith(key));
     if (!matching) return json({});
-    const value = typeof matching[1] === 'function' ? (matching[1] as (request?: RequestInit) => unknown)(init) : matching[1];
+    const value = await Promise.resolve(
+      typeof matching[1] === 'function'
+        ? (matching[1] as (request?: RequestInit) => unknown | Promise<unknown>)(init)
+        : matching[1],
+    );
     if (value instanceof Error) throw value;
     return json(value);
   });
@@ -321,6 +333,95 @@ describe('AgentTeams collaboration page', () => {
         instruction: '完成制度和账号核查',
         material: {},
       });
+    });
+  });
+
+  it('treats configured Manager and workers as pending verification when the server gate is ready', async () => {
+    mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': readyHealth,
+      'GET /api/v1/teams': teams,
+      'GET /api/v1/agentteams-collaboration/tasks': [],
+    });
+    renderPage();
+
+    expect(await screen.findByText('Manager已配置/待实测')).toBeInTheDocument();
+    expect(screen.getByText('Worker 已配置/待实测：2/2')).toBeInTheDocument();
+    expect(screen.queryByText(/Manager未就绪/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the current task details when an earlier selection resolves after a later selection', async () => {
+    const taskA: AgentCollaborationTask = {
+      ...completedTask,
+      id: 'AT-A',
+      trace_id: 'AT-A',
+      title: '任务 A',
+      summary: 'A 的最终汇总',
+      nodes: [{ ...rootNode, id: 'AT-A', root_task_id: 'AT-A', title: 'A 节点' }],
+    };
+    const taskB: AgentCollaborationTask = {
+      ...completedTask,
+      id: 'AT-B',
+      trace_id: 'AT-B',
+      title: '任务 B',
+      summary: 'B 的最终汇总',
+      nodes: [{ ...rootNode, id: 'AT-B', root_task_id: 'AT-B', title: 'B 节点' }],
+    };
+    const graphA: AgentTaskGraph = { nodes: taskA.nodes, parent_edges: [], dependency_edges: [], communication_edges: [] };
+    const graphB: AgentTaskGraph = { nodes: taskB.nodes, parent_edges: [], dependency_edges: [], communication_edges: [] };
+    const eventsA: AgentTaskEvent[] = [{ ...completedEvents[0], root_task_id: 'AT-A', task_id: 'AT-A', summary: 'A 的轨迹事件' }];
+    const eventsB: AgentTaskEvent[] = [{ ...completedEvents[0], root_task_id: 'AT-B', task_id: 'AT-B', summary: 'B 的轨迹事件' }];
+    const messagesA: AgentMessage[] = [{ ...completedMessages[0], root_task_id: 'AT-A', task_id: 'AT-A', body: 'A 的 Matrix 消息' }];
+    const messagesB: AgentMessage[] = [{ ...completedMessages[0], root_task_id: 'AT-B', task_id: 'AT-B', body: 'B 的 Matrix 消息' }];
+    const resultA: AgentFinalResult = { task_id: 'AT-A', status: 'completed', summary: 'A 的最终汇总', node_results: taskA.nodes };
+    const resultB: AgentFinalResult = { task_id: 'AT-B', status: 'completed', summary: 'B 的最终汇总', node_results: taskB.nodes };
+    const delayedA = {
+      task: deferred<AgentCollaborationTask>(),
+      graph: deferred<AgentTaskGraph>(),
+      events: deferred<AgentTaskEvent[]>(),
+      messages: deferred<AgentMessage[]>(),
+      result: deferred<AgentFinalResult>(),
+    };
+    const fetchMock = mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': readyHealth,
+      'GET /api/v1/teams': teams,
+      'GET /api/v1/agentteams-collaboration/tasks': [taskA, taskB],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A': () => delayedA.task.promise,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A/graph': () => delayedA.graph.promise,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A/events': () => delayedA.events.promise,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A/messages': () => delayedA.messages.promise,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A/result': () => delayedA.result.promise,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B': taskB,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B/graph': graphB,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B/events': eventsB,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B/messages': messagesB,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B/result': resultB,
+    });
+    renderPage();
+
+    await screen.findByRole('button', { name: '查看协作任务 任务 A' });
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/agentteams-collaboration/tasks/AT-A/result'))).toBe(true);
+    });
+    fireEvent.click(screen.getByRole('button', { name: '查看协作任务 任务 B' }));
+
+    expect(await screen.findByText('B 的最终汇总')).toBeInTheDocument();
+    await act(async () => {
+      delayedA.task.resolve(taskA);
+      delayedA.graph.resolve(graphA);
+      delayedA.events.resolve(eventsA);
+      delayedA.messages.resolve(messagesA);
+      delayedA.result.resolve(resultA);
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText('B 节点')).toHaveLength(2);
+      expect(screen.getByText('B 的轨迹事件')).toBeInTheDocument();
+      expect(screen.getByText('B 的 Matrix 消息')).toBeInTheDocument();
+      expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
+      expect(screen.queryAllByText('A 节点')).toHaveLength(0);
+      expect(screen.queryByText('A 的轨迹事件')).not.toBeInTheDocument();
+      expect(screen.queryByText('A 的 Matrix 消息')).not.toBeInTheDocument();
+      expect(screen.queryByText('A 的最终汇总')).not.toBeInTheDocument();
     });
   });
 
