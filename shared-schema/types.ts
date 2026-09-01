@@ -351,3 +351,114 @@ export interface AccessRequest {
   decided_at: string | null;
   created_at: string;
 }
+
+// ---- AgentTeams 独立协作 ----
+
+export type AgentTaskTerminalStatus = 'completed' | 'failed' | 'timed_out' | 'cancelled';
+
+export type AgentTaskStatus =
+  | 'planning'
+  | 'assigned'
+  | 'accepted'
+  | 'running'
+  | 'waiting_children'
+  | 'summarizing'
+  | AgentTaskTerminalStatus;
+
+export interface AgentTaskNode {
+  id: string;
+  root_task_id: string;
+  parent_task_id: string | null;
+  title: string;
+  coordinator_agent_id: string;
+  assignee_agent_id: string;
+  status: AgentTaskStatus;
+  progress: number;
+  depth: number;
+  required: boolean;
+  output_payload: Record<string, unknown>;
+  error_code: string;
+  error_message: string;
+}
+
+export interface AgentTaskEvent {
+  id: number;
+  root_task_id: string;
+  task_id: string;
+  event_seq: number;
+  event_type: string;
+  actor_agent_id: string;
+  target_agent_id: string | null;
+  summary: string;
+  detail: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AgentCollaborationTask {
+  id: string;
+  team_id: string;
+  trace_id: string;
+  title: string;
+  instruction: string;
+  status: AgentTaskStatus;
+  source: 'agentteams';
+  summary: string;
+  nodes: AgentTaskNode[];
+  latest_event_id: number;
+  created_at: string;
+}
+
+export interface AgentMessage {
+  id: string;
+  root_task_id: string;
+  task_id: string;
+  parent_task_id: string | null;
+  message_type: string;
+  sender_agent_id: string;
+  receiver_agent_id: string;
+  body: string;
+  payload: Record<string, unknown>;
+  matrix_room_id: string;
+  matrix_event_id: string | null;
+  direction: string;
+  delivery_status: string;
+  created_at: string;
+}
+
+export interface AgentTaskGraph {
+  nodes: AgentTaskNode[];
+  parent_edges: Array<Record<string, string>>;
+  dependency_edges: Array<Record<string, string>>;
+  communication_edges: Array<Record<string, string>>;
+}
+
+export interface AgentWorkerHealth {
+  agent_id: string;
+  matrix_user_id: string;
+  status: string;
+}
+
+export interface AgentCollaborationHealth {
+  enabled: boolean;
+  ready_for_demo: boolean;
+  reason: string;
+  matrix: string;
+  room: string;
+  manager: string;
+  workers: AgentWorkerHealth[];
+}
+
+export interface AgentFinalResult {
+  task_id: string;
+  status: AgentTaskStatus;
+  summary: string;
+  node_results: AgentTaskNode[];
+}
+
+export interface AgentCollaborationTaskCreate {
+  team_id: string;
+  leader_agent_id: string;
+  title: string;
+  instruction: string;
+  material?: Record<string, unknown>;
+}

@@ -1,5 +1,12 @@
 import type {
   AccessRequest,
+  AgentCollaborationHealth,
+  AgentCollaborationTask,
+  AgentCollaborationTaskCreate,
+  AgentFinalResult,
+  AgentMessage,
+  AgentTaskEvent,
+  AgentTaskGraph,
   AuditEvent,
   Capability,
   ChatMessage,
@@ -23,6 +30,18 @@ import type {
 const BASE = '/api/v1';
 
 type RequestOptions = RequestInit & { absolute?: boolean };
+
+function errorMessage(body: unknown, fallback: string): string {
+  if (!body || typeof body !== 'object') return fallback;
+  const payload = body as { error?: { message?: unknown }; detail?: unknown };
+  if (typeof payload.error?.message === 'string') return payload.error.message;
+  if (typeof payload.detail === 'string') return payload.detail;
+  if (payload.detail && typeof payload.detail === 'object') {
+    const detail = payload.detail as { message?: unknown };
+    if (typeof detail.message === 'string') return detail.message;
+  }
+  return fallback;
+}
 
 // 会话摘要（会话列表用）
 export interface SessionSummary {
@@ -55,8 +74,7 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
     try {
-      const body = await res.json();
-      message = body?.error?.message ?? body?.detail ?? message;
+      message = errorMessage(await res.json(), message);
     } catch {
       // 保留默认错误信息
     }
@@ -74,6 +92,37 @@ function qs(params?: Record<string, string | undefined>): string {
 
 export const api = {
   health: () => request<{ status: string }>('/health', { absolute: true }),
+  agentTeamsHealth: () => request<AgentCollaborationHealth>('/agentteams-collaboration/health'),
+  createAgentTeamsTask: (payload: AgentCollaborationTaskCreate) =>
+    request<AgentCollaborationTask>('/agentteams-collaboration/tasks', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  listAgentTeamsTasks: () => request<AgentCollaborationTask[]>('/agentteams-collaboration/tasks'),
+  getAgentTeamsTask: (taskId: string) =>
+    request<AgentCollaborationTask>(`/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}`),
+  getAgentTeamsGraph: (taskId: string) =>
+    request<AgentTaskGraph>(`/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/graph`),
+  getAgentTeamsEvents: (taskId: string, afterEventId?: number) =>
+    request<AgentTaskEvent[]>(
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/events${
+        afterEventId !== undefined ? `?after_event_id=${afterEventId}` : ''
+      }`,
+    ),
+  getAgentTeamsMessages: (taskId: string) =>
+    request<AgentMessage[]>(`/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/messages`),
+  getAgentTeamsResult: (taskId: string) =>
+    request<AgentFinalResult>(`/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/result`),
+  cancelAgentTeamsTask: (taskId: string) =>
+    request<AgentCollaborationTask>(
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/cancel`,
+      { method: 'POST' },
+    ),
+  retryAgentTeamsTask: (taskId: string) =>
+    request<AgentCollaborationTask>(
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/retry`,
+      { method: 'POST' },
+    ),
   listEmployees: (params?: { type?: string }) => request<Employee[]>(`/employees${qs(params)}`),
   getEmployee: (employeeNo: string) => request<Employee>(`/employees/${encodeURIComponent(employeeNo)}`),
   listPlugins: () => request<Plugin[]>('/plugins'),
