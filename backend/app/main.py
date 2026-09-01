@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import threading
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -6,16 +7,60 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .database import Base, engine, ensure_schema_compatibility
-from .routers import access, audit, chat, employees, internal, knowledge, memory, plugins, policies, teams, workplace
+from .routers import (
+    access,
+    agentteams_collaboration,
+    audit,
+    chat,
+    employees,
+    internal,
+    knowledge,
+    memory,
+    plugins,
+    policies,
+    teams,
+    workplace,
+)
 from .seed import seed_if_empty
+from .services import config
+from .services.agentteams_runner import AgentTeamsCollaborationRunner
+
+
+runner_stop = threading.Event()
+runner_thread: threading.Thread | None = None
+
+
+def start_agentteams_runner(stop_event: threading.Event) -> threading.Thread:
+    """Start the opt-in Matrix runner without blocking the ASGI lifespan."""
+    runner = AgentTeamsCollaborationRunner()
+
+    def run() -> None:
+        try:
+            runner.run_forever(stop_event)
+        finally:
+            runner.close()
+
+    thread = threading.Thread(target=run, name="agentteams-collaboration-runner", daemon=True)
+    thread.start()
+    return thread
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global runner_thread
     Base.metadata.create_all(bind=engine)
     ensure_schema_compatibility()
     seed_if_empty()
-    yield
+    if config.agentteams_collaboration_enabled():
+        runner_stop.clear()
+        runner_thread = start_agentteams_runner(runner_stop)
+    try:
+        yield
+    finally:
+        runner_stop.set()
+        if runner_thread is not None:
+            runner_thread.join(timeout=5)
+            runner_thread = None
 
 
 app = FastAPI(title="数字员工平台 Demo API", version="0.1.0", lifespan=lifespan)
@@ -91,3 +136,4 @@ app.include_router(workplace.workplace_router, prefix=API_PREFIX)
 app.include_router(workplace.skills_router, prefix=API_PREFIX)
 app.include_router(workplace.conversations_router, prefix=API_PREFIX)
 app.include_router(workplace.workflow_router, prefix=API_PREFIX)
+app.include_router(agentteams_collaboration.router, prefix=API_PREFIX)
