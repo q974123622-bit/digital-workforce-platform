@@ -8,6 +8,7 @@ lifecycle owner may call :meth:`run_forever`; direct tests use
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from datetime import datetime, timedelta
 from typing import Any
@@ -15,7 +16,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from .. import models
 from ..database import SessionLocal
@@ -27,6 +28,7 @@ from .agentteams_protocol import PREFIX, AgentProtocolMessage, parse_protocol_li
 
 _CURSOR_SCOPE_PREFIX = "agentteams:matrix-sync:"
 _TERMINAL_STATUSES = {"completed", "failed", "timed_out", "cancelled"}
+logger = logging.getLogger(__name__)
 
 
 class AgentTeamsCollaborationRunner:
@@ -65,8 +67,12 @@ class AgentTeamsCollaborationRunner:
             try:
                 self.tick_once(db)
                 db.commit()
-            except Exception:
+            except Exception as exc:
                 db.rollback()
+                logger.warning(
+                    "agentteams_collaboration_tick_failed error_type=%s",
+                    exc.__class__.__name__,
+                )
             finally:
                 db.close()
             stop_event.wait(config.agentteams_collaboration_poll_seconds())
@@ -115,13 +121,16 @@ class AgentTeamsCollaborationRunner:
         # rolls back every current-batch effect (and its cursor) if service
         # validation/authorization/state handling fails.
         with db.begin_nested():
+            next_cursor = getattr(batch, "next_cursor", None)
+            if not isinstance(next_cursor, str) or not next_cursor.strip():
+                raise ValueError("matrix_sync_missing_cursor")
             for event in batch.events:
                 if not event.event_id:
                     raise ValueError("matrix_event_missing_id")
                 if self._matrix_event_seen(db, event.event_id):
                     continue
                 self._process_event(db, event)
-            self._save_cursor(db, batch.next_cursor)
+            self._save_cursor(db, next_cursor)
 
     def _expire_tasks(self, db: Session) -> None:
         now = datetime.now()
@@ -130,11 +139,18 @@ class AgentTeamsCollaborationRunner:
         unaccepted_before = now - timedelta(seconds=accept_timeout)
         root_before = now - timedelta(seconds=task_timeout)
 
+        root_node = aliased(models.AgentTaskNode)
         assigned = list(
             db.scalars(
-                select(models.AgentTaskNode).where(
+                select(models.AgentTaskNode)
+                .join(models.TaskRun, models.TaskRun.id == models.AgentTaskNode.root_task_id)
+                .join(root_node, root_node.id == models.AgentTaskNode.root_task_id)
+                .where(
                     models.AgentTaskNode.status == "assigned",
                     models.AgentTaskNode.created_at <= unaccepted_before,
+                    models.TaskRun.source == "agentteams",
+                    models.TaskRun.status.not_in(_TERMINAL_STATUSES),
+                    root_node.status.not_in(_TERMINAL_STATUSES),
                 )
             )
         )
@@ -223,6 +239,11 @@ class AgentTeamsCollaborationRunner:
                 continue
 
             for message in messages:
+                if self._root_is_terminal(db, message.root_task_id):
+                    if not event_recorded:
+                        self._record_raw_event(db, event, message_type="matrix.terminal_late")
+                        event_recorded = True
+                    continue
                 self.service.apply_message(db, matrix_sender=event.sender, message=message)
                 inbound = db.scalar(
                     select(models.AgentMessage).where(
@@ -299,6 +320,16 @@ class AgentTeamsCollaborationRunner:
         return db.scalar(
             select(models.AgentMessage.id).where(models.AgentMessage.matrix_event_id == event_id)
         ) is not None
+
+    @staticmethod
+    def _root_is_terminal(db: Session, root_task_id: str) -> bool:
+        """Keep late protocol input from reopening an already terminal root."""
+        run = db.get(models.TaskRun, root_task_id)
+        root = db.get(models.AgentTaskNode, root_task_id)
+        return (
+            (run is not None and run.source == "agentteams" and run.status in _TERMINAL_STATUSES)
+            or (root is not None and root.status in _TERMINAL_STATUSES)
+        )
 
     def _record_raw_event(
         self,
