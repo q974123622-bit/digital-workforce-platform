@@ -88,7 +88,7 @@
 | DeepSeek 公网兼容接口 | `CURRENT` | 开发期已有模型实现，不是测试环境的强制依赖 |
 | DashScope Embedding | `CURRENT` | 开发期已有嵌入实现，不是测试环境的强制依赖 |
 | 内部模型或 AI 网关 | `TARGET` / `TBD` | 测试环境优先接入，具体协议、模型和地址待内网确认 |
-| 内部知识库 | `VERIFIED` | 已独立完成连接测试，尚待通过正式 Knowledge Adapter 收编到平台链路 |
+| 内部知识库 | `CURRENT` / `VERIFIED` | 已有只读 Knowledge Adapter、平台知识库映射和离线链路测试；独立真实检索已验证，Linux 测试服务器闭环尚待完成 |
 
 DSH 可以继续演进，但不得成为业务模型中的唯一可能实现。长期应沉淀 Runtime/Harness 契约，使 DSH 保持核心但可替换；新 Runtime 接入后仍需接受平台统一身份、权限、资源和审计控制。
 
