@@ -6,6 +6,7 @@
 """
 
 import os
+import json
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -16,6 +17,12 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 # 预留的环境变量名（真实值只存在于正式员工受控环境，仓库内不得出现）
 INTERNAL_KB_ENDPOINT = "DWP_INTERNAL_KB_ENDPOINT"
 INTERNAL_KB_CREDENTIAL_REF = "DWP_INTERNAL_KB_CREDENTIAL_REF"
+INTERNAL_KB_BASE_URL = "DWP_INTERNAL_KB_BASE_URL"
+INTERNAL_KB_X_ORG = "DWP_INTERNAL_KB_X_ORG"
+INTERNAL_KB_X_TENANT = "DWP_INTERNAL_KB_X_TENANT"
+INTERNAL_KB_X_USER = "DWP_INTERNAL_KB_X_USER"
+INTERNAL_KB_AUTHORIZATION = "DWP_INTERNAL_KB_AUTHORIZATION"
+INTERNAL_KB_ID_MAP = "DWP_INTERNAL_KB_ID_MAP"
 ADP_ENDPOINT = "DWP_ADP_ENDPOINT"
 ADP_CREDENTIAL_REF = "DWP_ADP_CREDENTIAL_REF"
 RPA_ENDPOINT = "DWP_RPA_ENDPOINT"
@@ -109,6 +116,35 @@ def credential_ref(name: str) -> str | None:
 def kb_mode() -> str:
     """知识库检索模式：mock | rag | internal；未配置默认 mock。"""
     return (os.environ.get(KB_MODE) or "mock").strip().lower()
+
+
+def internal_kb_base_url() -> str | None:
+    return os.environ.get(INTERNAL_KB_BASE_URL) or os.environ.get(INTERNAL_KB_ENDPOINT)
+
+
+def internal_kb_id_map() -> dict[str, int]:
+    raw = os.environ.get(INTERNAL_KB_ID_MAP) or "{}"
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(key): int(value) for key, value in parsed.items()}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def internal_kb_configured() -> bool:
+    return all(
+        get(name)
+        for name in (
+            INTERNAL_KB_BASE_URL,
+            INTERNAL_KB_X_ORG,
+            INTERNAL_KB_X_TENANT,
+            INTERNAL_KB_X_USER,
+            INTERNAL_KB_AUTHORIZATION,
+            INTERNAL_KB_ID_MAP,
+        )
+    )
 
 
 def embedding_api_key() -> str | None:

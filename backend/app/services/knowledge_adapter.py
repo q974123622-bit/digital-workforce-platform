@@ -6,7 +6,8 @@ search(employee_id, knowledge_base_id, query, trace_id)
 - MockKnowledgeAdapter：读取 mock-data/kb/ 虚构文档返回片段；
   doc_path 指向目录时递归读取目录内受支持文件（.md / .docx / .xlsx / .pdf），
   .doc 旧版二进制无法可靠解析则跳过并告警。
-- InternalKnowledgeAdapterStub：只保留接口与配置结构，不接入任何真实内容
+- InternalKnowledgeAdapter：通过内部知识引擎只读检索 API 返回统一 hits
+- InternalKnowledgeAdapterStub：内部配置不完整时的安全占位，不接入真实内容
 
 禁止：业务模块直接调用本模块；必须经 Plugin Gateway（gateway.search_knowledge）。
 """
@@ -280,16 +281,20 @@ def select_adapter(plugin: models.Plugin, kb: models.KnowledgeBase | None) -> Kn
     """按 DWP_KB_MODE 路由 Knowledge Adapter：
     - mock（默认）：原 MockKnowledgeAdapter；
     - rag：RAGKnowledgeAdapter（嵌入失败自动降级 Mock，写降级审计）；
-    - internal：受控内部端点 Stub（真实端点仅在 Secure Overlay 正式环境配置，仓库内不接入）。
-    internal:// 插件或 resource_type=internal 的资源始终走 Stub，防止绕过安全边界。
+    - internal：配置齐全时走内部知识引擎只读检索，否则安全返回 Stub。
+    非 internal 模式下，internal:// 插件或 internal 资源仍只返回 Stub，避免残留配置触发联网。
     """
     mode = config.kb_mode()
+    if mode == "internal":
+        if config.internal_kb_configured():
+            from .internal_knowledge_adapter import InternalKnowledgeAdapter
+
+            return InternalKnowledgeAdapter()
+        return InternalKnowledgeAdapterStub()
     if plugin.endpoint_ref.startswith("internal://") or (kb and kb.resource_type == "internal"):
         return InternalKnowledgeAdapterStub()
     if mode == "rag":
         from .rag_knowledge_adapter import RAGKnowledgeAdapter
 
         return _RagWithFallback(RAGKnowledgeAdapter(), MockKnowledgeAdapter(kb=kb), kb)
-    if mode == "internal":
-        return InternalKnowledgeAdapterStub()
     return MockKnowledgeAdapter(kb=kb)
