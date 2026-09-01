@@ -54,7 +54,9 @@ _SECRET_ASSIGNMENT_PATTERN = re.compile(
     r"(?i)\b(?:password|passwd|pwd|token|secret|api[_-]?key|private[_-]?key|access[_-]?key|"
     r"authorization|credential|cookie|header|endpoint)\s*[:=]\s*[^,\s]+"
 )
-_AUTH_VALUE_PATTERN = re.compile(r"(?i)\b(?:bearer|basic|token)\s+[A-Za-z0-9._~+/-]+=*")
+_AUTH_VALUE_PATTERN = re.compile(
+    r"(?i)\b(?:bearer|basic|token|api[_-]?key|x-api-key)\s+[A-Za-z0-9._~+/-]+=*"
+)
 _STACK_TRACE_PATTERN = re.compile(
     r"(?i)(?:traceback\s*\(|stack trace|exception\s*(?::|in thread)|(?:^|\n)\s*at\s+[\w.$<>]+\(.*:\d+\))"
 )

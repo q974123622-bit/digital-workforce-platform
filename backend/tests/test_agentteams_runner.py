@@ -419,6 +419,51 @@ def test_tool_result_filters_non_http_uris_and_token_scheme(db_session, monkeypa
     assert result.payload["data"]["safe"] == "保留"
 
 
+def test_tool_result_redacts_api_key_prefixes_in_all_sendable_fields(db_session, monkeypatch):
+    service, run, leader = _create_run(db_session)
+    node = _delegate_one_child(db_session, service, run, leader)
+
+    def fake_invoke_plugin(_db, **_kwargs):
+        return {
+            "ok": True,
+            "decision": "allow",
+            "audit_ids": [66],
+            "tool_name": "ApiKey abc.def.ghi",
+            "tool_type": "X-Api-Key abc.def.ghi",
+            "execution_mode": "apikey abc.def.ghi",
+            "runtime_mode": "x-api-key abc.def.ghi",
+            "data": {
+                "message": "ApiKey abc.def.ghi",
+                "nested": {"message": "X-Api-Key abc.def.ghi"},
+                "safe": "保留",
+            },
+        }
+
+    monkeypatch.setattr("app.services.agentteams_collaboration.invoke_plugin", fake_invoke_plugin)
+    request = _node_message(
+        run,
+        node,
+        event_type="tool.request",
+        key="api-key-prefix-sanitized",
+        payload=_tool_request_payload(),
+    )
+
+    service.apply_message(
+        db_session,
+        matrix_sender=_worker_matrix_sender(db_session, service, node),
+        message=request,
+    )
+
+    result = db_session.query(models.AgentMessage).filter_by(
+        direction="outbound", task_id=node.id, message_type="tool.result",
+    ).one()
+    emitted = json.dumps(result.payload, ensure_ascii=False)
+    assert "abc.def.ghi" not in emitted
+    assert "ApiKey abc" not in emitted
+    assert "X-Api-Key abc" not in emitted
+    assert result.payload["data"]["safe"] == "保留"
+
+
 def test_tool_result_payload_has_hard_utf8_byte_limit(db_session, monkeypatch):
     service, run, leader = _create_run(db_session)
     node = _delegate_one_child(db_session, service, run, leader)
