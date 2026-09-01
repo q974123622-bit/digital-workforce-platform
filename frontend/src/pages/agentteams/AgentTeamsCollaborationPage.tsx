@@ -57,6 +57,9 @@ function healthTag(label: string, status: string) {
 function workerHealthTag(workers: AgentCollaborationHealth['workers']) {
   const readyWorkers = workers.filter((worker) => worker.status === 'ready').length;
   const configuredWorkers = workers.filter((worker) => worker.status === 'configured').length;
+  if (readyWorkers > 0 && configuredWorkers > 0) {
+    return <Tag color="processing">Worker已就绪：{readyWorkers}/{workers.length}；已配置/待实测：{configuredWorkers}/{workers.length}</Tag>;
+  }
   if (configuredWorkers > 0) {
     return <Tag color="processing">Worker 已配置/待实测：{configuredWorkers}/{workers.length}</Tag>;
   }
@@ -97,7 +100,7 @@ export default function AgentTeamsCollaborationPage() {
   const [loading, setLoading] = useState(true);
   const [taskLoading, setTaskLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [acting, setActing] = useState(false);
+  const [actingTaskIds, setActingTaskIds] = useState<Set<string>>(() => new Set());
   const [loadError, setLoadError] = useState<string>();
   const [formError, setFormError] = useState<string>();
   const [actionError, setActionError] = useState<string>();
@@ -240,28 +243,41 @@ export default function AgentTeamsCollaborationPage() {
   };
 
   const handleCancel = async () => {
-    if (!selectedTask || acting) return;
-    setActing(true);
+    const actionTask = selectedTask;
+    if (!actionTask || actingTaskIds.has(actionTask.id)) return;
+    const requestVersion = taskSelectionVersionRef.current;
+    const isCurrentTask = () => taskSelectionVersionRef.current === requestVersion;
+    setActingTaskIds((current) => new Set(current).add(actionTask.id));
     setActionError(undefined);
     try {
-      const task = await api.cancelAgentTeamsTask(selectedTask.id);
+      const task = await api.cancelAgentTeamsTask(actionTask.id);
+      if (!isCurrentTask()) return;
       setSelectedTask(task);
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       setGraph((current) => ({ ...current, nodes: task.nodes }));
       setResult(null);
     } catch (error) {
-      setActionError(`取消任务失败：${errorText(error)}`);
+      if (isCurrentTask()) setActionError(`取消任务失败：${errorText(error)}`);
     } finally {
-      setActing(false);
+      setActingTaskIds((current) => {
+        if (!current.has(actionTask.id)) return current;
+        const next = new Set(current);
+        next.delete(actionTask.id);
+        return next;
+      });
     }
   };
 
   const handleRetry = async () => {
-    if (!selectedTask || acting) return;
-    setActing(true);
+    const actionTask = selectedTask;
+    if (!actionTask || actingTaskIds.has(actionTask.id)) return;
+    const requestVersion = taskSelectionVersionRef.current;
+    const isCurrentTask = () => taskSelectionVersionRef.current === requestVersion;
+    setActingTaskIds((current) => new Set(current).add(actionTask.id));
     setActionError(undefined);
     try {
-      const task = await api.retryAgentTeamsTask(selectedTask.id);
+      const task = await api.retryAgentTeamsTask(actionTask.id);
+      if (!isCurrentTask()) return;
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       setSelectedTask(task);
       setGraph({ ...EMPTY_GRAPH, nodes: task.nodes });
@@ -271,9 +287,14 @@ export default function AgentTeamsCollaborationPage() {
       setSelectedNodeId(task.id);
       selectTask(task.id);
     } catch (error) {
-      setActionError(`重试任务失败：${errorText(error)}`);
+      if (isCurrentTask()) setActionError(`重试任务失败：${errorText(error)}`);
     } finally {
-      setActing(false);
+      setActingTaskIds((current) => {
+        if (!current.has(actionTask.id)) return current;
+        const next = new Set(current);
+        next.delete(actionTask.id);
+        return next;
+      });
     }
   };
 
@@ -426,12 +447,12 @@ export default function AgentTeamsCollaborationPage() {
                 extra={
                   <Space>
                     {!isTerminal(selectedTask.status) && (
-                      <Button danger icon={<CloseCircleOutlined />} loading={acting} onClick={() => void handleCancel()}>
+                      <Button danger icon={<CloseCircleOutlined />} loading={actingTaskIds.has(selectedTask.id)} onClick={() => void handleCancel()}>
                         取消任务
                       </Button>
                     )}
                     {isTerminal(selectedTask.status) && selectedTask.status !== 'completed' && (
-                      <Button icon={<ReloadOutlined />} loading={acting} onClick={() => void handleRetry()}>
+                      <Button icon={<ReloadOutlined />} loading={actingTaskIds.has(selectedTask.id)} onClick={() => void handleRetry()}>
                         重试
                       </Button>
                     )}

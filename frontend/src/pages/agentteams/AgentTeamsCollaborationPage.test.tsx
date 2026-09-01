@@ -177,12 +177,13 @@ function mockPageApi(routes: Record<string, MockRoute>) {
     const method = init?.method ?? 'GET';
     const requestKey = `${method} ${String(input).split('?')[0]}`;
     const matching = Object.entries(routes).find(([key]) => requestKey.endsWith(key));
-    if (!matching) return json({});
+    if (!matching) throw new Error(`未匹配的页面请求：${requestKey}`);
     const value = await Promise.resolve(
       typeof matching[1] === 'function'
         ? (matching[1] as (request?: RequestInit) => unknown | Promise<unknown>)(init)
         : matching[1],
     );
+    if (value === undefined) throw new Error(`页面请求返回 undefined：${matching[0]}`);
     if (value instanceof Error) throw value;
     return json(value);
   });
@@ -201,6 +202,23 @@ function completedTaskRoutes(task: AgentCollaborationTask = completedTask): Reco
     'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/result': completedResult,
     'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT': task,
   };
+}
+
+function actionRaceTask(
+  id: string,
+  title: string,
+  status: AgentCollaborationTask['status'],
+  summary: string,
+): AgentCollaborationTask {
+  const node = {
+    ...rootNode,
+    id,
+    root_task_id: id,
+    title: `${title} 节点`,
+    status,
+    progress: status === 'running' ? 40 : 100,
+  };
+  return { ...completedTask, id, trace_id: id, title, instruction: `${title} 说明`, status, summary, nodes: [node], latest_event_id: 1 };
 }
 
 function renderPage() {
@@ -349,6 +367,24 @@ describe('AgentTeams collaboration page', () => {
     expect(screen.queryByText(/Manager未就绪/)).not.toBeInTheDocument();
   });
 
+  it('shows both ready and configured Worker counts when the server reports a mixed state', async () => {
+    mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': {
+        ...readyHealth,
+        workers: [
+          { ...readyHealth.workers[0], status: 'ready' },
+          { ...readyHealth.workers[1], status: 'ready' },
+          { agent_id: 'VE-0003', matrix_user_id: '@ve-0003:matrix.test', status: 'configured' },
+        ],
+      },
+      'GET /api/v1/teams': teams,
+      'GET /api/v1/agentteams-collaboration/tasks': [],
+    });
+    renderPage();
+
+    expect(await screen.findByText('Worker已就绪：2/3；已配置/待实测：1/3')).toBeInTheDocument();
+  });
+
   it('keeps the current task details when an earlier selection resolves after a later selection', async () => {
     const taskA: AgentCollaborationTask = {
       ...completedTask,
@@ -422,6 +458,112 @@ describe('AgentTeams collaboration page', () => {
       expect(screen.queryByText('A 的轨迹事件')).not.toBeInTheDocument();
       expect(screen.queryByText('A 的 Matrix 消息')).not.toBeInTheDocument();
       expect(screen.queryByText('A 的最终汇总')).not.toBeInTheDocument();
+    });
+  });
+
+  it('does not let a deferred cancel for A overwrite the selected B task', async () => {
+    const taskA = actionRaceTask('AT-A-CANCEL', 'A 运行任务', 'running', '');
+    const taskB = actionRaceTask('AT-B-CANCEL', 'B 失败任务', 'failed', 'B 的最终汇总');
+    const cancelledA: AgentCollaborationTask = {
+      ...taskA,
+      status: 'cancelled',
+      nodes: taskA.nodes.map((node) => ({ ...node, status: 'cancelled' })),
+    };
+    const cancelA = deferred<AgentCollaborationTask>();
+    mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': readyHealth,
+      'GET /api/v1/teams': teams,
+      'GET /api/v1/agentteams-collaboration/tasks': [taskA, taskB],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-CANCEL': taskA,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-CANCEL/graph': { nodes: taskA.nodes, parent_edges: [], dependency_edges: [], communication_edges: [] },
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-CANCEL/events': [{ ...completedEvents[0], root_task_id: taskA.id, task_id: taskA.id, summary: 'A 的轨迹事件' }],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-CANCEL/messages': [{ ...completedMessages[0], root_task_id: taskA.id, task_id: taskA.id, body: 'A 的 Matrix 消息' }],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-CANCEL/result': { task_id: taskA.id, status: taskA.status, summary: taskA.summary, node_results: taskA.nodes },
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-CANCEL': taskB,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-CANCEL/graph': { nodes: taskB.nodes, parent_edges: [], dependency_edges: [], communication_edges: [] },
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-CANCEL/events': [{ ...completedEvents[0], root_task_id: taskB.id, task_id: taskB.id, summary: 'B 的轨迹事件' }],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-CANCEL/messages': [{ ...completedMessages[0], root_task_id: taskB.id, task_id: taskB.id, body: 'B 的 Matrix 消息' }],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-CANCEL/result': { task_id: taskB.id, status: taskB.status, summary: taskB.summary, node_results: taskB.nodes },
+      'POST /api/v1/agentteams-collaboration/tasks/AT-A-CANCEL/cancel': () => cancelA.promise,
+    });
+    renderPage();
+
+    expect(await screen.findByText('A 运行任务 说明')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /取消任务/ }));
+    fireEvent.click(screen.getByRole('button', { name: '查看协作任务 B 失败任务' }));
+
+    const retryB = await screen.findByRole('button', { name: /重试/ });
+    expect(retryB).not.toBeDisabled();
+    expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
+    expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(2);
+    expect(screen.queryByText(/取消任务失败/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      cancelA.resolve(cancelledA);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
+      expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(2);
+      expect(screen.getByRole('button', { name: /重试/ })).not.toBeDisabled();
+      expect(screen.queryByText('A 运行任务 节点')).not.toBeInTheDocument();
+      expect(screen.queryByText(/取消任务失败/)).not.toBeInTheDocument();
+      expect(screen.queryByText('正在刷新服务端协作轨迹…')).not.toBeInTheDocument();
+    });
+  });
+
+  it('does not let a deferred retry for A overwrite the selected B task', async () => {
+    const taskA = actionRaceTask('AT-A-RETRY', 'A 失败任务', 'failed', 'A 的最终汇总');
+    const taskB = actionRaceTask('AT-B-RETRY', 'B 失败任务', 'failed', 'B 的最终汇总');
+    const retriedA: AgentCollaborationTask = {
+      ...taskA,
+      id: 'AT-A-RETRY-NEW',
+      trace_id: 'AT-A-RETRY-NEW',
+      title: 'A 重试任务',
+      status: 'running',
+      summary: '',
+      nodes: taskA.nodes.map((node) => ({ ...node, id: 'AT-A-RETRY-NEW', root_task_id: 'AT-A-RETRY-NEW', title: 'A 重试任务 节点', status: 'running' })),
+    };
+    const retryA = deferred<AgentCollaborationTask>();
+    mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': readyHealth,
+      'GET /api/v1/teams': teams,
+      'GET /api/v1/agentteams-collaboration/tasks': [taskA, taskB],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-RETRY': taskA,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-RETRY/graph': { nodes: taskA.nodes, parent_edges: [], dependency_edges: [], communication_edges: [] },
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-RETRY/events': [{ ...completedEvents[0], root_task_id: taskA.id, task_id: taskA.id, summary: 'A 的轨迹事件' }],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-RETRY/messages': [{ ...completedMessages[0], root_task_id: taskA.id, task_id: taskA.id, body: 'A 的 Matrix 消息' }],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-A-RETRY/result': { task_id: taskA.id, status: taskA.status, summary: taskA.summary, node_results: taskA.nodes },
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-RETRY': taskB,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-RETRY/graph': { nodes: taskB.nodes, parent_edges: [], dependency_edges: [], communication_edges: [] },
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-RETRY/events': [{ ...completedEvents[0], root_task_id: taskB.id, task_id: taskB.id, summary: 'B 的轨迹事件' }],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-RETRY/messages': [{ ...completedMessages[0], root_task_id: taskB.id, task_id: taskB.id, body: 'B 的 Matrix 消息' }],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-B-RETRY/result': { task_id: taskB.id, status: taskB.status, summary: taskB.summary, node_results: taskB.nodes },
+      'POST /api/v1/agentteams-collaboration/tasks/AT-A-RETRY/retry': () => retryA.promise,
+    });
+    renderPage();
+
+    expect(await screen.findByText('A 失败任务 说明')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /重试/ }));
+    fireEvent.click(screen.getByRole('button', { name: '查看协作任务 B 失败任务' }));
+
+    const retryB = await screen.findByRole('button', { name: /重试/ });
+    expect(retryB).not.toBeDisabled();
+    expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
+    expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(2);
+    expect(screen.queryByText(/重试任务失败/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      retryA.resolve(retriedA);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
+      expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(2);
+      expect(screen.getByRole('button', { name: /重试/ })).not.toBeDisabled();
+      expect(screen.queryByText('A 重试任务 节点')).not.toBeInTheDocument();
+      expect(screen.queryByText(/重试任务失败/)).not.toBeInTheDocument();
+      expect(screen.queryByText('正在刷新服务端协作轨迹…')).not.toBeInTheDocument();
     });
   });
 
