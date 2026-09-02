@@ -30,6 +30,7 @@ const readyHealth: AgentCollaborationHealth = {
   matrix: 'ready',
   room: 'ready',
   manager: 'configured',
+  platform_team: 'ready',
   workers: [
     { agent_id: 'VE-0001', matrix_user_id: '@ve-0001:matrix.test', status: 'configured' },
     { agent_id: 'VE-0002', matrix_user_id: '@ve-0002:matrix.test', status: 'configured' },
