@@ -66,6 +66,32 @@ def _as_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
+def _is_received_room_message(message: dict[str, Any]) -> bool:
+    return (
+        message.get("direction") == "inbound"
+        and message.get("delivery_status") == "received"
+        and bool(str(message.get("matrix_room_id") or "").strip())
+        and bool(str(message.get("matrix_event_id") or "").strip())
+    )
+
+
+def _has_protocol_summary(message: dict[str, Any]) -> bool:
+    if isinstance(message.get("body"), str) and message["body"].strip():
+        return True
+    payload = message.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    summary = payload.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return True
+    protocol_payload = payload.get("payload")
+    return (
+        isinstance(protocol_payload, dict)
+        and isinstance(protocol_payload.get("summary"), str)
+        and bool(protocol_payload["summary"].strip())
+    )
+
+
 def wait_for_terminal(client: httpx.Client, task_id: str, timeout_seconds: int = 600) -> dict[str, Any]:
     """Poll persisted task state for no longer than the documented smoke window."""
     deadline = time.monotonic() + timeout_seconds
@@ -88,6 +114,8 @@ def build_evidence(
     """Check the persisted evidence required for a real, multi-Worker loop."""
     nodes = _as_list(detail.get("nodes"))
     children = [node for node in nodes if node.get("parent_task_id")]
+    root = next((node for node in nodes if not node.get("parent_task_id")), {})
+    manager_id = str(root.get("assignee_agent_id") or "").strip()
     child_assignees = {
         str(node.get("assignee_agent_id") or "").strip()
         for node in children
@@ -96,15 +124,27 @@ def build_evidence(
     child_senders = {
         str(message.get("sender_agent_id") or "").strip()
         for message in messages
-        if str(message.get("sender_agent_id") or "").strip() in child_assignees
+        if _is_received_room_message(message)
+        and str(message.get("sender_agent_id") or "").strip() in child_assignees
     }
     matrix_event_ids: dict[str, list[str]] = {}
     for sender in sorted(child_senders):
         matrix_event_ids[sender] = sorted({
             str(message.get("matrix_event_id") or "").strip()
             for message in messages
-            if str(message.get("sender_agent_id") or "").strip() == sender
-            and str(message.get("matrix_event_id") or "").strip()
+            if _is_received_room_message(message)
+            and str(message.get("sender_agent_id") or "").strip() == sender
+        })
+    manager_summaries = [
+        message for message in messages
+        if _is_received_room_message(message)
+        and message.get("message_type") == "task.summary"
+        and str(message.get("sender_agent_id") or "").strip() == manager_id
+        and _has_protocol_summary(message)
+    ]
+    if manager_summaries:
+        matrix_event_ids[manager_id] = sorted({
+            str(message.get("matrix_event_id") or "").strip() for message in manager_summaries
         })
 
     missing = []
@@ -119,9 +159,14 @@ def build_evidence(
         missing.append("少于两个不同的子任务Worker发送者")
     if any(not matrix_event_ids[sender] for sender in child_senders):
         missing.append("参与的Worker缺少Matrix事件ID")
+    if not manager_summaries:
+        missing.append("缺少Manager的入站task.summary Matrix证据")
     if not any(event.get("event_type") == "task.progress" for event in events):
         missing.append("缺少task.progress事件")
-    has_agent_message = any(message.get("message_type") == "agent.message" for message in messages)
+    has_agent_message = any(
+        _is_received_room_message(message) and message.get("message_type") == "agent.message"
+        for message in messages
+    )
     has_nested_delegate = any(
         isinstance(node.get("depth"), int) and node["depth"] >= 2 for node in nodes
     )
@@ -131,7 +176,7 @@ def build_evidence(
     return {
         "ok": not missing,
         "task_id": task_id,
-        "participant_ids": sorted(child_senders),
+        "participant_ids": sorted(child_senders | ({manager_id} if manager_summaries else set())),
         "matrix_event_ids": matrix_event_ids,
         "summary": summary,
         "missing_criteria": missing,
@@ -143,14 +188,20 @@ def main() -> int:
         description="Run a configured AgentTeams collaboration smoke check without starting services."
     )
     parser.parse_args()
-    try:
-        with httpx.Client(timeout=20.0) as client:
+    with httpx.Client(timeout=20.0) as client:
+        try:
             health = _get_json(client, "/agentteams-collaboration/health")
-            if not isinstance(health, dict) or health.get("ready_for_demo") is not True:
-                reason = health.get("reason") if isinstance(health, dict) else "健康检查响应无效"
-                _print_evidence(_empty_evidence(f"预检未就绪: {reason or '未知原因'}"))
-                return 2
+        except (httpx.HTTPError, TypeError, ValueError):
+            _print_evidence(_empty_evidence("预检健康检查不可用"))
+            return 2
+        if not isinstance(health, dict):
+            _print_evidence(_empty_evidence("预检健康检查响应无效"))
+            return 2
+        if health.get("ready_for_demo") is not True:
+            _print_evidence(_empty_evidence("预检未就绪"))
+            return 2
 
+        try:
             task = _post_json(client, "/agentteams-collaboration/tasks", FIXED_TASK)
             task_id = str(task.get("id") or "").strip() if isinstance(task, dict) else ""
             if not task_id:
@@ -162,9 +213,9 @@ def main() -> int:
             events = _get_json(client, f"/agentteams-collaboration/tasks/{task_id}/events")
             messages = _get_json(client, f"/agentteams-collaboration/tasks/{task_id}/messages")
             result = _get_json(client, f"/agentteams-collaboration/tasks/{task_id}/result")
-    except httpx.HTTPError:
-        _print_evidence(_empty_evidence("无法访问已配置的后端API"))
-        return 1
+        except (httpx.HTTPError, TypeError, ValueError):
+            _print_evidence(_empty_evidence("运行期间后端响应无效"))
+            return 1
 
     evidence = build_evidence(
         task_id,

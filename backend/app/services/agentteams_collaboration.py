@@ -31,6 +31,30 @@ class CollaborationConflict(RuntimeError):
     """A protocol request violates collaboration ownership or state rules."""
 
 
+def matrix_user_id_for_runtime(runtime_ref: str | None) -> str | None:
+    """Resolve a stored runtime reference to its exact, authorization-safe MXID."""
+    if runtime_ref is None:
+        return None
+    reference = runtime_ref.strip()
+    if not reference:
+        return None
+    if reference.startswith("@"):
+        localpart, separator, domain = reference[1:].partition(":")
+        if not separator or not localpart or not domain or any(char.isspace() for char in reference):
+            return None
+        return reference
+    domain = config.agentteams_matrix_domain().strip()
+    if (
+        not domain
+        or any(char.isspace() for char in reference)
+        or any(char.isspace() for char in domain)
+        or any(char in reference for char in "@:/")
+        or "@" in domain
+    ):
+        return None
+    return f"@{reference}:{domain}"
+
+
 ALLOWED: dict[str, set[str]] = {
     "planning": {"waiting_children", "failed", "timed_out", "cancelled"},
     "assigned": {"accepted", "failed", "timed_out", "cancelled"},
@@ -991,27 +1015,7 @@ class AgentTeamsCollaborationService:
 
     @staticmethod
     def _matrix_user_id_for_runtime(runtime_ref: str | None) -> str | None:
-        """Resolve a stored worker name to its exact Matrix ID without fuzzy matching."""
-        if runtime_ref is None:
-            return None
-        reference = runtime_ref.strip()
-        if not reference:
-            return None
-        if reference.startswith("@"):
-            localpart, separator, domain = reference[1:].partition(":")
-            if not separator or not localpart or not domain or any(char.isspace() for char in reference):
-                return None
-            return reference
-        domain = config.agentteams_matrix_domain().strip()
-        if (
-            not domain
-            or any(char.isspace() for char in reference)
-            or any(char.isspace() for char in domain)
-            or any(char in reference for char in "@:/")
-            or "@" in domain
-        ):
-            return None
-        return f"@{reference}:{domain}"
+        return matrix_user_id_for_runtime(runtime_ref)
 
     @staticmethod
     def _runtime_ref(employee: models.DigitalEmployee) -> str | None:

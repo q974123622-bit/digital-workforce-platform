@@ -286,6 +286,9 @@ def test_parse_completion_excludes_own_task_message():
 def test_group_chat_agentteams_path(db_session, monkeypatch):
     conv = _seed_group(db_session)
     fake = FakeGatewayOK()
+    # This legacy path is explicitly isolated with a fake gateway, so give it
+    # a non-secret room ID instead of depending on a developer's backend/.env.
+    monkeypatch.setenv("AGENTTEAMS_ROOM_ID", "!room:test")
     monkeypatch.setattr("app.services.group_chat.AgentTeamsGateway", lambda: fake)
     monkeypatch.setattr("app.services.group_chat.config.team_backend_mode", lambda: "auto")
     classifier = lambda db, **kw: True  # noqa: E731 强制判为任务

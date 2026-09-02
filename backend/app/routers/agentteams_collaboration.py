@@ -17,7 +17,11 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..services import config
-from ..services.agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict
+from ..services.agentteams_collaboration import (
+    AgentTeamsCollaborationService,
+    CollaborationConflict,
+    matrix_user_id_for_runtime,
+)
 from ..services.agentteams_gateway import AgentTeamsGateway
 
 
@@ -30,18 +34,8 @@ def _configured(value: str | None) -> bool:
     return bool(value and value.strip())
 
 
-def _resolvable_matrix_user_id(value: str) -> bool:
-    """Return whether a stored value can identify a Matrix user without I/O."""
-    matrix_user_id = value.strip()
-    if not matrix_user_id.startswith("@"):
-        return False
-    localpart, separator, domain = matrix_user_id[1:].partition(":")
-    return bool(localpart and separator and domain)
-
-
 def _worker_health(db: Session) -> list[dict]:
     """Report stored worker bindings without claiming their runtimes are live."""
-    domain = config.agentteams_matrix_domain()
     workers = list(
         db.scalars(
             select(models.DigitalEmployee)
@@ -52,12 +46,10 @@ def _worker_health(db: Session) -> list[dict]:
     result = []
     for worker in workers:
         runtime_ref = (worker.runtime_ref or "").strip()
-        matrix_user_id = ""
-        if runtime_ref:
-            matrix_user_id = runtime_ref if runtime_ref.startswith("@") else f"@{runtime_ref}:{domain}"
+        matrix_user_id = matrix_user_id_for_runtime(runtime_ref) or ""
         if not runtime_ref:
             status = "missing_runtime_ref"
-        elif not _resolvable_matrix_user_id(matrix_user_id):
+        elif not matrix_user_id:
             status = "invalid_matrix_user_id"
         else:
             status = "configured"
@@ -88,7 +80,11 @@ def _normalise_health(raw_health: dict) -> dict:
             agent_id = str(raw_worker.get("agent_id") or "").strip()
             matrix_user_id = str(raw_worker.get("matrix_user_id") or "").strip()
             raw_status = str(raw_worker.get("status") or "").strip()
-            if raw_status in {"configured", "ready"} and agent_id and _resolvable_matrix_user_id(matrix_user_id):
+            is_exact_mxid = (
+                matrix_user_id.startswith("@")
+                and matrix_user_id_for_runtime(matrix_user_id) == matrix_user_id
+            )
+            if raw_status in {"configured", "ready"} and agent_id and is_exact_mxid:
                 status = "configured"
             elif not raw_worker.get("matrix_user_id"):
                 status = "missing_runtime_ref"
@@ -108,7 +104,7 @@ def _normalise_health(raw_health: dict) -> dict:
 
     configured_workers = [
         worker for worker in workers
-        if worker["status"] == "configured" and _resolvable_matrix_user_id(worker["matrix_user_id"])
+        if worker["status"] == "configured"
     ]
     worker_ids = {worker["agent_id"] for worker in configured_workers}
     worker_mxids = {worker["matrix_user_id"] for worker in configured_workers}
@@ -179,8 +175,9 @@ def inspect_environment(db: Session) -> dict:
     room = "not_configured" if not _configured(room_id) else "unchecked"
     matrix_room_ready = False
     if matrix_configured and _configured(room_id):
+        gateway = AgentTeamsGateway()
         try:
-            gateway_health = AgentTeamsGateway().health(room_id.strip())
+            gateway_health = gateway.health(room_id.strip())
         except Exception:
             matrix = "unavailable"
             room = "unavailable"
@@ -188,6 +185,8 @@ def inspect_environment(db: Session) -> dict:
             matrix_room_ready = gateway_health.ok is True
             matrix = "ready" if matrix_room_ready else "unavailable"
             room = "ready" if matrix_room_ready else gateway_health.detail
+        finally:
+            gateway.close()
 
     return _normalise_health({
         "enabled": True,
