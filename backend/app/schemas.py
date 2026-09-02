@@ -715,6 +715,7 @@ class AgentCollaborationHealthOut(BaseModel):
     matrix: str
     room: str
     manager: str
+    platform_team: str
     workers: list[AgentWorkerHealthOut] = Field(default_factory=list)
 
 

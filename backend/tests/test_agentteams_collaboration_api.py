@@ -8,15 +8,21 @@ READY_HEALTH = {
     "enabled": True,
     "matrix": "ready",
     "room": "ready",
-    "manager": "ready",
+    "manager": "configured",
+    "platform_team": "ready",
     "ready_for_demo": True,
     "reason": "",
     "workers": [
         {
             "agent_id": "VE-0001",
             "matrix_user_id": "@ve-0001:test",
-            "status": "ready",
-        }
+            "status": "configured",
+        },
+        {
+            "agent_id": "VE-0002",
+            "matrix_user_id": "@ve-0002:test",
+            "status": "configured",
+        },
     ],
 }
 
@@ -60,7 +66,7 @@ def test_health_reports_matrix_room_manager_and_workers(client):
 
     assert response.status_code == 200
     body = response.json()
-    assert {"matrix", "room", "manager", "workers", "ready_for_demo"} <= body.keys()
+    assert {"matrix", "room", "manager", "platform_team", "workers", "ready_for_demo"} <= body.keys()
     assert body["ready_for_demo"] is False
 
 

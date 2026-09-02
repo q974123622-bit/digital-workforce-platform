@@ -445,6 +445,8 @@ export interface AgentCollaborationHealth {
   matrix: string;
   room: string;
   manager: string;
+  /** System-level check: at least one Team exists; task submission validates its selected team. */
+  platform_team: string;
   workers: AgentWorkerHealth[];
 }
 
