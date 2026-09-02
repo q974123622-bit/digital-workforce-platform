@@ -61,6 +61,17 @@ logicalNpc/
 
 启动后访问 <http://localhost:5173>。
 
+## AgentTeams多Agent协作演示
+
+独立协作链路将任务、消息、事件和最终汇总持久化在平台侧；真实 Matrix/AgentTeams 环境是已有依赖，不会由本仓库创建。使用 `.\scripts\run_agentteams_demo.ps1` 启动平台侧演示前，请先阅读：
+
+- [设计](docs/superpowers/specs/2026-08-28-agentteams-standalone-collaboration-system-design.md)与[实施计划](docs/superpowers/plans/2026-08-31-agentteams-standalone-collaboration-system.md)
+- [协议说明](docs/agentteams/PROTOCOL.md)
+- [部署与排障](docs/agentteams/DEPLOYMENT.md)
+- [固定演示脚本](docs/agentteams/DEMO.md)
+
+设计和实施计划会随其原始文档在后续集成步骤进入版本库；本次仅交付运行、协议、部署和演示文档。
+
 ## 手动启动
 
 ### 后端（端口 8000）
