@@ -121,14 +121,15 @@ def build_evidence(
         for node in children
         if str(node.get("assignee_agent_id") or "").strip()
     }
-    child_senders = {
+    worker_assignees = child_assignees - {manager_id}
+    worker_senders = {
         str(message.get("sender_agent_id") or "").strip()
         for message in messages
         if _is_received_room_message(message)
-        and str(message.get("sender_agent_id") or "").strip() in child_assignees
+        and str(message.get("sender_agent_id") or "").strip() in worker_assignees
     }
     matrix_event_ids: dict[str, list[str]] = {}
-    for sender in sorted(child_senders):
+    for sender in sorted(worker_senders):
         matrix_event_ids[sender] = sorted({
             str(message.get("matrix_event_id") or "").strip()
             for message in messages
@@ -155,9 +156,9 @@ def build_evidence(
         missing.append("缺少非空任务汇总")
     if len(children) < 2:
         missing.append("少于两个子任务节点")
-    if len(child_senders) < 2:
+    if len(worker_senders) < 2:
         missing.append("少于两个不同的子任务Worker发送者")
-    if any(not matrix_event_ids[sender] for sender in child_senders):
+    if any(not matrix_event_ids[sender] for sender in worker_senders):
         missing.append("参与的Worker缺少Matrix事件ID")
     if not manager_summaries:
         missing.append("缺少Manager的入站task.summary Matrix证据")
@@ -176,7 +177,7 @@ def build_evidence(
     return {
         "ok": not missing,
         "task_id": task_id,
-        "participant_ids": sorted(child_senders | ({manager_id} if manager_summaries else set())),
+        "participant_ids": sorted(worker_senders | ({manager_id} if manager_summaries else set())),
         "matrix_event_ids": matrix_event_ids,
         "summary": summary,
         "missing_criteria": missing,

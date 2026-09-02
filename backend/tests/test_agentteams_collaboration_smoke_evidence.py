@@ -117,6 +117,34 @@ def test_build_evidence_accepts_nested_protocol_payload_summary(smoke_module):
     assert evidence["ok"] is True
 
 
+def test_build_evidence_rejects_manager_self_assignment_as_a_second_worker(smoke_module):
+    detail = {
+        "nodes": [
+            {"id": "AT-1", "parent_task_id": None, "assignee_agent_id": "DT-E10281", "depth": 0},
+            {"id": "AT-2", "parent_task_id": "AT-1", "assignee_agent_id": "DT-E10281", "depth": 1},
+            {"id": "AT-3", "parent_task_id": "AT-1", "assignee_agent_id": "VE-0002", "depth": 1},
+        ]
+    }
+    messages = [
+        _message("DT-E10281", "agent.message", "$manager-child", direction="inbound", delivery_status="received"),
+        _message("VE-0002", "agent.message", "$worker-1", direction="inbound", delivery_status="received"),
+        _message(
+            "DT-E10281",
+            "task.summary",
+            "$manager-summary",
+            direction="inbound",
+            delivery_status="received",
+            payload={"summary": "入职准备已完成"},
+        ),
+    ]
+
+    evidence = smoke_module.build_evidence(
+        "AT-1", detail, [{"event_type": "task.progress"}], messages, _completed_result()
+    )
+
+    assert evidence["ok"] is False
+
+
 class _FakeResponse:
     def __init__(self, value):
         self.value = value
