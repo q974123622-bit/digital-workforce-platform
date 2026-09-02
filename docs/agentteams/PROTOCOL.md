@@ -19,7 +19,7 @@ Ordinary Matrix text is not interpreted as a state event. `DWP_EVENT` is case-se
 | `type` | Yes | One of the twelve message types below. |
 | `root_task_id` | Yes | Root `TaskRun` identifier for the collaboration tree. |
 | `task_id` | Yes | Current `AgentTaskNode` identifier. |
-| `parent_task_id` | No, defaults to `null` | Parent node ID. When present it must equal the persisted node parent; `null` is valid only for a root node. |
+| `parent_task_id` | Root: No, defaults to `null`; Child: Yes | Parent node ID. Root envelopes may omit it or use `null`. Child envelopes must include the persisted parent node ID; omitted, `null`, or mismatched child values are rejected as `invalid_parent_task`. |
 | `trace_id` | Yes | Non-empty trace identifier. It must equal both the node and root run trace ID. A newly created root uses its Task ID as the trace ID. |
 | `sender` | Yes | Logical platform or employee ID. For inbound employee messages it must match the employee bound to the Matrix sender. |
 | `receiver` | Yes | Logical destination. `tool.request` must use `platform`; the service does not infer a tool receiver. |
@@ -28,6 +28,8 @@ Ordinary Matrix text is not interpreted as a state event. `DWP_EVENT` is case-se
 | `payload` | No, defaults to `{}` | JSON object. Individual message handlers validate the payload fields they consume; all other fields are retained for audit or result data. |
 
 The envelope forbids extra top-level fields. JSON is rendered compactly by the platform but receivers must rely on the parsed object, not field order or whitespace.
+
+The wire example above is a child-task envelope and therefore includes `parent_task_id`. A root-task envelope may omit that field or send `null`; a child-task envelope must send the exact persisted parent node ID.
 
 ## Message types and sender roles
 
@@ -150,7 +152,7 @@ For result and summary, the service stores the complete payload as node output. 
 
 Before an inbound message can change state, the service checks all of the following:
 
-1. `root_task_id`, `task_id`, `parent_task_id`, and `trace_id` must match the persisted collaboration tree.
+1. `root_task_id`, `task_id`, and `trace_id` must match the persisted collaboration tree. For a root node, omitted `parent_task_id` defaults to `null`; for a child node, the envelope must explicitly carry the exact persisted parent task ID. Missing, `null`, or mismatched child values are rejected as `invalid_parent_task`.
 2. The Matrix event sender must map to exactly one stored AgentTeams digital employee. A runtime reference may be a full MXID, or a localpart combined with the configured Matrix domain; malformed or ambiguous mappings are rejected.
 3. The mapped employee number must equal envelope `sender` and must be a member of the root team.
 4. The sender must have the role permitted by the message type: node assignee, node coordinator, or both as listed above.

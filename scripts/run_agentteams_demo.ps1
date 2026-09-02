@@ -51,6 +51,16 @@ function Assert-PortAvailable {
     }
 }
 
+function Test-CollaborationPreflightReady {
+    param([AllowNull()][object]$Health)
+
+    return ($null -ne $Health -and $Health.ready_for_demo -eq $true)
+}
+
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+}
+
 if (-not (Test-Path -LiteralPath $python)) {
     throw 'backend Python environment is missing. Prepare backend/.venv with installed dependencies first.'
 }
@@ -144,7 +154,7 @@ if ($backendReady) {
     }
 }
 
-$realPreflightReady = $collaborationReady
+$realPreflightReady = Test-CollaborationPreflightReady -Health $collaborationHealth
 
 Write-Host ''
 Write-Host "Backend health: $(if ($backendReady) { 'ok' } else { 'unavailable' })"

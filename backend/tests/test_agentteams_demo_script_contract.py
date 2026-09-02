@@ -38,7 +38,7 @@ def test_agentteams_demo_script_is_parseable_and_avoids_mutating_setup_commands(
     assert "database initialization is an explicit, separately approved operation" in source.lower()
     assert "if (-not (Test-Path -LiteralPath $databasePath))" in source
     assert "process environment can provide configuration" in source
-    assert "$realPreflightReady = $collaborationReady" in source
+    assert "$realPreflightReady = Test-CollaborationPreflightReady -Health $collaborationHealth" in source
     assert "Start-Process" in source
     assert "-WindowStyle Hidden" in source
     assert "-RedirectStandardOutput" in source
@@ -48,3 +48,42 @@ def test_agentteams_demo_script_is_parseable_and_avoids_mutating_setup_commands(
     assert "pip install" not in lowered
     assert "docker compose" not in lowered
     assert "--reset" not in lowered
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is required to probe the demo preflight function")
+def test_dot_sourced_script_exposes_health_only_preflight_function():
+    """Dot-sourcing must return before startup operations and expose only pure readiness logic."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    function_marker = "function Test-CollaborationPreflightReady"
+    guard_marker = "if ($MyInvocation.InvocationName -eq '.')"
+    startup_marker = "if (-not (Test-Path -LiteralPath $python))"
+
+    assert function_marker in source
+    assert guard_marker in source
+    assert "$realPreflightReady = Test-CollaborationPreflightReady -Health $collaborationHealth" in source
+    assert source.index(function_marker) < source.index(guard_marker) < source.index(startup_marker)
+
+    probe = subprocess.run(
+        [
+            POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            (
+                "$ErrorActionPreference = 'Stop'; "
+                f". '{SCRIPT.as_posix()}'; "
+                "$ready = Test-CollaborationPreflightReady -Health ([pscustomobject]@{ ready_for_demo = $true }); "
+                "$blocked = Test-CollaborationPreflightReady -Health ([pscustomobject]@{ ready_for_demo = $false }); "
+                "if ($ready -ne $true -or $blocked -ne $false) { throw 'unexpected pure preflight result' }; "
+                "[Console]::WriteLine('pure-preflight-ok')"
+            ),
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == "pure-preflight-ok"
