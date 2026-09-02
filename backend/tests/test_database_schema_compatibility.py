@@ -1,0 +1,21 @@
+from sqlalchemy import create_engine, inspect, text
+
+from app import database
+
+
+def test_sqlite_compatibility_adds_agentteams_task_owner_column(monkeypatch):
+    legacy_engine = create_engine("sqlite://")
+    with legacy_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE plugin (id VARCHAR PRIMARY KEY)"))
+        connection.execute(text("CREATE TABLE employee_plugin_grant (id INTEGER PRIMARY KEY)"))
+        connection.execute(
+            text("CREATE TABLE task_run (id VARCHAR PRIMARY KEY, team_id VARCHAR NOT NULL)")
+        )
+
+    monkeypatch.setattr(database, "DATABASE_URL", "sqlite://")
+    monkeypatch.setattr(database, "engine", legacy_engine)
+
+    database.ensure_schema_compatibility()
+
+    columns = {column["name"] for column in inspect(legacy_engine).get_columns("task_run")}
+    assert "owner_human_no" in columns

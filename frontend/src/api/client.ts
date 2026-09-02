@@ -93,34 +93,44 @@ function qs(params?: Record<string, string | undefined>): string {
 export const api = {
   health: () => request<{ status: string }>('/health', { absolute: true }),
   agentTeamsHealth: () => request<AgentCollaborationHealth>('/agentteams-collaboration/health'),
-  createAgentTeamsTask: (payload: AgentCollaborationTaskCreate) =>
-    request<AgentCollaborationTask>('/agentteams-collaboration/tasks', {
+  createAgentTeamsTask: (actorNo: string, payload: AgentCollaborationTaskCreate) =>
+    request<AgentCollaborationTask>(`/agentteams-collaboration/tasks${qs({ actor_no: actorNo })}`, {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  listAgentTeamsTasks: () => request<AgentCollaborationTask[]>('/agentteams-collaboration/tasks'),
-  getAgentTeamsTask: (taskId: string) =>
-    request<AgentCollaborationTask>(`/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}`),
-  getAgentTeamsGraph: (taskId: string) =>
-    request<AgentTaskGraph>(`/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/graph`),
-  getAgentTeamsEvents: (taskId: string, afterEventId?: number) =>
-    request<AgentTaskEvent[]>(
-      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/events${
-        afterEventId !== undefined ? `?after_event_id=${afterEventId}` : ''
-      }`,
-    ),
-  getAgentTeamsMessages: (taskId: string) =>
-    request<AgentMessage[]>(`/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/messages`),
-  getAgentTeamsResult: (taskId: string) =>
-    request<AgentFinalResult>(`/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/result`),
-  cancelAgentTeamsTask: (taskId: string) =>
+  listAgentTeamsTasks: (actorNo: string) =>
+    request<AgentCollaborationTask[]>(`/agentteams-collaboration/tasks${qs({ actor_no: actorNo })}`),
+  getAgentTeamsTask: (actorNo: string, taskId: string) =>
     request<AgentCollaborationTask>(
-      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/cancel`,
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}${qs({ actor_no: actorNo })}`,
+    ),
+  getAgentTeamsGraph: (actorNo: string, taskId: string) =>
+    request<AgentTaskGraph>(
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/graph${qs({ actor_no: actorNo })}`,
+    ),
+  getAgentTeamsEvents: (actorNo: string, taskId: string, afterEventId?: number) =>
+    request<AgentTaskEvent[]>(
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/events${qs({
+        actor_no: actorNo,
+        after_event_id: afterEventId?.toString(),
+      })}`,
+    ),
+  getAgentTeamsMessages: (actorNo: string, taskId: string) =>
+    request<AgentMessage[]>(
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/messages${qs({ actor_no: actorNo })}`,
+    ),
+  getAgentTeamsResult: (actorNo: string, taskId: string) =>
+    request<AgentFinalResult>(
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/result${qs({ actor_no: actorNo })}`,
+    ),
+  cancelAgentTeamsTask: (actorNo: string, taskId: string) =>
+    request<AgentCollaborationTask>(
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/cancel${qs({ actor_no: actorNo })}`,
       { method: 'POST' },
     ),
-  retryAgentTeamsTask: (taskId: string) =>
+  retryAgentTeamsTask: (actorNo: string, taskId: string) =>
     request<AgentCollaborationTask>(
-      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/retry`,
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/retry${qs({ actor_no: actorNo })}`,
       { method: 'POST' },
     ),
   listEmployees: (params?: { type?: string }) => request<Employee[]>(`/employees${qs(params)}`),

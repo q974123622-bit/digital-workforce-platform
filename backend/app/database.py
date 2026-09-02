@@ -42,6 +42,12 @@ def ensure_schema_compatibility() -> None:
             connection.execute(
                 text("ALTER TABLE employee_plugin_grant ADD COLUMN grant_source VARCHAR NOT NULL DEFAULT ''")
             )
+    task_run_columns = {column["name"] for column in inspector.get_columns("task_run")}
+    if task_run_columns and "owner_human_no" not in task_run_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE task_run ADD COLUMN owner_human_no VARCHAR NOT NULL DEFAULT ''")
+            )
 
 
 def get_db():

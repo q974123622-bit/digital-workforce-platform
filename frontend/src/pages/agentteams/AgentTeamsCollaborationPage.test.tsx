@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import AgentTeamsCollaborationPage from './AgentTeamsCollaborationPage';
+import { CurrentUserProvider, useCurrentUser } from '../../context/CurrentUserContext';
 import type {
   AgentCollaborationHealth,
   AgentCollaborationTask,
@@ -21,6 +22,7 @@ const json = (body: unknown, status = 200) =>
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  localStorage.removeItem('dwp.current-actor');
 });
 
 const readyHealth: AgentCollaborationHealth = {
@@ -176,8 +178,10 @@ function deferred<T>() {
 function mockPageApi(routes: Record<string, MockRoute>) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
+    const rawRequestKey = `${method} ${String(input)}`;
     const requestKey = `${method} ${String(input).split('?')[0]}`;
-    const matching = Object.entries(routes).find(([key]) => requestKey.endsWith(key));
+    const matching = Object.entries(routes).find(([key]) => rawRequestKey.endsWith(key))
+      ?? Object.entries(routes).find(([key]) => requestKey.endsWith(key));
     if (!matching) throw new Error(`未匹配的页面请求：${requestKey}`);
     const value = await Promise.resolve(
       typeof matching[1] === 'function'
@@ -224,9 +228,27 @@ function actionRaceTask(
 
 function renderPage() {
   return render(
-    <MemoryRouter>
-      <AgentTeamsCollaborationPage />
-    </MemoryRouter>,
+    <CurrentUserProvider>
+      <MemoryRouter>
+        <AgentTeamsCollaborationPage />
+      </MemoryRouter>
+    </CurrentUserProvider>,
+  );
+}
+
+function ActorSwitcher() {
+  const { setActor } = useCurrentUser();
+  return <button type="button" onClick={() => setActor('E20999')}>切换为 E20999</button>;
+}
+
+function renderPageWithActorSwitcher() {
+  return render(
+    <CurrentUserProvider>
+      <MemoryRouter>
+        <ActorSwitcher />
+        <AgentTeamsCollaborationPage />
+      </MemoryRouter>
+    </CurrentUserProvider>,
   );
 }
 
@@ -234,27 +256,28 @@ describe('AgentTeams collaboration API client', () => {
   it('uses the collaboration endpoints, encodes task IDs, and preserves zero event cursors', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json({}));
     vi.stubGlobal('fetch', fetchMock);
+    const actorNo = 'E10281';
 
     await api.agentTeamsHealth();
-    await api.listAgentTeamsTasks();
-    await api.getAgentTeamsTask('AT /1');
-    await api.getAgentTeamsGraph('AT /1');
-    await api.getAgentTeamsEvents('AT /1', 0);
-    await api.getAgentTeamsMessages('AT /1');
-    await api.getAgentTeamsResult('AT /1');
-    await api.cancelAgentTeamsTask('AT /1');
-    await api.retryAgentTeamsTask('AT /1');
+    await api.listAgentTeamsTasks(actorNo);
+    await api.getAgentTeamsTask(actorNo, 'AT /1');
+    await api.getAgentTeamsGraph(actorNo, 'AT /1');
+    await api.getAgentTeamsEvents(actorNo, 'AT /1', 0);
+    await api.getAgentTeamsMessages(actorNo, 'AT /1');
+    await api.getAgentTeamsResult(actorNo, 'AT /1');
+    await api.cancelAgentTeamsTask(actorNo, 'AT /1');
+    await api.retryAgentTeamsTask(actorNo, 'AT /1');
 
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
       '/api/v1/agentteams-collaboration/health',
-      '/api/v1/agentteams-collaboration/tasks',
-      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1',
-      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/graph',
-      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/events?after_event_id=0',
-      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/messages',
-      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/result',
-      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/cancel',
-      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/retry',
+      '/api/v1/agentteams-collaboration/tasks?actor_no=E10281',
+      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1?actor_no=E10281',
+      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/graph?actor_no=E10281',
+      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/events?actor_no=E10281&after_event_id=0',
+      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/messages?actor_no=E10281',
+      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/result?actor_no=E10281',
+      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/cancel?actor_no=E10281',
+      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/retry?actor_no=E10281',
     ]);
     expect(fetchMock.mock.calls[7][1]).toMatchObject({ method: 'POST' });
     expect(fetchMock.mock.calls[8][1]).toMatchObject({ method: 'POST' });
@@ -264,7 +287,7 @@ describe('AgentTeams collaboration API client', () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json({}));
     vi.stubGlobal('fetch', fetchMock);
 
-    await api.createAgentTeamsTask({
+    await api.createAgentTeamsTask('E10281', {
       team_id: 'TEAM-1',
       leader_agent_id: 'DT-E10281',
       title: '入职协作分析',
@@ -272,7 +295,7 @@ describe('AgentTeams collaboration API client', () => {
       material: { policy_version: '2026.08' },
     });
 
-    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/v1/agentteams-collaboration/tasks');
+    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/v1/agentteams-collaboration/tasks?actor_no=E10281');
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' });
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       team_id: 'TEAM-1',
@@ -290,7 +313,7 @@ describe('AgentTeams collaboration API client', () => {
     );
 
     await expect(
-      api.createAgentTeamsTask({
+      api.createAgentTeamsTask('E10281', {
         team_id: 'TEAM-1',
         leader_agent_id: 'DT-E10281',
         title: '入职协作分析',
@@ -342,7 +365,7 @@ describe('AgentTeams collaboration page', () => {
 
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(
-        ([input, init]) => String(input).endsWith('/api/v1/agentteams-collaboration/tasks') && init?.method === 'POST',
+        ([input, init]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks') && init?.method === 'POST',
       );
       expect(call).toBeTruthy();
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({
@@ -384,6 +407,37 @@ describe('AgentTeams collaboration page', () => {
     renderPage();
 
     expect(await screen.findByText('Worker已就绪：2/3；已配置/待实测：1/3')).toBeInTheDocument();
+  });
+
+  it('clears prior actor task data before loading the newly selected actor', async () => {
+    const fetchMock = mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': readyHealth,
+      'GET /api/v1/teams': teams,
+      'GET /api/v1/agentteams-collaboration/tasks?actor_no=E10281': [completedTask],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT?actor_no=E10281': completedTask,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/graph?actor_no=E10281': completedGraph,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/events?actor_no=E10281': completedEvents,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages?actor_no=E10281': completedMessages,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/result?actor_no=E10281': completedResult,
+      'GET /api/v1/agentteams-collaboration/tasks?actor_no=E20999': [],
+    });
+    renderPageWithActorSwitcher();
+
+    expect(await screen.findByText('制度材料和账号准备均已确认。')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /选择任务 制度核查/ }));
+    expect(await screen.findByText('制度核查完成，请Manager汇总。')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '切换为 E20999' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('制度材料和账号准备均已确认。')).not.toBeInTheDocument();
+      expect(screen.queryByText('制度核查完成，请Manager汇总。')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '查看协作任务 入职协作分析' })).not.toBeInTheDocument();
+      expect(screen.queryByText('最终汇总')).not.toBeInTheDocument();
+    });
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes('AT-ROOT?actor_no=E20999')),
+    ).toBe(false);
   });
 
   it('keeps the current task details when an earlier selection resolves after a later selection', async () => {
@@ -437,7 +491,7 @@ describe('AgentTeams collaboration page', () => {
 
     await screen.findByRole('button', { name: '查看协作任务 任务 A' });
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/agentteams-collaboration/tasks/AT-A/result'))).toBe(true);
+      expect(fetchMock.mock.calls.some(([input]) => String(input).split('?')[0].endsWith('/agentteams-collaboration/tasks/AT-A/result'))).toBe(true);
     });
     fireEvent.click(screen.getByRole('button', { name: '查看协作任务 任务 B' }));
 
@@ -647,11 +701,11 @@ describe('AgentTeams collaboration page', () => {
     renderPage();
 
     await screen.findByText('制度材料和账号准备均已确认。');
-    const before = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
+    const before = fetchMock.mock.calls.filter(([input]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1100));
     });
-    const after = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
+    const after = fetchMock.mock.calls.filter(([input]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
     expect(after).toBe(before);
   }, 3000);
 
@@ -680,12 +734,12 @@ describe('AgentTeams collaboration page', () => {
     renderPage();
 
     await screen.findByText('执行中');
-    const before = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
+    const before = fetchMock.mock.calls.filter(([input]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1100));
     });
     await waitFor(() => {
-      const after = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
+      const after = fetchMock.mock.calls.filter(([input]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
       expect(after).toBeGreaterThan(before);
     });
   }, 4000);
@@ -743,7 +797,7 @@ describe('AgentTeams collaboration page', () => {
     renderPage();
     expect(await screen.findByText('制度材料和账号准备均已确认。')).toBeInTheDocument();
     expect(
-      fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/v1/agentteams-collaboration/tasks')).length,
+      fetchMock.mock.calls.filter(([input]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks')).length,
     ).toBeGreaterThanOrEqual(2);
   });
 });

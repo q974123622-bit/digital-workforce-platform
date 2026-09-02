@@ -17,6 +17,7 @@ import type {
   Team,
 } from '@dwp/shared-schema';
 import { api } from '../../api/client';
+import { useCurrentUser } from '../../context/CurrentUserContext';
 import { TaskTree, AGENT_TASK_STATUS_META } from './TaskTree';
 import { TimelinePanel } from './TimelinePanel';
 
@@ -83,6 +84,8 @@ interface LoadedTask {
 }
 
 export default function AgentTeamsCollaborationPage() {
+  const { actor } = useCurrentUser();
+  const actorNo = actor.employee_no;
   const [health, setHealth] = useState<AgentCollaborationHealth | null>(null);
   const [teams, setTeams] = useState<Team[]>([]);
   const [tasks, setTasks] = useState<AgentCollaborationTask[]>([]);
@@ -105,6 +108,8 @@ export default function AgentTeamsCollaborationPage() {
   const [formError, setFormError] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const taskSelectionVersionRef = useRef(0);
+  const actorVersionRef = useRef(0);
+  const selectedTaskActorRef = useRef(actorNo);
   const selectTask = useCallback((taskId: string | null) => {
     if (taskId === selectedTaskId) return;
     taskSelectionVersionRef.current += 1;
@@ -117,25 +122,27 @@ export default function AgentTeamsCollaborationPage() {
   }, [graph.nodes, selectedNodeId, selectedTask?.nodes]);
 
   const loadInitial = useCallback(async () => {
+    const actorVersion = actorVersionRef.current;
     setLoading(true);
     setLoadError(undefined);
     try {
       const [nextHealth, nextTeams, nextTasks] = await Promise.all([
         api.agentTeamsHealth(),
         api.listTeams(),
-        api.listAgentTeamsTasks(),
+        api.listAgentTeamsTasks(actorNo),
       ]);
+      if (actorVersionRef.current !== actorVersion) return;
       setHealth(nextHealth);
       setTeams(nextTeams);
       setTasks(nextTasks);
       setTeamId((current) => current ?? nextTeams[0]?.id);
       setSelectedTaskId((current) => current ?? nextTasks[0]?.id ?? null);
     } catch (error) {
-      setLoadError(errorText(error));
+      if (actorVersionRef.current === actorVersion) setLoadError(errorText(error));
     } finally {
-      setLoading(false);
+      if (actorVersionRef.current === actorVersion) setLoading(false);
     }
-  }, []);
+  }, [actorNo]);
 
   const loadTask = useCallback(async (
     taskId: string,
@@ -147,11 +154,11 @@ export default function AgentTeamsCollaborationPage() {
     setTaskLoading(true);
     try {
       const [task, nextGraph, nextEvents, nextMessages, nextResult] = await Promise.all([
-        api.getAgentTeamsTask(taskId),
-        api.getAgentTeamsGraph(taskId),
-        api.getAgentTeamsEvents(taskId, afterEventId),
-        api.getAgentTeamsMessages(taskId),
-        api.getAgentTeamsResult(taskId),
+        api.getAgentTeamsTask(actorNo, taskId),
+        api.getAgentTeamsGraph(actorNo, taskId),
+        api.getAgentTeamsEvents(actorNo, taskId, afterEventId),
+        api.getAgentTeamsMessages(actorNo, taskId),
+        api.getAgentTeamsResult(actorNo, taskId),
       ]);
       if (!isCurrentTask()) return null;
       setSelectedTask(task);
@@ -168,13 +175,36 @@ export default function AgentTeamsCollaborationPage() {
     } finally {
       if (isCurrentTask()) setTaskLoading(false);
     }
-  }, []);
+  }, [actorNo]);
+
+  useEffect(() => {
+    actorVersionRef.current += 1;
+    taskSelectionVersionRef.current += 1;
+    setTasks([]);
+    setSelectedTaskId(null);
+    setSelectedTask(null);
+    setGraph(EMPTY_GRAPH);
+    setEvents([]);
+    setMessages([]);
+    setResult(null);
+    setSelectedNodeId(null);
+    setTaskLoading(false);
+    setSubmitting(false);
+    setActingTaskIds(new Set());
+    setLoadError(undefined);
+    setFormError(undefined);
+    setActionError(undefined);
+  }, [actorNo]);
 
   useEffect(() => {
     void loadInitial();
   }, [loadInitial]);
 
   useEffect(() => {
+    if (selectedTaskActorRef.current !== actorNo) {
+      selectedTaskActorRef.current = actorNo;
+      return;
+    }
     if (!selectedTaskId) return;
     const requestVersion = ++taskSelectionVersionRef.current;
     setEvents([]);
@@ -182,7 +212,7 @@ export default function AgentTeamsCollaborationPage() {
     setResult(null);
     setSelectedNodeId(selectedTaskId);
     void loadTask(selectedTaskId, requestVersion);
-  }, [loadTask, selectedTaskId]);
+  }, [actorNo, loadTask, selectedTaskId]);
 
   useEffect(() => {
     if (!selectedTaskId || selectedTask?.id !== selectedTaskId || isTerminal(selectedTask.status)) return;
@@ -216,14 +246,16 @@ export default function AgentTeamsCollaborationPage() {
     setSubmitting(true);
     setFormError(undefined);
     setActionError(undefined);
+    const actorVersion = actorVersionRef.current;
     try {
-      const task = await api.createAgentTeamsTask({
+      const task = await api.createAgentTeamsTask(actorNo, {
         team_id: selectedTeam.id,
         leader_agent_id: selectedTeam.leader_employee_id,
         title: trimmedTitle,
         instruction: trimmedInstruction,
         material: parsedMaterial,
       });
+      if (actorVersionRef.current !== actorVersion) return;
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       setSelectedTask(task);
       setGraph({ ...EMPTY_GRAPH, nodes: task.nodes });
@@ -236,9 +268,9 @@ export default function AgentTeamsCollaborationPage() {
       setInstruction('');
       setMaterial('');
     } catch (error) {
-      setActionError(`提交协作任务失败：${errorText(error)}`);
+      if (actorVersionRef.current === actorVersion) setActionError(`提交协作任务失败：${errorText(error)}`);
     } finally {
-      setSubmitting(false);
+      if (actorVersionRef.current === actorVersion) setSubmitting(false);
     }
   };
 
@@ -250,7 +282,7 @@ export default function AgentTeamsCollaborationPage() {
     setActingTaskIds((current) => new Set(current).add(actionTask.id));
     setActionError(undefined);
     try {
-      const task = await api.cancelAgentTeamsTask(actionTask.id);
+      const task = await api.cancelAgentTeamsTask(actorNo, actionTask.id);
       if (!isCurrentTask()) return;
       setSelectedTask(task);
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
@@ -259,6 +291,7 @@ export default function AgentTeamsCollaborationPage() {
     } catch (error) {
       if (isCurrentTask()) setActionError(`取消任务失败：${errorText(error)}`);
     } finally {
+      if (!isCurrentTask()) return;
       setActingTaskIds((current) => {
         if (!current.has(actionTask.id)) return current;
         const next = new Set(current);
@@ -276,7 +309,7 @@ export default function AgentTeamsCollaborationPage() {
     setActingTaskIds((current) => new Set(current).add(actionTask.id));
     setActionError(undefined);
     try {
-      const task = await api.retryAgentTeamsTask(actionTask.id);
+      const task = await api.retryAgentTeamsTask(actorNo, actionTask.id);
       if (!isCurrentTask()) return;
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       setSelectedTask(task);
@@ -289,6 +322,7 @@ export default function AgentTeamsCollaborationPage() {
     } catch (error) {
       if (isCurrentTask()) setActionError(`重试任务失败：${errorText(error)}`);
     } finally {
+      if (!isCurrentTask()) return;
       setActingTaskIds((current) => {
         if (!current.has(actionTask.id)) return current;
         const next = new Set(current);

@@ -68,6 +68,8 @@ def _create_run(db_session):
         instruction="协调完成入职准备",
         material={"employee": "李四"},
     )
+    run.owner_human_no = "E10281"
+    db_session.flush()
     return service, run, leader
 
 
@@ -751,7 +753,7 @@ def test_runner_suppresses_stale_submit_after_task_is_cancelled(db_session):
     from app.services.agentteams_runner import AgentTeamsCollaborationRunner
 
     service, run, _leader = _create_run(db_session)
-    cancel_task(run.id, db_session)
+    cancel_task(run.id, actor_no="E10281", db=db_session)
     gateway = FakeGateway()
 
     AgentTeamsCollaborationRunner(

@@ -200,6 +200,9 @@ class TaskRun(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     team_id: Mapped[str] = mapped_column(String)
+    # AgentTeams HTTP tasks persist their human demo caller for per-task access control.
+    # Legacy rows without a verified owner remain inaccessible through that API.
+    owner_human_no: Mapped[str] = mapped_column(String, default="", index=True)
     conversation_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     trigger_message_seq: Mapped[int | None] = mapped_column(nullable=True)
     trace_id: Mapped[str] = mapped_column(String, default="")

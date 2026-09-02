@@ -92,6 +92,12 @@ GET /api/v1/agentteams-collaboration/health
 
 `ready_for_demo` requires: runner enabled, Matrix `ready`, room `ready`, Manager configured, a platform team, and at least two distinct configured Worker IDs with two distinct resolvable MXIDs. This readiness check intentionally never claims remote proof for Manager or Worker runtime processes.
 
+## Demo caller boundary
+
+All collaboration task routes except the public health check require `actor_no`. In this demo, the backend verifies that it names an active `HumanEmployee`, records that value in `TaskRun.owner_human_no` at creation, and permits list/detail/graph/events/messages/result/cancel/retry only to that stored creator. Creation also reads the selected Team server-side and requires `leader_agent_id` to equal its designated `leader_employee_id`; a submitted Team member cannot replace the leader. Existing task rows with no recorded owner are intentionally inaccessible through these routes because their creator cannot be verified.
+
+This is **demo request isolation, not production authentication**: `actor_no` is selected by the demo UI and is not a credential. A formal deployment must have login/authentication middleware validate and inject the caller identity, then apply a durable Team ACL/role policy. Do not treat a freely supplied query parameter as proof of identity in production.
+
 ## Logs, tasks, and correlation
 
 The demo script writes these files under the project:

@@ -26,6 +26,10 @@ READY_HEALTH = {
     ],
 }
 
+ACTOR_NO = "E10281"
+UNAUTHORIZED_ACTOR_NO = "E20999"
+TEAM_OPERATOR_NOT_CREATOR_NO = "E10021"
+
 
 def _stub_health(monkeypatch, value: dict) -> None:
     """Stub the API boundary, never the Matrix runner or service itself."""
@@ -51,7 +55,7 @@ def _prepare_leader(db_session):
 
 def _create_task(db_session):
     _prepare_leader(db_session)
-    return AgentTeamsCollaborationService().create_task(
+    run = AgentTeamsCollaborationService().create_task(
         db_session,
         team_id="TEAM-ONBOARD",
         leader_agent_id="DT-E10281",
@@ -59,6 +63,9 @@ def _create_task(db_session):
         instruction="完成制度和账号核查",
         material={"employee": "李四"},
     )
+    run.owner_human_no = ACTOR_NO
+    db_session.flush()
+    return run
 
 
 def test_health_reports_matrix_room_manager_and_workers(client):
@@ -74,13 +81,17 @@ def test_submit_returns_created_agentteams_task(client, db_session, monkeypatch)
     _prepare_leader(db_session)
     _stub_health(monkeypatch, READY_HEALTH)
 
-    response = client.post("/api/v1/agentteams-collaboration/tasks", json={
-        "team_id": "TEAM-ONBOARD",
-        "leader_agent_id": "DT-E10281",
-        "title": "入职协作",
-        "instruction": "完成制度和账号核查",
-        "material": {},
-    })
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-ONBOARD",
+            "leader_agent_id": "VE-0001",
+            "title": "入职协作",
+            "instruction": "完成制度和账号核查",
+            "material": {},
+        },
+    )
 
     assert response.status_code == 201
     body = response.json()
@@ -101,13 +112,17 @@ def test_submit_returns_503_when_environment_is_not_ready_without_creating_task(
     })
     before = db_session.query(models.TaskRun).filter_by(source="agentteams").count()
 
-    response = client.post("/api/v1/agentteams-collaboration/tasks", json={
-        "team_id": "TEAM-ONBOARD",
-        "leader_agent_id": "DT-E10281",
-        "title": "入职协作",
-        "instruction": "完成制度和账号核查",
-        "material": {},
-    })
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-ONBOARD",
+            "leader_agent_id": "VE-0001",
+            "title": "入职协作",
+            "instruction": "完成制度和账号核查",
+            "material": {},
+        },
+    )
 
     assert response.status_code == 503
     assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
@@ -116,12 +131,12 @@ def test_submit_returns_503_when_environment_is_not_ready_without_creating_task(
 def test_task_detail_graph_events_messages_and_result_only_use_the_root_id(client, db_session):
     run = _create_task(db_session)
 
-    listed = client.get("/api/v1/agentteams-collaboration/tasks")
-    detail = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}")
-    graph = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}/graph")
-    events = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}/events")
-    messages = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}/messages")
-    result = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}/result")
+    listed = client.get("/api/v1/agentteams-collaboration/tasks", params={"actor_no": ACTOR_NO})
+    detail = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}", params={"actor_no": ACTOR_NO})
+    graph = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}/graph", params={"actor_no": ACTOR_NO})
+    events = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}/events", params={"actor_no": ACTOR_NO})
+    messages = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}/messages", params={"actor_no": ACTOR_NO})
+    result = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}/result", params={"actor_no": ACTOR_NO})
 
     assert listed.status_code == 200
     assert [task["id"] for task in listed.json()] == [run.id]
@@ -153,10 +168,13 @@ def test_event_query_honors_after_event_id(client, db_session):
     ))
     db_session.flush()
 
-    all_events = client.get(f"/api/v1/agentteams-collaboration/tasks/{run.id}/events")
+    all_events = client.get(
+        f"/api/v1/agentteams-collaboration/tasks/{run.id}/events",
+        params={"actor_no": ACTOR_NO},
+    )
     later_events = client.get(
         f"/api/v1/agentteams-collaboration/tasks/{run.id}/events",
-        params={"after_event_id": all_events.json()[0]["id"]},
+        params={"actor_no": ACTOR_NO, "after_event_id": all_events.json()[0]["id"]},
     )
 
     assert all_events.status_code == 200
@@ -167,8 +185,14 @@ def test_event_query_honors_after_event_id(client, db_session):
 def test_cancel_only_changes_a_non_terminal_root_task(client, db_session):
     run = _create_task(db_session)
 
-    cancelled = client.post(f"/api/v1/agentteams-collaboration/tasks/{run.id}/cancel")
-    repeated = client.post(f"/api/v1/agentteams-collaboration/tasks/{run.id}/cancel")
+    cancelled = client.post(
+        f"/api/v1/agentteams-collaboration/tasks/{run.id}/cancel",
+        params={"actor_no": ACTOR_NO},
+    )
+    repeated = client.post(
+        f"/api/v1/agentteams-collaboration/tasks/{run.id}/cancel",
+        params={"actor_no": ACTOR_NO},
+    )
 
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
@@ -188,7 +212,10 @@ def test_retry_rejects_completed_task(client, db_session):
     db_session.get(models.AgentTaskNode, run.id).status = "completed"
     db_session.flush()
 
-    response = client.post(f"/api/v1/agentteams-collaboration/tasks/{run.id}/retry")
+    response = client.post(
+        f"/api/v1/agentteams-collaboration/tasks/{run.id}/retry",
+        params={"actor_no": ACTOR_NO},
+    )
 
     assert response.status_code == 409
     assert db_session.get(models.TaskRun, run.id).status == "completed"
@@ -206,6 +233,123 @@ def test_unknown_root_task_returns_404_for_every_task_query(client):
         f"/api/v1/agentteams-collaboration/tasks/{root}/retry",
     ]
 
-    responses = [client.post(path) if path.endswith(("/cancel", "/retry")) else client.get(path) for path in paths]
+    responses = [
+        client.post(path, params={"actor_no": ACTOR_NO})
+        if path.endswith(("/cancel", "/retry"))
+        else client.get(path, params={"actor_no": ACTOR_NO})
+        for path in paths
+    ]
 
     assert [response.status_code for response in responses] == [404] * len(paths)
+
+
+def test_task_endpoints_reject_missing_and_untrusted_callers(client, db_session):
+    run = _create_task(db_session)
+    base = "/api/v1/agentteams-collaboration/tasks"
+    task_paths = [
+        base,
+        f"{base}/{run.id}",
+        f"{base}/{run.id}/graph",
+        f"{base}/{run.id}/events",
+        f"{base}/{run.id}/messages",
+        f"{base}/{run.id}/result",
+        f"{base}/{run.id}/cancel",
+        f"{base}/{run.id}/retry",
+    ]
+
+    for path in task_paths:
+        response = client.post(path) if path.endswith(("/cancel", "/retry")) else client.get(path)
+        assert response.status_code == 422
+
+    listed = client.get(base, params={"actor_no": UNAUTHORIZED_ACTOR_NO})
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+    for path in task_paths[1:]:
+        response = (
+            client.post(path, params={"actor_no": UNAUTHORIZED_ACTOR_NO})
+            if path.endswith(("/cancel", "/retry"))
+            else client.get(path, params={"actor_no": UNAUTHORIZED_ACTOR_NO})
+        )
+        assert response.status_code == 403
+
+    unknown = client.get(base, params={"actor_no": "E-UNKNOWN"})
+    assert unknown.status_code == 404
+
+
+def test_submit_rejects_a_team_member_substituted_for_the_designated_leader(
+    client, db_session, monkeypatch
+):
+    _prepare_leader(db_session)
+    _stub_health(monkeypatch, READY_HEALTH)
+    before = db_session.query(models.TaskRun).filter_by(source="agentteams").count()
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-ONBOARD",
+            "leader_agent_id": "DT-E10281",
+            "title": "越权负责人替换",
+            "instruction": "不应创建",
+            "material": {},
+        },
+    )
+
+    assert response.status_code == 403
+    assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
+
+
+def test_creator_exclusively_owns_agentteams_tasks_after_creation(client, db_session, monkeypatch):
+    _stub_health(monkeypatch, READY_HEALTH)
+    created = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-ONBOARD",
+            "leader_agent_id": "VE-0001",
+            "title": "创建者专属协作任务",
+            "instruction": "仅创建者可操作",
+            "material": {},
+        },
+    )
+
+    assert created.status_code == 201
+    task_id = created.json()["id"]
+    assert client.get(
+        f"/api/v1/agentteams-collaboration/tasks/{task_id}",
+        params={"actor_no": ACTOR_NO},
+    ).status_code == 200
+
+    for actor_no in (TEAM_OPERATOR_NOT_CREATOR_NO, UNAUTHORIZED_ACTOR_NO):
+        listed = client.get("/api/v1/agentteams-collaboration/tasks", params={"actor_no": actor_no})
+        assert listed.status_code == 200
+        assert listed.json() == []
+        for suffix in ("", "/graph", "/events", "/messages", "/result", "/cancel", "/retry"):
+            path = f"/api/v1/agentteams-collaboration/tasks/{task_id}{suffix}"
+            response = (
+                client.post(path, params={"actor_no": actor_no})
+                if suffix in {"/cancel", "/retry"}
+                else client.get(path, params={"actor_no": actor_no})
+            )
+            assert response.status_code == 403
+
+
+def test_submit_rejects_an_inactive_human_actor(client, db_session, monkeypatch):
+    db_session.get(models.HumanEmployee, ACTOR_NO).status = "inactive"
+    db_session.flush()
+    _stub_health(monkeypatch, READY_HEALTH)
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-ONBOARD",
+            "leader_agent_id": "VE-0001",
+            "title": "停用身份不能创建",
+            "instruction": "不应创建",
+            "material": {},
+        },
+    )
+
+    assert response.status_code == 403

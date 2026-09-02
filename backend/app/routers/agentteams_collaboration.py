@@ -205,6 +205,16 @@ def _service() -> AgentTeamsCollaborationService:
     )
 
 
+def _require_actor(db: Session, actor_no: str) -> models.HumanEmployee:
+    """Require the same trusted human caller identity used by workplace APIs."""
+    actor = db.get(models.HumanEmployee, actor_no)
+    if actor is None:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    if actor.status != "active":
+        raise HTTPException(status_code=403, detail="员工当前未启用")
+    return actor
+
+
 def _node_out(node: models.AgentTaskNode) -> schemas.AgentTaskNodeOut:
     return schemas.AgentTaskNodeOut.model_validate(node)
 
@@ -233,6 +243,16 @@ def _require_root_task(db: Session, task_id: str) -> tuple[models.TaskRun, model
     ):
         raise HTTPException(status_code=404, detail="协作任务不存在")
     return run, root
+
+
+def _require_task_access(
+    db: Session, task_id: str, actor_no: str
+) -> tuple[models.HumanEmployee, models.TaskRun, models.AgentTaskNode]:
+    actor = _require_actor(db, actor_no)
+    run, root = _require_root_task(db, task_id)
+    if run.owner_human_no != actor.employee_no:
+        raise HTTPException(status_code=403, detail="无权访问该协作任务")
+    return actor, run, root
 
 
 def _task_out(
@@ -282,29 +302,46 @@ def health(db: Session = Depends(get_db)):
 
 
 @router.post("/tasks", response_model=schemas.AgentCollaborationTaskOut, status_code=201)
-def create_task(payload: schemas.AgentCollaborationTaskCreateIn, db: Session = Depends(get_db)):
+def create_task(
+    payload: schemas.AgentCollaborationTaskCreateIn,
+    actor_no: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    actor = _require_actor(db, actor_no)
+    team = db.get(models.Team, payload.team_id)
+    if team is None:
+        raise HTTPException(status_code=404, detail="团队不存在")
+    if payload.leader_agent_id != team.leader_employee_id:
+        raise HTTPException(status_code=403, detail="协作任务必须使用团队指定负责人")
     _require_ready(db)
     service = _service()
-    run = _commit_or_conflict(
-        db,
-        lambda: service.create_task(
+
+    def create_for_actor() -> models.TaskRun:
+        run = service.create_task(
             db,
             team_id=payload.team_id,
             leader_agent_id=payload.leader_agent_id,
             title=payload.title,
             instruction=payload.instruction,
             material=payload.material,
-        ),
-    )
+        )
+        run.owner_human_no = actor.employee_no
+        return run
+
+    run = _commit_or_conflict(db, create_for_actor)
     return _task_out(db, run)
 
 
 @router.get("/tasks", response_model=list[schemas.AgentCollaborationTaskOut])
-def list_tasks(db: Session = Depends(get_db)):
+def list_tasks(actor_no: str = Query(...), db: Session = Depends(get_db)):
+    actor = _require_actor(db, actor_no)
     runs = list(
         db.scalars(
             select(models.TaskRun)
-            .where(models.TaskRun.source == "agentteams")
+            .where(
+                models.TaskRun.source == "agentteams",
+                models.TaskRun.owner_human_no == actor.employee_no,
+            )
             .order_by(models.TaskRun.created_at.desc(), models.TaskRun.id.desc())
         )
     )
@@ -312,14 +349,14 @@ def list_tasks(db: Session = Depends(get_db)):
 
 
 @router.get("/tasks/{task_id}", response_model=schemas.AgentCollaborationTaskOut)
-def get_task(task_id: str, db: Session = Depends(get_db)):
-    run, root = _require_root_task(db, task_id)
+def get_task(task_id: str, actor_no: str = Query(...), db: Session = Depends(get_db)):
+    _, run, root = _require_task_access(db, task_id, actor_no)
     return _task_out(db, run, root)
 
 
 @router.get("/tasks/{task_id}/graph", response_model=schemas.AgentTaskGraphOut)
-def get_graph(task_id: str, db: Session = Depends(get_db)):
-    _require_root_task(db, task_id)
+def get_graph(task_id: str, actor_no: str = Query(...), db: Session = Depends(get_db)):
+    _require_task_access(db, task_id, actor_no)
     graph = _service().build_graph(db, task_id)
     return schemas.AgentTaskGraphOut(
         nodes=[_node_out(node) for node in _task_nodes(db, task_id)],
@@ -333,9 +370,10 @@ def get_graph(task_id: str, db: Session = Depends(get_db)):
 def get_events(
     task_id: str,
     after_event_id: int | None = Query(default=None, ge=0),
+    actor_no: str = Query(...),
     db: Session = Depends(get_db),
 ):
-    _require_root_task(db, task_id)
+    _require_task_access(db, task_id, actor_no)
     statement = select(models.AgentTaskEvent).where(models.AgentTaskEvent.root_task_id == task_id)
     if after_event_id is not None:
         statement = statement.where(models.AgentTaskEvent.id > after_event_id)
@@ -343,8 +381,8 @@ def get_events(
 
 
 @router.get("/tasks/{task_id}/messages", response_model=list[schemas.AgentMessageOut])
-def get_messages(task_id: str, db: Session = Depends(get_db)):
-    _require_root_task(db, task_id)
+def get_messages(task_id: str, actor_no: str = Query(...), db: Session = Depends(get_db)):
+    _require_task_access(db, task_id, actor_no)
     return list(
         db.scalars(
             select(models.AgentMessage)
@@ -355,8 +393,8 @@ def get_messages(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/tasks/{task_id}/result", response_model=schemas.AgentFinalResultOut)
-def get_result(task_id: str, db: Session = Depends(get_db)):
-    run, root = _require_root_task(db, task_id)
+def get_result(task_id: str, actor_no: str = Query(...), db: Session = Depends(get_db)):
+    _, run, root = _require_task_access(db, task_id, actor_no)
     return schemas.AgentFinalResultOut(
         task_id=run.id,
         status=root.status,
@@ -366,8 +404,8 @@ def get_result(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=schemas.AgentCollaborationTaskOut)
-def cancel_task(task_id: str, db: Session = Depends(get_db)):
-    run, root = _require_root_task(db, task_id)
+def cancel_task(task_id: str, actor_no: str = Query(...), db: Session = Depends(get_db)):
+    actor, run, root = _require_task_access(db, task_id, actor_no)
     if run.status in _TERMINAL_STATUSES or root.status in _TERMINAL_STATUSES:
         raise HTTPException(status_code=409, detail="终态协作任务不能取消")
 
@@ -405,18 +443,18 @@ def cancel_task(task_id: str, db: Session = Depends(get_db)):
         task_id=task_id,
         event_seq=next_seq + 1,
         event_type="task.cancelled",
-        actor_agent_id="user",
+        actor_agent_id=actor.employee_no,
         target_agent_id=root.assignee_agent_id,
         summary="task cancelled by user",
-        detail={"cancelled_nodes": [node.id for node in active_nodes]},
+        detail={"cancelled_nodes": [node.id for node in active_nodes], "actor_no": actor.employee_no},
     ))
     db.commit()
     return _task_out(db, run, root)
 
 
 @router.post("/tasks/{task_id}/retry", response_model=schemas.AgentCollaborationTaskOut)
-def retry_task(task_id: str, db: Session = Depends(get_db)):
-    run, root = _require_root_task(db, task_id)
+def retry_task(task_id: str, actor_no: str = Query(...), db: Session = Depends(get_db)):
+    actor, run, root = _require_task_access(db, task_id, actor_no)
     if run.status == "completed" or root.status == "completed":
         raise HTTPException(status_code=409, detail="已完成协作任务不能重试")
     if run.status not in _TERMINAL_STATUSES or root.status not in _TERMINAL_STATUSES:
@@ -424,15 +462,18 @@ def retry_task(task_id: str, db: Session = Depends(get_db)):
 
     _require_ready(db)
     service = _service()
-    retry_run = _commit_or_conflict(
-        db,
-        lambda: service.create_task(
+
+    def retry_for_actor() -> models.TaskRun:
+        retry_run = service.create_task(
             db,
             team_id=run.team_id,
             leader_agent_id=root.assignee_agent_id,
             title=root.title,
             instruction=root.instruction,
             material=dict(root.input_payload or {}),
-        ),
-    )
+        )
+        retry_run.owner_human_no = actor.employee_no
+        return retry_run
+
+    retry_run = _commit_or_conflict(db, retry_for_actor)
     return _task_out(db, retry_run)
