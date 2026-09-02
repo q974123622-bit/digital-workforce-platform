@@ -33,6 +33,12 @@ def test_agentteams_demo_script_is_parseable_and_avoids_mutating_setup_commands(
     assert "param([switch]$NoFrontend)" in source
     assert "$ErrorActionPreference = 'Stop'" in source
     assert "$env:DWP_AGENTTEAMS_COLLAB_ENABLED = '1'" in source
+    assert "$env:DWP_SKIP_AUTO_SEED = '1'" in source
+    assert "$databasePath = Join-Path $backend 'dwp.db'" in source
+    assert "database initialization is an explicit, separately approved operation" in source.lower()
+    assert "if (-not (Test-Path -LiteralPath $databasePath))" in source
+    assert "process environment can provide configuration" in source
+    assert "$realPreflightReady = $collaborationReady" in source
     assert "Start-Process" in source
     assert "-WindowStyle Hidden" in source
     assert "-RedirectStandardOutput" in source

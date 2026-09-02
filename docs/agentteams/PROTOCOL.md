@@ -19,13 +19,13 @@ Ordinary Matrix text is not interpreted as a state event. `DWP_EVENT` is case-se
 | `type` | Yes | One of the twelve message types below. |
 | `root_task_id` | Yes | Root `TaskRun` identifier for the collaboration tree. |
 | `task_id` | Yes | Current `AgentTaskNode` identifier. |
-| `parent_task_id` | Yes, nullable | Parent node ID; `null` only for a root node. It must equal the persisted node parent. |
+| `parent_task_id` | No, defaults to `null` | Parent node ID. When present it must equal the persisted node parent; `null` is valid only for a root node. |
 | `trace_id` | Yes | Non-empty trace identifier. It must equal both the node and root run trace ID. A newly created root uses its Task ID as the trace ID. |
 | `sender` | Yes | Logical platform or employee ID. For inbound employee messages it must match the employee bound to the Matrix sender. |
 | `receiver` | Yes | Logical destination. `tool.request` must use `platform`; the service does not infer a tool receiver. |
 | `timestamp` | Yes | Non-empty producer timestamp string. It is retained in the received protocol payload; durable event order is not derived from it. |
 | `idempotency_key` | Yes | Non-empty key used to make a received protocol message effective once. |
-| `payload` | Yes | JSON object. Individual message handlers validate the payload fields they consume; all other fields are retained for audit or result data. |
+| `payload` | No, defaults to `{}` | JSON object. Individual message handlers validate the payload fields they consume; all other fields are retained for audit or result data. |
 
 The envelope forbids extra top-level fields. JSON is rendered compactly by the platform but receivers must rely on the parsed object, not field order or whitespace.
 

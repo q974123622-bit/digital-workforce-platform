@@ -7,6 +7,7 @@ $backend = Join-Path $projectRoot 'backend'
 $frontend = Join-Path $projectRoot 'frontend'
 $python = Join-Path $projectRoot 'backend\.venv\Scripts\python.exe'
 $backendEnv = Join-Path $backend '.env'
+$databasePath = Join-Path $backend 'dwp.db'
 $backendStdout = Join-Path $backend 'agentteams-backend.out.log'
 $backendStderr = Join-Path $backend 'agentteams-backend.err.log'
 $frontendStdout = Join-Path $frontend 'agentteams-frontend.out.log'
@@ -53,14 +54,18 @@ function Assert-PortAvailable {
 if (-not (Test-Path -LiteralPath $python)) {
     throw 'backend Python environment is missing. Prepare backend/.venv with installed dependencies first.'
 }
+if (-not (Test-Path -LiteralPath $databasePath)) {
+    throw 'backend/dwp.db is missing. Database initialization is an explicit, separately approved operation; this demo script will not create a database or seed data.'
+}
 
-# Deliberately process-scoped: do not write this value to backend/.env or any other file.
+# Deliberately process-scoped: do not write these values to backend/.env or any other file.
 $env:DWP_AGENTTEAMS_COLLAB_ENABLED = '1'
+$env:DWP_SKIP_AUTO_SEED = '1'
 
 Write-Host 'Starting AgentTeams collaboration demo (no installs, resets, or Matrix service creation).'
 
 $backendEnvPresent = Test-Path -LiteralPath $backendEnv
-Write-Host (if ($backendEnvPresent) { 'Backend .env: found' } else { 'Backend .env: missing' })
+Write-Host (if ($backendEnvPresent) { 'Backend .env: present (read-only check)' } else { 'Backend .env: missing; process environment can provide configuration (read-only check)' })
 
 $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
 $dockerReady = $false
@@ -139,7 +144,7 @@ if ($backendReady) {
     }
 }
 
-$realPreflightReady = $backendEnvPresent -and $dockerReady -and $controllerRunning -and $backendReady -and $collaborationReady
+$realPreflightReady = $collaborationReady
 
 Write-Host ''
 Write-Host "Backend health: $(if ($backendReady) { 'ok' } else { 'unavailable' })"

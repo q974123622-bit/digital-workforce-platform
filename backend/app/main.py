@@ -50,7 +50,8 @@ async def lifespan(_: FastAPI):
     global runner_thread
     Base.metadata.create_all(bind=engine)
     ensure_schema_compatibility()
-    seed_if_empty()
+    if not config.skip_auto_seed():
+        seed_if_empty()
     if config.agentteams_collaboration_enabled():
         runner_stop.clear()
         runner_thread = start_agentteams_runner(runner_stop)

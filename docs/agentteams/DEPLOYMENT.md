@@ -1,6 +1,6 @@
 # AgentTeams collaboration deployment and operations
 
-This runbook starts the platform-side collaboration runner. It does **not** create Matrix, AgentTeams, Workers, containers, or database data. The first demo version depends on an already configured Matrix and AgentTeams environment and does not require Redis, Celery, or PostgreSQL; its durable demo state uses the platform’s existing database.
+This runbook starts the platform-side collaboration runner. It does **not** create Matrix, AgentTeams, Workers, containers, or database data. The first demo version depends on an already configured Matrix and AgentTeams environment and does not require Redis, Celery, or PostgreSQL; its durable demo state uses the platform’s existing database. The demo script requires an initialized `backend/dwp.db` and disables automatic seed recovery, so it cannot delete or reseed platform data.
 
 ## Prerequisites
 
@@ -9,6 +9,7 @@ Before starting the local platform process, confirm all of the following outside
 - An existing Matrix homeserver, a usable collaboration room, and the AgentTeams controller that serves that environment.
 - A Manager plus at least two Worker identities that have already joined the intended room. The platform health endpoint checks the room using its configured Matrix account, but it does not remotely prove that Manager or Worker runtimes are alive.
 - A team already exists in the platform database. Its leader and at least two AgentTeams digital employees must have distinct, resolvable Matrix runtime references. The Worker records must be `runtime_type=agentteams`; health reports these bindings as `configured`, not as remotely connected.
+- An initialized local SQLite database already exists at `backend/dwp.db`. The demo script blocks before startup when this file is absent: database initialization is a separate, explicitly approved operation and is never performed by the script.
 - The repository has an existing `backend/.venv/Scripts/python.exe` with the project dependencies and frontend dependencies already installed. The startup script never installs dependencies.
 - Ports 8000 and, unless `-NoFrontend` is used, 5173 are free. The script refuses to stop or replace a process using either port.
 
@@ -21,6 +22,7 @@ Set deployment configuration through the normal environment or the ignored `back
 | Purpose | Names |
 |---|---|
 | Enable the runner | `DWP_AGENTTEAMS_COLLAB_ENABLED` — the demo script sets this only in its own process and child processes; do not persist it merely to run the demo. |
+| Demo seed safety | `DWP_SKIP_AUTO_SEED` — an internal, non-secret safety switch set only by the demo script in its process and child processes. It skips `seed_if_empty()` while retaining normal schema compatibility checks for the existing database. |
 | Matrix endpoint and authentication | `AGENTTEAMS_MATRIX_URL`, plus either `AGENTTEAMS_MATRIX_TOKEN` or both `AGENTTEAMS_ADMIN_USER` and `AGENTTEAMS_ADMIN_PASSWORD` |
 | Target room and Manager identity | `AGENTTEAMS_ROOM_ID`, `AGENTTEAMS_MANAGER_MXID` |
 | Runtime-reference resolution | `AGENTTEAMS_MATRIX_DOMAIN` when stored Worker references use localparts rather than full MXIDs |
@@ -46,14 +48,15 @@ For an API-only session, run:
 
 The script performs only these checks/actions:
 
-1. Checks the exact `backend/.venv/Scripts/python.exe` path and sets `DWP_AGENTTEAMS_COLLAB_ENABLED=1` in its process environment only.
-2. Reads whether `backend/.env` exists, checks Docker availability, and, when Docker is reachable, inspects the configured controller container. It does not print configuration values.
-3. Starts FastAPI and, unless skipped, Vite as hidden child processes with explicit working directories. Standard output and error go directly to project log files.
-4. Waits for `/health`, then requests `/api/v1/agentteams-collaboration/health` and prints only a health status and reason.
+1. Checks the exact `backend/.venv/Scripts/python.exe` path and an existing `backend/dwp.db`. A missing database blocks startup; the script does not initialize a database or seed data.
+2. Sets `DWP_AGENTTEAMS_COLLAB_ENABLED=1` and the internal `DWP_SKIP_AUTO_SEED=1` only in its process environment and inherited child processes. The backend therefore retains its normal schema compatibility path but skips `seed_if_empty()`.
+3. Reads whether `backend/.env` exists, checks Docker availability, and, when Docker is reachable, inspects the configured controller container. These are advisory, read-only diagnostics; a missing `.env` is acceptable when the process environment supplies configuration. The script does not print configuration values.
+4. Starts FastAPI and, unless skipped, Vite as hidden child processes with explicit working directories. Standard output and error go directly to project log files.
+5. Waits for `/health`, then requests `/api/v1/agentteams-collaboration/health` and prints only a health status and reason. Its real collaboration preflight is determined only by that endpoint’s `ready_for_demo` result, not by `.env`, Docker, or controller diagnostic presence.
 
 It prints the URLs, launched PIDs, log locations, the independent smoke command, and exact `Stop-Process` commands. Use the PIDs printed by that run; do not broadly terminate all Python, Node, or Docker processes.
 
-If any real preflight is blocked — missing backend `.env`, unavailable Docker/controller check, unavailable backend, or a collaboration health result that is not ready — the script prints a blocking warning and the smoke command. The backend or UI being available is not a claim that AgentTeams is connected. The frontend is UI-only: it renders persisted server state and cannot independently prove Matrix connectivity.
+If collaboration health is not ready, the script prints a blocking warning and the smoke command. A missing `.env`, unavailable Docker, or an unconfirmed controller is advisory only; process environment configuration can still yield a ready collaboration health result. The backend or UI being available is not a claim that AgentTeams is connected. The frontend is UI-only: it renders persisted server state and cannot independently prove Matrix connectivity.
 
 ## Formal-environment service order
 
@@ -63,7 +66,7 @@ For a managed environment, bring components up in this order and verify each lay
 2. Existing AgentTeams controller associated with that Matrix environment.
 3. Manager and at least two distinct Worker accounts, with room membership and the expected AgentTeams runtimes.
 4. Platform database with a Team, its leader, and Worker-to-Matrix runtime-reference bindings.
-5. Platform backend with the collaboration runner enabled. The runner owns outbox delivery, Matrix sync, receive validation, task expiry, and durable audit records.
+5. Platform backend with the collaboration runner enabled. The runner owns outbox delivery, Matrix sync, receive validation, task expiry, and durable audit records. The demo script requires the existing initialized `backend/dwp.db`; it does not seed it. Backend startup still runs its normal `create_all` and schema-compatibility routines against that existing database, so schema initialization or migration approval is separate from this script’s no-reseed guarantee.
 6. Frontend, if operators want visual inspection. It is not a runtime dependency of the runner.
 
 Do not introduce a second Matrix service for this demo. If Matrix or a controller must be provisioned or changed, that is an environment operation outside this runbook and needs the corresponding owner’s approval.
@@ -118,6 +121,7 @@ For an API investigation, use `/tasks/{task_id}`, `/tasks/{task_id}/graph`, `/ta
 | Malformed or unsupported protocol | Inspect the persisted `protocol.invalid` event/message and correct the `DWP_EVENT` envelope. Invalid JSON, unknown types, and unknown versions never produce a task-status transition. |
 | Policy denial for a tool request | Inspect the tool audit IDs and decision in the task’s tool audit panel. The platform returns a safe denied `tool.result`; correct permissions or seek the normal approval, rather than bypassing the Gateway. |
 | Script reports a blocked preflight | Read only the named backend/frontend logs and endpoint status/reason. The script intentionally does not reveal configuration values. Fix the external prerequisite, rerun the script, then run the explicit smoke check. |
+| Script refuses to start because `backend/dwp.db` is missing | Initialize or migrate the database only through a separately approved operation. Do not bypass the check or use this demo script to create data. |
 
 ## Tests versus real smoke
 
