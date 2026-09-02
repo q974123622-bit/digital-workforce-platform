@@ -802,26 +802,94 @@ def test_runner_leaves_outbox_pending_when_send_fails(db_session):
     assert outbox.matrix_event_id is None
 
 
-def test_runner_does_not_advance_cursor_when_batch_processing_fails(db_session):
+def test_runner_does_not_advance_cursor_when_technical_batch_processing_fails(db_session, monkeypatch):
     from app.services.agentteams_runner import AgentTeamsCollaborationRunner
 
     service, run, leader = _create_run(db_session)
-    invalid_transition = _message(
-        run, leader, event_type="task.progress", key="bad-progress", payload={"progress": 50},
-    )
+    protocol = _message(run, leader, key="technical-failure")
     gateway = FakeGateway([
         MatrixSyncBatch(
-            events=[_event("$bad-progress", render_protocol_line(invalid_transition))],
+            events=[_event("$technical-failure", render_protocol_line(protocol))],
             next_cursor="s2",
         )
     ])
 
-    with pytest.raises(CollaborationConflict, match="invalid_transition"):
+    def fail_apply(*_args, **_kwargs):
+        raise RuntimeError("database write failed")
+
+    monkeypatch.setattr(service, "apply_message", fail_apply)
+
+    with pytest.raises(RuntimeError, match="database write failed"):
         AgentTeamsCollaborationRunner(gateway=gateway, service=service, room_id=ROOM_ID).tick_once(db_session)
 
     assert db_session.query(models.AgentMatrixCursor).count() == 0
     assert db_session.query(models.AgentMessage).filter_by(direction="inbound").count() == 0
     assert db_session.get(models.AgentTaskNode, run.id).status == "planning"
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    [
+        ("unknown_root", "unknown_root_task"),
+        ("unauthorized_sender", "matrix_sender_mismatch"),
+        ("invalid_transition", "invalid_transition"),
+    ],
+)
+def test_runner_audits_business_rejection_advances_cursor_and_keeps_sent_outbox(
+    db_session, case, expected_error,
+):
+    """A bad DWP_EVENT must not pin Matrix sync or undo a successful send."""
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    service, run, leader = _create_run(db_session)
+    if case == "unknown_root":
+        bad = _message(run, leader, key=case).model_copy(update={
+            "root_task_id": "AT-unknown",
+            "task_id": "AT-unknown",
+            "trace_id": "AT-unknown",
+            "idempotency_key": "AT-unknown:unknown-root",
+        })
+        bad_sender = leader.runtime_ref
+    elif case == "unauthorized_sender":
+        bad = _message(run, leader, key=case)
+        bad_sender = "@untrusted:local"
+    else:
+        bad = _message(
+            run, leader, event_type="task.progress", key=case, payload={"progress": 50},
+        )
+        bad_sender = leader.runtime_ref
+
+    legal = _message(run, leader, key=f"legal-after-{case}")
+    gateway = FakeGateway([
+        MatrixSyncBatch(
+            events=[
+                _event(f"$bad-{case}", render_protocol_line(bad), sender=bad_sender),
+                _event(f"$legal-{case}", render_protocol_line(legal), sender=leader.runtime_ref),
+            ],
+            next_cursor="s2",
+        )
+    ])
+
+    AgentTeamsCollaborationRunner(gateway=gateway, service=service, room_id=ROOM_ID).tick_once(db_session)
+
+    rejected = db_session.query(models.AgentMessage).filter_by(
+        direction="inbound", matrix_event_id=f"$bad-{case}",
+    ).one()
+    assert rejected.message_type == "protocol.rejected"
+    assert rejected.payload["error"] == expected_error
+    assert db_session.query(models.AgentTaskEvent).filter_by(
+        event_type="protocol.rejected",
+    ).count() == 1
+    assert db_session.query(models.AgentMessage).filter_by(
+        direction="inbound", matrix_event_id=f"$legal-{case}", message_type="agent.message",
+    ).count() == 1
+    assert db_session.query(models.AgentMatrixCursor).one().cursor == "s2"
+    assert db_session.get(models.AgentTaskNode, run.id).status == "planning"
+    submit = db_session.query(models.AgentMessage).filter_by(
+        root_task_id=run.id, message_type="task.submit", direction="outbound",
+    ).one()
+    assert submit.delivery_status == "sent"
+    assert submit.matrix_event_id == "$sent-1"
 
 
 def test_runner_replay_deduplicates_matrix_event(db_session):

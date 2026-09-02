@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session, aliased
 from .. import models
 from ..database import SessionLocal
 from . import config
-from .agentteams_collaboration import AgentTeamsCollaborationService
+from .agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict
 from .agentteams_gateway import AgentTeamsGateway, MatrixEvent
 from .agentteams_protocol import PREFIX, AgentProtocolMessage, parse_protocol_lines, render_protocol_line
 
@@ -127,8 +127,9 @@ class AgentTeamsCollaborationRunner:
         batch = self.gateway.sync_messages(since, {self.room_id})
 
         # The savepoint keeps earlier sends in this tick eligible for commit, yet
-        # rolls back every current-batch effect (and its cursor) if service
-        # validation/authorization/state handling fails.
+        # rolls back every current-batch effect (and its cursor) if a technical
+        # receive failure occurs.  Expected protocol rejections are isolated per
+        # message below, recorded durably, and do not pin the Matrix cursor.
         with db.begin_nested():
             next_cursor = getattr(batch, "next_cursor", None)
             if not isinstance(next_cursor, str) or not next_cursor.strip():
@@ -253,7 +254,38 @@ class AgentTeamsCollaborationRunner:
                         self._record_raw_event(db, event, message_type="matrix.terminal_late")
                         event_recorded = True
                     continue
-                self.service.apply_message(db, matrix_sender=event.sender, message=message)
+                try:
+                    # A rejected protocol message may have reached a validation
+                    # step after partially preparing ORM state.  Its own
+                    # savepoint makes that rejection non-state-changing while
+                    # allowing a later valid event in the same sync batch to
+                    # progress and the batch cursor to advance.
+                    with db.begin_nested():
+                        self.service.apply_message(db, matrix_sender=event.sender, message=message)
+                except CollaborationConflict as exc:
+                    if not event_recorded:
+                        self._record_raw_event(
+                            db,
+                            event,
+                            message_type="protocol.rejected",
+                            error=exc,
+                        )
+                        event_recorded = True
+                    root_task_id, task_id = self._event_context(db, event.body, event.event_id)
+                    self._append_event(
+                        db,
+                        root_task_id=root_task_id,
+                        task_id=task_id,
+                        event_type="protocol.rejected",
+                        actor_agent_id=event.sender,
+                        target_agent_id=None,
+                        summary="rejected AgentTeams protocol message",
+                        detail={
+                            "matrix_event_id": event.event_id,
+                            "error": self._bounded_error(exc),
+                        },
+                    )
+                    continue
                 inbound = db.scalar(
                     select(models.AgentMessage).where(
                         models.AgentMessage.idempotency_key == f"in:{message.idempotency_key}",
