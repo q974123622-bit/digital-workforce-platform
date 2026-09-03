@@ -30,7 +30,9 @@ def test_employee_detail_grants(client):
     emp = client.get("/api/v1/employees/DT-E10281").json()
     assert emp["owner_human_no"] == "E10281"
     modes = {g["plugin_id"]: g["decision_mode"] for g in emp["grants"]}
-    assert modes["knowledge-l2"] == "allow"
+    assert "knowledge-l1" not in modes
+    assert "knowledge-l2" not in modes
+    assert "knowledge-l3" not in modes
     assert modes["rpa-report"] == "deny"
 
 

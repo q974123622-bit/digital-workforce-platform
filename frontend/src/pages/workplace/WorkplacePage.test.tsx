@@ -492,26 +492,44 @@ describe('WorkplacePage', () => {
     expect(screen.getByText('找到 2 条资料')).toBeInTheDocument();
   });
 
-  it('技能抽屉：上传技能与启停开关', async () => {
+  it('能力档案：查看真实能力并管理个人工作方法', async () => {
     const fetchMock = stubFetch({
       '/api/v1/workplace?actor_no=E10281': home,
       '/api/v1/conversations?actor_no=E10281': [],
+      '/api/v1/agents/DT-E10281/effective-capabilities': {
+        employee_id: 'DT-E10281', display_name: '张三的数字分身', identity_kind: 'human_twin',
+        runtime_engine: 'harness', runtime_state: 'ready', container_name: 'dwp-harness-dt-e10281',
+        knowledge_mode: 'mock', available_count: 2, attention_count: 0,
+        capabilities: [
+          {
+            id: 'knowledge:KB-PUBLIC', name: '公共知识', kind: 'knowledge', source_type: 'knowledge_base',
+            description: '公开制度与常见问题', actions: ['read'], status: 'available', decision: 'allow',
+            reason: '已就绪', authorized: true, installed: true, healthy: true, data_level: 'L1',
+            knowledge_base_id: 'KB-PUBLIC', target_employee_ids: [], example_prompts: ['请查询公共制度。'],
+          },
+          {
+            id: 'platform:delegate', name: '向数字员工求助', kind: 'delegation', source_type: 'platform_tool',
+            description: '分身不会时向岗位员工委派一次', actions: ['delegate'], status: 'available', decision: 'allow',
+            reason: '委派深度固定为 1', authorized: true, installed: true, healthy: true, data_level: null,
+            knowledge_base_id: null, target_employee_ids: ['AI-GENERAL'], example_prompts: ['请咨询数字员工。'],
+          },
+        ],
+      },
       '/api/v1/skills': { id: 'SK-0002', owner_human_no: 'E10281', name: '会议纪要模板', status: 'active', created_at: '2026-08-19T10:00:00', description: '', content: '结论先行' },
       '/api/v1/skills/SK-0001?actor_no=E10281': { ...skill, status: 'disabled' },
     });
     renderPage();
 
     fireEvent.click(await screen.findByRole('button', { name: '通讯录' }));
-    fireEvent.click(screen.getByRole('button', { name: '技能' }));
+    fireEvent.click(screen.getByRole('button', { name: '能力 张三的数字分身' }));
     expect(await screen.findByText('报销制度速答')).toBeInTheDocument();
-    // 分身插件能力也展示在资料抽屉
-    expect(screen.getByText('可用能力（插件授权 · 2）')).toBeInTheDocument();
-    expect(screen.getByText('公开制度知识库')).toBeInTheDocument();
+    expect(await screen.findByText('公共知识')).toBeInTheDocument();
+    expect(screen.getByText('向数字员工求助')).toBeInTheDocument();
 
-    // 上传技能
-    fireEvent.click(screen.getByRole('button', { name: /上传技能/ }));
-    fireEvent.change(screen.getByLabelText('技能名称'), { target: { value: '会议纪要模板' } });
-    fireEvent.change(screen.getByLabelText('技能内容'), { target: { value: '结论先行，行动项带负责人。' } });
+    // 添加个人工作方法
+    fireEvent.click(screen.getByRole('button', { name: /添加工作方法/ }));
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: '会议纪要模板' } });
+    fireEvent.change(screen.getByLabelText('工作方法内容'), { target: { value: '结论先行，行动项带负责人。' } });
     fireEvent.click(screen.getByRole('button', { name: '上传' }));
 
     await waitFor(() => {

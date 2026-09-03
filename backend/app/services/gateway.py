@@ -326,6 +326,23 @@ def search_knowledge(
                 "policy_id": "AGENT-KB-GRANT", "audit_id": audit_id,
             },
         )
+    binding = db.scalar(select(models.AgentPluginBinding).where(
+        models.AgentPluginBinding.plugin_id == plugin_id,
+        models.AgentPluginBinding.target_agent_id == employee_id,
+        models.AgentPluginBinding.admin_enabled.is_(True),
+        models.AgentPluginBinding.employee_enabled.is_(True),
+        models.AgentPluginBinding.decision_mode == "allow",
+    ))
+    if binding is None:
+        audit_id = write_audit(
+            db, trace_id=trace_id, employee_id=employee_id, plugin_id=plugin_id,
+            action="read", decision=DECISION_DENY, knowledge_base_id=knowledge_base_id,
+            reason="知识库 MCP 未发布、未授权或未启用",
+        )
+        raise HTTPException(status_code=403, detail={
+            "reason": "知识库 MCP 未发布、未授权或未启用",
+            "policy_id": "AGENT-PLUGIN-BINDING", "audit_id": audit_id,
+        })
     return invoke_plugin(
         db,
         employee_id=employee_id,

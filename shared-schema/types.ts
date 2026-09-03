@@ -82,6 +82,38 @@ export interface Capability {
   issues: string[];
 }
 
+export interface EffectiveCapabilityItem {
+  id: string;
+  name: string;
+  kind: 'knowledge' | 'delegation' | 'instruction';
+  source_type: 'knowledge_base' | 'platform_tool' | 'skill';
+  description: string;
+  actions: string[];
+  status: 'available' | 'approval' | 'unauthorized' | 'runtime_unavailable' | 'disabled';
+  decision: 'allow' | 'approval' | 'deny';
+  reason: string;
+  authorized: boolean;
+  installed: boolean;
+  healthy: boolean;
+  data_level: string | null;
+  knowledge_base_id: string | null;
+  target_employee_ids: string[];
+  example_prompts: string[];
+}
+
+export interface EffectiveCapabilities {
+  employee_id: string;
+  display_name: string;
+  identity_kind: string;
+  runtime_engine: string;
+  runtime_state: string;
+  container_name: string;
+  knowledge_mode: 'mock' | 'internal';
+  capabilities: EffectiveCapabilityItem[];
+  available_count: number;
+  attention_count: number;
+}
+
 export interface Policy {
   id: string;
   name: string;

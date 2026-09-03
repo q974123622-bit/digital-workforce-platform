@@ -535,6 +535,19 @@ def process_conversation_async(
             conv.updated_at = datetime.now()
             db.add(conv)
             db.commit()
+            # 完整会话保留；超过五组问答的最旧轮次进入长期记忆适配器。
+            answers_for_memory = db.scalars(
+                select(models.ConversationMessage).where(
+                    models.ConversationMessage.conversation_id == conversation_id,
+                    models.ConversationMessage.role == "assistant",
+                    models.ConversationMessage.seq > trigger_seq,
+                ).order_by(models.ConversationMessage.seq)
+            ).all()
+            if answers_for_memory:
+                from .memory_service import compact_conversation
+                compact_conversation(
+                    db, conversation_id, actor_no, answers_for_memory[-1].participant_no,
+                )
             if execution_id:
                 execution = db.get(models.AgentExecution, execution_id)
                 if execution is None or execution.status == "cancelled":

@@ -120,7 +120,7 @@ def test_chain_rag_allow_with_score(client, db_session, monkeypatch, engine_fact
     monkeypatch.setenv("DWP_KB_MODE", "rag")
     monkeypatch.setattr(embedding_mod, "create_embedder", lambda: FakeEmbedding())
     monkeypatch.setattr("app.services.rag_knowledge_adapter.session_factory", engine_factory)
-    resp = _search(client, "DT-E10281", "KB-IT-SERVICE", "VPN 怎么连", "T-RAG-CHAIN-001")
+    resp = _search(client, "AI-GENERAL", "KB-IT-SERVICE", "VPN 怎么连", "T-RAG-CHAIN-001")
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
@@ -150,7 +150,7 @@ def test_degradation_when_embedding_unavailable(client, db_session, monkeypatch,
     monkeypatch.setenv("DWP_KB_MODE", "rag")
     monkeypatch.setattr(embedding_mod, "create_embedder", lambda: RaisingEmbedding())
     monkeypatch.setattr("app.services.knowledge_adapter.session_factory", engine_factory)
-    resp = _search(client, "DT-E10281", "KB-IT-SERVICE", "VPN 怎么连", "T-RAG-DEGRADE-001")
+    resp = _search(client, "AI-GENERAL", "KB-IT-SERVICE", "VPN 怎么连", "T-RAG-DEGRADE-001")
     assert resp.status_code == 200  # 不抛 5xx
     body = resp.json()
     assert body["ok"] is True

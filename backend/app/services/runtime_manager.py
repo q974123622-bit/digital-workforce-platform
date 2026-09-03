@@ -11,11 +11,13 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
 from . import config
+from .docker_engine import DockerEngineClient, EngineResult
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HARNESS_IMAGE = os.getenv("DWP_HARNESS_IMAGE", "dwp-dsh:rc6")
@@ -45,20 +47,85 @@ def _docker(*args: str, timeout: int = DOCKER_TIMEOUT) -> subprocess.CompletedPr
         raise RuntimeError(f"Docker 命令执行失败：{exc.__class__.__name__}") from exc
 
 
-def docker_available() -> bool:
+def _has_docker_cli() -> bool:
+    return shutil.which("docker") is not None
+
+
+def exec_in_container(
+    name: str,
+    command: list[str],
+    *,
+    environment: dict[str, str] | None = None,
+    workdir: str | None = None,
+    timeout: int = DOCKER_TIMEOUT,
+) -> subprocess.CompletedProcess[str] | EngineResult:
+    """Execute through the host CLI or the mounted Engine socket."""
+    if _has_docker_cli():
+        env_path = None
+        try:
+            args = ["exec"]
+            if workdir:
+                args.extend(["--workdir", workdir])
+            if environment:
+                with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False, encoding="utf-8") as env_file:
+                    for key, value in environment.items():
+                        env_file.write(f"{key}={value.replace(chr(10), '').replace(chr(13), '')}\n")
+                    env_path = env_file.name
+                args.extend(["--env-file", env_path])
+            return _docker(*args, name, *command, timeout=timeout)
+        finally:
+            if env_path:
+                try:
+                    os.remove(env_path)
+                except OSError:
+                    pass
     try:
-        return _docker("version", "--format", "{{.Server.Version}}", timeout=5).returncode == 0
-    except RuntimeError:
+        engine = DockerEngineClient(timeout=timeout)
+        try:
+            return engine.exec(name, command, environment=environment, workdir=workdir)
+        finally:
+            engine.close()
+    except (OSError, httpx.HTTPError) as exc:
+        raise RuntimeError(f"Docker Engine 调用失败：{exc.__class__.__name__}") from exc
+
+
+def docker_available() -> bool:
+    if _has_docker_cli():
+        try:
+            return _docker("version", "--format", "{{.Server.Version}}", timeout=5).returncode == 0
+        except RuntimeError:
+            return False
+    try:
+        engine = DockerEngineClient(timeout=5)
+        try:
+            return bool(engine.version())
+        finally:
+            engine.close()
+    except (OSError, httpx.HTTPError):
         return False
 
 
 def _container_status(name: str) -> str | None:
-    proc = _docker("inspect", "--format", "{{.State.Status}}", name)
-    return proc.stdout.strip() if proc.returncode == 0 else None
+    if _has_docker_cli():
+        proc = _docker("inspect", "--format", "{{.State.Status}}", name)
+        return proc.stdout.strip() if proc.returncode == 0 else None
+    engine = DockerEngineClient(timeout=DOCKER_TIMEOUT)
+    try:
+        return engine.container_status(name)
+    finally:
+        engine.close()
 
 
 def _assert_image() -> None:
-    if _docker("image", "inspect", HARNESS_IMAGE).returncode != 0:
+    if _has_docker_cli():
+        exists = _docker("image", "inspect", HARNESS_IMAGE).returncode == 0
+    else:
+        engine = DockerEngineClient(timeout=DOCKER_TIMEOUT)
+        try:
+            exists = engine.image_exists(HARNESS_IMAGE)
+        finally:
+            engine.close()
+    if not exists:
         raise RuntimeError(f"Harness 镜像不存在：{HARNESS_IMAGE}")
 
 
@@ -75,6 +142,8 @@ def ensure_container(employee_id: str) -> str:
 
     status = _container_status(name)
     if status is None:
+        if not _has_docker_cli():
+            raise RuntimeError(f"Harness 容器不存在：{name}；请使用离线 Compose 启动全部实例")
         api_key = config.get("DEEPSEEK_API_KEY")
         if not api_key:
             raise RuntimeError("DEEPSEEK_API_KEY 未配置")
@@ -111,20 +180,27 @@ def ensure_container(employee_id: str) -> str:
         if proc.returncode != 0:
             raise RuntimeError(f"创建 Harness 容器失败：{(proc.stderr or proc.stdout).strip()[:300]}")
     elif status != "running":
-        proc = _docker("start", name, timeout=30)
+        if _has_docker_cli():
+            proc = _docker("start", name, timeout=30)
+        else:
+            engine = DockerEngineClient(timeout=30)
+            try:
+                proc = engine.start_container(name)
+            finally:
+                engine.close()
         if proc.returncode != 0:
             raise RuntimeError(f"启动 Harness 容器失败：{(proc.stderr or proc.stdout).strip()[:300]}")
 
-    profile_sync = _docker(
-        "exec", name, "sh", "-c",
-        "mkdir -p /dsh-home/profiles/dwp-knowledge-agent-v2 && "
-        "cp /opt/dwp/profile/cordis.yml /opt/dwp/profile/cordis.patch.yml "
-        "/opt/dwp/profile/package.json /dsh-home/profiles/dwp-knowledge-agent-v2/",
+    profile_sync = exec_in_container(
+        name,
+        ["sh", "-c", "mkdir -p /dsh-home/profiles/dwp-knowledge-agent-v2 && "
+         "cp /opt/dwp/profile/cordis.yml /opt/dwp/profile/cordis.patch.yml "
+         "/opt/dwp/profile/package.json /dsh-home/profiles/dwp-knowledge-agent-v2/"],
     )
     if profile_sync.returncode != 0:
         raise RuntimeError(f"Harness 安全 Profile 同步失败：{name}")
 
-    probe = _docker("exec", name, "sh", "-c", "command -v dsh >/dev/null 2>&1")
+    probe = exec_in_container(name, ["sh", "-c", "command -v dsh >/dev/null 2>&1"])
     if probe.returncode != 0:
         raise RuntimeError(f"Harness 容器健康检查失败：{name}")
     return name
@@ -166,7 +242,14 @@ def stop(db: Session, employee_id: str) -> models.AgentRuntime:
         raise ValueError("数字员工正在执行任务，不能直接停止")
     status = _container_status(row.container_name) if docker_available() else None
     if status == "running":
-        proc = _docker("stop", "--time", "5", row.container_name, timeout=10)
+        if _has_docker_cli():
+            proc = _docker("stop", "--time", "5", row.container_name, timeout=10)
+        else:
+            engine = DockerEngineClient(timeout=10)
+            try:
+                proc = engine.stop_container(row.container_name, seconds=5)
+            finally:
+                engine.close()
         if proc.returncode != 0:
             raise RuntimeError(f"停止 Harness 容器失败：{(proc.stderr or proc.stdout).strip()[:300]}")
     row.state, row.last_error = "stopped", ""

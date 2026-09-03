@@ -24,13 +24,10 @@ def test_capability_catalog_unifies_plugins_and_skills(client):
     resp = client.get("/api/v1/capabilities?actor_no=E10281")
     assert resp.status_code == 200
     rows = resp.json()
-    assert len(rows) == 16  # 12 plugins + 张三的 4 skills
+    assert len(rows) == 7  # 知识问答 MVP：3 个知识插件 + 张三的 4 个个人工作方法
     skill = next(row for row in rows if row["id"] == "SK-0001")
-    workflow = next(row for row in rows if row["id"] == "expense-claim")
     assert skill["kind"] == "instruction" and skill["executable"] is False
-    assert workflow["executable"] is True
-    assert workflow["executor"]["primary"] == "harness"
-    assert workflow["ready"] is True
+    assert all(row["kind"] in {"knowledge", "instruction"} for row in rows)
 
 
 def test_harness_drives_then_calls_adapter_once(db_session, monkeypatch):
@@ -68,7 +65,7 @@ def test_harness_drives_then_calls_adapter_once(db_session, monkeypatch):
     assert harness.calls[0][3].context_id == "VE-0002:TASK-001"
 
 
-def test_harness_failure_falls_back_to_adapter_once(db_session, monkeypatch):
+def test_harness_failure_does_not_fall_back_to_adapter(db_session, monkeypatch):
     calls = []
 
     def adapter_once(plugin, params):
@@ -76,17 +73,17 @@ def test_harness_failure_falls_back_to_adapter_once(db_session, monkeypatch):
         return {"source": "demo", "status": "submitted"}
 
     monkeypatch.setattr("app.services.capability_executor.run_adapter", adapter_once)
-    result = invoke_plugin(
-        db_session,
-        employee_id="VE-0002",
-        plugin_id="expense-claim",
-        action="execute",
-        params={},
-        trace_id="CAP-H-2",
-        runtime=FailedHarness(),
-    )
-    assert result["runtime_mode"] == "demo_adapter"
-    assert calls == ["expense-claim"]
+    with pytest.raises(RuntimeError, match="不可用"):
+        invoke_plugin(
+            db_session,
+            employee_id="VE-0002",
+            plugin_id="expense-claim",
+            action="execute",
+            params={},
+            trace_id="CAP-H-2",
+            runtime=FailedHarness(),
+        )
+    assert calls == []
 
 
 def test_harness_summary_is_not_truncated(db_session):
@@ -187,7 +184,37 @@ def test_unregistered_dynamic_plugin_is_visible_but_not_executable(client):
         json={"id": "not-wired", "name": "未接线能力", "type": "http", "data_level": "L1"},
     )
     assert created.status_code == 201
-    rows = client.get("/api/v1/capabilities?actor_no=E10281").json()
+    rows = client.get("/api/v1/capabilities?actor_no=E10281&include_experimental=true").json()
     contract = next(row for row in rows if row["id"] == "not-wired")
     assert contract["ready"] is False
     assert contract["issues"]
+
+
+def test_effective_capabilities_join_grants_policy_and_runtime(client, db_session):
+    runtime = db_session.get(models.AgentRuntime, "AI-GENERAL")
+    runtime.state = "ready"
+    db_session.commit()
+
+    resp = client.get("/api/v1/agents/AI-GENERAL/effective-capabilities")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["runtime_state"] == "ready"
+    assert body["knowledge_mode"] == "mock"
+    it_service = next(row for row in body["capabilities"] if row["knowledge_base_id"] == "KB-IT-SERVICE")
+    assert it_service["status"] == "available"
+    assert it_service["authorized"] is True
+    assert it_service["installed"] is True
+    customer = next(row for row in body["capabilities"] if row["knowledge_base_id"] == "KB-CUSTOMER-SENSITIVE")
+    assert customer["status"] == "unauthorized"
+    assert not any(row["kind"] == "delegation" for row in body["capabilities"])
+
+
+def test_twin_effective_capabilities_expose_bounded_delegation(client, db_session):
+    runtime = db_session.get(models.AgentRuntime, "DT-E10281")
+    runtime.state = "ready"
+    db_session.commit()
+
+    body = client.get("/api/v1/agents/DT-E10281/effective-capabilities").json()
+    delegation = next(row for row in body["capabilities"] if row["kind"] == "delegation")
+    assert delegation["status"] == "available"
+    assert delegation["target_employee_ids"] == ["AI-GENERAL", "AI-INVESTMENT"]

@@ -37,7 +37,9 @@ def list_users(
     _: models.Account = Depends(require_roles("agent_admin", "platform_admin")),
     db: Session = Depends(get_db),
 ):
-    humans = db.scalars(select(models.HumanEmployee).order_by(models.HumanEmployee.employee_no)).all()
+    humans = db.scalars(select(models.HumanEmployee).where(
+        models.HumanEmployee.status == "active"
+    ).order_by(models.HumanEmployee.employee_no)).all()
     return [_directory_row(db, human) for human in humans]
 
 
@@ -46,7 +48,7 @@ def sync_mock_directory(
     _: models.Account = Depends(require_roles("agent_admin", "platform_admin")),
     db: Session = Depends(get_db),
 ):
-    humans = db.scalars(select(models.HumanEmployee)).all()
+    humans = db.scalars(select(models.HumanEmployee).where(models.HumanEmployee.status == "active")).all()
     for human in humans:
         exists = db.scalar(
             select(models.DirectoryBinding).where(
@@ -101,4 +103,3 @@ def mock_wecom_callback(payload: schemas.WeComMockIn, db: Session = Depends(get_
         target_agent_name=target.name,
         content=payload.content,
     )
-

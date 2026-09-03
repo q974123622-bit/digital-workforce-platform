@@ -232,6 +232,52 @@ def workplace_home(
 # ---- 技能 CRUD ----
 
 
+def _sync_skill_plugin(db: Session, skill: models.Skill, *, new_version: bool = False) -> None:
+    """Compatibility bridge: the old inline editor now writes the unified Plugin model."""
+    plugin_id = f"SKILL-{skill.id}"
+    plugin = db.get(models.Plugin, plugin_id)
+    if plugin is None:
+        plugin = models.Plugin(
+            id=plugin_id, name=skill.name, type="mcp", plugin_type="skill", scope="personal",
+            owner_human_no=skill.owner_human_no, endpoint_ref="mock://", data_level="L1",
+            status="active", description=skill.description,
+        )
+        db.add(plugin); db.flush()
+    plugin.name = skill.name; plugin.description = skill.description
+    version = "1.0.0"
+    if new_version and plugin.current_version:
+        parts = plugin.current_version.split(".")
+        try: version = f"{parts[0]}.{parts[1]}.{int(parts[2]) + 1}"
+        except (IndexError, ValueError): version = datetime.now().strftime("1.0.%Y%m%d%H%M%S")
+    elif plugin.current_version:
+        version = plugin.current_version
+    existing = db.scalar(select(models.PluginVersion).where(
+        models.PluginVersion.plugin_id == plugin_id, models.PluginVersion.version == version))
+    if existing is None or new_version:
+        for old in db.scalars(select(models.PluginVersion).where(
+            models.PluginVersion.plugin_id == plugin_id,
+            models.PluginVersion.publish_status == "published")).all():
+            old.publish_status = "superseded"
+        db.add(models.PluginVersion(
+            plugin_id=plugin_id, version=version, deployment_mode="instruction", artifact_path="",
+            sha256="inline-editor", manifest={"instruction_summary": skill.description, "instruction": skill.content[:8000]},
+            data_level="L1", review_status="approved", publish_status="published",
+            submitted_by=skill.owner_human_no, reviewed_by="automatic-policy",
+            reviewed_at=datetime.now(), published_at=datetime.now(),
+        ))
+    plugin.current_version = version; plugin.status = "active"
+    binding = db.scalar(select(models.AgentPluginBinding).where(
+        models.AgentPluginBinding.plugin_id == plugin_id,
+        models.AgentPluginBinding.target_agent_id == f"DT-{skill.owner_human_no}"))
+    if binding is None:
+        binding = models.AgentPluginBinding(
+            plugin_id=plugin_id, target_agent_id=f"DT-{skill.owner_human_no}",
+            authorized_by="automatic-policy", admin_enabled=True,
+        ); db.add(binding)
+    binding.employee_enabled = skill.status == "active"
+    db.commit()
+
+
 @skills_router.post("", response_model=schemas.SkillOut, status_code=201)
 def create_skill(
     payload: schemas.SkillCreate,
@@ -251,6 +297,7 @@ def create_skill(
     db.add(skill)
     db.commit()
     db.refresh(skill)
+    _sync_skill_plugin(db, skill)
     return skill
 
 
@@ -286,6 +333,8 @@ def update_skill(
         setattr(skill, field, value)
     db.commit()
     db.refresh(skill)
+    changed = any(field in payload.model_dump(exclude_unset=True) for field in ("name", "description", "content"))
+    _sync_skill_plugin(db, skill, new_version=changed)
     return skill
 
 
@@ -303,6 +352,12 @@ def delete_skill(
         raise HTTPException(status_code=404, detail="技能不存在")
     if skill.owner_human_no != actor_no:
         raise HTTPException(status_code=403, detail="无权删除其他员工的技能")
+    plugin = db.get(models.Plugin, f"SKILL-{skill.id}")
+    if plugin is not None:
+        plugin.status = "withdrawn"
+        for binding in db.scalars(select(models.AgentPluginBinding).where(
+            models.AgentPluginBinding.plugin_id == plugin.id)).all():
+            binding.admin_enabled = False
     db.delete(skill)
     db.commit()
 

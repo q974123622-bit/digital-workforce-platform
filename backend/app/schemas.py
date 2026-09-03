@@ -613,6 +613,11 @@ class LoginOut(BaseModel):
     expires_at: datetime
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=8, max_length=200)
+    new_password: str = Field(min_length=10, max_length=200)
+
+
 class DirectoryUserOut(BaseModel):
     provider: str = "mock"
     external_user_id: str
@@ -653,6 +658,38 @@ class AgentRuntimeOutV1(BaseModel):
     workspace_ref: str
     last_error: str
     last_active_at: datetime | None = None
+
+
+class EffectiveCapabilityItemOut(BaseModel):
+    id: str
+    name: str
+    kind: Literal["knowledge", "delegation", "instruction"]
+    source_type: Literal["knowledge_base", "platform_tool", "skill"]
+    description: str = ""
+    actions: list[str] = []
+    status: Literal["available", "approval", "unauthorized", "runtime_unavailable", "disabled"]
+    decision: Literal["allow", "approval", "deny"]
+    reason: str = ""
+    authorized: bool = False
+    installed: bool = False
+    healthy: bool = False
+    data_level: str | None = None
+    knowledge_base_id: str | None = None
+    target_employee_ids: list[str] = []
+    example_prompts: list[str] = []
+
+
+class EffectiveCapabilitiesOut(BaseModel):
+    employee_id: str
+    display_name: str
+    identity_kind: str
+    runtime_engine: str
+    runtime_state: str
+    container_name: str
+    knowledge_mode: Literal["mock", "internal"]
+    capabilities: list[EffectiveCapabilityItemOut] = []
+    available_count: int = 0
+    attention_count: int = 0
 
 
 class PersonaDraftIn(BaseModel):

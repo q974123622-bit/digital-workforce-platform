@@ -9,7 +9,7 @@ from .. import models
 from . import config
 from .adapters import run_adapter
 from .capability_contract import plugin_contract
-from .runtime_adapter import DockerHarnessRuntimeAdapter, HarnessExecutionContext, RuntimeAdapter
+from .runtime_adapter import DockerHarnessRuntimeAdapter, HarnessExecutionContext, NoopRuntimeAdapter, RuntimeAdapter
 
 
 @dataclass(frozen=True)
@@ -63,17 +63,23 @@ def execute_capability(
     runtime_mode = "demo_adapter"
     if harness_enabled:
         active_runtime = runtime or DockerHarnessRuntimeAdapter()
-        result = active_runtime.run(
-            employee_id=context.employee_id,
-            task_prompt=_harness_prompt(plugin, params, context),
-            trace_id=trace_id,
-            context=context,
-        )
-        if result.ok:
-            runtime_mode = "harness"
-            runtime_summary = result.result
+        # DWP_HARNESS_ENABLED=0 is an explicit local Mock mode, not a failure fallback.
+        if isinstance(active_runtime, NoopRuntimeAdapter):
+            active_runtime = None
+        if active_runtime is None:
+            runtime_summary = "显式 Mock 模式：未启动 Harness"
         else:
-            runtime_summary = result.result or "Harness 不可用，已进入 Demo Adapter 降级"
+            result = active_runtime.run(
+                employee_id=context.employee_id,
+                task_prompt=_harness_prompt(plugin, params, context),
+                trace_id=trace_id,
+                context=context,
+            )
+            if result.ok:
+                runtime_mode = "harness"
+                runtime_summary = result.result
+            else:
+                raise RuntimeError(result.result or "Harness 执行失败")
 
     # 受控工具桥：Adapter 在整条授权链中只调用一次。
     return CapabilityExecution(

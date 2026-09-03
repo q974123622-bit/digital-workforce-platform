@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .database import Base, engine, ensure_schema_compatibility
-from .routers import access, agents, audit, auth, chat, directory, employees, internal, knowledge, plugins, policies, teams, workplace
+from .routers import access, agents, audit, auth, chat, directory, employees, internal, knowledge, memory, plugin_governance, plugins, policies, teams, workplace
 from .seed import seed_if_empty
 from .services import config, runtime_manager
 
@@ -92,6 +92,10 @@ app.include_router(directory.router, prefix=API_PREFIX)
 app.include_router(directory.wecom_router, prefix=API_PREFIX)
 app.include_router(plugins.router, prefix=API_PREFIX)
 app.include_router(plugins.capabilities_router, prefix=API_PREFIX)
+app.include_router(plugin_governance.my_router, prefix=API_PREFIX)
+app.include_router(plugin_governance.admin_router, prefix=API_PREFIX)
+app.include_router(memory.my_router, prefix=API_PREFIX)
+app.include_router(memory.admin_router, prefix=API_PREFIX)
 app.include_router(policies.router, prefix=API_PREFIX)
 app.include_router(audit.router, prefix=API_PREFIX)
 app.include_router(access.router, prefix=API_PREFIX)

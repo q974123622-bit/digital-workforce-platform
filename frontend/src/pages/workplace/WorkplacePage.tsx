@@ -42,6 +42,7 @@ import type {
   AgentExecution,
   AgentExecutionDetail,
   ConversationSummary,
+  EffectiveCapabilities,
   Skill,
   TaskRun,
   Workflow,
@@ -66,26 +67,6 @@ const GROUP_META: Record<string, ContactMeta> = {
   twin: { label: '我的分身', emoji: '⭐', color: '#2f54eb', bg: '#eef4ff' },
   virtual: { label: '数字员工', emoji: '员', color: '#165dff', bg: '#e8f3ff' },
   rpa: { label: '自动化小助手', emoji: '⚙️', color: '#fa8c16', bg: '#fff7e6' },
-};
-
-const PLUGIN_TYPE_LABEL: Record<string, string> = {
-  knowledge: '知识库',
-  mcp: 'MCP 查询',
-  workflow: '流程',
-  rpa: 'RPA',
-  http: '公网搜索',
-};
-
-const DECISION_META: Record<string, { label: string; color: string }> = {
-  allow: { label: '可用', color: 'success' },
-  deny: { label: '已禁用', color: 'default' },
-  approval: { label: '需审批', color: 'warning' },
-};
-
-const DATA_LEVEL_LABEL: Record<string, string> = {
-  L1: '公开',
-  L2: '内部',
-  L3: '敏感',
 };
 
 const TASK_STATUS: Record<string, { label: string; color: string; icon: ReactNode }> = {
@@ -460,6 +441,10 @@ export default function WorkplacePage() {
   const [selectedNos, setSelectedNos] = useState<string[]>([]);
 
   const [skillDrawerOpen, setSkillDrawerOpen] = useState(false);
+  const [capabilityEmployeeNo, setCapabilityEmployeeNo] = useState<string>();
+  const [effectiveCapabilities, setEffectiveCapabilities] = useState<EffectiveCapabilities>();
+  const [capabilityLoading, setCapabilityLoading] = useState(false);
+  const [capabilityError, setCapabilityError] = useState<string>();
   const [skillModalOpen, setSkillModalOpen] = useState(false);
   const [skillForm] = Form.useForm();
 
@@ -657,6 +642,26 @@ export default function WorkplacePage() {
   const twin = home?.twin ?? null;
   const employees = home?.available_employees ?? [];
   const skills = home?.skills ?? [];
+
+  const capabilityEmployee = [twin, ...employees].find((employee) => employee?.employee_no === capabilityEmployeeNo) ?? null;
+
+  useEffect(() => {
+    if (!skillDrawerOpen || !capabilityEmployeeNo) return;
+    let cancelled = false;
+    setCapabilityLoading(true);
+    setCapabilityError(undefined);
+    api.getEffectiveCapabilities(capabilityEmployeeNo)
+      .then((result) => { if (!cancelled) setEffectiveCapabilities(result); })
+      .catch((cause: Error) => { if (!cancelled) setCapabilityError(cause.message); })
+      .finally(() => { if (!cancelled) setCapabilityLoading(false); });
+    return () => { cancelled = true; };
+  }, [capabilityEmployeeNo, skillDrawerOpen]);
+
+  const openCapability = (employeeNo: string) => {
+    setCapabilityEmployeeNo(employeeNo);
+    setEffectiveCapabilities(undefined);
+    setSkillDrawerOpen(true);
+  };
 
   const metaOf = useCallback(
     (employeeNo: string): ContactMeta => {
@@ -894,7 +899,7 @@ export default function WorkplacePage() {
       setSkillModalOpen(false);
       skillForm.resetFields();
       reload();
-      message.success('技能已上传，我的分身已经学会了');
+      message.success('个人工作方法已保存，并会用于我的数字分身');
     } catch (err) {
       message.error(`上传失败：${(err as Error).message}`);
     }
@@ -1145,18 +1150,16 @@ export default function WorkplacePage() {
                           </div>
                         </div>
                         <Space size={2} className="wp-contact-actions">
-                          {emp.type === 'twin' && (
-                            <Tooltip title="管理技能">
-                              <Button
-                                type="text"
-                                shape="circle"
-                                size="small"
-                                aria-label="技能"
-                                icon={<ToolOutlined />}
-                                onClick={() => setSkillDrawerOpen(true)}
-                              />
-                            </Tooltip>
-                          )}
+                          <Tooltip title="查看能力">
+                            <Button
+                              type="text"
+                              shape="circle"
+                              size="small"
+                              aria-label={`能力 ${emp.name}`}
+                              icon={<ToolOutlined />}
+                              onClick={() => openCapability(emp.employee_no)}
+                            />
+                          </Tooltip>
                           <Tooltip title="发起私聊">
                             <Button
                               className="wp-chat-action"
@@ -1518,40 +1521,74 @@ export default function WorkplacePage() {
         )}
       </Modal>
 
-      {/* 分身资料抽屉 + 技能管理 */}
+      {/* 数字员工能力档案；分身额外支持个人工作方法管理 */}
       <Drawer
-        title="我的分身"
+        title="能力档案"
         open={skillDrawerOpen}
-        onClose={() => setSkillDrawerOpen(false)}
-        width={380}
-        extra={
+        onClose={() => { setSkillDrawerOpen(false); setCapabilityEmployeeNo(undefined); }}
+        width={440}
+        extra={capabilityEmployee?.type === 'twin' ? (
           <Button type="primary" size="small" icon={<UploadOutlined />} onClick={() => setSkillModalOpen(true)}>
-            上传技能
+            添加工作方法
           </Button>
-        }
+        ) : null}
       >
-        {twin && (
+        {capabilityEmployee && (
           <>
             <div className="wp-drawer-hero">
-              <Avatar size={56} style={{ background: GROUP_META.twin.bg, color: GROUP_META.twin.color, fontSize: 28 }}>
-                {GROUP_META.twin.emoji}
+              <Avatar size={56} style={{ background: metaOf(capabilityEmployee.employee_no).bg, color: metaOf(capabilityEmployee.employee_no).color, fontSize: 24 }}>
+                {metaOf(capabilityEmployee.employee_no).emoji}
               </Avatar>
               <div>
-                <div className="wp-chat-title">{twin.name}</div>
+                <div className="wp-chat-title">{capabilityEmployee.name}</div>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  {twin.department} · {GROUP_META.twin.label}
+                  {capabilityEmployee.department} · {metaOf(capabilityEmployee.employee_no).label}
                 </Text>
               </div>
             </div>
-            <Paragraph className="wp-persona">{twin.role_prompt || '（尚未配置擅长方向）'}</Paragraph>
-            <div className="wp-drawer-section">
+            <Paragraph className="wp-persona">{capabilityEmployee.role_prompt || '（尚未配置职责与擅长方向）'}</Paragraph>
+
+            {capabilityLoading && <LoadingState rows={4} />}
+            {capabilityError && <Alert type="error" showIcon message="能力状态加载失败" description={capabilityError} />}
+            {effectiveCapabilities && (
+              <>
+                <div className="wp-drawer-section">
+                  <div className="wp-drawer-section-title">当前运行状态</div>
+                  <Space size={[6, 6]} wrap>
+                    <Tag color={['ready', 'busy'].includes(effectiveCapabilities.runtime_state) ? 'green' : 'red'}>
+                      Harness {['ready', 'busy'].includes(effectiveCapabilities.runtime_state) ? '已就绪' : effectiveCapabilities.runtime_state}
+                    </Tag>
+                    <Tag color={effectiveCapabilities.knowledge_mode === 'internal' ? 'blue' : 'gold'}>
+                      {effectiveCapabilities.knowledge_mode === 'internal' ? '内部知识引擎' : 'Mock 知识'}
+                    </Tag>
+                    <Tag color="blue">{effectiveCapabilities.available_count} 项可用</Tag>
+                  </Space>
+                </div>
+                <div className="wp-drawer-section">
+                  <div className="wp-drawer-section-title">能做什么</div>
+                  {effectiveCapabilities.capabilities.filter((item) => item.authorized).length === 0 && <Empty description="暂未授权能力" />}
+                  {effectiveCapabilities.capabilities.filter((item) => item.authorized).map((item) => (
+                    <div className="wp-skill" key={item.id}>
+                      <div style={{ minWidth: 0 }}>
+                        <div className="wp-row-name">{item.name}</div>
+                        <div className="wp-row-preview">{item.description}</div>
+                        {item.example_prompts[0] && <div className="wp-row-preview">示例：{item.example_prompts[0]}</div>}
+                      </div>
+                      <Tag color={item.status === 'available' ? 'success' : item.status === 'approval' ? 'warning' : 'error'}>
+                        {item.status === 'available' ? '可用' : item.status === 'approval' ? '需审批' : '环境未就绪'}
+                      </Tag>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {capabilityEmployee.type === 'twin' && <div className="wp-drawer-section">
               <div className="wp-drawer-section-title">
-                已掌握技能（{skills.length}）
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  已学会 {skills.filter((s) => s.status === 'active').length} 项
-                </Text>
+                个人工作方法（{skills.length}）
+                <Text type="secondary" style={{ fontSize: 12 }}>已启用 {skills.filter((s) => s.status === 'active').length} 项</Text>
               </div>
-              {skills.length === 0 && <Empty description="还没有技能，点击右上角上传" />}
+              {skills.length === 0 && <Empty description="还没有个人工作方法，点击右上角添加" />}
               {skills.map((skill) => (
                 <div key={skill.id} className="wp-skill">
                   <div style={{ minWidth: 0 }}>
@@ -1569,32 +1606,7 @@ export default function WorkplacePage() {
                   </Popconfirm>
                 </div>
               ))}
-            </div>
-
-            <div className="wp-drawer-section">
-              <div className="wp-drawer-section-title">可用能力（插件授权 · {twin.grants.length}）</div>
-              {twin.grants.length === 0 ? (
-                <Empty description="暂无插件授权" />
-              ) : (
-                twin.grants.map((grant) => (
-                  <div className="wp-skill" key={grant.plugin_id}>
-                    <div style={{ minWidth: 0 }}>
-                      <div className="wp-row-name">{grant.name}</div>
-                      <div className="wp-row-preview">
-                        {PLUGIN_TYPE_LABEL[grant.type] ?? grant.type} ·{' '}
-                        {DATA_LEVEL_LABEL[grant.data_level] ?? grant.data_level} 数据
-                      </div>
-                    </div>
-                    <Tag color={DECISION_META[grant.decision_mode]?.color ?? 'default'}>
-                      {DECISION_META[grant.decision_mode]?.label ?? grant.decision_mode}
-                    </Tag>
-                  </div>
-                ))
-              )}
-              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                流程 / RPA 工作流由协作空间里的数字员工执行，分身负责拆解任务并指派。
-              </Text>
-            </div>
+            </div>}
           </>
         )}
       </Drawer>
@@ -1685,9 +1697,9 @@ export default function WorkplacePage() {
         )}
       </Drawer>
 
-      {/* 上传技能弹窗 */}
+      {/* 添加个人工作方法弹窗 */}
       <Modal
-        title="上传技能"
+        title="添加个人工作方法"
         open={skillModalOpen}
         onCancel={() => {
           setSkillModalOpen(false);
@@ -1698,13 +1710,13 @@ export default function WorkplacePage() {
         width={520}
       >
         <Form form={skillForm} layout="vertical">
-          <Form.Item name="name" label="技能名称" rules={[{ required: true, message: '请输入技能名称' }]}>
+          <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="例如：报销制度速答" maxLength={40} />
           </Form.Item>
           <Form.Item name="description" label="一句话说明">
             <Input placeholder="我的分身会用这句话向别人介绍这项技能" maxLength={80} />
           </Form.Item>
-          <Form.Item name="content" label="技能内容" rules={[{ required: true, message: '请填写或导入技能内容' }]}>
+          <Form.Item name="content" label="工作方法内容" rules={[{ required: true, message: '请填写或导入内容' }]}>
             <Input.TextArea rows={7} placeholder="粘贴 Markdown / 纯文本内容，或直接拖入 .md / .txt 文件" />
           </Form.Item>
           <Upload.Dragger

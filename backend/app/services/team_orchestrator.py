@@ -580,6 +580,8 @@ class TeamTaskOrchestrator:
                     return self._to_out(run)
                 sub["status"] = "failed"
                 sub["result"] = "子任务执行失败"
+                sub["execution_mode"] = "failed"
+                sub["runtime_mode"] = "failed"
                 run.status = "failed"
                 self._save(db, run)
                 return self._to_out(run)
@@ -587,6 +589,7 @@ class TeamTaskOrchestrator:
                 sub["status"] = "failed"
                 sub["result"] = f"子任务执行异常：{exc.__class__.__name__}"
                 sub["execution_mode"] = "failed"
+                sub["runtime_mode"] = "failed"
                 run.status = "failed"
                 self._save(db, run)
                 return self._to_out(run)

@@ -10,10 +10,11 @@ def test_workspace_formal_twin(client):
     assert ws["security"]["location"] == "remote"
     assert ws["security"]["internet"] == "deny"
     plugin_ids = {p["plugin_id"] for p in ws["plugins"]}
-    assert "knowledge-l2" in plugin_ids
+    assert "knowledge-l1" not in plugin_ids
+    assert "knowledge-l2" not in plugin_ids
     kbs = {kb["knowledge_base_id"]: kb for kb in ws["knowledge_bases"]}
-    assert kbs["KB-INTERNAL"]["accessible"] is True
-    assert kbs["KB-PUBLIC"]["accessible"] is True
+    assert kbs["KB-INTERNAL"]["accessible"] is False
+    assert kbs["KB-PUBLIC"]["accessible"] is False
 
 
 def test_workspace_intern_twin_kb_denied(client):
@@ -54,7 +55,7 @@ def test_chat_system_prompt_injects_persona(db_session):
             return {}
 
     fake = RecorderLLM()
-    ChatOrchestrator(fake).handle_message(db_session, employee_no="DT-E10281", message="你好", session_id=None)
+    ChatOrchestrator(fake).handle_message(db_session, employee_no="AI-GENERAL", message="你好", session_id=None)
     system = fake.seen[0][0]["content"]
-    assert "架构部员工张三的数字分身" in system  # role_prompt 人设注入
+    assert "AI员工平台" in system  # role_prompt 人设注入
     assert "IT 服务知识库" in system  # 知识库清单注入

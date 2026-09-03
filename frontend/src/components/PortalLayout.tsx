@@ -1,4 +1,4 @@
-import { AppstoreOutlined, LogoutOutlined, MessageOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, BulbOutlined, LogoutOutlined, MessageOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Avatar, Button, Dropdown, Typography } from 'antd';
 import { Link, Outlet } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -21,6 +21,8 @@ export default function PortalLayout() {
             <Link to="/workplace" className="flex h-full items-center gap-2 border-b-2 border-[#165dff] px-3 text-sm text-[#165dff]">
               <MessageOutlined /> 工作消息
             </Link>
+            <Link to="/plugins" className="flex h-full items-center gap-2 px-3 text-sm text-[#4e5969] hover:text-[#165dff]"><BulbOutlined /> 插件</Link>
+            <Link to="/memories" className="hidden h-full items-center gap-2 px-3 text-sm text-[#4e5969] hover:text-[#165dff] sm:flex"><SafetyCertificateOutlined /> 记忆</Link>
           </nav>
           <div className="flex-1" />
           {canAdmin && (
@@ -42,4 +44,3 @@ export default function PortalLayout() {
     </div>
   );
 }
-

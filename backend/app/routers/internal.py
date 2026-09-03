@@ -35,6 +35,24 @@ class AgentDelegateToolIn(BaseModel):
     question: str
 
 
+class SaveMemoryToolIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str
+    memory_type: str = "preference"
+
+
+def _save_memory(db: Session, claims: HarnessClaims, payload: SaveMemoryToolIn) -> dict:
+    from ..services.memory_service import save_explicit
+    try:
+        row = save_explicit(
+            db, claims.requester_human_no, claims.employee_id,
+            payload.content, payload.memory_type,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="长期记忆暂时无法保存，请稍后重试") from exc
+    return {"memory_id": row.id, "saved": True, "trace_id": claims.trace_id}
+
+
 def _claims(authorization: str | None = Header(default=None)) -> HarnessClaims:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="缺少 Harness 工具令牌")
@@ -47,6 +65,20 @@ def _claims(authorization: str | None = Header(default=None)) -> HarnessClaims:
 def _can_delegate(db: Session, claims: HarnessClaims) -> bool:
     profile = db.get(models.AgentProfile, claims.employee_id)
     return bool(profile and profile.identity_kind == "human_twin" and claims.depth == 0)
+
+
+def _has_knowledge_tool(db: Session, claims: HarnessClaims) -> bool:
+    return db.scalar(select(models.AgentPluginBinding).join(
+        models.Plugin, models.Plugin.id == models.AgentPluginBinding.plugin_id,
+    ).where(
+        models.AgentPluginBinding.target_agent_id == claims.employee_id,
+        models.AgentPluginBinding.admin_enabled.is_(True),
+        models.AgentPluginBinding.employee_enabled.is_(True),
+        models.AgentPluginBinding.decision_mode == "allow",
+        models.Plugin.plugin_type == "mcp",
+        models.Plugin.mcp_category == "knowledge",
+        models.Plugin.status == "active",
+    )) is not None
 
 
 def _agent_search(
@@ -210,7 +242,7 @@ async def agent_tools_mcp(
     elif method == "notifications/initialized":
         return {"jsonrpc": "2.0", "result": {}}
     elif method == "tools/list":
-        tools = [{
+        tools = ([{
             "name": "search_knowledge",
             "description": "在当前数字员工已授权的一个知识库中检索，每次只能检索一库。",
             "inputSchema": {
@@ -221,7 +253,7 @@ async def agent_tools_mcp(
                 },
                 "required": ["knowledge_base_id", "query"],
             },
-        }]
+        }] if _has_knowledge_tool(db, claims) else [])
         if _can_delegate(db, claims):
             tools.append({
                 "name": "ask_digital_employee",
@@ -235,6 +267,18 @@ async def agent_tools_mcp(
                     "required": ["target_agent_id", "question"],
                 },
             })
+        tools.append({
+            "name": "save_memory",
+            "description": "仅在用户明确要求‘请记住’或‘以后都这样处理’时保存长期记忆。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string"},
+                    "memory_type": {"type": "string", "enum": ["preference", "fact", "decision", "todo"]},
+                },
+                "required": ["content"],
+            },
+        })
         result = {"tools": tools}
     elif method == "tools/call":
         params = body.get("params") or {}
@@ -244,6 +288,8 @@ async def agent_tools_mcp(
                 data = _agent_search(db, claims, AgentKnowledgeToolIn.model_validate(arguments))
             elif params.get("name") == "ask_digital_employee":
                 data = _agent_delegate(db, claims, AgentDelegateToolIn.model_validate(arguments))
+            elif params.get("name") == "save_memory":
+                data = _save_memory(db, claims, SaveMemoryToolIn.model_validate(arguments))
             else:
                 raise HTTPException(status_code=404, detail="未知工具")
             result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}

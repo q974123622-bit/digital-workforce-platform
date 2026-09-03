@@ -1,7 +1,7 @@
-"""RuntimeAdapter（Sprint 5）：harness 后端（DeepSeek Harness headless）+ demo 降级。
+"""RuntimeAdapter：Harness 后端与显式本地 Mock 模式。
 
 - harness 模式：调 `npx @deepseek-ai/dsh --profile headless <task>`，真实执行一轮回答。
-- demo 模式：不调用外部运行时，返回空结果，由上层走 Mock Gateway 链路。
+- demo 模式：仅在明确关闭 Harness 时使用；Harness 失败不会自动降级。
 - Key 只从环境变量读取（DEEPSEEK_API_KEY），不出现在命令行/日志。
 """
 
@@ -73,7 +73,7 @@ class NoopRuntimeAdapter(RuntimeAdapter):
 
 
 class HarnessRuntimeAdapter(RuntimeAdapter):
-    """DeepSeek Harness headless 后端；失败自动返回 demo 结果（由上层决定降级）。
+    """DeepSeek Harness headless 后端；失败返回错误，由上层明确终止执行。
 
     默认演示模式：仅当显式设置 DWP_HARNESS_ENABLED=1 才尝试真实 Harness
     （门禁 G2 未通过，见 PLANS S5-02；避免 npx dsh 阻塞服务线程）。
@@ -166,45 +166,25 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
         tool_token: str = "",
         tool_base_url: str = "",
     ) -> RuntimeResult:
-        docker_bin = shutil.which("docker")
         if not config.get("DEEPSEEK_API_KEY"):
             return RuntimeResult(mode="demo", ok=False, result="DEEPSEEK_API_KEY 未配置")
-        if not docker_bin:
-            return RuntimeResult(mode="demo", ok=False, result="docker 不可用")
-        env_path = None
         try:
             name = runtime_manager.ensure_container(employee_id)
-            with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False, encoding="utf-8") as env_file:
-                for key, value in (
-                    ("DEEPSEEK_API_KEY", config.get("DEEPSEEK_API_KEY") or ""),
-                    ("DEEPSEEK_BASE_URL", config.get("DEEPSEEK_BASE_URL") or ""),
-                    ("DEEPSEEK_MODEL", config.get("DEEPSEEK_MODEL", "deepseek-v4-flash") or "deepseek-v4-flash"),
-                    ("DWP_AGENT_TOOL_TOKEN", tool_token),
-                    ("DWP_PLATFORM_TOOL_URL", f"{tool_base_url.rstrip('/')}/internal/agent-tools/mcp"),
-                ):
-                    env_file.write(f"{key}={value.replace(chr(10), '').replace(chr(13), '')}\n")
-                env_path = env_file.name
-            proc = subprocess.run(
-                [
-                    docker_bin, "exec", "--workdir", "/workspace",
-                    "--env-file", env_path,
-                    name, "dsh", "--profile", "dwp-knowledge-agent-v2", task_prompt,
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            proc = runtime_manager.exec_in_container(
+                name,
+                ["dsh", "--profile", "dwp-knowledge-agent-v2", task_prompt],
+                environment={
+                    "DEEPSEEK_API_KEY": config.get("DEEPSEEK_API_KEY") or "",
+                    "DEEPSEEK_BASE_URL": config.get("DEEPSEEK_BASE_URL") or "",
+                    "DEEPSEEK_MODEL": config.get("DEEPSEEK_MODEL", "deepseek-v4-flash") or "deepseek-v4-flash",
+                    "DWP_AGENT_TOOL_TOKEN": tool_token,
+                    "DWP_PLATFORM_TOOL_URL": f"{tool_base_url.rstrip('/')}/internal/agent-tools/mcp",
+                },
+                workdir="/workspace",
                 timeout=self.timeout,
-                stdin=subprocess.DEVNULL,
             )
         except (subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
             return RuntimeResult(mode="harness", ok=False, result=f"Harness 容器不可用：{exc.__class__.__name__}")
-        finally:
-            if env_path:
-                try:
-                    os.remove(env_path)
-                except OSError:
-                    pass
 
         if proc.returncode != 0:
             return RuntimeResult(mode="harness", ok=False, result=(proc.stderr or proc.stdout or "").strip()[:500])

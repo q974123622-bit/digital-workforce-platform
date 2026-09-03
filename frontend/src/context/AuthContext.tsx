@@ -8,6 +8,7 @@ interface AuthContextValue {
   checking: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -35,7 +36,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAccount(null);
   }, []);
 
-  const value = useMemo(() => ({ account, checking, login, logout }), [account, checking, login, logout]);
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    await api.changePassword(currentPassword, newPassword);
+    setAccount((current) => current ? { ...current, must_change_password: false } : current);
+  }, []);
+
+  const value = useMemo(() => ({ account, checking, login, logout, changePassword }), [account, checking, login, logout, changePassword]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
@@ -44,4 +50,3 @@ export function useAuth() {
   if (!value) throw new Error('useAuth 必须在 AuthProvider 内使用');
   return value;
 }
-

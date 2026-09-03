@@ -31,11 +31,19 @@ def ensure_schema_compatibility() -> None:
         return
     inspector = inspect(engine)
     plugin_columns = {column["name"] for column in inspector.get_columns("plugin")}
-    if plugin_columns and "runtime_meta" not in plugin_columns:
+    plugin_additions = {
+        "runtime_meta": "JSON NOT NULL DEFAULT '{}'",
+        "plugin_type": "VARCHAR NOT NULL DEFAULT 'mcp'",
+        "scope": "VARCHAR NOT NULL DEFAULT 'shared'",
+        "owner_human_no": "VARCHAR",
+        "mcp_category": "VARCHAR",
+        "current_version": "VARCHAR",
+    }
+    if plugin_columns:
         with engine.begin() as connection:
-            connection.execute(
-                text("ALTER TABLE plugin ADD COLUMN runtime_meta JSON NOT NULL DEFAULT '{}'")
-            )
+            for name, ddl in plugin_additions.items():
+                if name not in plugin_columns:
+                    connection.execute(text(f"ALTER TABLE plugin ADD COLUMN {name} {ddl}"))
     grant_columns = {column["name"] for column in inspector.get_columns("employee_plugin_grant")}
     if grant_columns and "grant_source" not in grant_columns:
         with engine.begin() as connection:

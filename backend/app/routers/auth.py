@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..services.auth import SESSION_COOKIE, current_account, issue_session, revoke_session, verify_password
+from ..services.auth import SESSION_COOKIE, current_account, hash_password, issue_session, revoke_session, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -58,3 +58,18 @@ def logout(
     revoke_session(db, token)
     response.delete_cookie(SESSION_COOKIE, path="/")
 
+
+@router.post("/change-password", status_code=204)
+def change_password(
+    payload: schemas.ChangePasswordIn,
+    account: models.Account = Depends(current_account),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(payload.current_password, account.password_hash):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+    account.password_hash = hash_password(payload.new_password)
+    account.must_change_password = False
+    db.add(account)
+    db.commit()

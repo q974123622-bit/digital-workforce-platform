@@ -9,7 +9,7 @@ def test_local_login_and_current_account(client):
     assert response.json()["account"]["employee_no"] == "E10281"
     me = client.get("/api/v1/auth/me")
     assert me.status_code == 200
-    assert "platform_admin" in me.json()["roles"]
+    assert me.json()["roles"] == ["user"]
 
 
 def test_agent_directory_has_bounded_twin_and_role_colleagues(client):
@@ -18,11 +18,16 @@ def test_agent_directory_has_bounded_twin_and_role_colleagues(client):
     assert rows["DT-E10281"]["identity_kind"] == "human_twin"
     assert rows["DT-E10281"]["delegation_policy"] == "bounded_single"
     assert set(rows["AI-GENERAL"]["knowledge_base_ids"]) == {
-        "KB-PUBLIC", "KB-INTERNAL", "KB-IT-SERVICE", "KB-REG-INTERNAL", "KB-REG-EXTERNAL"
+        "KB-PUBLIC", "KB-ONBOARD", "KB-INTERNAL", "KB-FINTECH", "KB-IT-SERVICE",
+        "KB-REG-INTERNAL", "KB-REG-EXTERNAL",
     }
     assert set(rows["AI-INVESTMENT"]["knowledge_base_ids"]) == {
         "KB-SECURITIES", "KB-INVESTMENT-BANKING"
     }
+    assert rows["DT-E10281"]["knowledge_base_ids"] == []
+    assert set(rows["AI-GENERAL"]["knowledge_base_ids"]).isdisjoint(
+        rows["AI-INVESTMENT"]["knowledge_base_ids"]
+    )
 
 
 def test_runtime_is_one_stable_harness_identity_per_agent(client, monkeypatch):
@@ -35,6 +40,8 @@ def test_runtime_is_one_stable_harness_identity_per_agent(client, monkeypatch):
     assert runtime.status_code == 200
     assert runtime.json()["engine"] == "harness"
     assert runtime.json()["container_name"] == "dwp-harness-ai-general"
+    assert client.post("/api/v1/agents/AI-GENERAL/runtime/start").status_code == 403
+    _login(client, username="admin")
     started = client.post("/api/v1/agents/AI-GENERAL/runtime/start")
     assert started.status_code == 200
     assert started.json()["state"] == "ready"

@@ -146,7 +146,8 @@ SSE 事件类型（固定枚举）：
 | GET | `/skills?actor_no=` | 我的技能列表 | — | `SkillDto[]` |
 | PUT | `/skills/{skill_id}?actor_no=` | 更新本人的技能（含 status 启停） | `{name?, description?, content?, status?}` | `SkillDto` |
 | DELETE | `/skills/{skill_id}?actor_no=` | 删除本人的技能 | — | 204 |
-| GET | `/capabilities?actor_no=` | 统一能力目录（全部 Plugin + 本人 Skill） | — | `CapabilityDto[]` |
+| GET | `/capabilities?actor_no=` | MVP 能力目录（知识 Plugin + 本人工作方法；`include_experimental=true` 可查看实验能力） | — | `CapabilityDto[]` |
+| GET | `/agents/{employee_id}/effective-capabilities` | 聚合具体知识库授权、Policy 与 Harness 状态后的真实能力 | — | `EffectiveCapabilitiesDto` |
 
 `CapabilityDto` 统一字段：`contract_version / id / name / source_type / kind / status / executable / actions / input_schema / executor / owner_human_no / ready / issues`。
 其中 Skill 固定为 `kind=instruction, executable=false, executor.primary=prompt`；Plugin 才能进入 Policy/Gateway 执行链。
@@ -360,3 +361,31 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 | 2026-08-19 | v1.1 兼容扩展（Sprint 7）：新增 §3.8 职场 API（WorkplaceHomeDto / SkillDto / ConversationDto）；新接口显式传 actor_no；群聊消息走顺序编排并复用 Policy→Gateway→审计 | A | 本文件 / shared-schema / schemas / routers/workplace.py |
 | 2026-08-19 | v1.1 实现更新（Sprint 7 C 档）：`POST /conversations/{id}/messages` 群聊改为「分身判断任务/闲聊」；任务型接入 TeamTaskOrchestrator（拆解/指派/审批/汇总），闲聊单成员回复；ConversationDto 增加 tasks；新增 SubtaskExecutor 接口 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py |
 | 2026-08-19 | v1.1 实现更新（Sprint 7 会话管理）：TaskRunDto 增加 trigger_message_seq（任务卡内联）；移除分身受理气泡；子任务结果格式化为可读文本；同请求去重；新增 DELETE /conversations/{id} 清空会话；会话摘要预览显示最新任务状态 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py / routers/workplace.py |
+# 统一插件与记忆接口（MVP）
+
+员工插件：
+
+- `GET /api/v1/my/plugins`
+- `POST /api/v1/my/plugins/submissions`（multipart ZIP）
+- `GET /api/v1/my/plugins/submissions`
+- `POST /api/v1/my/plugins/{plugin_id}/enable|disable`
+
+管理员治理：
+
+- `GET /api/v1/admin/plugins`
+- `GET /api/v1/admin/plugin-submissions`
+- `POST /api/v1/admin/plugin-submissions/{id}/approve|reject`
+- `POST /api/v1/admin/plugins/{id}/versions/{version}/publish|rollback`
+- `GET|POST /api/v1/admin/agent-plugin-bindings`
+- `PUT|DELETE /api/v1/admin/agent-plugin-bindings/{id}`
+
+员工记忆与管理员健康检查：
+
+- `GET|DELETE /api/v1/my/agents/{agent_id}/memories`
+- `PUT|DELETE /api/v1/my/agents/{agent_id}/memories/{memory_id}`
+- `POST /api/v1/my/agents/{agent_id}/memories/{memory_id}/retain`
+- `GET /api/v1/admin/memory/health`
+- `GET /api/v1/admin/memory/jobs`
+- `POST /api/v1/admin/memory/jobs/{job_id}/retry`
+
+所有员工接口都从登录 Cookie 读取真实身份，不接受正文覆盖身份；管理员接口要求独立管理员角色。

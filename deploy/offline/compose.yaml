@@ -1,31 +1,111 @@
-name: dwp-demo
+name: dwp-ai-employee-platform
+
+x-harness-common: &harness-common
+  image: dwp-dsh:rc6
+  pull_policy: never
+  restart: unless-stopped
+  entrypoint: ["sh", "-c"]
+  command:
+    - >-
+      mkdir -p /dsh-home/profiles/dwp-knowledge-agent-v2 /workspace &&
+      cp /opt/dwp/profile/cordis.yml /opt/dwp/profile/cordis.patch.yml
+      /opt/dwp/profile/package.json /dsh-home/profiles/dwp-knowledge-agent-v2/ &&
+      trap 'exit 0' TERM INT;
+      while :; do sleep 3600 & wait $$!; done
+  environment:
+    DSH_HOME: /dsh-home
+    DSH_PERMISSION_MODE: read-only
+  networks:
+    - dwp
+  security_opt:
+    - no-new-privileges:true
 
 services:
+  harness-ai-general:
+    <<: *harness-common
+    container_name: dwp-harness-ai-general
+    labels:
+      dwp.managed: "true"
+      dwp.employee_id: AI-GENERAL
+    volumes:
+      - ./harness/AI-GENERAL/dsh-home:/dsh-home
+      - ./harness/AI-GENERAL/workspace:/workspace
+
+  harness-ai-investment:
+    <<: *harness-common
+    container_name: dwp-harness-ai-investment
+    labels:
+      dwp.managed: "true"
+      dwp.employee_id: AI-INVESTMENT
+    volumes:
+      - ./harness/AI-INVESTMENT/dsh-home:/dsh-home
+      - ./harness/AI-INVESTMENT/workspace:/workspace
+
+  harness-dt-e10281:
+    <<: *harness-common
+    container_name: dwp-harness-dt-e10281
+    labels:
+      dwp.managed: "true"
+      dwp.employee_id: DT-E10281
+    volumes:
+      - ./harness/DT-E10281/dsh-home:/dsh-home
+      - ./harness/DT-E10281/workspace:/workspace
+
+  harness-dt-e20999:
+    <<: *harness-common
+    container_name: dwp-harness-dt-e20999
+    labels:
+      dwp.managed: "true"
+      dwp.employee_id: DT-E20999
+    volumes:
+      - ./harness/DT-E20999/dsh-home:/dsh-home
+      - ./harness/DT-E20999/workspace:/workspace
+
   backend:
-    image: dwp-backend:0.1.0-offline
+    image: dwp-backend:0.2.0-offline
     pull_policy: never
     restart: unless-stopped
     user: "${DWP_UID:-1000}:${DWP_GID:-1000}"
+    group_add:
+      - "${DWP_DOCKER_GID:-0}"
+    env_file:
+      - ./config.env
     environment:
       DATABASE_URL: sqlite:////data/dwp.db
-      DEEPSEEK_BASE_URL: http://api.llmxt.cisctest:8002/v1
-      DEEPSEEK_MODEL: ascend-deepseek-v4-flash
-      DWP_KB_MODE: mock
-      DWP_HARNESS_ENABLED: "0"
+      DWP_HARNESS_ENABLED: "1"
+      DWP_AGENT_EXECUTION_MODE: harness
+      DWP_PLATFORM_TOOL_BASE_URL: http://backend:8000
+      DWP_HARNESS_IMAGE: dwp-dsh:rc6
       DWP_TEAM_BACKEND: builtin
       DWP_REQUIRE_AUTH: "1"
+      DWP_ARTIFACT_ROOT: /data/artifacts
+      DWP_MCP_RUNTIME_MODE: mock
+      DWP_MEMORY_MODE: ${DWP_MEMORY_MODE:-mock}
     secrets:
       - llm_api_key
+      - harness_signing_secret
+      - employee_initial_password
+      - admin_initial_password
     volumes:
       - ./data:/data
       - ./backups:/backups
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      harness-ai-general:
+        condition: service_started
+      harness-ai-investment:
+        condition: service_started
+      harness-dt-e10281:
+        condition: service_started
+      harness-dt-e20999:
+        condition: service_started
     networks:
       - dwp
     security_opt:
       - no-new-privileges:true
 
   frontend:
-    image: dwp-frontend:0.1.0-offline
+    image: dwp-frontend:0.2.0-offline
     pull_policy: never
     restart: unless-stopped
     depends_on:
@@ -41,6 +121,12 @@ services:
 secrets:
   llm_api_key:
     file: ./secrets/llm_api_key
+  harness_signing_secret:
+    file: ./secrets/harness_signing_secret
+  employee_initial_password:
+    file: ./secrets/employee_initial_password
+  admin_initial_password:
+    file: ./secrets/admin_initial_password
 
 networks:
   dwp:

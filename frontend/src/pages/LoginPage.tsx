@@ -33,9 +33,9 @@ export default function LoginPage() {
           </div>
         </div>
         {error && <Alert className="mb-4" type="error" showIcon message={error} />}
-        <Form layout="vertical" onFinish={submit} initialValues={{ username: 'E10281', password: 'Demo@123456' }}>
+        <Form layout="vertical" onFinish={submit}>
           <Form.Item label="账号" name="username" rules={[{ required: true, message: '请输入账号' }]}>
-            <Input size="large" prefix={<UserOutlined />} autoComplete="username" placeholder="员工工号" />
+            <Input size="large" prefix={<UserOutlined />} autoComplete="username" placeholder="员工工号或管理员账号" />
           </Form.Item>
           <Form.Item label="密码" name="password" rules={[{ required: true, message: '请输入密码' }]}>
             <Input.Password size="large" prefix={<LockOutlined />} autoComplete="current-password" />
@@ -51,4 +51,3 @@ export default function LoginPage() {
     </main>
   );
 }
-

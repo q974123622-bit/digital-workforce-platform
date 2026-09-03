@@ -29,7 +29,7 @@ if (-not (Test-Path $venvPy)) {
     Pop-Location
     & $venvPy -m pip install -r (Join-Path $backend "requirements.txt")
 } else {
-    & $venvPy -c "import fastapi, uvicorn, dotenv" 2>$null
+    & $venvPy -c "import fastapi, uvicorn, dotenv, multipart, yaml" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[1/6] 安装后端依赖 ..."
         & $venvPy -m pip install -r (Join-Path $backend "requirements.txt")

@@ -18,7 +18,7 @@ def _search(client, employee="DT-E10281", trace_id="T-L3"):
     )
 
 
-def test_l3_read_requires_whitelist_then_allows(client, db_session):
+def test_l3_plugin_whitelist_does_not_bypass_knowledge_grant(client, db_session):
     denied = _search(client)
     assert denied.status_code == 403
     assert denied.json()["error"]["detail"]["policy_id"] == "P-DATA-003"
@@ -34,7 +34,8 @@ def test_l3_read_requires_whitelist_then_allows(client, db_session):
         employee_id="DT-E10281", plugin_id="knowledge-l3", action="read"
     ).one()
     assert grant.grant_source == "whitelist"
-    assert _search(client, trace_id=f"ARQ-{request_id}").status_code == 200
+    # 张三没有任何具体知识库授权；插件白名单不能绕过逐库授权。
+    assert _search(client, trace_id=f"ARQ-{request_id}").status_code == 403
 
 
 def test_intern_cannot_apply_and_virtual_cannot_approve(client):

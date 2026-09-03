@@ -33,12 +33,12 @@ def _tool_script(kb_id, query, final_answer):
 
 
 def test_chat_orchestrator_tool_allow_path(db_session):
-    """场景 A：正式分身问内部制度 → 工具经 Gateway Allow → 正常回答。"""
+    """场景 A：AI员工平台问内部制度 → 工具经 Gateway Allow → 正常回答。"""
     fake = FakeLLM(_tool_script("KB-INTERNAL", "内部制度", "根据内部制度库，入职流程如下…"))
     orchestrator = ChatOrchestrator(fake)
     result = orchestrator.handle_message(
         db_session,
-        employee_no="DT-E10281",
+        employee_no="AI-GENERAL",
         message="查询一下内部制度。",
         session_id=None,
     )

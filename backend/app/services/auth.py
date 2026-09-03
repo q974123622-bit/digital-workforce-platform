@@ -113,8 +113,11 @@ def optional_account(
 
 
 def enforce_actor(account: models.Account | None, actor_no: str) -> None:
-    if account is not None and account.human_employee_no != actor_no:
-        raise HTTPException(status_code=403, detail="不能以其他员工身份执行操作")
+    if account is not None:
+        if "user" not in (account.roles or []):
+            raise HTTPException(status_code=403, detail="管理员账号不能进入员工工作台")
+        if account.human_employee_no != actor_no:
+            raise HTTPException(status_code=403, detail="不能以其他员工身份执行操作")
 
 
 def require_roles(*roles: str):

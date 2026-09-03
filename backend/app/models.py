@@ -46,6 +46,84 @@ class Plugin(Base):
     status: Mapped[str] = mapped_column(String, default="active")
     description: Mapped[str] = mapped_column(String, default="")
     runtime_meta: Mapped[dict] = mapped_column(JSON, default=dict)  # mcpServer/tool 等运行时元数据
+    # 统一插件模型。type 暂时保留用于兼容旧接口，新增代码只使用 plugin_type。
+    plugin_type: Mapped[str] = mapped_column(String, default="mcp")  # skill | mcp
+    scope: Mapped[str] = mapped_column(String, default="shared")  # personal | shared
+    owner_human_no: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    mcp_category: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_version: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class PluginVersion(Base):
+    __tablename__ = "plugin_version"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plugin_id: Mapped[str] = mapped_column(String, index=True)
+    version: Mapped[str] = mapped_column(String)
+    deployment_mode: Mapped[str] = mapped_column(String, default="instruction")
+    artifact_path: Mapped[str] = mapped_column(String, default="")
+    sha256: Mapped[str] = mapped_column(String, default="")
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    data_level: Mapped[str] = mapped_column(String, default="L1")
+    review_status: Mapped[str] = mapped_column(String, default="pending")
+    publish_status: Mapped[str] = mapped_column(String, default="draft")
+    submitted_by: Mapped[str] = mapped_column(String)
+    reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    review_note: Mapped[str] = mapped_column(String, default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class PluginReview(Base):
+    __tablename__ = "plugin_review"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plugin_version_id: Mapped[int] = mapped_column(index=True)
+    decision: Mapped[str] = mapped_column(String)
+    reviewer: Mapped[str] = mapped_column(String)
+    note: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AgentPluginBinding(Base):
+    __tablename__ = "agent_plugin_binding"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plugin_id: Mapped[str] = mapped_column(String, index=True)
+    target_agent_id: Mapped[str] = mapped_column(String, index=True)
+    pinned_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    authorized_by: Mapped[str] = mapped_column(String, default="")
+    employee_enabled: Mapped[bool] = mapped_column(default=True)
+    admin_enabled: Mapped[bool] = mapped_column(default=True)
+    decision_mode: Mapped[str] = mapped_column(String, default="allow")
+    priority: Mapped[int] = mapped_column(default=100)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class PluginBuildJob(Base):
+    __tablename__ = "plugin_build_job"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    plugin_version_id: Mapped[int] = mapped_column(index=True)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    runtime: Mapped[str] = mapped_column(String, default="")
+    attempts: Mapped[int] = mapped_column(default=0)
+    error_summary: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class McpRuntimeInstance(Base):
+    __tablename__ = "mcp_runtime_instance"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plugin_version_id: Mapped[int] = mapped_column(index=True)
+    container_name: Mapped[str] = mapped_column(String, default="")
+    state: Mapped[str] = mapped_column(String, default="mock")
+    health: Mapped[str] = mapped_column(String, default="unknown")
+    last_error: Mapped[str] = mapped_column(String, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class EmployeePluginGrant(Base):
@@ -232,6 +310,47 @@ class ConversationMessage(Base):
     content: Mapped[str] = mapped_column(String, default="")
     tool_cards: Mapped[list] = mapped_column(JSON, default=list)
     seq: Mapped[int] = mapped_column(default=0)
+
+
+class ConversationMemoryState(Base):
+    __tablename__ = "conversation_memory_state"
+
+    conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    compacted_through_seq: Mapped[int] = mapped_column(default=0)
+    rolling_summary: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="idle")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class MemoryRecord(Base):
+    __tablename__ = "memory_record"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String, default="default", index=True)
+    requester_human_no: Mapped[str] = mapped_column(String, index=True)
+    agent_id: Mapped[str] = mapped_column(String, index=True)
+    memory_type: Mapped[str] = mapped_column(String, default="summary")
+    content: Mapped[str] = mapped_column(String, default="")
+    source: Mapped[str] = mapped_column(String, default="automatic")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    retained: Mapped[bool] = mapped_column(default=False)
+    external_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    sync_status: Mapped[str] = mapped_column(String, default="local")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class MemorySyncJob(Base):
+    __tablename__ = "memory_sync_job"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    memory_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    operation: Mapped[str] = mapped_column(String, default="upsert")
+    status: Mapped[str] = mapped_column(String, default="pending")
+    attempts: Mapped[int] = mapped_column(default=0)
+    error_summary: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class AgentExecution(Base):

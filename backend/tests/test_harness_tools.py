@@ -43,7 +43,7 @@ def test_mcp_catalog_hides_delegate_from_role_employee(client, monkeypatch):
     )
     assert response.status_code == 200
     names = [tool["name"] for tool in response.json()["result"]["tools"]]
-    assert names == ["search_knowledge"]
+    assert names == ["search_knowledge", "save_memory"]
 
 
 def test_mcp_catalog_allows_one_delegate_for_twin(client, monkeypatch):
@@ -58,7 +58,8 @@ def test_mcp_catalog_allows_one_delegate_for_twin(client, monkeypatch):
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
     )
     names = [tool["name"] for tool in response.json()["result"]["tools"]]
-    assert names == ["search_knowledge", "ask_digital_employee"]
+    # 张三分身没有直接知识库；可进行一次受控委派，并可保存显式长期记忆。
+    assert names == ["ask_digital_employee", "save_memory"]
 
 
 def test_role_employee_cannot_delegate(client, monkeypatch):

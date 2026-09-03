@@ -18,4 +18,3 @@ print(sys.argv[1])
 PY
 chmod 600 "backups/dwp_${stamp}.db"
 echo "备份完成: backups/dwp_${stamp}.db"
-

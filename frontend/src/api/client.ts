@@ -22,7 +22,8 @@ import type {
   AgentExecution,
   AgentExecutionDetail,
   ConversationRunReply,
-  DirectoryUser,
+    DirectoryUser,
+    EffectiveCapabilities,
   LoginReply,
 } from '@dwp/shared-schema';
 
@@ -37,8 +38,9 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   const timer = setTimeout(() => controller.abort(), 30000);
   let res: Response;
   try {
+    const multipart = fetchInit.body instanceof FormData;
     res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json', ...(fetchInit.headers ?? {}) },
+      headers: { ...(multipart ? {} : { 'Content-Type': 'application/json' }), ...(fetchInit.headers ?? {}) },
       credentials: 'include',
       ...fetchInit,
       signal: controller.signal,
@@ -78,7 +80,25 @@ export const api = {
     request<LoginReply>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   me: () => request<Account>('/auth/me'),
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<void>('/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),
+  getMyPlugins: () => request<{ effective: UnifiedPlugin[]; available: UnifiedPlugin[] }>('/my/plugins'),
+  getMyPluginSubmissions: () => request<PluginSubmission[]>('/my/plugins/submissions'),
+  submitPlugin: (form: FormData) => request<PluginSubmission>('/my/plugins/submissions', { method: 'POST', body: form }),
+  enableMyPlugin: (pluginId: string, enabled: boolean) => request<{ ok: boolean }>(`/my/plugins/${encodeURIComponent(pluginId)}/${enabled ? 'enable' : 'disable'}`, { method: 'POST', body: '{}' }),
+  listMyMemories: (agentId: string) => request<MemoryItem[]>(`/my/agents/${encodeURIComponent(agentId)}/memories`),
+  deleteMyMemory: (agentId: string, memoryId: string) => request<void>(`/my/agents/${encodeURIComponent(agentId)}/memories/${encodeURIComponent(memoryId)}`, { method: 'DELETE' }),
+  retainMyMemory: (agentId: string, memoryId: string) => request<MemoryItem>(`/my/agents/${encodeURIComponent(agentId)}/memories/${encodeURIComponent(memoryId)}/retain`, { method: 'POST' }),
+  listAdminPlugins: () => request<UnifiedPlugin[]>('/admin/plugins'),
+  listPluginSubmissions: () => request<PluginSubmission[]>('/admin/plugin-submissions'),
+  reviewPlugin: (id: number, approve: boolean, note = '') => request<PluginSubmission>(`/admin/plugin-submissions/${id}/${approve ? 'approve' : 'reject'}`, { method: 'POST', body: JSON.stringify({ note }) }),
+  publishPlugin: (pluginId: string, version: string) => request<PluginSubmission>(`/admin/plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/publish`, { method: 'POST' }),
+  listAgentPluginBindings: () => request<PluginBinding[]>('/admin/agent-plugin-bindings'),
+  createAgentPluginBinding: (pluginId: string, targetAgentId: string) => request<PluginBinding>('/admin/agent-plugin-bindings', { method: 'POST', body: JSON.stringify({ plugin_id: pluginId, target_agent_id: targetAgentId }) }),
+  memoryHealth: () => request<{ mode: string; status: string; memories: number; pending_jobs: number; failed_jobs: number }>('/admin/memory/health'),
   listAgents: () => request<AgentProfile[]>('/agents'),
+  getEffectiveCapabilities: (employeeId: string) =>
+    request<EffectiveCapabilities>(`/agents/${encodeURIComponent(employeeId)}/effective-capabilities`),
   startAgentRuntime: (employeeId: string) =>
     request(`/agents/${encodeURIComponent(employeeId)}/runtime/start`, { method: 'POST' }),
   stopAgentRuntime: (employeeId: string) =>
@@ -182,3 +202,8 @@ export const api = {
     ),
   listWorkflows: () => request<Workflow[]>('/workflows'),
 };
+
+export interface UnifiedPlugin { id?: string | number; plugin_id?: string; name: string; plugin_type: 'skill' | 'mcp'; scope?: string; mcp_category?: string; current_version?: string; version?: string; status?: string; tools?: unknown[] }
+export interface PluginSubmission extends UnifiedPlugin { id: number; data_level: string; deployment_mode: string; review_status: string; publish_status: string; submitted_by: string; review_note: string; created_at: string }
+export interface MemoryItem { id: string; agent_id: string; memory_type: string; content: string; source: string; retained: boolean; expires_at?: string; sync_status: string; created_at: string }
+export interface PluginBinding { id: number; plugin_id: string; target_agent_id: string; pinned_version?: string; admin_enabled: boolean; employee_enabled: boolean; decision_mode: string; priority: number }

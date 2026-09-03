@@ -6,10 +6,22 @@ from pathlib import Path
 from sqlalchemy import select
 
 from . import models
-from .database import DATABASE_URL, Base, SessionLocal, engine
+from .database import DATABASE_URL, Base, SessionLocal, engine, ensure_schema_compatibility
 from .services.auth import hash_password
 
 SEED_PATH = Path(__file__).resolve().parents[2] / "mock-data" / "seed.json"
+
+
+def _secret_value(env_name: str, file_env_name: str, default_file: str, fallback: str) -> str:
+    value = os.getenv(env_name)
+    if value:
+        return value
+    path = Path(os.getenv(file_env_name, default_file))
+    if path.is_file():
+        candidate = path.read_text(encoding="utf-8").strip()
+        if candidate:
+            return candidate
+    return fallback
 
 
 def load_seed() -> dict:
@@ -19,6 +31,14 @@ def load_seed() -> dict:
 def seed_data(db, data: dict) -> None:
     # 幂等：先清空旧数据再灌种子（演示环境专用，SQLite 无外键约束）
     for model in (
+        models.MemorySyncJob,
+        models.MemoryRecord,
+        models.ConversationMemoryState,
+        models.McpRuntimeInstance,
+        models.PluginBuildJob,
+        models.AgentPluginBinding,
+        models.PluginReview,
+        models.PluginVersion,
         models.AgentExecutionEvent,
         models.AgentExecution,
         models.DelegationRun,
@@ -151,45 +171,141 @@ def ensure_mvp_seed(db) -> None:
             ))
 
     grant_specs = {
-        "AI-GENERAL": ["KB-PUBLIC", "KB-INTERNAL", "KB-IT-SERVICE", "KB-REG-INTERNAL", "KB-REG-EXTERNAL"],
-        "AI-INVESTMENT": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
-        # 分身保留当前正式/实习身份可见范围；专业问题仍由分身规划器优先委派。
-        "DT-E10281": [
-            "KB-PUBLIC", "KB-ONBOARD", "KB-INTERNAL", "KB-IT-SERVICE",
-            "KB-SECURITIES", "KB-REG-INTERNAL", "KB-REG-EXTERNAL", "KB-INVESTMENT-BANKING",
-            "KB-CUSTOMER-SENSITIVE",
+        "AI-GENERAL": [
+            "KB-PUBLIC", "KB-ONBOARD", "KB-INTERNAL", "KB-FINTECH",
+            "KB-IT-SERVICE", "KB-REG-INTERNAL", "KB-REG-EXTERNAL",
         ],
+        "AI-INVESTMENT": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
+        # 张三的分身不直接持有知识库；遇到知识问题必须委派给岗位数字员工。
+        "DT-E10281": [],
         "DT-E20999": ["KB-PUBLIC", "KB-ONBOARD", "KB-REG-EXTERNAL"],
         # Historical inactive demo identities remain callable by compatibility tests,
         # but are not shown in the active directory or provisioned as MVP containers.
         "VE-0001": ["KB-PUBLIC", "KB-ONBOARD"],
     }
     for employee_id, kb_ids in grant_specs.items():
+        db.query(models.AgentKnowledgeGrant).filter(
+            models.AgentKnowledgeGrant.employee_id == employee_id,
+            models.AgentKnowledgeGrant.knowledge_base_id.not_in(kb_ids) if kb_ids else True,
+        ).delete(synchronize_session=False)
         for kb_id in kb_ids:
             if db.scalar(select(models.AgentKnowledgeGrant).where(
                 models.AgentKnowledgeGrant.employee_id == employee_id,
                 models.AgentKnowledgeGrant.knowledge_base_id == kb_id,
             )) is None:
                 db.add(models.AgentKnowledgeGrant(employee_id=employee_id, knowledge_base_id=kb_id))
-        level = "knowledge-l1" if employee_id == "DT-E20999" else "knowledge-l2"
-        if db.scalar(select(models.EmployeePluginGrant).where(
+        # 插件级知识许可也按具体库的数据等级重新生成，避免旧授权残留造成 UI 误导。
+        db.query(models.EmployeePluginGrant).filter(
             models.EmployeePluginGrant.employee_id == employee_id,
-            models.EmployeePluginGrant.plugin_id == level,
-            models.EmployeePluginGrant.action == "read",
-        )) is None:
+            models.EmployeePluginGrant.plugin_id.in_(["knowledge-l1", "knowledge-l2", "knowledge-l3"]),
+        ).delete(synchronize_session=False)
+        levels = {
+            db.get(models.KnowledgeBase, kb_id).data_level
+            for kb_id in kb_ids
+            if db.get(models.KnowledgeBase, kb_id) is not None
+        }
+        for data_level in sorted(levels):
             db.add(models.EmployeePluginGrant(
-                employee_id=employee_id, plugin_id=level, action="read",
+                employee_id=employee_id, plugin_id=f"knowledge-{data_level.lower()}", action="read",
                 decision_mode="allow", grant_source="seed",
             ))
 
-    demo_password = os.getenv("DWP_DEMO_PASSWORD", "Demo@123456")
-    for human in db.query(models.HumanEmployee).all():
-        if db.scalar(select(models.Account).where(models.Account.username == human.employee_no)) is None:
-            roles = ["user"] + (["agent_admin", "security_admin", "platform_admin"] if human.employee_no == "E10281" else [])
-            db.add(models.Account(
-                username=human.employee_no, password_hash=hash_password(demo_password),
-                human_employee_no=human.employee_no, roles=roles, must_change_password=True,
+    # 历史 Skill/知识能力统一迁移为已发布 Plugin 1.0.0；保留原 ID 和审计关联。
+    for plugin in db.query(models.Plugin).all():
+        if plugin.plugin_type not in {"skill", "mcp"}:
+            plugin.plugin_type = "mcp"
+        if plugin.type == "knowledge":
+            plugin.plugin_type = "mcp"
+            plugin.mcp_category = "knowledge"
+        elif plugin.type in {"workflow", "rpa"}:
+            # Insecure no-auth mode exists solely for the legacy automated demo suite.
+            # Real deployments require auth and keep these historical capabilities disabled.
+            plugin.status = "active" if os.getenv("DWP_REQUIRE_AUTH", "1") == "0" else "disabled"
+        elif plugin.type in {"http", "mcp"}:
+            plugin.plugin_type = "mcp"
+            plugin.mcp_category = plugin.mcp_category or ("cloud_information" if plugin.type == "http" else "internal_system")
+        plugin.scope = plugin.scope or "shared"
+        if plugin.current_version is None:
+            plugin.current_version = "1.0.0"
+        if db.scalar(select(models.PluginVersion).where(
+            models.PluginVersion.plugin_id == plugin.id,
+            models.PluginVersion.version == plugin.current_version,
+        )) is None:
+            db.add(models.PluginVersion(
+                plugin_id=plugin.id, version=plugin.current_version,
+                deployment_mode="external", artifact_path="", sha256="seed",
+                manifest={"tools": [{"name": "search_knowledge"}]} if plugin.mcp_category == "knowledge" else {"tools": []},
+                data_level=plugin.data_level, review_status="approved", publish_status="published",
+                submitted_by="migration", reviewed_by="migration", reviewed_at=__import__("datetime").datetime.now(),
+                published_at=__import__("datetime").datetime.now(),
             ))
+    for skill in db.query(models.Skill).all():
+        plugin_id = f"SKILL-{skill.id}"
+        if db.get(models.Plugin, plugin_id) is None:
+            db.add(models.Plugin(
+                id=plugin_id, name=skill.name, type="mcp", plugin_type="skill", scope="personal",
+                owner_human_no=skill.owner_human_no, current_version="1.0.0", status="active",
+                endpoint_ref="mock://", data_level="L1", description=skill.description,
+            ))
+            db.add(models.PluginVersion(
+                plugin_id=plugin_id, version="1.0.0", deployment_mode="instruction",
+                artifact_path="", sha256="migration", manifest={"instruction_summary": skill.content[:500]},
+                data_level="L1", review_status="approved", publish_status="published",
+                submitted_by=skill.owner_human_no, reviewed_by="migration",
+                reviewed_at=__import__("datetime").datetime.now(), published_at=__import__("datetime").datetime.now(),
+            ))
+            twin_id = f"DT-{skill.owner_human_no}"
+            if db.get(models.DigitalEmployee, twin_id):
+                db.add(models.AgentPluginBinding(
+                    plugin_id=plugin_id, target_agent_id=twin_id, authorized_by="migration",
+                    employee_enabled=skill.status == "active", admin_enabled=True,
+                ))
+    db.flush()
+    for grant in db.query(models.EmployeePluginGrant).all():
+        plugin = db.get(models.Plugin, grant.plugin_id)
+        if plugin and plugin.plugin_type == "mcp" and db.scalar(select(models.AgentPluginBinding).where(
+            models.AgentPluginBinding.plugin_id == plugin.id,
+            models.AgentPluginBinding.target_agent_id == grant.employee_id,
+        )) is None:
+            db.add(models.AgentPluginBinding(
+                plugin_id=plugin.id, target_agent_id=grant.employee_id, authorized_by="migration",
+                employee_enabled=True, admin_enabled=grant.decision_mode == "allow",
+                decision_mode=grant.decision_mode,
+            ))
+
+    fallback_password = os.getenv("DWP_DEMO_PASSWORD", "Demo@123456")
+    employee_password = _secret_value(
+        "DWP_EMPLOYEE_INITIAL_PASSWORD", "DWP_EMPLOYEE_INITIAL_PASSWORD_FILE",
+        "/run/secrets/employee_initial_password", fallback_password,
+    )
+    admin_password = _secret_value(
+        "DWP_ADMIN_INITIAL_PASSWORD", "DWP_ADMIN_INITIAL_PASSWORD_FILE",
+        "/run/secrets/admin_initial_password", fallback_password,
+    )
+    admin_human = db.get(models.HumanEmployee, "SYS-ADMIN")
+    if admin_human is None:
+        db.add(models.HumanEmployee(
+            employee_no="SYS-ADMIN", name="平台管理员", department="平台管理",
+            employment_type="system", status="hidden",
+        ))
+        db.flush()
+    account_specs = {
+        "E10281": ("E10281", ["user"], employee_password, "active"),
+        "E20999": ("E20999", ["user"], employee_password, "active"),
+        "admin": ("SYS-ADMIN", ["agent_admin", "security_admin", "platform_admin"], admin_password, "active"),
+    }
+    for username, (human_no, roles, password, status) in account_specs.items():
+        account = db.scalar(select(models.Account).where(models.Account.username == username))
+        if account is None:
+            account = models.Account(username=username, password_hash=hash_password(password),
+                                     human_employee_no=human_no, must_change_password=True)
+            db.add(account)
+        account.human_employee_no = human_no; account.roles = roles; account.status = status
+    for account in db.query(models.Account).all():
+        if account.username not in account_specs:
+            account.status = "inactive"
+            account.roles = []
+    for human in db.query(models.HumanEmployee).filter(models.HumanEmployee.status == "active").all():
         if db.scalar(select(models.DirectoryBinding).where(
             models.DirectoryBinding.provider == "mock",
             models.DirectoryBinding.external_user_id == human.employee_no,
@@ -202,9 +318,13 @@ def ensure_mvp_seed(db) -> None:
 
 
 def seed_if_empty() -> None:
+    # seed/runtime-manager may run before FastAPI lifespan; always upgrade additive
+    # SQLite columns before ORM queries so -NoReset can safely reuse an old database.
+    Base.metadata.create_all(bind=engine)
+    ensure_schema_compatibility()
     db = SessionLocal()
     try:
-        if db.query(models.DigitalEmployee).count() == 0 or db.query(models.Skill).count() == 0:
+        if db.query(models.DigitalEmployee).count() == 0:
             seed_data(db, load_seed())
         else:
             ensure_mvp_seed(db)

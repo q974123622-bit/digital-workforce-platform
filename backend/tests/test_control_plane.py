@@ -42,12 +42,12 @@ def test_identity_virtual_employee(client):
 # ---- Policy Engine：四维评估 ----
 
 
-def test_policy_001_formal_twin_allow_internal_kb(client):
-    resp = _evaluate(client, "DT-E10281", "knowledge", "knowledge-l2", "L2", "read")
+def test_policy_001_role_employee_allow_internal_kb(client):
+    resp = _evaluate(client, "AI-GENERAL", "knowledge", "knowledge-l2", "L2", "read")
     assert resp.status_code == 200
     body = resp.json()
     assert body["decision"] == "allow"
-    assert body["policy_id"] == "POLICY-001"
+    assert body["policy_id"] is None
 
 
 def test_policy_002_intern_twin_deny_internal_kb(client):
@@ -105,7 +105,7 @@ def test_gateway_allow_chain(client):
     resp = client.post(
         "/internal/gateway/invoke",
         json={
-            "employee_id": "DT-E10281",
+            "employee_id": "AI-GENERAL",
             "plugin_id": "knowledge-l2",
             "action": "read",
             "params": {"query": "入职流程"},
@@ -116,18 +116,19 @@ def test_gateway_allow_chain(client):
     body = resp.json()
     assert body["ok"] is True
     assert body["decision"] == "allow"
-    assert body["policy_id"] == "POLICY-001"
+    assert body["policy_id"] is None
     assert body["data"]["source"] == "demo"
     assert len(body["audit_ids"]) == 1
 
     # 审计字段齐全：trace_id / employee_id / plugin_id / action / decision / reason / ts / result_summary
     audit = client.get(f"/api/v1/audit/{body['audit_ids'][0]}").json()
     assert audit["trace_id"] == "T-GW-ALLOW-001"
-    assert audit["employee_id"] == "DT-E10281"
+    assert audit["employee_id"] == "AI-GENERAL"
     assert audit["plugin_id"] == "knowledge-l2"
     assert audit["action"] == "read"
     assert audit["decision"] == "allow"
-    assert audit["reason"] == "正式员工数字分身可访问内部知识库"
+    # 具体插件授权的 allow 不暴露内部策略说明到审计展示字段。
+    assert audit["reason"] is None
     assert audit["ts"]
     assert audit["result_summary"]
 

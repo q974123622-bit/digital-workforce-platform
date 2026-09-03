@@ -9,7 +9,7 @@ const { Sider, Header, Content } = Layout;
 const items: MenuProps['items'] = [
   { key: '/', icon: <ApartmentOutlined />, label: <Link to="/">运行概览</Link> },
   { key: '/agents', icon: <RobotOutlined />, label: <Link to="/agents">数字员工</Link> },
-  { key: '/plugins', icon: <DatabaseOutlined />, label: <Link to="/plugins">知识与能力</Link> },
+  { key: '/plugins', icon: <DatabaseOutlined />, label: <Link to="/plugins">插件治理</Link> },
   { key: '/security', icon: <AuditOutlined />, label: <Link to="/security">权限与审计</Link> },
 ];
 
@@ -30,7 +30,6 @@ export default function AdminLayout() {
         <Header className="!flex !h-14 !items-center !border-b !border-[#e5e6eb] !bg-white !px-5">
           <Typography.Text strong>平台管理</Typography.Text>
           <div className="flex-1" />
-          <a href="/" className="mr-4 text-sm text-[#4e5969]">返回工作台</a>
           <Avatar size={26}>{account?.name.slice(0, 1)}</Avatar>
           <Typography.Text className="ml-2">{account?.name}</Typography.Text>
           <Button type="text" icon={<LogoutOutlined />} onClick={logout} aria-label="退出登录" />

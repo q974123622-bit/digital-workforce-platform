@@ -60,20 +60,20 @@ def test_registry_kb_not_found(client):
 # ---- 安全资源边界：正式 / 实习 / 虚拟员工 ----
 
 
-def test_formal_twin_read_internal_kb_allow(client):
-    resp = _search(client, "DT-E10281", "KB-INTERNAL", "入职流程", "T-S3-FORMAL-001")
+def test_general_employee_read_internal_kb_allow(client):
+    resp = _search(client, "AI-GENERAL", "KB-INTERNAL", "入职流程", "T-S3-FORMAL-001")
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
     assert body["decision"] == "allow"
-    assert body["policy_id"] == "POLICY-001"
+    assert body["policy_id"] is None
     assert body["data"]["source"] == "demo"
     assert body["data"]["knowledge_base_id"] == "KB-INTERNAL"
     assert len(body["data"]["hits"]) >= 1
 
     audit = client.get(f"/api/v1/audit/{body['audit_ids'][0]}").json()
     assert audit["knowledge_base_id"] == "KB-INTERNAL"
-    assert audit["employee_id"] == "DT-E10281"
+    assert audit["employee_id"] == "AI-GENERAL"
     assert audit["decision"] == "allow"
     assert audit["trace_id"] == "T-S3-FORMAL-001"
 
@@ -145,9 +145,9 @@ def test_search_missing_kb(client):
 
 
 def test_it_service_kb_is_internal(client):
-    formal = _search(client, "DT-E10281", "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-001")
+    formal = _search(client, "AI-GENERAL", "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-001")
     assert formal.status_code == 200
-    assert formal.json()["policy_id"] == "POLICY-001"
+    assert formal.json()["policy_id"] is None
 
     intern = _search(client, "DT-E20999", "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-002")
     assert intern.status_code == 403
@@ -155,11 +155,11 @@ def test_it_service_kb_is_internal(client):
 
 
 def test_new_securities_kb_l2_formal_allow(client):
-    resp = _search(client, "DT-E10281", "KB-SECURITIES", "融资融券流程", "T-P17-SEC-001")
+    resp = _search(client, "AI-INVESTMENT", "KB-SECURITIES", "融资融券流程", "T-P17-SEC-001")
     assert resp.status_code == 200
     body = resp.json()
     assert body["decision"] == "allow"
-    assert body["policy_id"] == "POLICY-001"
+    assert body["policy_id"] is None
     assert len(body["data"]["hits"]) >= 1
 
 
@@ -170,7 +170,7 @@ def test_new_securities_kb_l2_intern_deny(client):
 
 
 def test_new_internal_reg_kb_l2_formal_allow(client):
-    resp = _search(client, "DT-E10281", "KB-REG-INTERNAL", "反洗钱", "T-P17-REG-001")
+    resp = _search(client, "AI-GENERAL", "KB-REG-INTERNAL", "反洗钱", "T-P17-REG-001")
     assert resp.status_code == 200
     assert resp.json()["decision"] == "allow"
     assert len(resp.json()["data"]["hits"]) >= 1
@@ -186,10 +186,10 @@ def test_new_external_reg_kb_l1_any_employee_allow(client):
 def test_multiformat_directory_search_returns_nonempty_hits(client):
     # 目录内 .xlsx 与 .docx 均可被解析并返回片段
     cases = [
-        ("DT-E10281", "KB-IT-SERVICE", "企业邮箱"),
-        ("DT-E10281", "KB-SECURITIES", "股票期权"),
-        ("DT-E10281", "KB-REG-INTERNAL", "适当性"),
-        ("DT-E10281", "KB-REG-EXTERNAL", "尽职调查"),
+        ("AI-GENERAL", "KB-IT-SERVICE", "企业邮箱"),
+        ("AI-INVESTMENT", "KB-SECURITIES", "股票期权"),
+        ("AI-GENERAL", "KB-REG-INTERNAL", "适当性"),
+        ("AI-GENERAL", "KB-REG-EXTERNAL", "尽职调查"),
     ]
     for i, (emp, kb_id, query) in enumerate(cases):
         resp = _search(client, emp, kb_id, query, f"T-P17-MF-{i}")

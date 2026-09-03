@@ -5,6 +5,8 @@ import { CurrentUserProvider } from './context/CurrentUserContext';
 import { useAuth } from './context/AuthContext';
 import WorkplacePage from './pages/workplace/WorkplacePage';
 import ChatPage from './pages/ChatPage';
+import PluginCenter from './pages/PluginCenter';
+import MemoryPage from './pages/MemoryPage';
 
 function AuthenticatedPortal() {
   const { account } = useAuth();
@@ -16,6 +18,8 @@ function AuthenticatedPortal() {
           <Route path="/" element={<Navigate to="/workplace" replace />} />
           <Route path="/workplace" element={<WorkplacePage />} />
           <Route path="/chat/:employeeNo" element={<ChatPage />} />
+          <Route path="/plugins" element={<PluginCenter />} />
+          <Route path="/memories" element={<MemoryPage />} />
           <Route path="*" element={<Navigate to="/workplace" replace />} />
         </Route>
       </Routes>

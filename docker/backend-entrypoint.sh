@@ -14,5 +14,17 @@ if [ -z "$DEEPSEEK_API_KEY" ]; then
 fi
 export DEEPSEEK_API_KEY
 
-exec "$@"
+signing_secret_file="/run/secrets/harness_signing_secret"
+if [ ! -r "$signing_secret_file" ]; then
+  echo "ERROR: missing readable Harness signing secret: $signing_secret_file" >&2
+  exit 1
+fi
 
+DWP_HARNESS_TOOL_SIGNING_SECRET="$(tr -d '\r\n' < "$signing_secret_file")"
+if [ -z "$DWP_HARNESS_TOOL_SIGNING_SECRET" ]; then
+  echo "ERROR: Harness signing secret is empty" >&2
+  exit 1
+fi
+export DWP_HARNESS_TOOL_SIGNING_SECRET
+
+exec "$@"

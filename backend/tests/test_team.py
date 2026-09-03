@@ -147,14 +147,13 @@ def test_harness_result_included_in_subtask(client, db_session):
     assert "已核对入职材料清单" in run.subtasks[1].runtime_summary
 
 
-def test_harness_fallback_to_gateway(client, db_session):
+def test_harness_failure_marks_subtasks_failed_without_gateway_fallback(client, db_session):
     orch = _orchestrator(runtime=FakeRuntime(ok=False))
     run = _create(db_session, orch)
-    assert run.subtasks[0].status == "completed"
-    assert run.subtasks[0].runtime_mode == "demo_adapter"
-    assert run.subtasks[1].runtime_mode == "demo_adapter"
-    assert "流程：员工查询 MCP" in run.subtasks[0].result
-    assert "王老师" in run.subtasks[0].result
+    assert run.status == "failed"
+    assert run.subtasks[0].status == "failed"
+    assert run.subtasks[0].runtime_mode == "failed"
+    assert run.subtasks[0].result == "子任务执行异常：RuntimeError"
 
 
 def test_docker_harness_requires_key():
