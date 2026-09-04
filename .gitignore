@@ -18,6 +18,7 @@ venv/
 *.db
 *.sqlite3
 *.log
+.agentteams-runtime/
 
 # 附件存储（本地上传文件，不入库）
 backend/storage/

@@ -1,0 +1,27 @@
+server_name: matrix.local
+pid_file: /data/homeserver.pid
+public_baseurl: http://127.0.0.1:8008/
+report_stats: false
+
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    x_forwarded: false
+    resources:
+      - names: [client, federation]
+        compress: false
+
+database:
+  name: sqlite3
+  args:
+    database: /data/homeserver.db
+
+log_config: /data/matrix.log.config
+media_store_path: /data/media_store
+signing_key_path: /data/matrix.local.signing.key
+trusted_key_servers: []
+enable_registration: false
+enable_registration_without_verification: false
+federation_domain_whitelist: []
+registration_shared_secret_path: /run/agentteams/registration-secret

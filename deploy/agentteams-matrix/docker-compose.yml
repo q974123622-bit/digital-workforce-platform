@@ -1,0 +1,19 @@
+# COMPOSE_PROJECT_NAME=dwp-agentteams (the launch scripts also pass -p explicitly).
+name: dwp-agentteams
+
+services:
+  synapse:
+    image: matrixdotorg/synapse:v1.117.0
+    restart: unless-stopped
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+    ports:
+      - "127.0.0.1:8008:8008"
+    volumes:
+      - dwp-agentteams-synapse-data:/data
+      - ./homeserver.template.yaml:/data/homeserver.yaml:ro
+      - ../../.agentteams-runtime/synapse-registration-secret:/run/agentteams/registration-secret:ro
+
+volumes:
+  dwp-agentteams-synapse-data:
+    name: dwp-agentteams-synapse-data
