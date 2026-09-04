@@ -1,6 +1,9 @@
 import pytest
+from fastapi import HTTPException
 
 from app import models
+from app.services import adapters
+from app.services.adapters import AdapterInputError, run_adapter, validate_adapter_input
 from app.services.gateway import invoke_plugin
 from app.services.runtime_adapter import RuntimeResult
 
@@ -102,6 +105,83 @@ def test_harness_summary_is_not_truncated(db_session):
     )
     assert len(long_summary) > 1000
     assert result["runtime_summary"] == long_summary
+
+
+@pytest.mark.parametrize(
+    ("employee_id", "plugin_id", "params"),
+    [
+        ("VE-0002", "agentteams-onboarding-employee", {"employee_ref": "新员工A", "path": "C:/forbidden.json"}),
+        ("VE-0003", "agentteams-it-readiness", {"employee_ref": "未知员工"}),
+        ("VE-0005", "agentteams-onboarding-evidence", {"employee_ref": True}),
+    ],
+)
+def test_invalid_agentteams_input_is_denied_before_harness_or_adapter(
+    db_session, monkeypatch, employee_id, plugin_id, params,
+):
+    harness = SuccessHarness()
+    plugin = db_session.get(models.Plugin, plugin_id)
+    before = db_session.query(models.AuditEvent).count()
+
+    def adapter_must_not_run(*_args, **_kwargs):
+        raise AssertionError("adapter must not execute for invalid input")
+
+    monkeypatch.setitem(adapters.REGISTRY, plugin.endpoint_ref, adapter_must_not_run)
+    with pytest.raises(HTTPException) as error:
+        invoke_plugin(
+            db_session,
+            employee_id=employee_id,
+            plugin_id=plugin_id,
+            action="execute",
+            params=params,
+            trace_id=f"PRECHECK-{plugin_id}",
+            runtime=harness,
+        )
+
+    assert error.value.status_code == 400
+    assert error.value.detail["message"] == "工具参数不合法"
+    assert len(harness.calls) == 0
+    assert db_session.query(models.AuditEvent).count() == before + 1
+    audit = db_session.get(models.AuditEvent, error.value.detail["audit_id"])
+    assert audit.decision == "deny"
+    assert audit.reason == "工具参数不合法"
+
+
+def test_valid_agentteams_input_runs_harness_then_adapter_once(db_session, monkeypatch):
+    order = []
+
+    class OrderedHarness(SuccessHarness):
+        def run(self, **kwargs):
+            order.append("runtime")
+            return super().run(**kwargs)
+
+    def adapter_once(plugin, params):
+        order.append("adapter")
+        return {"source": "demo", "employee_ref": params["employee_ref"], "evidence_ids": ["HR-A-001"]}
+
+    monkeypatch.setattr("app.services.capability_executor.run_adapter", adapter_once)
+    harness = OrderedHarness()
+    result = invoke_plugin(
+        db_session,
+        employee_id="VE-0002",
+        plugin_id="agentteams-onboarding-employee",
+        action="execute",
+        params={"employee_ref": "新员工A"},
+        trace_id="PRECHECK-VALID",
+        runtime=harness,
+    )
+
+    assert result["ok"] is True
+    assert order == ["runtime", "adapter"]
+    assert len(harness.calls) == 1
+
+
+def test_adapter_input_precheck_ignores_non_agentteams_plugins_and_direct_adapter_stays_defensive(db_session):
+    expense = db_session.get(models.Plugin, "expense-claim")
+    assert validate_adapter_input(expense, {"employee_name": "张三", "amount": 100}) is None
+
+    hr_tool = db_session.get(models.Plugin, "agentteams-onboarding-employee")
+    with pytest.raises(AdapterInputError):
+        run_adapter(hr_tool, {"employee_ref": "未知员工"})
 
 
 @pytest.mark.parametrize(

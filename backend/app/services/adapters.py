@@ -20,17 +20,22 @@ class AdapterInputError(ValueError):
     """A caller supplied invalid input to a governed demo adapter."""
 
 
+def _validate_onboarding_input(params: dict) -> None:
+    """Validate only the fixed, user-supplied Task 4 input surface."""
+    if not isinstance(params, dict) or set(params) != {"employee_ref"}:
+        raise AdapterInputError("invalid_params")
+    employee_ref = params.get("employee_ref")
+    if not isinstance(employee_ref, str) or employee_ref != _ONBOARDING_EMPLOYEE_REF:
+        raise AdapterInputError("invalid_employee_ref")
+
+
 def _onboarding_fixture_section(params: dict, section_name: str) -> dict:
     """Read one fixed fictional fixture section after strict request validation.
 
     The request controls neither fixture location nor section selection. Callers
     receive a newly built domain view, never the parsed fixture itself.
     """
-    if not isinstance(params, dict) or set(params) != {"employee_ref"}:
-        raise AdapterInputError("invalid_params")
-    employee_ref = params.get("employee_ref")
-    if not isinstance(employee_ref, str) or employee_ref != _ONBOARDING_EMPLOYEE_REF:
-        raise AdapterInputError("invalid_employee_ref")
+    _validate_onboarding_input(params)
 
     try:
         fixture = json.loads(_ONBOARDING_FIXTURE.read_text(encoding="utf-8"))
@@ -96,6 +101,24 @@ def _mock_agentteams_onboarding_evidence(_plugin: models.Plugin, params: dict) -
         "evidence": evidence,
         "open_gaps": open_gaps,
     }
+
+
+_INPUT_VALIDATORS: dict[str, callable] = {
+    "mock://agentteams/onboarding-employee": _validate_onboarding_input,
+    "mock://agentteams/it-readiness": _validate_onboarding_input,
+    "mock://agentteams/onboarding-evidence": _validate_onboarding_input,
+}
+
+
+def validate_adapter_input(plugin: models.Plugin, params: dict) -> None:
+    """Perform side-effect-free validation for endpoints with strict inputs.
+
+    This intentionally ignores every other legacy adapter. It does not load a
+    fixture or invoke a handler, so callers may safely run it before a Harness.
+    """
+    validator = _INPUT_VALIDATORS.get(plugin.endpoint_ref)
+    if validator is not None:
+        validator(params)
 
 
 def _mock_kb_l1(_plugin: models.Plugin, params: dict) -> dict:
@@ -278,6 +301,8 @@ WORKFLOW_META: dict[str, dict] = {
 
 
 def run_adapter(plugin: models.Plugin, params: dict) -> dict:
+    # Keep this validation for direct adapter callers that bypass capability execution.
+    validate_adapter_input(plugin, params)
     handler = REGISTRY.get(plugin.endpoint_ref)
     if handler is None:
         raise RuntimeError(f"未注册的 Mock Adapter：{plugin.endpoint_ref}")

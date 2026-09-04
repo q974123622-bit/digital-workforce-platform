@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .. import models
 from . import config
-from .adapters import run_adapter
+from .adapters import run_adapter, validate_adapter_input
 from .capability_contract import plugin_contract
 from .runtime_adapter import DockerHarnessRuntimeAdapter, HarnessExecutionContext, RuntimeAdapter
 
@@ -57,6 +57,10 @@ def execute_capability(
     contract = plugin_contract(plugin)
     if not contract.ready:
         raise RuntimeError("；".join(contract.issues or ["能力契约未就绪"]))
+
+    # Strict demo-tool inputs must be rejected before prompt construction or any
+    # Harness invocation. Legacy adapters intentionally have no pre-validator.
+    validate_adapter_input(plugin, params)
 
     harness_enabled = runtime is not None or config.get("DWP_HARNESS_ENABLED") == "1"
     runtime_summary = ""
