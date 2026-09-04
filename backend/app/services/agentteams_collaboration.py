@@ -933,8 +933,10 @@ class AgentTeamsCollaborationService:
     ) -> None:
         payload: dict[str, Any] = {
             "title": self._safe_cross_agent_text(child.title, _MAX_SUBTASK_TITLE_LENGTH),
+            "instruction": self._safe_cross_agent_text(child.instruction, _MAX_SUBTASK_INSTRUCTION_LENGTH),
             "client_task_key": self._safe_client_task_key(child.client_task_key),
             "depends_on": [self._safe_client_task_key(key) for key in dependency_keys],
+            "parent_chain_agent_ids": self._assignment_parent_chain(db, child),
         }
         if dependency_results:
             payload["dependency_results"] = dependency_results
@@ -950,6 +952,24 @@ class AgentTeamsCollaborationService:
             payload=payload,
             idempotency_key=f"{child.id}:task.assign",
         )
+
+    @staticmethod
+    def _assignment_parent_chain(db: Session, child: models.AgentTaskNode) -> list[str]:
+        """Platform-owned root-to-parent assignee chain for Worker cycle checks."""
+        chain: list[str] = []
+        current_id = child.parent_task_id
+        while current_id is not None:
+            current = db.get(models.AgentTaskNode, current_id)
+            if current is None or current.root_task_id != child.root_task_id:
+                raise CollaborationConflict("invalid_parent_task")
+            if current.assignee_agent_id in chain:
+                raise CollaborationConflict("parent_chain_cycle")
+            chain.append(current.assignee_agent_id)
+            current_id = current.parent_task_id
+        chain.reverse()
+        if not chain or child.coordinator_agent_id not in chain:
+            raise CollaborationConflict("invalid_parent_task")
+        return chain
 
     def _propagate_required_failure(
         self, db: Session, failed_node: models.AgentTaskNode, actor_agent_id: str

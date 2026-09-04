@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -1013,3 +1014,37 @@ def test_worker_name_runtime_ref_accepts_only_configured_matrix_domain(db_sessio
         )
 
     assert policy.status == "accepted"
+
+
+def test_assignment_payload_carries_instruction_and_complete_parent_chain(db_session):
+    """Workers must receive platform-owned instruction and ancestry, not infer them from a title."""
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")])
+    child = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    assignment = db_session.query(models.AgentMessage).filter_by(
+        task_id=child.id, message_type="task.assign", direction="outbound",
+    ).one()
+
+    assert assignment.payload["instruction"] == "complete policy"
+    assert assignment.payload["parent_chain_agent_ids"] == ["DT-E10281"]
+
+    from app.services.agentteams_agent_runtime import AgentRuntime, AgentRuntimeConfig
+    from app.services.agentteams_protocol import AgentProtocolMessage
+
+    runtime = AgentRuntime(
+        AgentRuntimeConfig(
+            agent_id="VE-0002", role="hr", matrix_mxid="@hr:test", matrix_token="worker-only",
+            room_id="!room:test", trusted_sender_mxids={"platform": "@platform:test", "DT-E10281": "@leader:test", "VE-0002": "@hr:test"},
+            allowed_skill_ids={"hr-onboarding-assistant"}, state_dir=Path("tmp") / "runtime-contract",
+        ),
+        gateway=None, decisions=None,
+    )
+    context = runtime._new_worker_context(
+        AgentProtocolMessage(
+            version="1.0", message_id="assignment", type="task.assign", root_task_id=run.id, task_id=child.id,
+            parent_task_id=run.id, trace_id=run.trace_id, sender="DT-E10281", receiver="VE-0002",
+            timestamp="2026-09-04T10:00:00+08:00", idempotency_key="assignment", payload=dict(assignment.payload),
+        ),
+        ["hr-onboarding-assistant"],
+    )
+    assert context["task"]["goal"] == "complete policy"

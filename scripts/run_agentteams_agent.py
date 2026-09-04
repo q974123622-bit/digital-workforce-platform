@@ -21,7 +21,7 @@ from app.services.agentteams_skills import ProjectSkillRegistry
 from app.services.llm import DeepSeekProvider
 
 
-_ROLES = {"manager": "VE-0001", "hr": "VE-0002", "it": "VE-0003", "audit": "VE-0005"}
+_ROLES = {"manager", "hr", "it", "audit"}
 _ROLE_SKILLS = {
     "manager": {"agentteams-onboarding-readiness"},
     "hr": {"hr-onboarding-assistant"}, "it": {"it-service-assistant"}, "audit": {"audit-evidence-review"},
@@ -46,11 +46,11 @@ def load_runtime_config(role: str, path: Path, *, env: dict[str, str] | None = N
         token = environment.get(token_env)
     if not all(isinstance(value, str) and value for value in (matrix_url, room_id, agent.get("agent_id"), agent.get("mxid"), token)):
         raise ValueError("invalid_runtime_config")
-    if agent["agent_id"] != _ROLES[role] or not agent["mxid"].startswith("@"):
+    if not agent["agent_id"] or not agent["mxid"].startswith("@"):
         raise ValueError("invalid_runtime_config")
     trusted = {"platform": _platform_mxid(data)}
     for candidate_role, candidate in data["agents"].items():
-        if candidate_role not in _ROLES or not isinstance(candidate, dict) or candidate.get("agent_id") != _ROLES[candidate_role] or not isinstance(candidate.get("mxid"), str):
+        if candidate_role not in _ROLES or not isinstance(candidate, dict) or not isinstance(candidate.get("agent_id"), str) or not candidate.get("agent_id") or not isinstance(candidate.get("mxid"), str) or not candidate["mxid"].startswith("@"):
             raise ValueError("invalid_runtime_config")
         trusted[candidate["agent_id"]] = candidate["mxid"]
     allowed = set(agent.get("allowed_skill_ids") or _ROLE_SKILLS[role])

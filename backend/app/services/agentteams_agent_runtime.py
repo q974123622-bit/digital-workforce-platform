@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import time
 from typing import Any, Callable, Literal, Mapping, Protocol
 
@@ -33,7 +34,7 @@ from .agentteams_protocol import AgentProtocolMessage, parse_protocol_lines, ren
 
 
 Role = Literal["manager", "hr", "it", "audit"]
-_ROLE_AGENT_IDS = {"manager": "VE-0001", "hr": "VE-0002", "it": "VE-0003", "audit": "VE-0005"}
+_ROLES = {"manager", "hr", "it", "audit"}
 _ROLE_PROFESSIONAL_SKILLS = {
     "hr": {"hr-onboarding-assistant"},
     "it": {"it-service-assistant"},
@@ -41,13 +42,16 @@ _ROLE_PROFESSIONAL_SKILLS = {
 }
 _SAFE_ERROR_CODES = {
     "skill_selection_failed", "planning_failed", "decision_failed", "summary_failed",
-    "completion_without_tool_evidence", "invalid_model_decision", "runtime_error",
+    "completion_without_tool_evidence", "invalid_model_decision", "invalid_team_catalog",
+    "invalid_parent_chain", "runtime_error",
 }
 _MAX_TRACKED = 256
 _MAX_TASK_CONTEXTS = 32
 _MAX_EVIDENCE_ITEMS = 8
 _MAX_EVIDENCE_BYTES = 4096
 _MAX_TEXT = 512
+_MAX_STATE_BYTES = 16_384
+_SENSITIVE_TEXT = re.compile(r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+|\b(?:https?|wss?|file|ftp)://\S+|\b[a-z_][a-z0-9_]*\s*=\s*\S+|traceback\s*\(|\bfile\s+['\"]?[a-z]:[/\\])", re.I)
 
 
 class MatrixProtocolTransport(Protocol):
@@ -77,9 +81,7 @@ class AgentRuntimeConfig:
     pause_seconds: float = 3.0
 
     def __post_init__(self) -> None:
-        if self.role not in _ROLE_AGENT_IDS or self.agent_id != _ROLE_AGENT_IDS[self.role]:
-            raise ValueError("invalid_runtime_identity")
-        if not self.matrix_mxid.startswith("@") or not self.matrix_token or not self.room_id:
+        if self.role not in _ROLES or not self.agent_id or not self.matrix_mxid.startswith("@") or not self.matrix_token or not self.room_id:
             raise ValueError("invalid_runtime_config")
         if self.trusted_sender_mxids.get(self.agent_id) != self.matrix_mxid:
             raise ValueError("invalid_runtime_config")
@@ -162,32 +164,43 @@ class AgentRuntime:
     def _process_event(self, event: MatrixEvent, state: dict[str, Any]) -> int | bool | None:
         if event.sender == self.config.matrix_mxid:
             return False
-        try:
-            messages = parse_protocol_lines(event.body)
-        except (json.JSONDecodeError, ValidationError, ValueError):
-            self._security(state, "parse_error")
-            return False
         count = 0
-        for message in messages:
-            if message.receiver != self.config.agent_id:
-                continue
-            expected_mxid = self.config.trusted_sender_mxids.get(message.sender)
-            if expected_mxid != event.sender:
-                self._security(state, "spoofed_sender")
-                continue
-            if message.idempotency_key in state["processed_idempotency_keys"]:
+        # A Matrix event is an untrusted chat body.  Parse each envelope on its
+        # own so one malformed line cannot suppress a later valid command.
+        for line in event.body.splitlines():
+            if not line.startswith("DWP_EVENT "):
                 continue
             try:
-                responses = self._handle_message(message, event, state)
-            except AgentDecisionError as exc:
-                responses = [self._failure(message, self._safe_code(exc.code))]
-            except Exception:
-                responses = [self._failure(message, "runtime_error")]
-            if not self._send_responses(responses):
-                return None
-            self._mark_idempotency(state, message.idempotency_key)
-            count += 1
+                messages = parse_protocol_lines(line)
+            except (json.JSONDecodeError, ValidationError, ValueError):
+                self._security(state, "parse_error")
+                continue
+            for message in messages:
+                outcome = self._process_protocol_message(message, event, state)
+                if outcome is None:
+                    return None
+                count += outcome
         return count
+
+    def _process_protocol_message(self, message: AgentProtocolMessage, event: MatrixEvent, state: dict[str, Any]) -> int | None:
+        if message.receiver != self.config.agent_id:
+            return 0
+        expected_mxid = self.config.trusted_sender_mxids.get(message.sender)
+        if expected_mxid != event.sender:
+            self._security(state, "spoofed_sender")
+            return 0
+        if message.idempotency_key in state["processed_idempotency_keys"]:
+            return 0
+        try:
+            responses = self._handle_message(message, event, state)
+        except AgentDecisionError as exc:
+            responses = [self._failure(message, self._safe_code(exc.code))]
+        except Exception:
+            responses = [self._failure(message, "runtime_error")]
+        if not self._send_responses(responses):
+            return None
+        self._mark_idempotency(state, message.idempotency_key)
+        return 1
 
     def _handle_message(
         self, message: AgentProtocolMessage, event: MatrixEvent, state: dict[str, Any]
@@ -208,7 +221,7 @@ class AgentRuntime:
 
     def _manager_submit(self, message: AgentProtocolMessage, state: dict[str, Any]) -> list[AgentProtocolMessage]:
         goal = self._goal(message)
-        catalog = self._team_catalog(message.payload)
+        catalog, catalog_version = self._fresh_team_catalog(message.payload)
         self._visible_pause()
         selection = self.decisions.select_skills(SkillSelectionContext(
             user_goal=goal,
@@ -223,7 +236,7 @@ class AgentRuntime:
         decision = self.decisions.plan(self._manager_context(
             goal=goal, selected=selected, catalog=catalog, child_results=[], current_round=1, limits={}
         ))
-        self._remember_manager(state, message, goal, selected, catalog)
+        self._remember_manager(state, message, goal, selected, catalog_version)
         return [skill_message, *self._manager_decision(message, decision, catalog, 1)]
 
     def _manager_review(self, message: AgentProtocolMessage, state: dict[str, Any]) -> list[AgentProtocolMessage]:
@@ -231,9 +244,9 @@ class AgentRuntime:
         selected = self._safe_selected(stored.get("selected_skill_ids", []), self.config.scenario_skill_ids)
         if not selected:
             raise AgentDecisionError("planning_failed")
-        catalog = stored.get("team_catalog", {})
-        if not isinstance(catalog, dict):
-            catalog = {}
+        catalog, catalog_version = self._fresh_team_catalog(
+            message.payload, previous_version=stored.get("team_catalog_version")
+        )
         current_round = self._positive_int(message.payload.get("current_round"), 1)
         self._visible_pause()
         decision = self.decisions.plan(self._manager_context(
@@ -241,6 +254,7 @@ class AgentRuntime:
             child_results=self._bounded_collection(message.payload.get("child_results")),
             current_round=current_round, limits=message.payload.get("remaining_limits", {}),
         ))
+        self._remember_manager(state, message, self._goal(message, stored.get("goal")), selected, catalog_version)
         return self._manager_decision(message, decision, catalog, current_round)
 
     def _manager_decision(self, message: AgentProtocolMessage, decision: Any, catalog: Mapping[str, Any], round_no: int) -> list[AgentProtocolMessage]:
@@ -363,21 +377,31 @@ class AgentRuntime:
             max_nodes=self._positive_int(safe_limits.get("nodes"), 20),
         )
 
-    def _remember_manager(self, state, message, goal, selected, catalog) -> None:
-        state["tasks"][message.task_id] = {"kind": "manager", "goal": goal, "selected_skill_ids": selected, "team_catalog": catalog}
+    def _remember_manager(self, state, message, goal, selected, catalog_version) -> None:
+        # Catalog entries are a per-message authority snapshot.  Persist only
+        # its monotonic version; a later planning round must supply a fresh one.
+        state["tasks"][message.task_id] = {
+            "kind": "manager", "goal": goal, "selected_skill_ids": selected,
+            "team_catalog_version": catalog_version,
+        }
         self._trim_tasks(state)
 
     def _new_worker_context(self, message, selected) -> dict[str, Any]:
+        parent_chain = message.payload.get("parent_chain_agent_ids")
+        if not isinstance(parent_chain, list) or not parent_chain or any(not isinstance(item, str) or not item for item in parent_chain):
+            raise AgentDecisionError("invalid_parent_chain")
+        if message.sender not in parent_chain or self.config.agent_id in parent_chain or len(parent_chain) != len(set(parent_chain)):
+            raise AgentDecisionError("invalid_parent_chain")
         return {
             "kind": "worker", "selected_skill_ids": selected, "completion_corrected": False, "evidence": [],
-            "parent_chain_agent_ids": [message.sender] if message.sender != "platform" else [],
+            "parent_chain_agent_ids": self._bounded_text_list(parent_chain, 8),
             "task": {"title": self._text(message.payload.get("title", "task")), "goal": self._goal(message),
                      "client_task_key": self._text(message.payload.get("client_task_key", "task")),
                      "dependency_results": self._bounded_collection(message.payload.get("dependency_results"))},
         }
 
     def _safe_subtask(self, subtask: PlannedSubtask | None, catalog: Mapping[str, Any], *, parent_chain: list[str] | None = None) -> dict[str, Any]:
-        if subtask is None or not subtask.required_capability or subtask.assignee_agent_id in set(parent_chain or []):
+        if subtask is None or not subtask.required_capability or subtask.assignee_agent_id == self.config.agent_id or subtask.assignee_agent_id in set(parent_chain or []):
             raise AgentDecisionError("invalid_model_decision")
         member = catalog.get(subtask.assignee_agent_id)
         capabilities = member.get("capabilities", []) if isinstance(member, Mapping) else []
@@ -390,8 +414,13 @@ class AgentRuntime:
             "required_capability": self._text(subtask.required_capability, 128), "material": {},
         }
 
-    def _team_catalog(self, payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    def _fresh_team_catalog(self, payload: Mapping[str, Any], previous_version: Any = None) -> tuple[dict[str, dict[str, Any]], int]:
         raw = payload.get("team_capability_catalog")
+        version = payload.get("team_catalog_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise AgentDecisionError("invalid_team_catalog")
+        if isinstance(previous_version, int) and version <= previous_version:
+            raise AgentDecisionError("invalid_team_catalog")
         catalog: dict[str, dict[str, Any]] = {}
         if isinstance(raw, list):
             for item in raw:
@@ -399,7 +428,9 @@ class AgentRuntime:
                     caps = item.get("capabilities", [])
                     if isinstance(caps, list) and all(isinstance(value, str) for value in caps):
                         catalog[item["agent_id"]] = {"capabilities": self._bounded_text_list(caps, 32)}
-        return catalog or {key: self._bounded_value(value) for key, value in self.config.team_catalog.items()}
+        if not catalog:
+            raise AgentDecisionError("invalid_team_catalog")
+        return catalog, version
 
     def _tool(self, name: Any) -> dict[str, str] | None:
         if not isinstance(name, str):
@@ -443,7 +474,7 @@ class AgentRuntime:
 
     def _save_state(self) -> None:
         self.config.state_dir.mkdir(parents=True, exist_ok=True)
-        safe = self._bounded_value({key: value for key, value in self._state.items() if key != "matrix_token"})
+        safe = self._bounded_state({key: value for key, value in self._state.items() if key != "matrix_token"})
         temporary = self._state_path.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(safe, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -499,18 +530,52 @@ class AgentRuntime:
         return [self._bounded_value(value) for value in (values if isinstance(values, list) else [])[:_MAX_EVIDENCE_ITEMS] if isinstance(value, Mapping)]
 
     def _bounded_value(self, value: Any, depth: int = 0) -> Any:
+        return self._safe_value(value, depth)
+
+    def _safe_value(self, value: Any, depth: int = 0) -> Any:
         if depth >= 4:
             return "[truncated]"
         if value is None or isinstance(value, (bool, int, float)):
             return value
         if isinstance(value, str):
-            return value[:_MAX_TEXT]
+            return "[redacted]" if _SENSITIVE_TEXT.search(value) else value[:_MAX_TEXT]
         if isinstance(value, Mapping):
-            return {str(key)[:80]: self._bounded_value(item, depth + 1) for key, item in list(value.items())[:20] if "token" not in str(key).lower() and "secret" not in str(key).lower()}
+            return {
+                str(key)[:80]: self._safe_value(item, depth + 1)
+                for key, item in list(value.items())[:20]
+                if not _is_sensitive_key(str(key))
+            }
         if isinstance(value, list):
-            return [self._bounded_value(item, depth + 1) for item in value[:20]]
+            return [self._safe_value(item, depth + 1) for item in value[:20]]
         return "[unsupported]"
+
+    def _bounded_state(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        """Return a redacted, finite JSON document before any filesystem write."""
+        safe = self._safe_value(value)
+        if not isinstance(safe, dict):
+            return {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}}
+        def size() -> int:
+            return len(json.dumps(safe, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        tasks = safe.get("tasks")
+        while size() > _MAX_STATE_BYTES and isinstance(tasks, dict) and tasks:
+            tasks.pop(next(iter(tasks)))
+        for key in ("processed_event_ids", "processed_idempotency_keys"):
+            values = safe.get(key)
+            while size() > _MAX_STATE_BYTES and isinstance(values, list) and values:
+                del values[: max(1, len(values) // 2)]
+        if size() > _MAX_STATE_BYTES:
+            safe["security"] = {"state_truncated": 1}
+        return safe
 
     @staticmethod
     def _safe_code(code: Any) -> str:
         return code if isinstance(code, str) and code in _SAFE_ERROR_CODES else "runtime_error"
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """Match whole configuration/data-field terms, never incidental substrings."""
+    spaced = re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
+    words = {part for part in re.split(r"[^a-z0-9]+", spaced) if part}
+    if words.intersection({"token", "secret", "password", "passwd", "pwd", "authorization", "credential", "cookie", "header", "private", "endpoint", "url", "uri", "stack", "traceback", "exception"}):
+        return True
+    return ("api" in words and "key" in words) or ("access" in words and "key" in words)

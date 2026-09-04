@@ -22,13 +22,16 @@ class FakeGateway:
         self.events: list[MatrixEvent] = []
         self.sent: list[tuple[str, str, str]] = []
         self.fail_sends = False
+        self.fail_on_send: int | None = None
+        self.send_attempts = 0
 
     def sync_messages(self, since, room_ids):
         assert room_ids == {"!team:local"}
         return MatrixSyncBatch(events=list(self.events), next_cursor="cursor-1")
 
     def send_protocol_message(self, room_id, text, protocol_line):
-        if self.fail_sends:
+        self.send_attempts += 1
+        if self.fail_sends or self.fail_on_send == self.send_attempts:
             raise RuntimeError("network unavailable")
         self.sent.append((room_id, text, protocol_line))
         return f"$sent-{len(self.sent)}"
@@ -122,7 +125,18 @@ def plan(action="delegate"):
 
 
 def assign_payload():
-    return {"title": "HR 核查", "client_task_key": "hr", "dependency_results": []}
+    return {
+        "title": "HR 核查", "instruction": "核验新员工A的完整HR入职材料，并报告缺口。",
+        "client_task_key": "hr", "dependency_results": [], "parent_chain_agent_ids": ["VE-0001"],
+    }
+
+
+def manager_payload(instruction="评估新员工A", version=1):
+    return {
+        "instruction": instruction,
+        "team_capability_catalog": [{"agent_id": key, **value} for key, value in TEAM.items()],
+        "team_catalog_version": version,
+    }
 
 
 def test_manager_selects_skill_then_delegates_without_invalid_root_ack(tmp_path):
@@ -132,9 +146,7 @@ def test_manager_selects_skill_then_delegates_without_invalid_root_ack(tmp_path)
         SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"]),
     ]
     engine.plans = [plan(), plan()]
-    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload={
-        "instruction": "评估新员工A", "team_capability_catalog": [{"agent_id": key, **value} for key, value in TEAM.items()],
-    }))]
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
 
     assert subject.run_once() == 1
 
@@ -150,8 +162,8 @@ def test_manager_summary_can_follow_up_or_finish(tmp_path):
     subject, gateway, engine, _ = runtime(tmp_path)
     engine.plans = [plan(), plan("summarize")]
     engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
-    submit = message(type="task.submit", sender="platform", receiver="VE-0001", payload={"instruction": "评估新员工A", "team_capability_catalog": [{"agent_id": key, **value} for key, value in TEAM.items()]})
-    summary = message(type="task.summary", sender="platform", receiver="VE-0001", payload={"request": "task.summary", "child_results": [{"result": "ok"}], "current_round": 1, "remaining_limits": {"rounds": 3, "nodes": 18, "children": 5}} , key="summary")
+    submit = message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload())
+    summary = message(type="task.summary", sender="platform", receiver="VE-0001", payload={"request": "task.summary", "child_results": [{"result": "ok"}], "current_round": 1, "remaining_limits": {"rounds": 3, "nodes": 18, "children": 5}, "team_capability_catalog": manager_payload()["team_capability_catalog"], "team_catalog_version": 2} , key="summary")
     gateway.events = [event(submit, event_id="$1", ts=1), event(summary, event_id="$2", ts=2)]
 
     subject.run_once()
@@ -180,6 +192,7 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     assert sent[3].receiver == "platform"
     assert sent[3].payload["plugin_id"] == "agentteams-onboarding-employee"
     assert sent[-1].payload["audit_ids"] == ["AUD-1"]
+    assert engine.worker_contexts[0].task["goal"] == "核验新员工A的完整HR入职材料，并报告缺口。"
 
 
 @pytest.mark.parametrize("decision, expected", [
@@ -224,7 +237,7 @@ def test_event_and_idempotency_duplicates_replay_nothing(tmp_path):
         SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"]),
     ]
     engine.plans = [plan(), plan()]
-    protocol = message(type="task.submit", sender="platform", receiver="VE-0001", payload={"instruction": "x", "team_capability_catalog": [{"agent_id": key, **value} for key, value in TEAM.items()]})
+    protocol = message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload("x"))
     gateway.events = [event(protocol, event_id="$same"), event(protocol, event_id="$different", ts=2)]
 
     assert subject.run_once() == 1
@@ -235,7 +248,7 @@ def test_restart_uses_atomic_state_without_secret_and_send_failure_does_not_adva
     subject, gateway, engine, _ = runtime(tmp_path)
     engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
     engine.plans = [plan()]
-    protocol = message(type="task.submit", sender="platform", receiver="VE-0001", payload={"instruction": "x", "team_capability_catalog": [{"agent_id": key, **value} for key, value in TEAM.items()]})
+    protocol = message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload("x"))
     gateway.events = [event(protocol)]
     gateway.fail_sends = True
     assert subject.run_once() == 0
@@ -304,3 +317,143 @@ def test_cli_accepts_a_role_specific_token_environment_reference(tmp_path):
 
     assert config.matrix_token == "manager-only"
     assert config.matrix_mxid == "@manager:matrix"
+
+
+def test_role_is_behavior_only_and_two_team_identity_sets_are_valid(tmp_path):
+    for agent_id, mxid in (("MGR-42", "@matrix-manager:local"), ("COORD-99", "@matrix-coordinator:local")):
+        config = AgentRuntimeConfig(
+            agent_id=agent_id, role="manager", matrix_mxid=mxid, matrix_token="manager-token",
+            room_id="!room", trusted_sender_mxids={"platform": "@platform:local", agent_id: mxid},
+            allowed_skill_ids={"agentteams-onboarding-readiness"}, state_dir=tmp_path / agent_id,
+        )
+        assert config.agent_id == agent_id
+
+
+def test_cli_accepts_non_demo_team_identity_for_a_manager(tmp_path):
+    from scripts.run_agentteams_agent import load_runtime_config
+
+    agents = {
+        "manager": {"agent_id": "COORD-99", "mxid": "@coord:matrix", "token": "manager-only"},
+        "hr": {"agent_id": "HR-27", "mxid": "@hr:matrix", "token": "hr-only"},
+        "it": {"agent_id": "TECH-12", "mxid": "@it:matrix", "token": "it-only"},
+        "audit": {"agent_id": "AUD-88", "mxid": "@audit:matrix", "token": "audit-only"},
+    }
+    path = tmp_path / "custom-runtime.json"
+    path.write_text(json.dumps({"matrix_url": "http://matrix", "room_id": "!room", "platform": {"mxid": "@platform:matrix"}, "team_catalog": {}, "agents": agents}), encoding="utf-8")
+
+    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY": "key"})
+
+    assert config.agent_id == "COORD-99"
+
+
+def test_state_redactor_removes_sensitive_keys_values_and_stack_text(tmp_path):
+    subject, _, _, _ = runtime(tmp_path, role="hr")
+    subject._state["tasks"] = {
+        "task": {"previous_results": [{"authorization": "Bearer secret-value", "endpoint": "https://internal.example/a", "nested": {"api_key": "api-secret"}}], "error": "Traceback (most recent call last): File C:/private.py"}
+    }
+    subject._save_state()
+
+    state = (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
+    for forbidden in ("secret-value", "internal.example", "api-secret", "Traceback", "authorization", "endpoint", "api_key"):
+        assert forbidden not in state
+
+
+def test_manager_requires_fresh_catalog_for_submit_and_follow_up(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload={"instruction": "x"}), event_id="$missing")]
+
+    subject.run_once()
+
+    assert sent_protocols(gateway)[0].type == "task.failed"
+    assert not engine.plan_contexts
+
+    subject, gateway, engine, _ = runtime(tmp_path / "fresh")
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    engine.plans = [plan()]
+    submit = message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload(version=5))
+    stale_summary = message(type="task.summary", sender="platform", receiver="VE-0001", payload={"request": "task.summary", "team_capability_catalog": manager_payload()["team_capability_catalog"], "team_catalog_version": 5}, key="stale")
+    gateway.events = [event(submit, event_id="$submit", ts=1), event(stale_summary, event_id="$stale", ts=2)]
+
+    subject.run_once()
+
+    assert sent_protocols(gateway)[-1].type == "task.failed"
+
+
+def test_worker_requires_full_parent_chain_and_rejects_self_or_ancestor_delegate(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    missing_chain = assign_payload()
+    missing_chain.pop("parent_chain_agent_ids")
+    gateway.events = [event(message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=missing_chain), sender=MXIDS["VE-0001"])]
+    subject.run_once()
+    assert sent_protocols(gateway)[0].type == "task.failed"
+
+    subject, gateway, engine, _ = runtime(tmp_path / "cycle", role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [WorkerDecision(action="delegate", subtask=PlannedSubtask(client_task_key="loop", title="loop", goal="loop", required_capability="hr.onboarding.read", assignee_agent_id="VE-0002", reason="bad"))]
+    cyclic = assign_payload()
+    cyclic["parent_chain_agent_ids"] = ["VE-0001", "VE-0002", "VE-0005"]
+    gateway.events = [event(message(type="task.assign", sender="VE-0005", receiver="VE-0002", parent_task_id="parent", payload=cyclic), sender=MXIDS["VE-0005"])]
+    subject.run_once()
+    assert sent_protocols(gateway)[-1].type == "task.failed"
+
+    subject, gateway, engine, _ = runtime(tmp_path / "long-cycle", role="it")
+    engine.selections = [SkillSelection(selected_skill_ids=["it-service-assistant"])]
+    engine.work = [WorkerDecision(action="delegate", subtask=PlannedSubtask(client_task_key="loop-hr", title="loop", goal="loop", required_capability="hr.onboarding.read", assignee_agent_id="VE-0002", reason="bad"))]
+    long_cycle = assign_payload()
+    long_cycle["parent_chain_agent_ids"] = ["VE-0001", "VE-0002", "VE-0005"]
+    gateway.events = [event(message(type="task.assign", sender="VE-0005", receiver="VE-0003", parent_task_id="audit", payload=long_cycle), sender=MXIDS["VE-0005"])]
+    subject.run_once()
+    assert sent_protocols(gateway)[-1].type == "task.failed"
+
+
+def test_valid_protocol_lines_survive_bad_lines_in_same_matrix_event(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    engine.plans = [plan()]
+    protocol = message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload())
+    body = "ordinary text\nDWP_EVENT {not-json}\n" + render_protocol_line(protocol) + "\nDWP_EVENT {still-bad}"
+    gateway.events = [MatrixEvent(event_id="$mixed", room_id="!team:local", sender=MXIDS["platform"], body=body, ts=1)]
+
+    assert subject.run_once() == 1
+    assert [item.type for item in sent_protocols(gateway)] == ["agent.message", "task.delegate"]
+    assert subject._state["security"]["parse_error"] == 2
+
+
+def test_partial_manager_send_retries_same_protocol_ids_without_cursor_advance(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"]), SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    engine.plans = [plan(), plan()]
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
+    gateway.fail_on_send = 2
+
+    assert subject.run_once() == 0
+    first_attempt = sent_protocols(gateway)
+    assert [item.type for item in first_attempt] == ["agent.message"]
+    assert subject._state["cursor"] is None
+
+    gateway.fail_on_send = None
+    assert subject.run_once() == 1
+    resent = sent_protocols(gateway)[1:]
+    assert resent[0].message_id == first_attempt[0].message_id
+    assert resent[0].idempotency_key == first_attempt[0].idempotency_key
+    assert [item.type for item in resent] == ["agent.message", "task.delegate"]
+    assert subject._state["cursor"] == "cursor-1"
+
+
+def test_run_forever_waits_after_empty_poll_and_default_pause_is_three_seconds(tmp_path):
+    subject, gateway, _, _ = runtime(tmp_path)
+    observed_waits = []
+
+    class StopAfterOnePoll:
+        checks = 0
+
+        def is_set(self):
+            self.checks += 1
+            return self.checks > 1
+
+        def wait(self, seconds):
+            observed_waits.append(seconds)
+
+    subject.run_forever(StopAfterOnePoll())
+    assert observed_waits == [1.0]
+    assert subject.config.pause_seconds == 3.0
