@@ -6,6 +6,7 @@
 """
 
 import os
+from typing import Literal
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -55,6 +56,7 @@ DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS = "DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS"
 DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS = "DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS"
 DWP_AGENTTEAMS_MAX_DEPTH = "DWP_AGENTTEAMS_MAX_DEPTH"
 DWP_AGENTTEAMS_MAX_CHILDREN = "DWP_AGENTTEAMS_MAX_CHILDREN"
+DWP_AGENTTEAMS_MODE = "DWP_AGENTTEAMS_MODE"
 # Demo startup can opt out of destructive seed recovery while preserving the
 # regular schema compatibility path for an already initialized database.
 DWP_SKIP_AUTO_SEED = "DWP_SKIP_AUTO_SEED"
@@ -73,6 +75,10 @@ def agentteams_collaboration_enabled() -> bool:
     """The persisted collaboration loop is opt-in; only literal ``1`` enables it."""
     return os.environ.get(DWP_AGENTTEAMS_COLLAB_ENABLED, "0") == "1"
 
+
+def agentteams_mode() -> Literal["local_demo", "agentteams_strict"]:
+    """Only the explicit demo value selects the credential-free branch."""
+    return "local_demo" if os.environ.get(DWP_AGENTTEAMS_MODE) == "local_demo" else "agentteams_strict"
 
 def skip_auto_seed() -> bool:
     """Only literal ``1`` suppresses lifespan's demo seed recovery."""

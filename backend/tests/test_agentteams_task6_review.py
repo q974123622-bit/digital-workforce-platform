@@ -54,3 +54,9 @@ def test_runner_defaults_to_strict_transport_mode_without_local_demo_imports():
         def close(self):
             pass
     assert AgentTeamsCollaborationRunner(gateway=Gateway()).transport_mode == "agentteams_strict"
+
+
+def test_unknown_agentteams_mode_fails_closed_as_strict(monkeypatch):
+    from app.services import config
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "typo")
+    assert config.agentteams_mode() == "agentteams_strict"
