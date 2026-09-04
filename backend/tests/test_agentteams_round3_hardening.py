@@ -30,3 +30,15 @@ def test_loader_rejects_symlink_authority_and_state_ancestor(tmp_path: Path):
         load_strict_runtime_config(link)
     with pytest.raises(ValueError):
         AgentRuntimeConfig(agent_id="HR-1", role="hr", matrix_mxid="@hr:test", matrix_token="x", room_id="!r", trusted_sender_mxids={"platform": "@p", "HR-1": "@hr:test"}, allowed_skill_ids={"hr-onboarding-assistant"}, state_dir=link / "state")
+
+
+def test_reparse_attribute_is_fail_closed(monkeypatch, tmp_path: Path):
+    import app.services.agentteams_runtime_config as subject
+    target = tmp_path / "runtime.json"; target.write_text(json.dumps(_document()), encoding="utf-8")
+    original = Path.lstat
+    class Reparse:
+        st_mode = original(target).st_mode
+        st_file_attributes = 0x400
+    monkeypatch.setattr(Path, "lstat", lambda self: Reparse() if self == target else original(self))
+    with pytest.raises(ValueError):
+        subject.load_strict_runtime_config(target)
