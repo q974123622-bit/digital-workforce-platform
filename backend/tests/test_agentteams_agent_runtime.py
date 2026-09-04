@@ -310,14 +310,14 @@ def test_cli_accepts_a_role_specific_token_environment_reference(tmp_path):
     path.write_text(json.dumps({
         "matrix_url": "http://matrix", "room_id": "!room", "team_id": "TEAM-ONBOARD", "platform": {"mxid": "@platform:matrix", "token": "platform-only"}, "team_catalog": TEAM,
         "agents": {
-            "manager": {"agent_id": "VE-0001", "mxid": "@manager:matrix", "token_env": "MANAGER_MATRIX_TOKEN"},
-            "hr": {"agent_id": "VE-0002", "mxid": "@hr:matrix", "token": "hr-only"},
-            "it": {"agent_id": "VE-0003", "mxid": "@it:matrix", "token": "it-only"},
-            "audit": {"agent_id": "VE-0005", "mxid": "@audit:matrix", "token": "audit-only"},
+                "manager": {"agent_id": "VE-0001", "mxid": "@manager:matrix", "token_env": "MANAGER_MATRIX_TOKEN", "allowed_skill_ids": ["agentteams-onboarding-readiness"], "safe_tool_catalog": []},
+                "hr": {"agent_id": "VE-0002", "mxid": "@hr:matrix", "token": "hr-only", "allowed_skill_ids": ["hr-onboarding-assistant"], "safe_tool_catalog": []},
+                "it": {"agent_id": "VE-0003", "mxid": "@it:matrix", "token": "it-only", "allowed_skill_ids": ["it-service-assistant"], "safe_tool_catalog": []},
+                "audit": {"agent_id": "VE-0005", "mxid": "@audit:matrix", "token": "audit-only", "allowed_skill_ids": ["audit-evidence-review"], "safe_tool_catalog": []},
         },
     }), encoding="utf-8")
 
-    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY": "key", "MANAGER_MATRIX_TOKEN": "manager-only"})
+    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY": "key", "MANAGER_MATRIX_TOKEN": "manager-only", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
 
     assert config.matrix_token == "manager-only"
     assert config.matrix_mxid == "@manager:matrix"
@@ -337,15 +337,15 @@ def test_cli_accepts_non_demo_team_identity_for_a_manager(tmp_path):
     from scripts.run_agentteams_agent import load_runtime_config
 
     agents = {
-        "manager": {"agent_id": "COORD-99", "mxid": "@coord:matrix", "token": "manager-only"},
-        "hr": {"agent_id": "HR-27", "mxid": "@hr:matrix", "token": "hr-only"},
-        "it": {"agent_id": "TECH-12", "mxid": "@it:matrix", "token": "it-only"},
-        "audit": {"agent_id": "AUD-88", "mxid": "@audit:matrix", "token": "audit-only"},
+        "manager": {"agent_id": "COORD-99", "mxid": "@coord:matrix", "token": "manager-only", "allowed_skill_ids": ["agentteams-onboarding-readiness"], "safe_tool_catalog": []},
+        "hr": {"agent_id": "HR-27", "mxid": "@hr:matrix", "token": "hr-only", "allowed_skill_ids": ["hr-onboarding-assistant"], "safe_tool_catalog": []},
+        "it": {"agent_id": "TECH-12", "mxid": "@it:matrix", "token": "it-only", "allowed_skill_ids": ["it-service-assistant"], "safe_tool_catalog": []},
+        "audit": {"agent_id": "AUD-88", "mxid": "@audit:matrix", "token": "audit-only", "allowed_skill_ids": ["audit-evidence-review"], "safe_tool_catalog": []},
     }
     path = tmp_path / "custom-runtime.json"
     path.write_text(json.dumps({"matrix_url": "http://matrix", "room_id": "!room", "team_id": "TEAM-CUSTOM", "platform": {"mxid": "@platform:matrix", "token": "platform-only"}, "team_catalog": {}, "agents": agents}), encoding="utf-8")
 
-    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY": "key"})
+    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY": "key", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
 
     assert config.agent_id == "COORD-99"
 

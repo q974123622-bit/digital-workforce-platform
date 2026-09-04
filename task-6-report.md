@@ -96,3 +96,14 @@ process-tree probe: `taskkill.exe` returns `Access denied` in this sandbox.
 - Review RED began with the missing heartbeat signing API; focused GREEN was
   `83 passed`. Windows reparse-point behavior is guarded where the platform
   exposes reparse metadata; normal file/symlink paths are covered directly.
+
+## Review fix round 2
+
+- Every strict role now supplies a bounded, duplicate-free skill allowlist and
+  tool catalog; the CLI passes both to `AgentRuntimeConfig` instead of creating
+  an empty tool catalog. CLI config selection is pinned to the health runtime
+  config path and shares its adjacent `state/` directory.
+- State-directory creation now reuses the runtime path safety guard before and
+  after `mkdir`; symlink/reparse ancestors fail closed. The existing mode
+  selector already normalizes unknown values to strict.
+- Focused runtime/config/CLI regression: `36 passed`.

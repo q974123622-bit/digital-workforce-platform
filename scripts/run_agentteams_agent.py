@@ -16,7 +16,7 @@ if str(BACKEND) not in sys.path:
 from app.services.agentteams_agent_runtime import AgentRuntime, AgentRuntimeConfig
 from app.services.agentteams_decisions import AgentDecisionEngine
 from app.services.agentteams_gateway import AgentTeamsGateway
-from app.services.agentteams_runtime_config import load_strict_runtime_config
+from app.services.agentteams_runtime_config import default_runtime_config_path, load_strict_runtime_config
 from app.services.agentteams_skills import ProjectSkillRegistry
 from app.services.llm import DeepSeekProvider
 
@@ -28,23 +28,24 @@ _ROLE_SKILLS = {
 }
 
 
-def load_runtime_config(role: str, path: Path, *, env: dict[str, str] | None = None) -> tuple[AgentRuntimeConfig, str]:
+def load_runtime_config(role: str, path: Path | None = None, *, env: dict[str, str] | None = None) -> tuple[AgentRuntimeConfig, str]:
     environment = os.environ if env is None else env
     if role not in _ROLES:
         raise ValueError("invalid_runtime_config")
     if not environment.get("DEEPSEEK_API_KEY"):
         raise ValueError("deepseek_key_missing")
-    runtime = load_strict_runtime_config(path, environ=environment)
+    authority = default_runtime_config_path(environment).resolve()
+    selected = authority if path is None else Path(path).resolve()
+    if selected != authority:
+        raise ValueError("invalid_runtime_config")
+    runtime = load_strict_runtime_config(selected, environ=environment)
     agent = runtime.agents[role]
     trusted = {"platform": runtime.platform.mxid}
     trusted.update({identity.agent_id: identity.mxid for identity in runtime.agents.values()})
-    allowed = set(_ROLE_SKILLS[role])
-    if role == "manager":
-        allowed.add("agentteams-onboarding-readiness")
     config = AgentRuntimeConfig(
         agent_id=agent.agent_id, role=role, matrix_mxid=agent.mxid, matrix_token=agent.token, room_id=runtime.room_id,
-        trusted_sender_mxids=trusted, allowed_skill_ids=allowed, team_catalog=runtime.team_catalog,
-        safe_tool_catalog=[], state_dir=path.parent / "state",
+        trusted_sender_mxids=trusted, allowed_skill_ids=set(agent.allowed_skill_ids), team_catalog=runtime.team_catalog,
+        safe_tool_catalog=list(agent.safe_tool_catalog), state_dir=selected.parent / "state",
     )
     return config, runtime.matrix_url
 
@@ -52,7 +53,7 @@ def load_runtime_config(role: str, path: Path, *, env: dict[str, str] | None = N
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run one independent Matrix AgentTeams Agent")
     parser.add_argument("--role", choices=sorted(_ROLES), required=True)
-    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args(argv)
     try:

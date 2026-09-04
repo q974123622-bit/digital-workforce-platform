@@ -32,7 +32,7 @@ from .agentteams_decisions import (
 )
 from .agentteams_gateway import MatrixEvent
 from .agentteams_protocol import AgentProtocolMessage, parse_protocol_lines, render_protocol_line
-from .agentteams_runtime_config import is_safe_agent_id
+from .agentteams_runtime_config import is_safe_agent_id, require_safe_path
 
 
 Role = Literal["manager", "hr", "it", "audit"]
@@ -101,6 +101,10 @@ class AgentRuntimeConfig:
         if not self.allowed_skill_ids:
             raise ValueError("invalid_runtime_config")
         object.__setattr__(self, "state_dir", Path(self.state_dir))
+        try:
+            require_safe_path(Path(self.state_dir), allow_missing=True)
+        except ValueError:
+            raise ValueError("invalid_runtime_config") from None
         professional = self.professional_skill_ids
         if professional is None and self.role != "manager":
             professional = set(_ROLE_PROFESSIONAL_SKILLS[self.role])
@@ -705,7 +709,9 @@ class AgentRuntime:
         return raw
 
     def _save_state(self) -> None:
+        require_safe_path(self.config.state_dir, allow_missing=True)
         self.config.state_dir.mkdir(parents=True, exist_ok=True)
+        require_safe_path(self.config.state_dir)
         safe = self._bounded_state({key: value for key, value in self._state.items() if key != "matrix_token"})
         # Pending envelopes have already been canonicalized and validated.  Do
         # not run them through a second lossy normalizer, or a crash recovery

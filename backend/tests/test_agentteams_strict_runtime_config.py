@@ -12,10 +12,10 @@ def _runtime_config() -> dict:
         "team_id": "TEAM-ONBOARD",
         "platform": {"mxid": "@platform:test", "token": "platform-token"},
         "agents": {
-            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token"},
-            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token"},
-            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token"},
-            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token"},
+            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token", "allowed_skill_ids": ["agentteams-onboarding-readiness"], "safe_tool_catalog": []},
+            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token", "allowed_skill_ids": ["hr-onboarding-assistant"], "safe_tool_catalog": []},
+            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token", "allowed_skill_ids": ["it-service-assistant"], "safe_tool_catalog": []},
+            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token", "allowed_skill_ids": ["audit-evidence-review"], "safe_tool_catalog": []},
         },
         "team_catalog": {},
     }
