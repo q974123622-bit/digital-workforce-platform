@@ -57,11 +57,12 @@ def matrix_user_id_for_runtime(runtime_ref: str | None) -> str | None:
 
 ALLOWED: dict[str, set[str]] = {
     "planning": {"waiting_children", "failed", "timed_out", "cancelled"},
+    "blocked": {"assigned", "failed", "timed_out", "cancelled"},
     "assigned": {"accepted", "failed", "timed_out", "cancelled"},
     "accepted": {"running", "failed", "timed_out", "cancelled"},
     "running": {"waiting_children", "completed", "failed", "timed_out", "cancelled"},
     "waiting_children": {"summarizing", "failed", "timed_out", "cancelled"},
-    "summarizing": {"completed", "failed", "timed_out", "cancelled"},
+    "summarizing": {"waiting_children", "completed", "failed", "timed_out", "cancelled"},
 }
 _INBOUND_IDEMPOTENCY_PREFIX = "in:"
 _MAX_TOOL_RESULT_DEPTH = 4
@@ -87,9 +88,17 @@ _STACK_TRACE_PATTERN = re.compile(
 
 
 class AgentTeamsCollaborationService:
-    def __init__(self, max_depth: int = 3, max_children: int = 5):
+    def __init__(
+        self,
+        max_depth: int = 3,
+        max_children: int = 5,
+        max_rounds: int | None = None,
+        max_nodes: int | None = None,
+    ):
         self.max_depth = max_depth
         self.max_children = max_children
+        self.max_rounds = 3 if max_rounds is None else max_rounds
+        self.max_nodes = 20 if max_nodes is None else max_nodes
 
     def create_task(
         self,
@@ -163,7 +172,12 @@ class AgentTeamsCollaborationService:
             sender_agent_id="platform",
             receiver_agent_id=leader.employee_no,
             body=instruction,
-            payload={"title": title, "instruction": instruction, "material": dict(material)},
+            payload={
+                "title": title,
+                "instruction": instruction,
+                "material": dict(material),
+                "team_capability_catalog": self._team_capability_catalog(db, team.id),
+            },
             idempotency_key=f"{task_id}:task.submit",
         )
         # Do not commit: callers own the transaction and their test rollback policy.
@@ -227,6 +241,7 @@ class AgentTeamsCollaborationService:
 
     def build_graph(self, db: Session, root_task_id: str) -> dict:
         run, root = self._root(db, root_task_id)
+        coordination = self._coordination(root)
         nodes = list(
             db.scalars(
                 select(models.AgentTaskNode)
@@ -264,6 +279,8 @@ class AgentTeamsCollaborationService:
         return {
             "root_task_id": run.id,
             "root_status": root.status,
+            "current_round": coordination["round"],
+            "selected_skill_ids": coordination["selected_skill_ids"],
             "nodes": [self._node_data(node) for node in nodes],
             "parent_edges": [
                 {"parent_task_id": node.parent_task_id, "task_id": node.id}
@@ -342,12 +359,33 @@ class AgentTeamsCollaborationService:
         )
         if existing_keys.intersection(keys):
             raise CollaborationConflict("duplicate_client_task_key")
+        total_nodes = db.scalar(
+            select(func.count(models.AgentTaskNode.id)).where(
+                models.AgentTaskNode.root_task_id == parent.root_task_id
+            )
+        ) or 0
+        if total_nodes + len(subtasks) > self.max_nodes:
+            raise CollaborationConflict("max_nodes_exceeded")
+        coordination = self._validated_next_coordination(parent, message.payload)
+        ancestor_assignees = self._parent_chain_assignees(db, parent)
+        capability_catalog = {
+            item["agent_id"]: set(item["capabilities"])
+            for item in self._team_capability_catalog(db, run.team_id)
+        }
         for subtask in subtasks:
             assignee = db.get(models.DigitalEmployee, subtask["assignee_agent_id"])
             if assignee is None or not self._is_team_member(db, run.team_id, subtask["assignee_agent_id"]):
                 raise CollaborationConflict("invalid_team_assignee")
             if not self._runtime_ref(assignee):
                 raise CollaborationConflict("missing_runtime_ref")
+            if assignee.status != "active":
+                raise CollaborationConflict("inactive_assignee")
+            if subtask["assignee_agent_id"] in ancestor_assignees:
+                raise CollaborationConflict("parent_chain_cycle")
+            if subtask["requires_capability"] and subtask["capability"] not in capability_catalog.get(
+                subtask["assignee_agent_id"], set()
+            ):
+                raise CollaborationConflict("capability_not_available")
 
         children: list[models.AgentTaskNode] = []
         for subtask in subtasks:
@@ -364,7 +402,7 @@ class AgentTeamsCollaborationService:
                 capability=subtask["capability"],
                 depth=parent.depth + 1,
                 required=subtask["required"],
-                status="assigned",
+                status="blocked" if subtask["depends_on"] else "assigned",
                 progress=0,
                 input_payload=subtask["material"],
                 output_payload={},
@@ -381,6 +419,11 @@ class AgentTeamsCollaborationService:
                 ))
 
         parent.status = "waiting_children"
+        if coordination is not None:
+            parent.input_payload = {
+                **dict(parent.input_payload or {}),
+                "coordination": coordination,
+            }
         events = [
             self._append_event(
                 db,
@@ -404,36 +447,33 @@ class AgentTeamsCollaborationService:
             ),
         ]
         for child in children:
-            self._queue_outbound(
-                db,
-                root_task_id=child.root_task_id,
-                task_id=child.id,
-                parent_task_id=child.parent_task_id,
-                message_type="task.assign",
-                sender_agent_id=child.coordinator_agent_id,
-                receiver_agent_id=child.assignee_agent_id,
-                body=child.instruction,
-                payload={
-                    "title": child.title,
-                    "client_task_key": child.client_task_key,
-                    "depends_on": [
-                        key for key in subtasks_by_key(subtasks, child.client_task_key)["depends_on"]
-                    ],
-                },
-                idempotency_key=f"{child.id}:task.assign",
-            )
-            events.append(
-                self._append_event(
-                    db,
-                    root_task_id=child.root_task_id,
-                    task_id=child.id,
-                    event_type="task.assigned",
-                    actor_agent_id=message.sender,
-                    target_agent_id=child.assignee_agent_id,
-                    summary="task assigned",
-                    detail={"parent_task_id": parent.id},
+            if child.status == "blocked":
+                events.append(
+                    self._append_event(
+                        db,
+                        root_task_id=child.root_task_id,
+                        task_id=child.id,
+                        event_type="task.blocked",
+                        actor_agent_id=message.sender,
+                        target_agent_id=child.assignee_agent_id,
+                        summary="task blocked until dependencies complete",
+                        detail={"parent_task_id": parent.id},
+                    )
                 )
-            )
+            else:
+                self._queue_assignment(db, child, subtasks_by_key(subtasks, child.client_task_key)["depends_on"])
+                events.append(
+                    self._append_event(
+                        db,
+                        root_task_id=child.root_task_id,
+                        task_id=child.id,
+                        event_type="task.assigned",
+                        actor_agent_id=message.sender,
+                        target_agent_id=child.assignee_agent_id,
+                        summary="task assigned",
+                        detail={"parent_task_id": parent.id},
+                    )
+                )
         return events
 
     def _apply_accepted(
@@ -464,6 +504,7 @@ class AgentTeamsCollaborationService:
         node.output_payload = dict(message.payload)
         node.finished_at = datetime.now()
         events = [self._event_for_message(db, node, message, "task.completed", "task completed")]
+        events.extend(self._release_ready_dependents(db, node))
         events.extend(self._maybe_request_parent_summary(db, node, message.sender))
         return events
 
@@ -475,7 +516,9 @@ class AgentTeamsCollaborationService:
         node.error_message = str(message.payload.get("error_message") or "")
         node.finished_at = datetime.now()
         events = [self._event_for_message(db, node, message, "task.failed", "task failed")]
-        if not node.required:
+        if node.required:
+            events.extend(self._propagate_required_failure(db, node, message.sender))
+        else:
             events.extend(self._maybe_request_parent_summary(db, node, message.sender))
         return events
 
@@ -742,6 +785,153 @@ class AgentTeamsCollaborationService:
         finally:
             db.commit = original_commit  # type: ignore[method-assign]
 
+    def _release_ready_dependents(
+        self, db: Session, completed_node: models.AgentTaskNode
+    ) -> list[models.AgentTaskEvent]:
+        """Assign only blocked siblings whose every prerequisite now completed."""
+        dependents = list(
+            db.scalars(
+                select(models.AgentTaskNode)
+                .join(
+                    models.AgentTaskDependency,
+                    models.AgentTaskDependency.task_id == models.AgentTaskNode.id,
+                )
+                .where(
+                    models.AgentTaskDependency.depends_on_task_id == completed_node.id,
+                    models.AgentTaskNode.status == "blocked",
+                )
+            )
+        )
+        events: list[models.AgentTaskEvent] = []
+        for dependent in dependents:
+            prerequisite_ids = list(
+                db.scalars(
+                    select(models.AgentTaskDependency.depends_on_task_id).where(
+                        models.AgentTaskDependency.task_id == dependent.id
+                    )
+                )
+            )
+            prerequisites = [db.get(models.AgentTaskNode, item) for item in prerequisite_ids]
+            if any(item is None or item.status != "completed" for item in prerequisites):
+                continue
+            self._transition(dependent, "assigned")
+            self._queue_assignment(
+                db,
+                dependent,
+                [item.client_task_key for item in prerequisites if item is not None],
+                dependency_results=self._safe_dependency_results(db, dependent.id),
+            )
+            events.append(
+                self._append_event(
+                    db,
+                    root_task_id=dependent.root_task_id,
+                    task_id=dependent.id,
+                    event_type="task.unblocked",
+                    actor_agent_id="platform",
+                    target_agent_id=dependent.assignee_agent_id,
+                    summary="dependencies complete; task assigned",
+                    detail={"dependency_task_ids": prerequisite_ids},
+                )
+            )
+        return events
+
+    def _safe_dependency_results(self, db: Session, task_id: str) -> list[dict[str, Any]]:
+        dependency_ids = list(
+            db.scalars(
+                select(models.AgentTaskDependency.depends_on_task_id).where(
+                    models.AgentTaskDependency.task_id == task_id
+                )
+            )
+        )
+        dependencies = [db.get(models.AgentTaskNode, dependency_id) for dependency_id in dependency_ids]
+        return [self._safe_node_result(item) for item in dependencies if item is not None]
+
+    def _safe_child_results(self, db: Session, parent_id: str) -> list[dict[str, Any]]:
+        children = list(
+            db.scalars(
+                select(models.AgentTaskNode)
+                .where(models.AgentTaskNode.parent_task_id == parent_id)
+                .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
+            )
+        )
+        return [self._safe_node_result(child) for child in children]
+
+    def _safe_node_result(self, node: models.AgentTaskNode) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "client_task_key": node.client_task_key,
+            "status": node.status,
+            "result": self._sanitize_tool_result_data(dict(node.output_payload or {})),
+        }
+        if node.error_code:
+            result["error_code"] = self._safe_tool_text(node.error_code)
+        if node.error_message:
+            result["error_message"] = self._safe_tool_text(node.error_message)
+        return result
+
+    def _queue_assignment(
+        self,
+        db: Session,
+        child: models.AgentTaskNode,
+        dependency_keys: list[str],
+        *,
+        dependency_results: list[dict[str, Any]] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "title": child.title,
+            "client_task_key": child.client_task_key,
+            "depends_on": dependency_keys,
+        }
+        if dependency_results:
+            payload["dependency_results"] = dependency_results
+        self._queue_outbound(
+            db,
+            root_task_id=child.root_task_id,
+            task_id=child.id,
+            parent_task_id=child.parent_task_id,
+            message_type="task.assign",
+            sender_agent_id=child.coordinator_agent_id,
+            receiver_agent_id=child.assignee_agent_id,
+            body=child.instruction,
+            payload=payload,
+            idempotency_key=f"{child.id}:task.assign",
+        )
+
+    def _propagate_required_failure(
+        self, db: Session, failed_node: models.AgentTaskNode, actor_agent_id: str
+    ) -> list[models.AgentTaskEvent]:
+        """Fail required ancestors so a final summary cannot mask missing evidence."""
+        events: list[models.AgentTaskEvent] = []
+        current = failed_node
+        while current.parent_task_id is not None:
+            parent = db.get(models.AgentTaskNode, current.parent_task_id)
+            if parent is None or parent.root_task_id != failed_node.root_task_id:
+                raise CollaborationConflict("invalid_parent_task")
+            if parent.status != "failed":
+                self._transition(parent, "failed")
+                parent.error_code = "required_child_failed"
+                parent.error_message = "A required child task failed."
+                parent.finished_at = datetime.now()
+                events.append(
+                    self._append_event(
+                        db,
+                        root_task_id=parent.root_task_id,
+                        task_id=parent.id,
+                        event_type="task.failed",
+                        actor_agent_id=actor_agent_id,
+                        target_agent_id=parent.assignee_agent_id,
+                        summary="required child failed",
+                        detail={"failed_child_task_id": current.id},
+                    )
+                )
+            current = parent
+            if not current.required:
+                break
+        root = db.get(models.AgentTaskNode, failed_node.root_task_id)
+        run = db.get(models.TaskRun, failed_node.root_task_id)
+        if root is not None and root.status == "failed" and run is not None:
+            run.status = "failed"
+        return events
+
     def _maybe_request_parent_summary(
         self, db: Session, child: models.AgentTaskNode, actor_agent_id: str
     ) -> list[models.AgentTaskEvent]:
@@ -763,6 +953,8 @@ class AgentTeamsCollaborationService:
         if not required_children or any(item.status != "completed" for item in required_children):
             return []
         self._transition(parent, "summarizing")
+        root = db.get(models.AgentTaskNode, parent.root_task_id)
+        coordination = self._coordination(root) if root is not None else {"round": 0, "selected_skill_ids": []}
         self._queue_outbound(
             db,
             root_task_id=parent.root_task_id,
@@ -772,7 +964,18 @@ class AgentTeamsCollaborationService:
             sender_agent_id="platform",
             receiver_agent_id=parent.coordinator_agent_id,
             body="All required child tasks are complete; submit a task.summary.",
-            payload={"request": "task.summary", "parent_task_id": parent.id},
+            payload={
+                "request": "task.summary",
+                "parent_task_id": parent.id,
+                "child_results": self._safe_child_results(db, parent.id),
+                "current_round": coordination["round"],
+                "remaining_limits": {
+                    "rounds": max(0, self.max_rounds - coordination["round"]),
+                    "nodes": max(0, self.max_nodes - self._root_node_count(db, parent.root_task_id)),
+                    "children": self.max_children,
+                    "depth": max(0, self.max_depth - parent.depth),
+                },
+            },
             idempotency_key=f"{parent.id}:task.summary.request",
         )
         return [
@@ -828,6 +1031,94 @@ class AgentTeamsCollaborationService:
         if message.sender not in allowed:
             raise CollaborationConflict("unauthorized_sender")
 
+    def _validated_next_coordination(
+        self, parent: models.AgentTaskNode, payload: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Validate Manager-round metadata before the task tree is mutated."""
+        if parent.parent_task_id is not None:
+            if parent.status == "summarizing":
+                raise CollaborationConflict("follow_up_requires_root_manager")
+            return None
+        existing = self._coordination(parent)
+        if parent.status == "planning":
+            next_round = 1
+        elif parent.status == "summarizing":
+            next_round = existing["round"] + 1
+        else:
+            return None
+        if next_round > self.max_rounds:
+            raise CollaborationConflict("max_rounds_exceeded")
+        selected = payload.get("selected_skill_ids", existing["selected_skill_ids"])
+        if not isinstance(selected, list) or not all(isinstance(item, str) and item.strip() for item in selected):
+            raise CollaborationConflict("invalid_selected_skill_ids")
+        if len(selected) != len(set(selected)):
+            raise CollaborationConflict("invalid_selected_skill_ids")
+        return {"round": next_round, "selected_skill_ids": list(selected)}
+
+    @staticmethod
+    def _coordination(node: models.AgentTaskNode | None) -> dict[str, Any]:
+        raw = dict(node.input_payload or {}).get("coordination") if node is not None else None
+        if not isinstance(raw, Mapping):
+            return {"round": 0, "selected_skill_ids": []}
+        round_number = raw.get("round", 0)
+        selected = raw.get("selected_skill_ids", [])
+        if isinstance(round_number, bool) or not isinstance(round_number, int) or round_number < 0:
+            round_number = 0
+        if not isinstance(selected, list) or not all(isinstance(item, str) for item in selected):
+            selected = []
+        return {"round": round_number, "selected_skill_ids": list(selected)}
+
+    @staticmethod
+    def _root_node_count(db: Session, root_task_id: str) -> int:
+        return db.scalar(
+            select(func.count(models.AgentTaskNode.id)).where(
+                models.AgentTaskNode.root_task_id == root_task_id
+            )
+        ) or 0
+
+    def _parent_chain_assignees(
+        self, db: Session, parent: models.AgentTaskNode
+    ) -> set[str]:
+        assignees: set[str] = set()
+        current: models.AgentTaskNode | None = parent
+        while current is not None:
+            assignees.add(current.assignee_agent_id)
+            if current.parent_task_id is None:
+                break
+            current = db.get(models.AgentTaskNode, current.parent_task_id)
+        return assignees
+
+    def _team_capability_catalog(self, db: Session, team_id: str) -> list[dict[str, Any]]:
+        """Expose only active, runtime-bound current-team members and granted tools."""
+        team = db.get(models.Team, team_id)
+        if team is None:
+            raise CollaborationConflict("unknown_team")
+        member_ids = {team.leader_employee_id}
+        member_ids.update(db.scalars(
+            select(models.TeamMember.employee_id).where(models.TeamMember.team_id == team_id)
+        ))
+        catalog: list[dict[str, Any]] = []
+        for employee_id in sorted(member_ids):
+            employee = db.get(models.DigitalEmployee, employee_id)
+            if employee is None or employee.status != "active" or not self._runtime_ref(employee):
+                continue
+            grants = list(db.scalars(
+                select(models.EmployeePluginGrant).where(
+                    models.EmployeePluginGrant.employee_id == employee_id,
+                    models.EmployeePluginGrant.decision_mode == "allow",
+                )
+            ))
+            capability_ids = sorted({grant.plugin_id for grant in grants})
+            catalog.append({
+                "agent_id": employee.employee_no,
+                "name": employee.name,
+                "department": employee.department,
+                "runtime_bound": True,
+                "capabilities": capability_ids,
+                "tool_summaries": capability_ids,
+            })
+        return catalog
+
     @staticmethod
     def _validate_subtask(raw: Any) -> dict[str, Any]:
         if not isinstance(raw, Mapping):
@@ -839,7 +1130,7 @@ class AgentTeamsCollaborationService:
         dependencies = raw.get("depends_on", [])
         material = raw.get("material", raw.get("input_payload", {}))
         required = raw.get("required", True)
-        capability = raw.get("capability", "")
+        capability = raw.get("required_capability", raw.get("capability", ""))
         if not all(isinstance(value, str) and value.strip() for value in (key, title, instruction, assignee)):
             raise CollaborationConflict("invalid_subtask")
         if not isinstance(dependencies, list) or not all(isinstance(value, str) and value for value in dependencies):
@@ -855,6 +1146,7 @@ class AgentTeamsCollaborationService:
             "material": dict(material),
             "required": required,
             "capability": capability,
+            "requires_capability": "required_capability" in raw,
         }
 
     @staticmethod

@@ -391,6 +391,204 @@ def test_optional_child_failure_does_not_block_parent(db_session):
     assert db_session.get(models.AgentTaskNode, run.id).status == "summarizing"
 
 
+def test_dependent_child_stays_blocked_until_predecessor_completes(db_session):
+    """Removing dependency gating would assign the IT check before HR evidence exists."""
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [
+            _subtask("hr-check", "VE-0002"),
+            _subtask("it-check", "VE-0003", depends_on=["hr-check"]),
+        ],
+    )
+    hr_check = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id, client_task_key="hr-check"
+    ).one()
+    it_check = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id, client_task_key="it-check"
+    ).one()
+
+    assert it_check.status == "blocked"
+    assert db_session.query(models.AgentMessage).filter_by(
+        task_id=it_check.id, message_type="task.assign", direction="outbound"
+    ).count() == 0
+
+    _start_node(db_session, run, hr_check)
+    _apply_node_message(
+        db_session,
+        run,
+        hr_check,
+        type="task.result",
+        key="result",
+        payload={"result": "HR evidence", "token": "must-not-leak"},
+    )
+
+    assignment = db_session.query(models.AgentMessage).filter_by(
+        task_id=it_check.id, message_type="task.assign", direction="outbound"
+    ).one()
+    assert it_check.status == "assigned"
+    assert assignment.payload["dependency_results"] == [
+        {"client_task_key": "hr-check", "status": "completed", "result": {"result": "HR evidence"}}
+    ]
+    assert db_session.query(models.AgentTaskEvent).filter_by(
+        task_id=it_check.id, event_type="task.unblocked"
+    ).count() == 1
+
+
+def test_manager_can_delegate_follow_up_round_from_summarizing(db_session):
+    """Removing the summarizing transition would prevent adaptive manager rounds."""
+    run, leader = _create_run(db_session)
+    root = db_session.get(models.AgentTaskNode, run.id)
+    root.status = "summarizing"
+    root.input_payload = {"coordination": {"round": 1, "selected_skill_ids": ["scenario-a"]}}
+    db_session.flush()
+
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [_subtask("follow-up", "VE-0002")],
+        key="follow-up",
+    )
+
+    assert root.status == "waiting_children"
+    assert root.input_payload["coordination"] == {
+        "round": 2,
+        "selected_skill_ids": ["scenario-a"],
+    }
+
+
+def test_delegate_rejects_node_limit_without_partial_tree(db_session):
+    """Removing total-node validation would persist a child after the root limit is full."""
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict
+
+    run, leader = _create_run(db_session)
+    service = AgentTeamsCollaborationService(max_nodes=1)
+    root = db_session.get(models.AgentTaskNode, run.id)
+    message = _protocol(
+        root_id=run.id,
+        task_id=run.id,
+        sender="DT-E10281",
+        receiver="platform",
+        type="task.delegate",
+        key=f"{run.id}:node-limit",
+        payload={"subtasks": [_subtask("one", "VE-0002")]},
+    )
+
+    with pytest.raises(CollaborationConflict, match="max_nodes_exceeded"):
+        service.apply_message(db_session, matrix_sender=_matrix_sender(leader.runtime_ref), message=message)
+
+    assert root.status == "planning"
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+    assert db_session.query(models.AgentMessage).filter_by(
+        root_task_id=run.id, message_type="task.assign"
+    ).count() == 0
+
+
+def test_delegate_rejects_follow_up_round_limit_without_partial_tree(db_session):
+    """Removing round validation would let the manager exceed its bounded follow-up rounds."""
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict
+
+    run, leader = _create_run(db_session)
+    root = db_session.get(models.AgentTaskNode, run.id)
+    root.status = "summarizing"
+    root.input_payload = {"coordination": {"round": 1}}
+    service = AgentTeamsCollaborationService(max_rounds=1)
+    message = _protocol(
+        root_id=run.id,
+        task_id=run.id,
+        sender="DT-E10281",
+        receiver="platform",
+        type="task.delegate",
+        key=f"{run.id}:round-limit",
+        payload={"subtasks": [_subtask("one", "VE-0002")]},
+    )
+
+    with pytest.raises(CollaborationConflict, match="max_rounds_exceeded"):
+        service.apply_message(db_session, matrix_sender=_matrix_sender(leader.runtime_ref), message=message)
+
+    assert root.status == "summarizing"
+    assert root.input_payload == {"coordination": {"round": 1}}
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+
+
+def test_delegate_rejects_capability_outside_current_team_catalog(db_session):
+    """Removing capability validation would let a plan name an ability no current teammate can use."""
+    from app.services.agentteams_collaboration import CollaborationConflict
+
+    run, leader = _create_run(db_session)
+    invalid = _subtask("unknown-capability", "VE-0002")
+    invalid["required_capability"] = "not-granted-by-this-team"
+
+    with pytest.raises(CollaborationConflict, match="capability_not_available"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [invalid])
+
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+
+
+def test_team_capability_catalog_only_lists_active_runtime_bound_team_members(db_session):
+    """Removing team filtering would expose a global employee-pool candidate to the manager."""
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService
+
+    catalog = AgentTeamsCollaborationService()._team_capability_catalog(db_session, "TEAM-ONBOARD")
+
+    assert {item["agent_id"] for item in catalog} == {"VE-0001", "VE-0002", "VE-0003", "RPA-0001"}
+    assert "VE-0004" not in {item["agent_id"] for item in catalog}
+    assert all(item["runtime_bound"] is True for item in catalog)
+
+
+def test_delegate_rejects_parent_chain_assignee_without_partial_tree(db_session):
+    """Removing ancestor validation would allow a worker to delegate work back to its manager."""
+    from app.services.agentteams_collaboration import CollaborationConflict
+
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("hr", "VE-0002")])
+    hr = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, hr)
+
+    with pytest.raises(CollaborationConflict, match="parent_chain_cycle"):
+        _delegate(
+            db_session,
+            run,
+            "VE-0002",
+            db_session.get(models.DigitalEmployee, "VE-0002").runtime_ref,
+            [_subtask("back-to-manager", "DT-E10281")],
+            key="parent-chain",
+            parent=hr,
+        )
+
+    assert hr.status == "running"
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=hr.id).count() == 0
+
+
+def test_required_child_failure_marks_root_failed(db_session):
+    """Removing failure propagation would allow a root summary to hide a required failure."""
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("required", "VE-0002")])
+    child = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, child)
+
+    _apply_node_message(
+        db_session,
+        run,
+        child,
+        type="task.failed",
+        key="required-failed",
+        payload={"error_code": "evidence_missing"},
+    )
+
+    root = db_session.get(models.AgentTaskNode, run.id)
+    assert root.status == "failed"
+    assert db_session.get(models.TaskRun, run.id).status == "failed"
+    assert db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id, message_type="task.summary", direction="outbound"
+    ).count() == 0
+
+
 def test_task_summary_completes_root_and_task_run(db_session):
     from app.services.agentteams_collaboration import apply_message
 
