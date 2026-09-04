@@ -34,9 +34,9 @@ def load_runtime_config(role: str, path: Path | None = None, *, env: dict[str, s
         raise ValueError("invalid_runtime_config")
     if not environment.get("DEEPSEEK_API_KEY"):
         raise ValueError("deepseek_key_missing")
-    authority = default_runtime_config_path(environment).resolve()
-    selected = authority if path is None else Path(path).resolve()
-    if selected != authority:
+    authority = default_runtime_config_path(environment)
+    selected = authority if path is None else Path(path)
+    if os.path.normcase(os.path.abspath(selected)) != os.path.normcase(os.path.abspath(authority)):
         raise ValueError("invalid_runtime_config")
     runtime = load_strict_runtime_config(selected, environ=environment)
     agent = runtime.agents[role]

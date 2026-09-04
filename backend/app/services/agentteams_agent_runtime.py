@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import time
 from typing import Any, Callable, Literal, Mapping, Protocol
 
@@ -697,7 +698,14 @@ class AgentRuntime:
     def _load_state(self) -> dict[str, Any]:
         default = {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}, "pending_outbox": None, "agent_id": None, "mxid": None, "heartbeat_at": None, "heartbeat_signature": None}
         try:
-            raw = json.loads(self._state_path.read_text(encoding="utf-8"))
+            require_safe_path(self.config.state_dir, allow_missing=True)
+            require_safe_path(self._state_path)
+            descriptor = os.open(self._state_path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            with os.fdopen(descriptor, "rb") as handle:
+                metadata = os.fstat(handle.fileno())
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_STATE_BYTES:
+                    return default
+                raw = json.loads(handle.read(_MAX_STATE_BYTES + 1).decode("utf-8"))
         except (OSError, ValueError, TypeError):
             return default
         if not isinstance(raw, dict):
@@ -723,12 +731,25 @@ class AgentRuntime:
             safe["pending_outbox"] = None
             security = safe.setdefault("security", {})
             security["pending_corrupt"] = min(9999, int(security.get("pending_corrupt", 0)) + 1)
-        temporary = self._state_path.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(safe, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self._state_path)
+        temporary = self.config.state_dir / f".{self.config.agent_id}.{os.getpid()}.{time.time_ns()}.tmp"
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                metadata = os.fstat(handle.fileno())
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ValueError("invalid_runtime_config")
+                json.dump(safe, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            require_safe_path(self.config.state_dir)
+            require_safe_path(temporary)
+            os.replace(temporary, self._state_path)
+        finally:
+            if temporary.exists():
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
 
     def _mark_processed(self, state, event_id) -> None:
         state["processed_event_ids"] = self._trim([*state["processed_event_ids"], event_id])

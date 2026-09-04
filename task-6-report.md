@@ -107,3 +107,11 @@ process-tree probe: `taskkill.exe` returns `Access denied` in this sandbox.
   after `mkdir`; symlink/reparse ancestors fail closed. The existing mode
   selector already normalizes unknown values to strict.
 - Focused runtime/config/CLI regression: `36 passed`.
+
+## Review fix round 3
+
+- State persistence now creates an exclusive, unique temporary file, verifies
+  its regular-file handle, fsyncs it, and rechecks safe parent paths before
+  replacement. State loading is bounded and handle-checked.
+- CLI compares authority paths without resolving links before the strict loader
+  validates them. Focused state/runtime tests: `33 passed`.
