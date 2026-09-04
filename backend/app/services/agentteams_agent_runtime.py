@@ -733,11 +733,13 @@ class AgentRuntime:
             security["pending_corrupt"] = min(9999, int(security.get("pending_corrupt", 0)) + 1)
         temporary = self.config.state_dir / f".{self.config.agent_id}.{os.getpid()}.{time.time_ns()}.tmp"
         descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+        temporary_identity = None
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
                 metadata = os.fstat(handle.fileno())
                 if not stat.S_ISREG(metadata.st_mode):
                     raise ValueError("invalid_runtime_config")
+                temporary_identity = (metadata.st_dev, metadata.st_ino)
                 json.dump(safe, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -747,7 +749,9 @@ class AgentRuntime:
         finally:
             if temporary.exists():
                 try:
-                    temporary.unlink()
+                    metadata = temporary.stat(follow_symlinks=False)
+                    if temporary_identity == (metadata.st_dev, metadata.st_ino):
+                        temporary.unlink()
                 except OSError:
                     pass
 

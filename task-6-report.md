@@ -115,3 +115,6 @@ process-tree probe: `taskkill.exe` returns `Access denied` in this sandbox.
   replacement. State loading is bounded and handle-checked.
 - CLI compares authority paths without resolving links before the strict loader
   validates them. Focused state/runtime tests: `33 passed`.
+
+Round 3 follow-up adds identity-safe temporary cleanup and symlink-authority
+coverage (`29 passed, 1 skipped` where symlink creation is unavailable).
