@@ -816,6 +816,21 @@ def test_wide_material_hits_global_budget_before_canonical_serialization(db_sess
     assert db_session.query(models.AgentMessage).filter_by(direction="outbound").count() == before_outbox
 
 
+def test_compact_json_below_byte_budget_is_not_rejected_by_shape(db_session):
+    # 1 root dict + 32 lists + 256 integer leaves = 289 visited values, while
+    # canonical JSON remains well below the 4 KiB material byte budget.
+    material = {f"k{index}": list(range(8)) for index in range(32)}
+    assert len(json.dumps(material, separators=(",", ":")).encode("utf-8")) < 4096
+    run, leader = _create_run(db_session)
+    subtask = _subtask("compact-material", "VE-0002")
+    subtask["material"] = material
+
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [subtask])
+
+    child = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    assert child.input_payload == material
+
+
 def test_locked_context_refresh_rejects_second_delegate_from_stale_session(db_session):
     from app.database import SessionLocal
     from app.services.agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict

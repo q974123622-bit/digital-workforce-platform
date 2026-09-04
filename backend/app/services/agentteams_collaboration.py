@@ -82,7 +82,9 @@ _MAX_MATERIAL_STRING_LENGTH = 1024
 _MAX_MATERIAL_KEY_LENGTH = 128
 _MAX_MATERIAL_CANONICAL_BYTES = 4096
 _MAX_MATERIAL_INTEGER_BITS = 8192
-_MAX_MATERIAL_VISITED_NODES = 256
+# A compact canonical JSON document has at least one byte per visited value;
+# keep the shape guard no stricter than the 4 KiB payload contract.
+_MAX_MATERIAL_VISITED_NODES = _MAX_MATERIAL_CANONICAL_BYTES
 _SAFE_CLIENT_TASK_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _SECRET_FIELD_PATTERN = re.compile(
     r"(?:password|passwd|pwd|token|secret|key|authorization|credential|cookie|header|endpoint|url|uri|"
