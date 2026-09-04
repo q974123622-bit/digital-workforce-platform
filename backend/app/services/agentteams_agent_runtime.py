@@ -12,6 +12,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,7 @@ from .agentteams_decisions import (
 )
 from .agentteams_gateway import MatrixEvent
 from .agentteams_protocol import AgentProtocolMessage, parse_protocol_lines, render_protocol_line
+from .agentteams_runtime_config import is_safe_agent_id
 
 
 Role = Literal["manager", "hr", "it", "audit"]
@@ -55,7 +57,12 @@ _MAX_PENDING_ENVELOPE_BYTES = 8_192
 _PENDING_VERSION = 1
 _SENSITIVE_TEXT = re.compile(r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+|\b(?:https?|wss?|file|ftp)://\S+|\b(?:api[_-]?key|password|token|authorization|credential)\s*[:=]\s*\S+|\b[a-z_][a-z0-9_]*\s*=\s*\S+|traceback\s*\(|\bfile\s+['\"]?[a-z]:[/\\])", re.I)
 _OUTBOUND_TYPES = {"agent.message", "task.accepted", "task.progress", "task.delegate", "task.summary", "task.failed", "tool.request", "task.result"}
-_SAFE_AGENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}")
+
+
+def heartbeat_signature(agent_id: str, mxid: str, heartbeat_at: str, token: str) -> str:
+    """Authenticate the minimal liveness record without persisting its key."""
+    message = f"{agent_id}\n{mxid}\n{heartbeat_at}".encode("utf-8")
+    return hmac.new(token.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
 class MatrixProtocolTransport(Protocol):
@@ -85,7 +92,7 @@ class AgentRuntimeConfig:
     pause_seconds: float = 3.0
 
     def __post_init__(self) -> None:
-        if self.role not in _ROLES or not _SAFE_AGENT_ID.fullmatch(self.agent_id) or not self.matrix_mxid.startswith("@") or not self.matrix_token or not self.room_id:
+        if self.role not in _ROLES or not is_safe_agent_id(self.agent_id) or not self.matrix_mxid.startswith("@") or not self.matrix_token or not self.room_id:
             raise ValueError("invalid_runtime_config")
         if self.trusted_sender_mxids.get(self.agent_id) != self.matrix_mxid:
             raise ValueError("invalid_runtime_config")
@@ -127,7 +134,15 @@ class AgentRuntime:
         sent, so a retry can replay the exact envelopes without another model
         call.
         """
-        self._state["heartbeat_at"] = datetime.now(timezone.utc).isoformat()
+        heartbeat_at = datetime.now(timezone.utc).isoformat()
+        self._state.update({
+            "agent_id": self.config.agent_id,
+            "mxid": self.config.matrix_mxid,
+            "heartbeat_at": heartbeat_at,
+            "heartbeat_signature": heartbeat_signature(
+                self.config.agent_id, self.config.matrix_mxid, heartbeat_at, self.config.matrix_token,
+            ),
+        })
         self._save_state()
         replayed = 0
         if self._state.get("pending_outbox"):
@@ -553,7 +568,7 @@ class AgentRuntime:
     def _complete_state(value: Any) -> bool:
         if not isinstance(value, Mapping):
             return False
-        required = {"cursor", "processed_event_ids", "processed_idempotency_keys", "tasks", "security", "pending_outbox", "heartbeat_at"}
+        required = {"cursor", "processed_event_ids", "processed_idempotency_keys", "tasks", "security", "pending_outbox", "agent_id", "mxid", "heartbeat_at", "heartbeat_signature"}
         if set(value) != required:
             return False
         if value.get("cursor") is not None and not isinstance(value.get("cursor"), str):
@@ -561,6 +576,12 @@ class AgentRuntime:
         if value.get("pending_outbox") is not None or not isinstance(value.get("tasks"), Mapping):
             return False
         if value.get("heartbeat_at") is not None and not isinstance(value.get("heartbeat_at"), str):
+            return False
+        if value.get("agent_id") is not None and not isinstance(value.get("agent_id"), str):
+            return False
+        if value.get("mxid") is not None and not isinstance(value.get("mxid"), str):
+            return False
+        if value.get("heartbeat_signature") is not None and not isinstance(value.get("heartbeat_signature"), str):
             return False
         for name in ("processed_event_ids", "processed_idempotency_keys"):
             tracked = value.get(name)
@@ -655,19 +676,22 @@ class AgentRuntime:
             raise AgentDecisionError("skill_selection_failed")
         return list(values)
 
-    def _successful_audit_ids(self, evidence: Any) -> list[str]:
+    def _successful_audit_ids(self, evidence: Any) -> list[int]:
         if not isinstance(evidence, list):
             return []
         for item in reversed(evidence):
             value = item.get("value") if isinstance(item, Mapping) and item.get("kind") == "tool.result" else None
             if isinstance(value, Mapping) and value.get("ok") is True:
                 ids = value.get("audit_ids")
-                if isinstance(ids, list) and ids and all(isinstance(item, str) and item for item in ids):
-                    return self._bounded_text_list(ids, 16)
+                if isinstance(ids, list) and ids and all(
+                    isinstance(item, int) and not isinstance(item, bool) and 0 < item < 2 ** 63
+                    for item in ids
+                ):
+                    return ids[:16]
         return []
 
     def _load_state(self) -> dict[str, Any]:
-        default = {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}, "pending_outbox": None, "heartbeat_at": None}
+        default = {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}, "pending_outbox": None, "agent_id": None, "mxid": None, "heartbeat_at": None, "heartbeat_signature": None}
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):

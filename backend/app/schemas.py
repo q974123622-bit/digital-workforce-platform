@@ -713,12 +713,15 @@ class AgentCollaborationHealthOut(BaseModel):
     enabled: bool
     ready_for_demo: bool
     reason: str
+    mode: Literal["local_demo", "agentteams_strict"] = "agentteams_strict"
+    transport: Literal["local", "matrix"] = "matrix"
+    strict_ready: bool = False
+    configured_team_id: str = ""
     matrix: str
     room: str
     manager: str
     platform_team: str
     workers: list[AgentWorkerHealthOut] = Field(default_factory=list)
-
 
 class AgentFinalResultOut(BaseModel):
     task_id: str

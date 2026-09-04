@@ -14,6 +14,7 @@ READY_HEALTH = {
     "manager": "configured",
     "platform_team": "ready",
     "strict_ready": True,
+    "configured_team_id": "TEAM-ONBOARD",
     "ready_for_demo": True,
     "reason": "",
     "workers": [
@@ -88,7 +89,7 @@ def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbe
     monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
     config_path = tmp_path / "runtime.json"
     config_path.write_text(json.dumps({
-        "matrix_url": "http://matrix.test", "room_id": "!team:test",
+        "matrix_url": "http://matrix.test", "room_id": "!team:test", "team_id": "TEAM-ONBOARD",
         "platform": {"mxid": "@platform:test", "token": "platform-token"},
         "agents": {
             "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token"},
@@ -104,8 +105,12 @@ def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbe
     db_session.flush()
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    for agent_id in ("VE-0001", "VE-0002", "VE-0003", "VE-0005"):
-        (state_dir / f"{agent_id}.json").write_text(json.dumps({"heartbeat_at": datetime.now(timezone.utc).isoformat()}), encoding="utf-8")
+    from app.services.agentteams_agent_runtime import heartbeat_signature
+    tokens = {"VE-0001": "manager-token", "VE-0002": "hr-token", "VE-0003": "it-token", "VE-0005": "audit-token"}
+    mxids = {"VE-0001": "@manager:test", "VE-0002": "@hr:test", "VE-0003": "@it:test", "VE-0005": "@audit:test"}
+    for agent_id in tokens:
+        heartbeat_at = datetime.now(timezone.utc).isoformat()
+        (state_dir / f"{agent_id}.json").write_text(json.dumps({"agent_id": agent_id, "mxid": mxids[agent_id], "heartbeat_at": heartbeat_at, "heartbeat_signature": heartbeat_signature(agent_id, mxids[agent_id], heartbeat_at, tokens[agent_id])}), encoding="utf-8")
 
     class FakeGateway:
         def __init__(self, *, matrix_token, **_kwargs):

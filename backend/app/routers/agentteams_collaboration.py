@@ -8,6 +8,7 @@ submission after a live Matrix room check has succeeded.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hmac
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,7 @@ from ..services.agentteams_collaboration import (
     matrix_user_id_for_runtime,
 )
 from ..services.agentteams_gateway import AgentTeamsGateway
+from ..services.agentteams_agent_runtime import heartbeat_signature
 from ..services.agentteams_runtime_config import default_runtime_config_path, load_strict_runtime_config
 
 
@@ -132,6 +134,7 @@ def _normalise_health(raw_health: dict) -> dict:
         "platform_team": platform_team,
         "workers": workers,
         "strict_ready": raw_health.get("strict_ready") is True,
+        "configured_team_id": str(raw_health.get("configured_team_id") or ""),
     }
 
 
@@ -142,9 +145,9 @@ def _heartbeat_max_age_seconds() -> int:
         return 30
 
 
-def _state_heartbeat(state_dir: Path, agent_id: str, *, now: datetime) -> str | None:
+def _state_heartbeat(state_dir: Path, identity, *, now: datetime) -> str | None:
     """Read one bounded regular state file; malformed/old state is not live."""
-    path = state_dir / f"{agent_id}.json"
+    path = state_dir / f"{identity.agent_id}.json"
     try:
         if path.is_symlink():
             return None
@@ -153,6 +156,10 @@ def _state_heartbeat(state_dir: Path, agent_id: str, *, now: datetime) -> str | 
             return None
         value = json.loads(path.read_text(encoding="utf-8"))
         heartbeat = value.get("heartbeat_at") if isinstance(value, dict) else None
+        if not isinstance(value, dict) or value.get("agent_id") != identity.agent_id or value.get("mxid") != identity.mxid: return None
+        signature = value.get("heartbeat_signature")
+        expected = heartbeat_signature(identity.agent_id, identity.mxid, heartbeat, identity.token) if isinstance(heartbeat, str) else ""
+        if not isinstance(signature, str) or not hmac.compare_digest(signature, expected): return None
         parsed = datetime.fromisoformat(heartbeat) if isinstance(heartbeat, str) else None
         if parsed is None or parsed.tzinfo is None:
             return None
@@ -191,8 +198,8 @@ def _strict_environment(db: Session, enabled: bool) -> dict:
                 gateway.close()
             except Exception:
                 pass
-    team = db.get(models.Team, "TEAM-ONBOARD")
-    member_ids = set(db.scalars(select(models.TeamMember.employee_id).where(models.TeamMember.team_id == "TEAM-ONBOARD"))) if team is not None else set()
+    team = db.get(models.Team, runtime.team_id)
+    member_ids = set(db.scalars(select(models.TeamMember.employee_id).where(models.TeamMember.team_id == runtime.team_id))) if team is not None else set()
     state_root = default_runtime_config_path().parent / "state"
     now = datetime.now(timezone.utc)
     workers = []
@@ -200,12 +207,12 @@ def _strict_environment(db: Session, enabled: bool) -> dict:
     for role, identity in runtime.agents.items():
         employee = db.get(models.DigitalEmployee, identity.agent_id)
         bound = bool(employee and employee.status == "active" and employee.runtime_type == "agentteams" and identity.agent_id in member_ids and matrix_user_id_for_runtime(employee.runtime_ref) == identity.mxid)
-        heartbeat = _state_heartbeat(state_root, identity.agent_id, now=now)
+        heartbeat = _state_heartbeat(state_root, identity, now=now)
         ready = bool(verified.get(role) and bound and heartbeat)
         team_bound = team_bound and bound
         workers.append({"agent_id": identity.agent_id, "matrix_user_id": identity.mxid, "status": "ready" if ready else "unavailable", **({"last_heartbeat_at": heartbeat} if heartbeat else {})})
     strict_ready = bool(enabled and verified.get("platform") and all(verified.get(role) for role in runtime.agents) and expected_members <= members and team_bound and all(item["status"] == "ready" for item in workers))
-    return _normalise_health({"enabled": enabled, "matrix": "ready" if verified.get("platform") else "unavailable", "room": "ready" if expected_members <= members else "unavailable", "manager": "ready" if verified.get("manager") else "not_configured", "platform_team": "ready" if team_bound else "missing", "workers": workers, "strict_ready": strict_ready})
+    return _normalise_health({"enabled": enabled, "matrix": "ready" if verified.get("platform") else "unavailable", "room": "ready" if expected_members <= members else "unavailable", "manager": "ready" if verified.get("manager") else "not_configured", "platform_team": "ready" if team_bound else "missing", "workers": workers, "strict_ready": strict_ready, "configured_team_id": runtime.team_id})
 
 
 def inspect_environment(db: Session) -> dict:
@@ -297,9 +304,9 @@ def _task_out(
     )
 
 
-def _require_ready(db: Session) -> None:
+def _require_ready(db: Session, *, team_id: str) -> None:
     health = _normalise_health(inspect_environment(db))
-    if health.get("ready_for_demo") is not True:
+    if health.get("ready_for_demo") is not True or health.get("configured_team_id") != team_id:
         raise HTTPException(
             status_code=503,
             detail={"message": "AgentTeams 协作环境未就绪", "health": health},
@@ -333,7 +340,7 @@ def create_task(
         raise HTTPException(status_code=404, detail="团队不存在")
     if payload.leader_agent_id != team.leader_employee_id:
         raise HTTPException(status_code=403, detail="协作任务必须使用团队指定负责人")
-    _require_ready(db)
+    _require_ready(db, team_id=payload.team_id)
     service = _service()
 
     def create_for_actor() -> models.TaskRun:
@@ -480,7 +487,7 @@ def retry_task(task_id: str, actor_no: str = Query(...), db: Session = Depends(g
     if run.status not in _TERMINAL_STATUSES or root.status not in _TERMINAL_STATUSES:
         raise HTTPException(status_code=409, detail="仅终态协作任务可以重试")
 
-    _require_ready(db)
+    _require_ready(db, team_id=run.team_id)
     service = _service()
 
     def retry_for_actor() -> models.TaskRun:

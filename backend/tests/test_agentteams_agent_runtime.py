@@ -183,7 +183,7 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
         WorkerDecision(action="complete", result="资料齐全"),
     ]
     assignment = message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload())
-    tool_result = message(type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1", payload={"ok": True, "audit_ids": ["AUD-1"], "data": {"source": "demo", "key": "drop", "note": "api_key: exposed password=hidden"}}, key="tool")
+    tool_result = message(type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1", payload={"ok": True, "audit_ids": [101], "data": {"source": "demo", "key": "drop", "note": "api_key: exposed password=hidden"}}, key="tool")
     gateway.events = [event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1), event(tool_result, event_id="$tool", ts=2)]
 
     subject.run_once()
@@ -192,11 +192,11 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     assert [item.type for item in sent] == ["task.accepted", "task.progress", "agent.message", "tool.request", "task.result"]
     assert sent[3].receiver == "platform"
     assert sent[3].payload["plugin_id"] == "agentteams-onboarding-employee"
-    assert sent[-1].payload["audit_ids"] == ["AUD-1"]
+    assert sent[-1].payload["audit_ids"] == [101]
     assert engine.worker_contexts[0].task["goal"] == "核验新员工A的完整HR入职材料，并报告缺口。"
     saved = (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
     assert "exposed" not in saved and "password" not in saved and '"key"' not in saved
-    assert "AUD-1" in saved
+    assert "101" in saved
 
 
 @pytest.mark.parametrize("decision, expected", [
@@ -308,7 +308,7 @@ def test_cli_accepts_a_role_specific_token_environment_reference(tmp_path):
 
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps({
-        "matrix_url": "http://matrix", "room_id": "!room", "platform": {"mxid": "@platform:matrix"}, "team_catalog": TEAM,
+        "matrix_url": "http://matrix", "room_id": "!room", "team_id": "TEAM-ONBOARD", "platform": {"mxid": "@platform:matrix", "token": "platform-only"}, "team_catalog": TEAM,
         "agents": {
             "manager": {"agent_id": "VE-0001", "mxid": "@manager:matrix", "token_env": "MANAGER_MATRIX_TOKEN"},
             "hr": {"agent_id": "VE-0002", "mxid": "@hr:matrix", "token": "hr-only"},
@@ -343,7 +343,7 @@ def test_cli_accepts_non_demo_team_identity_for_a_manager(tmp_path):
         "audit": {"agent_id": "AUD-88", "mxid": "@audit:matrix", "token": "audit-only"},
     }
     path = tmp_path / "custom-runtime.json"
-    path.write_text(json.dumps({"matrix_url": "http://matrix", "room_id": "!room", "platform": {"mxid": "@platform:matrix"}, "team_catalog": {}, "agents": agents}), encoding="utf-8")
+    path.write_text(json.dumps({"matrix_url": "http://matrix", "room_id": "!room", "team_id": "TEAM-CUSTOM", "platform": {"mxid": "@platform:matrix", "token": "platform-only"}, "team_catalog": {}, "agents": agents}), encoding="utf-8")
 
     config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY": "key"})
 

@@ -41,6 +41,8 @@ class AgentTeamsCollaborationRunner:
         room_id: str | None = None,
     ):
         self.gateway = gateway or AgentTeamsGateway()
+        # Strict is self-contained; an explicit local layer may override this instance.
+        self.transport_mode = "agentteams_strict"
         self.service = service or AgentTeamsCollaborationService(
             max_depth=config.agentteams_max_depth(),
             max_children=config.agentteams_max_children(),
@@ -121,9 +123,10 @@ class AgentTeamsCollaborationRunner:
                 )
                 if not valid_event_id:
                     raise ValueError("matrix_send_missing_event_id")
-            except Exception:
+            except (RuntimeError, ValueError, OSError) as exc:
                 # Do not mutate the durable outbox on an uncertain delivery.  The
                 # same idempotency key will be reused by the next retry.
+                logger.warning("agentteams_outbox_send_failed error_type=%s", exc.__class__.__name__)
                 continue
             outbound.delivery_status = "sent"
             outbound.matrix_room_id = self.room_id
@@ -142,7 +145,14 @@ class AgentTeamsCollaborationRunner:
             if not isinstance(next_cursor, str) or not next_cursor.strip():
                 raise ValueError("matrix_sync_missing_cursor")
             for event in batch.events:
-                if not event.event_id:
+                valid_event_id = (
+                    isinstance(event.event_id, str)
+                    and (
+                        (self.transport_mode == "agentteams_strict" and event.event_id.startswith("$") and len(event.event_id) > 1)
+                        or (self.transport_mode == "local_demo" and event.event_id.startswith("local-in-") and len(event.event_id) > len("local-in-"))
+                    )
+                )
+                if not valid_event_id:
                     raise ValueError("matrix_event_missing_id")
                 if self._matrix_event_seen(db, event.event_id):
                     continue

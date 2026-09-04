@@ -83,3 +83,16 @@ environment-only gateway-close smoke test was updated to the Task6 runtime.json
 contract and now verifies that all five constructed account clients close when
 membership lookup raises. The current first failure is the separate Windows
 process-tree probe: `taskkill.exe` returns `Access denied` in this sandbox.
+
+## Review fix round 1
+
+- Strict runtime state now authenticates `{agent_id,mxid,heartbeat_at}` with an
+  HMAC derived from that agent's Matrix token. The key is never persisted;
+  same-OS-account readers of the runtime token remain inside the deployment
+  trust boundary, but arbitrary state JSON cannot forge liveness.
+- Runtime config has one loader for health and the role CLI, requires a
+  configured team id, rejects portable-path and Windows-device agent ids, and
+  uses the configuration directory's `state/` folder for both paths.
+- Review RED began with the missing heartbeat signing API; focused GREEN was
+  `83 passed`. Windows reparse-point behavior is guarded where the platform
+  exposes reparse metadata; normal file/symlink paths are covered directly.

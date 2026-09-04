@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
 import sys
@@ -17,6 +16,7 @@ if str(BACKEND) not in sys.path:
 from app.services.agentteams_agent_runtime import AgentRuntime, AgentRuntimeConfig
 from app.services.agentteams_decisions import AgentDecisionEngine
 from app.services.agentteams_gateway import AgentTeamsGateway
+from app.services.agentteams_runtime_config import load_strict_runtime_config
 from app.services.agentteams_skills import ProjectSkillRegistry
 from app.services.llm import DeepSeekProvider
 
@@ -34,49 +34,19 @@ def load_runtime_config(role: str, path: Path, *, env: dict[str, str] | None = N
         raise ValueError("invalid_runtime_config")
     if not environment.get("DEEPSEEK_API_KEY"):
         raise ValueError("deepseek_key_missing")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        agent = data["agents"][role]
-        matrix_url, room_id = data["matrix_url"], data["room_id"]
-    except (OSError, ValueError, KeyError, TypeError):
-        raise ValueError("invalid_runtime_config") from None
-    token = agent.get("token")
-    token_env = agent.get("token_env")
-    if token is None and isinstance(token_env, str) and token_env:
-        token = environment.get(token_env)
-    if not all(isinstance(value, str) and value for value in (matrix_url, room_id, agent.get("agent_id"), agent.get("mxid"), token)):
-        raise ValueError("invalid_runtime_config")
-    if not agent["agent_id"] or not agent["mxid"].startswith("@"):
-        raise ValueError("invalid_runtime_config")
-    trusted = {"platform": _platform_mxid(data)}
-    for candidate_role, candidate in data["agents"].items():
-        if candidate_role not in _ROLES or not isinstance(candidate, dict) or not isinstance(candidate.get("agent_id"), str) or not candidate.get("agent_id") or not isinstance(candidate.get("mxid"), str) or not candidate["mxid"].startswith("@"):
-            raise ValueError("invalid_runtime_config")
-        trusted[candidate["agent_id"]] = candidate["mxid"]
-    allowed = set(agent.get("allowed_skill_ids") or _ROLE_SKILLS[role])
+    runtime = load_strict_runtime_config(path, environ=environment)
+    agent = runtime.agents[role]
+    trusted = {"platform": runtime.platform.mxid}
+    trusted.update({identity.agent_id: identity.mxid for identity in runtime.agents.values()})
+    allowed = set(_ROLE_SKILLS[role])
     if role == "manager":
         allowed.add("agentteams-onboarding-readiness")
     config = AgentRuntimeConfig(
-        agent_id=agent["agent_id"], role=role, matrix_mxid=agent["mxid"], matrix_token=token, room_id=room_id,
-        trusted_sender_mxids=trusted, allowed_skill_ids=allowed, team_catalog=_team_catalog(data),
-        safe_tool_catalog=list(agent.get("safe_tool_catalog") or []), state_dir=ROOT / ".agentteams-runtime" / "state",
+        agent_id=agent.agent_id, role=role, matrix_mxid=agent.mxid, matrix_token=agent.token, room_id=runtime.room_id,
+        trusted_sender_mxids=trusted, allowed_skill_ids=allowed, team_catalog=runtime.team_catalog,
+        safe_tool_catalog=[], state_dir=path.parent / "state",
     )
-    return config, matrix_url
-
-
-def _platform_mxid(data: dict) -> str:
-    platform = data.get("platform")
-    mxid = platform.get("mxid") if isinstance(platform, dict) else data.get("platform_mxid")
-    if not isinstance(mxid, str) or not mxid.startswith("@"):
-        raise ValueError("invalid_runtime_config")
-    return mxid
-
-
-def _team_catalog(data: dict) -> dict:
-    raw = data.get("team_catalog", {})
-    if not isinstance(raw, dict):
-        raise ValueError("invalid_runtime_config")
-    return raw
+    return config, runtime.matrix_url
 
 
 def main(argv: list[str] | None = None) -> int:

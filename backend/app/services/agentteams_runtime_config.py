@@ -11,12 +11,15 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import stat
 from typing import Mapping
 
 
 _ROLES = ("manager", "hr", "it", "audit")
 _MAX_RUNTIME_CONFIG_BYTES = 65_536
+_SAFE_AGENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}")
+_WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
 
 
 @dataclass(frozen=True)
@@ -32,12 +35,14 @@ class StrictRuntimeConfig:
     room_id: str
     platform: MatrixIdentity
     agents: Mapping[str, MatrixIdentity]
-    team_catalog: object
+    team_id: str
+    team_catalog: Mapping[str, object]
 
     def public_view(self) -> dict:
         return {
             "matrix_url_configured": bool(self.matrix_url),
             "room_id": self.room_id,
+            "configured_team_id": self.team_id,
             "platform_mxid": self.platform.mxid,
             "agents": {
                 role: {"agent_id": identity.agent_id, "matrix_user_id": identity.mxid}
@@ -63,6 +68,7 @@ def load_strict_runtime_config(
     env = os.environ if environ is None else environ
     target = Path(path) if path is not None else default_runtime_config_path(env)
     try:
+        _require_safe_path(target)
         if target.is_symlink():
             raise ValueError
         metadata = target.stat()
@@ -91,10 +97,11 @@ def load_strict_runtime_config(
         raise ValueError("invalid_runtime_config")
     if len({identity.agent_id for identity in agents.values()}) != len(agents):
         raise ValueError("invalid_runtime_config")
+    team_id = _text(document.get("team_id"))
     team_catalog = document.get("team_catalog")
-    if not isinstance(team_catalog, (dict, list)):
+    if not team_id or not isinstance(team_catalog, dict):
         raise ValueError("invalid_runtime_config")
-    return StrictRuntimeConfig(matrix_url, room_id, platform, agents, team_catalog)
+    return StrictRuntimeConfig(matrix_url, room_id, platform, agents, team_id, team_catalog)
 
 
 def _identity(raw: object, environ: Mapping[str, str], *, require_agent_id: bool) -> MatrixIdentity:
@@ -108,10 +115,29 @@ def _identity(raw: object, environ: Mapping[str, str], *, require_agent_id: bool
     if token_env:
         token = _text(environ.get(token_env))
     agent_id = _text(raw.get("agent_id")) if require_agent_id else None
-    if not mxid.startswith("@") or len(mxid) > 255 or not token or len(token) > 4096 or (require_agent_id and not agent_id):
+    if not mxid.startswith("@") or len(mxid) > 255 or not token or len(token) > 4096 or (require_agent_id and not is_safe_agent_id(agent_id)):
         raise ValueError("invalid_runtime_config")
     return MatrixIdentity(mxid=mxid, token=token, agent_id=agent_id)
 
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def is_safe_agent_id(value: str | None) -> bool:
+    """Permit only a portable state-file stem, never paths or DOS devices."""
+    return bool(value and _SAFE_AGENT_ID.fullmatch(value) and value.upper() not in _WINDOWS_RESERVED)
+
+
+def _require_safe_path(target: Path) -> None:
+    """Reject link/reparse ancestors before reading the credentials document."""
+    absolute = target.absolute()
+    for parent in (absolute, *absolute.parents):
+        try:
+            metadata = parent.lstat()
+        except OSError:
+            if parent == absolute:
+                raise
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
+            raise ValueError("invalid_runtime_config")

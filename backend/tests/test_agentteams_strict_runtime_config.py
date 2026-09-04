@@ -9,6 +9,7 @@ def _runtime_config() -> dict:
     return {
         "matrix_url": "http://matrix.test",
         "room_id": "!team:test",
+        "team_id": "TEAM-ONBOARD",
         "platform": {"mxid": "@platform:test", "token": "platform-token"},
         "agents": {
             "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token"},

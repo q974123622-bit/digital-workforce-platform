@@ -108,7 +108,7 @@ def test_health_closes_every_constructed_gateway_when_membership_check_raises(
     monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
     config_path = tmp_path / "runtime.json"
     config_path.write_text(json.dumps({
-        "matrix_url": "https://matrix.test", "room_id": "!room:matrix.test",
+        "matrix_url": "https://matrix.test", "room_id": "!room:matrix.test", "team_id": "TEAM-ONBOARD",
         "platform": {"mxid": "@platform:matrix.test", "token": "platform-secret"},
         "agents": {
             "manager": {"agent_id": "VE-0001", "mxid": "@manager:matrix.test", "token": "manager-secret"},
