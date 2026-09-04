@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.services.agentteams_collaboration import matrix_user_id_for_runtime
 from app.services import agentteams_lifecycle as at
 from app.services.agentteams_gateway import AgentTeamsUnavailableError
 
@@ -40,6 +41,40 @@ def test_create_worker_calls_agt(monkeypatch):
     )
     assert name == "dwp-ve-0009"
     assert any(c[:2] == ["create", "worker"] and "dwp-ve-0009" in c for c in calls)
+
+
+def test_create_worker_uses_explicit_safe_matrix_alias(monkeypatch):
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(at, "_agt", lambda args, timeout=180, input_text=None: calls.append(args) or "")
+    monkeypatch.setattr(at, "get_worker", lambda name: None)
+    monkeypatch.setattr(at, "_cp_into_container", lambda local: "/tmp/fake-soul.md")
+
+    name = at.create_worker(
+        employee_no="VE-0005",
+        employee_type="virtual",
+        display_name="审计证据助理",
+        soul="只核查审计证据。",
+        runtime_ref="audit-worker",
+        wait_ready=False,
+    )
+
+    assert name == "audit-worker"
+    assert matrix_user_id_for_runtime(name) == at.matrix_user_id(name)
+    assert any(call[:2] == ["create", "worker"] and "audit-worker" in call for call in calls)
+
+
+@pytest.mark.parametrize("runtime_ref", ["", "audit worker", "@audit-worker", "audit/worker", "Audit-Worker"])
+def test_create_worker_rejects_unsafe_explicit_matrix_alias(runtime_ref):
+    with pytest.raises(ValueError, match="invalid_worker_alias"):
+        at.create_worker(
+            employee_no="VE-0005",
+            employee_type="virtual",
+            display_name="审计证据助理",
+            soul="只核查审计证据。",
+            runtime_ref=runtime_ref,
+            wait_ready=False,
+        )
 
 
 def test_delete_worker_removes_from_team_first(monkeypatch):

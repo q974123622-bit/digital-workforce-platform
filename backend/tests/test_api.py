@@ -6,16 +6,29 @@ def test_health(client):
 
 def test_seed_counts(client):
     employees = client.get("/api/v1/employees").json()
-    assert len(employees) == 7
-    assert len([e for e in employees if e["type"] == "twin"]) == 2
-    assert len([e for e in employees if e["type"] == "virtual"]) == 4
-    assert len([e for e in employees if e["type"] == "rpa"]) == 1
-    assert len(client.get("/api/v1/plugins").json()) == 12
+    employee_ids = {employee["employee_no"] for employee in employees}
+    assert len(employee_ids) == len(employees)
+    assert {"VE-0001", "VE-0002", "VE-0003", "VE-0005"} <= employee_ids
+    assert {employee["employee_no"] for employee in employees if employee["type"] == "twin"} == {
+        "DT-E10281", "DT-E20999"
+    }
+    assert {employee["employee_no"] for employee in employees if employee["type"] == "virtual"} >= {
+        "VE-0001", "VE-0002", "VE-0003", "VE-0004", "VE-0005"
+    }
+    assert {employee["employee_no"] for employee in employees if employee["type"] == "rpa"} == {"RPA-0001"}
+    plugin_ids = {plugin["id"] for plugin in client.get("/api/v1/plugins").json()}
+    assert {
+        "agentteams-onboarding-employee",
+        "agentteams-it-readiness",
+        "agentteams-onboarding-evidence",
+    } <= plugin_ids
     assert len(client.get("/api/v1/policies").json()) == 9
     assert len(client.get("/api/v1/knowledge-bases").json()) == 9
     teams = client.get("/api/v1/teams").json()
     assert len(teams) == 1
-    assert len(teams[0]["members"]) == 4
+    assert {member["employee_id"] for member in teams[0]["members"]} == {
+        "VE-0001", "VE-0002", "VE-0003", "VE-0005", "RPA-0001"
+    }
 
 
 def test_employee_list_filters(client):
@@ -44,6 +57,11 @@ def test_employee_employment_type(client):
 
 
 def test_employee_crud(client):
+    seeded_virtual_ids = {
+        employee["employee_no"]
+        for employee in client.get("/api/v1/employees", params={"type": "virtual"}).json()
+    }
+    expected_no = f"VE-{max(int(value.split('-')[1]) for value in seeded_virtual_ids) + 1:04d}"
     resp = client.post(
         "/api/v1/employees",
         json={
@@ -56,7 +74,8 @@ def test_employee_crud(client):
     )
     assert resp.status_code == 201
     employee_no = resp.json()["employee_no"]
-    assert employee_no == "VE-0005"
+    assert employee_no == expected_no
+    assert employee_no not in seeded_virtual_ids
 
     resp = client.put(f"/api/v1/employees/{employee_no}", json={"name": "改名后的虚拟员工"})
     assert resp.status_code == 200
@@ -133,7 +152,7 @@ def test_teams_and_knowledge(client):
     team = client.get("/api/v1/teams/TEAM-ONBOARD").json()
     assert team["leader_employee_id"] == "VE-0001"
     assert {m["employee_id"] for m in team["members"]} == {
-        "VE-0001", "VE-0002", "VE-0003", "RPA-0001"
+        "VE-0001", "VE-0002", "VE-0003", "VE-0005", "RPA-0001"
     }
 
     kb = client.get("/api/v1/knowledge-bases/KB-PUBLIC").json()

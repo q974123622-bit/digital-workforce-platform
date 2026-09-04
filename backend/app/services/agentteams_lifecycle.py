@@ -12,11 +12,15 @@ import shutil
 import subprocess
 import tempfile
 import time
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
 from .agentteams_gateway import AgentTeamsUnavailableError
+
+
+_WORKER_ALIAS_PATTERN = re.compile(r"[a-z0-9][a-z0-9._=-]{0,63}")
 
 def worker_name(employee_no: str, employee_type: str) -> str:
     """数字员工工号 -> AgentTeams worker 名（Matrix localpart）。
@@ -30,6 +34,13 @@ def worker_name(employee_no: str, employee_type: str) -> str:
 
 def matrix_user_id(worker: str) -> str:
     return f"@{worker}:{config.agentteams_matrix_domain()}"
+
+
+def _worker_alias(runtime_ref: str) -> str:
+    """Return a safe explicit Matrix localpart or reject it before any CLI call."""
+    if not isinstance(runtime_ref, str) or not _WORKER_ALIAS_PATTERN.fullmatch(runtime_ref):
+        raise ValueError("invalid_worker_alias")
+    return runtime_ref
 
 
 def _agt(args: list[str], timeout: float = 180, input_text: str | None = None) -> str:
@@ -75,11 +86,12 @@ def create_worker(
     employee_type: str,
     display_name: str,
     soul: str,
+    runtime_ref: str | None = None,
     wait_ready: bool = True,
     timeout: float = 240,
 ) -> str:
     """创建数字员工对应的 AgentTeams worker 容器，返回 worker 名。"""
-    name = worker_name(employee_no, employee_type)
+    name = _worker_alias(runtime_ref) if runtime_ref is not None else worker_name(employee_no, employee_type)
     if get_worker(name) is not None:
         return name
     with tempfile.NamedTemporaryFile(

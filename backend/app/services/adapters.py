@@ -16,6 +16,10 @@ _ONBOARDING_FIXTURE = (
 _ONBOARDING_EMPLOYEE_REF = "新员工A"
 
 
+class AdapterInputError(ValueError):
+    """A caller supplied invalid input to a governed demo adapter."""
+
+
 def _onboarding_fixture_section(params: dict, section_name: str) -> dict:
     """Read one fixed fictional fixture section after strict request validation.
 
@@ -23,10 +27,10 @@ def _onboarding_fixture_section(params: dict, section_name: str) -> dict:
     receive a newly built domain view, never the parsed fixture itself.
     """
     if not isinstance(params, dict) or set(params) != {"employee_ref"}:
-        raise ValueError("invalid_params")
+        raise AdapterInputError("invalid_params")
     employee_ref = params.get("employee_ref")
     if not isinstance(employee_ref, str) or employee_ref != _ONBOARDING_EMPLOYEE_REF:
-        raise ValueError("invalid_employee_ref")
+        raise AdapterInputError("invalid_employee_ref")
 
     try:
         fixture = json.loads(_ONBOARDING_FIXTURE.read_text(encoding="utf-8"))

@@ -37,3 +37,22 @@ def test_agentteams_onboarding_demo_seed_grants_only_the_new_domain_plugins(db_s
         (employee_id, plugin_id, "execute", "allow")
         for employee_id, plugin_id in expected.items()
     }
+
+
+def test_agentteams_onboarding_plugins_publish_strict_employee_ref_schema():
+    data = load_seed()
+    expected_endpoints = {
+        "agentteams-onboarding-employee": "mock://agentteams/onboarding-employee",
+        "agentteams-it-readiness": "mock://agentteams/it-readiness",
+        "agentteams-onboarding-evidence": "mock://agentteams/onboarding-evidence",
+    }
+    plugins = {plugin["id"]: plugin for plugin in data["plugins"]}
+
+    for plugin_id, endpoint in expected_endpoints.items():
+        schema = plugins[plugin_id]["runtime_meta"]["input_schema"]
+        assert schema["additionalProperties"] is False
+        assert schema["required"] == ["employee_ref"]
+        assert schema["properties"]["employee_ref"] == {
+            "type": "string", "const": "新员工A", "maxLength": 16,
+        }
+        assert plugins[plugin_id]["endpoint_ref"] == endpoint

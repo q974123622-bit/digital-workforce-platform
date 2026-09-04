@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models
+from .adapters import AdapterInputError
 from .capability_contract import plugin_contract
 from .capability_executor import execute_capability
 from .identity import resolve_identity
@@ -191,13 +192,28 @@ def invoke_plugin(
             capability_id=plugin.id,
             capability_name=plugin.name,
         )
-        execution = execute_capability(
-            plugin,
-            params,
-            trace_id=trace_id,
-            context=context,
-            runtime=runtime,
-        )
+        try:
+            execution = execute_capability(
+                plugin,
+                params,
+                trace_id=trace_id,
+                context=context,
+                runtime=runtime,
+            )
+        except AdapterInputError:
+            audit_id = write_audit(
+                db,
+                trace_id=trace_id,
+                employee_id=employee_id,
+                plugin_id=plugin_id,
+                action=action,
+                decision=DECISION_DENY,
+                reason="工具参数不合法",
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "工具参数不合法", "audit_id": audit_id},
+            ) from None
         data = execution.data
         runtime_mode = execution.runtime_mode
         tool_name = execution.tool_name

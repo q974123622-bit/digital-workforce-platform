@@ -51,7 +51,11 @@ def test_agentteams_domain_tool_returns_bounded_demo_evidence_and_writes_audit(
     ("employee_id", "plugin_id"),
     [
         ("VE-0003", "agentteams-onboarding-employee"),
+        ("VE-0005", "agentteams-onboarding-employee"),
         ("VE-0002", "agentteams-onboarding-evidence"),
+        ("VE-0003", "agentteams-onboarding-evidence"),
+        ("VE-0002", "agentteams-it-readiness"),
+        ("VE-0005", "agentteams-it-readiness"),
     ],
 )
 def test_agentteams_worker_cannot_call_another_domain_tool_and_denial_is_audited(
@@ -71,24 +75,58 @@ def test_agentteams_worker_cannot_call_another_domain_tool_and_denial_is_audited
 
 
 @pytest.mark.parametrize(
-    "params, expected_error",
+    "plugin_id",
     [
-        ({"employee_ref": "未知员工"}, "invalid_employee_ref"),
-        ({"employee_ref": "新员工A" * 100}, "invalid_employee_ref"),
-        ({"employee_ref": "新员工A", "path": "C:/not-allowed.json"}, "invalid_params"),
+        "agentteams-onboarding-employee",
+        "agentteams-it-readiness",
+        "agentteams-onboarding-evidence",
     ],
 )
-def test_agentteams_tool_rejects_untrusted_input_without_leaking_fixture(
-    db_session, params, expected_error,
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"employee_ref": "未知员工"},
+        {"employee_ref": "新员工A" * 100},
+        {"employee_ref": None},
+        {"employee_ref": True},
+        {"employee_ref": []},
+        {"employee_ref": {}},
+        {"employee_ref": "新员工A", "path": "C:/not-allowed.json"},
+    ],
+)
+def test_agentteams_tool_http_rejects_untrusted_input_safely_and_audits(
+    client, db_session, plugin_id, params,
 ):
-    with pytest.raises(ValueError, match=expected_error) as error:
-        _invoke(db_session, "VE-0002", "agentteams-onboarding-employee", params)
+    before = db_session.query(models.AuditEvent).count()
 
-    rendered = str(error.value)
+    response = client.post(
+        "/internal/gateway/invoke",
+        json={
+            "employee_id": "VE-0002" if plugin_id == "agentteams-onboarding-employee" else (
+                "VE-0003" if plugin_id == "agentteams-it-readiness" else "VE-0005"
+            ),
+            "plugin_id": plugin_id,
+            "action": "execute",
+            "params": params,
+            "trace_id": f"TOOL-INVALID-{plugin_id}",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()["error"]
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["message"] == "工具参数不合法"
+    assert body["detail"]["message"] == "工具参数不合法"
+    assert isinstance(body["detail"]["audit_id"], int)
+    rendered = json.dumps(body, ensure_ascii=False)
     assert "HR-A-001" not in rendered
     assert "IT-A-001" not in rendered
     assert "AUD-A-001" not in rendered
     assert "onboarding-a.json" not in rendered
+    audit = db_session.get(models.AuditEvent, body["detail"]["audit_id"])
+    assert db_session.query(models.AuditEvent).count() == before + 1
+    assert audit.decision == "deny"
+    assert audit.reason == "工具参数不合法"
 
 
 def test_agentteams_tool_rejects_wrong_action_through_gateway_and_audits_denial(db_session):
