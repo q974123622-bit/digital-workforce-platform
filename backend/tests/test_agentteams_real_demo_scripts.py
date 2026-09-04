@@ -199,6 +199,29 @@ def test_stop_script_fails_closed_when_executable_arguments_or_start_time_do_not
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_process_helper_dot_source_does_not_change_callers_strict_mode():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        "Set-StrictMode -Off; "
+        f". '{PROCESS_HELPERS.as_posix()}'; "
+        "$value = $agentteamsStrictModeLeakProbe; "
+        "if ($null -ne $value) { throw 'unexpected probe value' }; "
+        "[Console]::WriteLine('strictmode-still-off')"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "strictmode-still-off"
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
 def test_process_helper_round_trips_difficult_arguments_through_real_windows_powershell(tmp_path):
     """Exercise the PS5.1 fallback against CreateProcess, not a string mock."""
     capture = tmp_path / "capture argv.py"

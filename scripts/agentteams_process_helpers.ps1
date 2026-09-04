@@ -1,5 +1,3 @@
-Set-StrictMode -Version Latest
-
 function Add-AgentTeamsBackslashes {
     param([System.Text.StringBuilder]$Builder, [int]$Count)
     if ($Count -gt 0) { [void]$Builder.Append((-join ('\' * $Count))) }
