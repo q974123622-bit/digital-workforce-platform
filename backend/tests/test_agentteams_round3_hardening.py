@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from app.services.agentteams_agent_runtime import AgentRuntimeConfig
+from app.services.agentteams_agent_runtime import AgentRuntime
+from app.services.agentteams_gateway import MatrixSyncBatch
 from app.services.agentteams_runtime_config import load_strict_runtime_config
 
 
@@ -42,3 +44,15 @@ def test_reparse_attribute_is_fail_closed(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(Path, "lstat", lambda self: Reparse() if self == target else original(self))
     with pytest.raises(ValueError):
         subject.load_strict_runtime_config(target)
+
+
+def test_state_save_never_reuses_legacy_fixed_tmp_sentinel(tmp_path: Path):
+    class Gateway:
+        def sync_messages(self, *_args): return MatrixSyncBatch(events=[], next_cursor="c1")
+        def close(self): pass
+    state = tmp_path / "state"; state.mkdir()
+    sentinel = state / "HR-1.json.tmp"; sentinel.write_text("do-not-touch", encoding="utf-8")
+    config = AgentRuntimeConfig(agent_id="HR-1", role="hr", matrix_mxid="@hr:test", matrix_token="token", room_id="!r", trusted_sender_mxids={"platform": "@p", "HR-1": "@hr:test"}, allowed_skill_ids={"hr-onboarding-assistant"}, state_dir=state)
+    runtime = AgentRuntime(config, Gateway(), object(), pause=lambda _: None)
+    runtime.run_once()
+    assert sentinel.read_text(encoding="utf-8") == "do-not-touch"
