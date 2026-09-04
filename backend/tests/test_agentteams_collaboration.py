@@ -742,6 +742,52 @@ def test_same_instruction_with_distinct_material_is_a_new_semantic_subtask(db_se
     assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 2
 
 
+def _too_deep_material():
+    material = current = {}
+    for index in range(12):
+        next_value = {f"level-{index}": {}}
+        current["child"] = next_value
+        current = next_value[f"level-{index}"]
+    return material
+
+
+def _recursive_material():
+    material = {}
+    material["self"] = material
+    return material
+
+
+@pytest.mark.parametrize("material_factory", [
+    _too_deep_material,
+    lambda: {f"item-{index}": index for index in range(64)},
+    lambda: {"text": "x" * 5000},
+    lambda: {"parts": ["x" * 512 for _ in range(20)]},
+    lambda: {"bad-key": object()},
+    lambda: {"not-finite": float("nan")},
+    lambda: {1: "non-string-key"},
+    _recursive_material,
+], ids=["deep", "many-items", "long-string", "byte-budget", "object", "nan", "non-string-key", "recursive"])
+def test_delegate_rejects_unbounded_or_invalid_material_without_mutation(db_session, material_factory):
+    from app.services.agentteams_collaboration import CollaborationConflict
+
+    run, leader = _create_run(db_session)
+    before_events = db_session.query(models.AgentTaskEvent).count()
+    before_outbox = db_session.query(models.AgentMessage).filter_by(direction="outbound").count()
+    before_inbound = db_session.query(models.AgentMessage).filter_by(direction="inbound").count()
+    subtask = _subtask("bounded-material", "VE-0002")
+    subtask["material"] = material_factory()
+
+    with pytest.raises(CollaborationConflict, match="invalid_material|material_too_large"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [subtask])
+
+    root = db_session.get(models.AgentTaskNode, run.id)
+    assert root.status == "planning"
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+    assert db_session.query(models.AgentTaskEvent).count() == before_events
+    assert db_session.query(models.AgentMessage).filter_by(direction="outbound").count() == before_outbox
+    assert db_session.query(models.AgentMessage).filter_by(direction="inbound").count() == before_inbound
+
+
 def test_locked_context_refresh_rejects_second_delegate_from_stale_session(db_session):
     from app.database import SessionLocal
     from app.services.agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict

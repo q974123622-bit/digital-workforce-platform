@@ -75,6 +75,12 @@ _MAX_SAFE_RESULT_COLLECTION_BYTES = 4096
 _MAX_SUBTASK_TITLE_LENGTH = 256
 _MAX_SUBTASK_INSTRUCTION_LENGTH = 512
 _MAX_SUBTASK_CAPABILITY_LENGTH = 128
+_MAX_MATERIAL_DEPTH = 5
+_MAX_MATERIAL_ITEMS = 32
+_MAX_MATERIAL_STRING_LENGTH = 1024
+_MAX_MATERIAL_KEY_LENGTH = 128
+_MAX_MATERIAL_CANONICAL_BYTES = 4096
+_MAX_MATERIAL_INTEGER_BITS = 8192
 _SAFE_CLIENT_TASK_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _SECRET_FIELD_PATTERN = re.compile(
     r"(?:password|passwd|pwd|token|secret|key|authorization|credential|cookie|header|endpoint|url|uri|"
@@ -199,6 +205,8 @@ class AgentTeamsCollaborationService:
         message: AgentProtocolMessage,
     ) -> list[models.AgentTaskEvent]:
         run, node = self._locked_context(db, message)
+        if message.type == "task.delegate":
+            self._prevalidate_delegate_subtasks(message.payload)
         if not self._reserve_protocol(db, message):
             return []
 
@@ -1261,14 +1269,15 @@ class AgentTeamsCollaborationService:
             AgentTeamsCollaborationService._is_safe_cross_agent_text(capability, _MAX_SUBTASK_CAPABILITY_LENGTH),
         )):
             raise CollaborationConflict("unsafe_subtask_metadata")
-        AgentTeamsCollaborationService._material_hash(material)
+        normalized_material = AgentTeamsCollaborationService._normalize_material(material)
+        AgentTeamsCollaborationService._material_hash(normalized_material)
         return {
             "client_task_key": key,
             "title": title,
             "instruction": instruction,
             "assignee_agent_id": assignee,
             "depends_on": list(dependencies),
-            "material": dict(material),
+            "material": normalized_material,
             "required": required,
             "capability": capability,
             "requires_capability": strict_mode or "required_capability" in raw,
@@ -1440,14 +1449,68 @@ class AgentTeamsCollaborationService:
             raise CollaborationConflict("invalid_task_scope")
         return root, node
 
+    def _prevalidate_delegate_subtasks(self, payload: Mapping[str, Any]) -> None:
+        """Reject unsafe material before persisting the inbound protocol envelope."""
+        raw_subtasks = payload.get("subtasks")
+        if not isinstance(raw_subtasks, list) or not 1 <= len(raw_subtasks) <= self.max_children:
+            return
+        for raw_subtask in raw_subtasks:
+            self._validate_subtask(raw_subtask)
+
     @staticmethod
-    def _material_hash(material: Mapping[str, Any]) -> str:
+    def _normalize_material(value: Any, depth: int = 0) -> Any:
         try:
+            if depth > _MAX_MATERIAL_DEPTH:
+                raise CollaborationConflict("material_too_large")
+            if value is None or type(value) is bool:
+                return value
+            if type(value) is int:
+                if value.bit_length() > _MAX_MATERIAL_INTEGER_BITS:
+                    raise CollaborationConflict("material_too_large")
+                return value
+            if type(value) is float:
+                if not math.isfinite(value):
+                    raise CollaborationConflict("invalid_material")
+                return value
+            if type(value) is str:
+                if len(value) > _MAX_MATERIAL_STRING_LENGTH:
+                    raise CollaborationConflict("material_too_large")
+                return value
+            if type(value) is list:
+                if len(value) > _MAX_MATERIAL_ITEMS:
+                    raise CollaborationConflict("material_too_large")
+                return [
+                    AgentTeamsCollaborationService._normalize_material(item, depth + 1)
+                    for item in value
+                ]
+            if type(value) is dict:
+                if len(value) > _MAX_MATERIAL_ITEMS:
+                    raise CollaborationConflict("material_too_large")
+                normalized: dict[str, Any] = {}
+                for key, item in value.items():
+                    if not isinstance(key, str):
+                        raise CollaborationConflict("invalid_material")
+                    if len(key) > _MAX_MATERIAL_KEY_LENGTH:
+                        raise CollaborationConflict("material_too_large")
+                    normalized[key] = AgentTeamsCollaborationService._normalize_material(item, depth + 1)
+                return normalized
+            raise CollaborationConflict("invalid_material")
+        except CollaborationConflict:
+            raise
+        except (ValueError, TypeError, RecursionError, OverflowError) as error:
+            raise CollaborationConflict("invalid_material") from error
+
+    @staticmethod
+    def _material_hash(material: Any) -> str:
+        try:
+            normalized = AgentTeamsCollaborationService._normalize_material(material)
             canonical = json.dumps(
-                material, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+                normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
             )
-        except (TypeError, ValueError, UnicodeEncodeError) as error:
-            raise CollaborationConflict("invalid_subtask") from error
+            if len(canonical.encode("utf-8")) > _MAX_MATERIAL_CANONICAL_BYTES:
+                raise CollaborationConflict("material_too_large")
+        except (TypeError, ValueError, UnicodeEncodeError, RecursionError, OverflowError) as error:
+            raise CollaborationConflict("invalid_material") from error
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     @staticmethod
