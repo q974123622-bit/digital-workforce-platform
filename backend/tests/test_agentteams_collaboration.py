@@ -788,6 +788,34 @@ def test_delegate_rejects_unbounded_or_invalid_material_without_mutation(db_sess
     assert db_session.query(models.AgentMessage).filter_by(direction="inbound").count() == before_inbound
 
 
+def test_wide_material_hits_global_budget_before_canonical_serialization(db_session, monkeypatch):
+    from app.services import agentteams_collaboration as collaboration
+    from app.services.agentteams_collaboration import CollaborationConflict
+
+    # Every dict has 32 entries, every string is short, and depth is only three;
+    # repeated references make the expanded traversal exceed the global budget.
+    leaf = {f"leaf-{index}": "ok" for index in range(32)}
+    middle = {f"middle-{index}": leaf for index in range(32)}
+    wide_material = {f"root-{index}": middle for index in range(32)}
+    run, leader = _create_run(db_session)
+    before_events = db_session.query(models.AgentTaskEvent).count()
+    before_outbox = db_session.query(models.AgentMessage).filter_by(direction="outbound").count()
+    subtask = _subtask("wide-material", "VE-0002")
+    subtask["material"] = wide_material
+
+    def fail_if_full_canonicalization_is_reached(*args, **kwargs):
+        raise AssertionError("material should exceed its traversal budget before json.dumps")
+
+    monkeypatch.setattr(collaboration.json, "dumps", fail_if_full_canonicalization_is_reached)
+    with pytest.raises(CollaborationConflict, match="material_too_large"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [subtask])
+
+    assert db_session.get(models.AgentTaskNode, run.id).status == "planning"
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+    assert db_session.query(models.AgentTaskEvent).count() == before_events
+    assert db_session.query(models.AgentMessage).filter_by(direction="outbound").count() == before_outbox
+
+
 def test_locked_context_refresh_rejects_second_delegate_from_stale_session(db_session):
     from app.database import SessionLocal
     from app.services.agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict

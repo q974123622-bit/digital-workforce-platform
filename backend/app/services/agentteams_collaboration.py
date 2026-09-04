@@ -8,6 +8,7 @@ outbox for a later runner to deliver.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import json
@@ -81,6 +82,7 @@ _MAX_MATERIAL_STRING_LENGTH = 1024
 _MAX_MATERIAL_KEY_LENGTH = 128
 _MAX_MATERIAL_CANONICAL_BYTES = 4096
 _MAX_MATERIAL_INTEGER_BITS = 8192
+_MAX_MATERIAL_VISITED_NODES = 256
 _SAFE_CLIENT_TASK_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _SECRET_FIELD_PATTERN = re.compile(
     r"(?:password|passwd|pwd|token|secret|key|authorization|credential|cookie|header|endpoint|url|uri|"
@@ -98,6 +100,22 @@ _AUTH_VALUE_PATTERN = re.compile(
 _STACK_TRACE_PATTERN = re.compile(
     r"(?i)(?:traceback\s*\(|stack trace|exception\s*(?::|in thread)|(?:^|\n)\s*at\s+[\w.$<>]+\(.*:\d+\))"
 )
+
+
+@dataclass
+class _MaterialBudget:
+    visited_nodes: int = 0
+    estimated_bytes: int = 0
+
+    def consume_node(self) -> None:
+        self.visited_nodes += 1
+        if self.visited_nodes > _MAX_MATERIAL_VISITED_NODES:
+            raise CollaborationConflict("material_too_large")
+
+    def consume_bytes(self, amount: int) -> None:
+        self.estimated_bytes += amount
+        if self.estimated_bytes > _MAX_MATERIAL_CANONICAL_BYTES:
+            raise CollaborationConflict("material_too_large")
 
 
 class AgentTeamsCollaborationService:
@@ -1187,11 +1205,14 @@ class AgentTeamsCollaborationService:
 
     @staticmethod
     def _subtask_semantic_fingerprint(subtask: Mapping[str, Any]) -> str:
+        material_hash = subtask.get("material_hash")
+        if not isinstance(material_hash, str):
+            material_hash = AgentTeamsCollaborationService._material_hash(subtask["material"])
         payload = {
             "assignee": subtask["assignee_agent_id"], "instruction": " ".join(subtask["instruction"].casefold().split()),
             "capability": subtask["capability"].casefold(), "required": subtask["required"],
             "depends_on": sorted(subtask["depends_on"]),
-            "material_hash": AgentTeamsCollaborationService._material_hash(subtask["material"]),
+            "material_hash": material_hash,
         }
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -1270,7 +1291,7 @@ class AgentTeamsCollaborationService:
         )):
             raise CollaborationConflict("unsafe_subtask_metadata")
         normalized_material = AgentTeamsCollaborationService._normalize_material(material)
-        AgentTeamsCollaborationService._material_hash(normalized_material)
+        material_hash = AgentTeamsCollaborationService._canonical_material_hash(normalized_material)
         return {
             "client_task_key": key,
             "title": title,
@@ -1278,6 +1299,7 @@ class AgentTeamsCollaborationService:
             "assignee_agent_id": assignee,
             "depends_on": list(dependencies),
             "material": normalized_material,
+            "material_hash": material_hash,
             "required": required,
             "capability": capability,
             "requires_capability": strict_mode or "required_capability" in raw,
@@ -1458,42 +1480,81 @@ class AgentTeamsCollaborationService:
             self._validate_subtask(raw_subtask)
 
     @staticmethod
-    def _normalize_material(value: Any, depth: int = 0) -> Any:
+    def _normalize_material(
+        value: Any,
+        depth: int = 0,
+        *,
+        budget: _MaterialBudget | None = None,
+        active_container_ids: set[int] | None = None,
+    ) -> Any:
         try:
+            budget = budget or _MaterialBudget()
+            active_container_ids = active_container_ids if active_container_ids is not None else set()
             if depth > _MAX_MATERIAL_DEPTH:
                 raise CollaborationConflict("material_too_large")
-            if value is None or type(value) is bool:
+            budget.consume_node()
+            if value is None:
+                budget.consume_bytes(4)
+                return value
+            if type(value) is bool:
+                budget.consume_bytes(5 if value else 4)
                 return value
             if type(value) is int:
                 if value.bit_length() > _MAX_MATERIAL_INTEGER_BITS:
                     raise CollaborationConflict("material_too_large")
+                budget.consume_bytes(len(str(value).encode("utf-8")))
                 return value
             if type(value) is float:
                 if not math.isfinite(value):
                     raise CollaborationConflict("invalid_material")
+                budget.consume_bytes(len(repr(value).encode("utf-8")))
                 return value
             if type(value) is str:
                 if len(value) > _MAX_MATERIAL_STRING_LENGTH:
                     raise CollaborationConflict("material_too_large")
+                budget.consume_bytes(len(value.encode("utf-8")) + 2)
                 return value
             if type(value) is list:
                 if len(value) > _MAX_MATERIAL_ITEMS:
                     raise CollaborationConflict("material_too_large")
-                return [
-                    AgentTeamsCollaborationService._normalize_material(item, depth + 1)
-                    for item in value
-                ]
+                container_id = id(value)
+                if container_id in active_container_ids:
+                    raise CollaborationConflict("invalid_material")
+                active_container_ids.add(container_id)
+                try:
+                    budget.consume_bytes(2 + max(0, len(value) - 1))
+                    return [
+                        AgentTeamsCollaborationService._normalize_material(
+                            item, depth + 1, budget=budget,
+                            active_container_ids=active_container_ids,
+                        )
+                        for item in value
+                    ]
+                finally:
+                    active_container_ids.remove(container_id)
             if type(value) is dict:
                 if len(value) > _MAX_MATERIAL_ITEMS:
                     raise CollaborationConflict("material_too_large")
+                container_id = id(value)
+                if container_id in active_container_ids:
+                    raise CollaborationConflict("invalid_material")
+                active_container_ids.add(container_id)
                 normalized: dict[str, Any] = {}
-                for key, item in value.items():
-                    if not isinstance(key, str):
-                        raise CollaborationConflict("invalid_material")
-                    if len(key) > _MAX_MATERIAL_KEY_LENGTH:
-                        raise CollaborationConflict("material_too_large")
-                    normalized[key] = AgentTeamsCollaborationService._normalize_material(item, depth + 1)
-                return normalized
+                try:
+                    budget.consume_bytes(2 + max(0, len(value) - 1))
+                    for key, item in value.items():
+                        if type(key) is not str:
+                            raise CollaborationConflict("invalid_material")
+                        if len(key) > _MAX_MATERIAL_KEY_LENGTH:
+                            raise CollaborationConflict("material_too_large")
+                        budget.consume_bytes(len(key.encode("utf-8")) + 3)
+                        normalized[key] = AgentTeamsCollaborationService._normalize_material(
+                            item, depth + 1, budget=budget,
+                            active_container_ids=active_container_ids,
+                        )
+                    return normalized
+                finally:
+                    active_container_ids.remove(container_id)
             raise CollaborationConflict("invalid_material")
         except CollaborationConflict:
             raise
@@ -1502,8 +1563,13 @@ class AgentTeamsCollaborationService:
 
     @staticmethod
     def _material_hash(material: Any) -> str:
+        return AgentTeamsCollaborationService._canonical_material_hash(
+            AgentTeamsCollaborationService._normalize_material(material)
+        )
+
+    @staticmethod
+    def _canonical_material_hash(normalized: Any) -> str:
         try:
-            normalized = AgentTeamsCollaborationService._normalize_material(material)
             canonical = json.dumps(
                 normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
             )
