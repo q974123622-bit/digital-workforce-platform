@@ -69,6 +69,7 @@ def _delegate(db_session, run, sender, matrix_sender, subtasks, key="delegate-1"
 
 
 def _subtask(key, assignee, *, depends_on=None, required=True):
+    capabilities = {"VE-0002": "hr-employee-mcp", "VE-0003": "adp-onboarding", "RPA-0001": "weekly-report"}
     return {
         "client_task_key": key,
         "title": f"{key} task",
@@ -76,6 +77,7 @@ def _subtask(key, assignee, *, depends_on=None, required=True):
         "assignee_agent_id": assignee,
         "depends_on": depends_on or [],
         "required": required,
+        "required_capability": capabilities.get(assignee, "unavailable"),
     }
 
 
@@ -202,12 +204,12 @@ def test_manager_delegate_creates_recursive_children(db_session):
                 {
                     "client_task_key": "policy", "title": "制度核查",
                     "instruction": "核查制度", "assignee_agent_id": "VE-0002",
-                    "depends_on": [],
+                    "depends_on": [], "required_capability": "hr-employee-mcp",
                 },
                 {
                     "client_task_key": "account", "title": "账号开通",
                     "instruction": "开通账号", "assignee_agent_id": "VE-0003",
-                    "depends_on": ["policy"],
+                    "depends_on": ["policy"], "required_capability": "adp-onboarding",
                 },
             ],
         },
@@ -497,7 +499,7 @@ def test_delegate_rejects_follow_up_round_limit_without_partial_tree(db_session)
     root = db_session.get(models.AgentTaskNode, run.id)
     root.status = "summarizing"
     root.input_payload = {"coordination": {"round": 1}}
-    service = AgentTeamsCollaborationService(max_rounds=1)
+    service = AgentTeamsCollaborationService(max_rounds=0)
     message = _protocol(
         root_id=run.id,
         task_id=run.id,
@@ -587,6 +589,117 @@ def test_required_child_failure_marks_root_failed(db_session):
     assert db_session.query(models.AgentMessage).filter_by(
         task_id=run.id, message_type="task.summary", direction="outbound"
     ).count() == 0
+
+
+def test_failed_dependency_cancels_direct_and_recursive_dependents(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("a", "VE-0002"), _subtask("b", "VE-0003", depends_on=["a"]), _subtask("c", "RPA-0001", depends_on=["b"])])
+    nodes = {n.client_task_key: n for n in db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id)}
+    _start_node(db_session, run, nodes["a"])
+    _apply_node_message(db_session, run, nodes["a"], type="task.failed", key="a-failed", payload={})
+    assert [(nodes[key].status, nodes[key].error_code) for key in ("b", "c")] == [("cancelled", "dependency_failed"), ("cancelled", "dependency_failed")]
+
+
+def test_optional_failed_dependency_cancels_required_dependent_and_fails_root(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("optional", "VE-0002", required=False), _subtask("required", "VE-0003", depends_on=["optional"])])
+    nodes = {n.client_task_key: n for n in db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id)}
+    _start_node(db_session, run, nodes["optional"])
+    _apply_node_message(db_session, run, nodes["optional"], type="task.failed", key="optional-failed", payload={})
+    assert nodes["required"].status == "cancelled"
+    assert db_session.get(models.TaskRun, run.id).status == "failed"
+
+
+def test_initial_plus_three_follow_up_rounds_are_allowed(db_session):
+    from app.services.agentteams_collaboration import CollaborationConflict
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("initial", "VE-0002")])
+    root = db_session.get(models.AgentTaskNode, run.id)
+    for round_number in range(2, 5):
+        root.status = "summarizing"
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask(f"follow-{round_number}", "VE-0002")], key=f"follow-{round_number}")
+        assert root.input_payload["coordination"]["round"] == round_number
+    root.status = "summarizing"
+    with pytest.raises(CollaborationConflict, match="max_rounds_exceeded"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("follow-5", "VE-0002")], key="follow-5")
+
+
+def test_strict_delegate_requires_explicit_nonempty_capability(db_session, monkeypatch):
+    from app.services.agentteams_collaboration import CollaborationConflict
+    monkeypatch.setattr(config, "agentteams_mode", lambda: "agentteams_strict")
+    run, leader = _create_run(db_session)
+    raw = _subtask("missing", "VE-0002")
+    raw.pop("required_capability")
+    raw["capability"] = "hr-employee-mcp"
+    with pytest.raises(CollaborationConflict, match="required_capability_required"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [raw])
+    raw["required_capability"] = ""
+    with pytest.raises(CollaborationConflict, match="required_capability_required"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [raw], key="empty")
+
+
+def test_delegate_rejects_all_optional_without_mutation(db_session):
+    from app.services.agentteams_collaboration import CollaborationConflict
+    run, leader = _create_run(db_session)
+    with pytest.raises(CollaborationConflict, match="required_subtask_required"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("optional", "VE-0002", required=False)])
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+
+
+def test_safe_child_results_are_bounded_and_redacted(db_session):
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("one", "VE-0002")])
+    node = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    node.output_payload = {"deep": {"url": "https://secret.example/token", "token": "no"}, "items": ["x" * 10000] * 20, "audit_ids": [7]}
+    safe = AgentTeamsCollaborationService()._safe_child_results(db_session, run.id)
+    assert safe[0]["truncated"] is True
+    assert safe[0]["result"]["audit_ids"] == [7]
+    assert "token" not in str(safe)
+
+
+def test_semantic_duplicate_follow_up_is_rejected_with_a_new_client_key(db_session):
+    from app.services.agentteams_collaboration import CollaborationConflict
+    run, leader = _create_run(db_session)
+    first = _subtask("first", "VE-0002")
+    first["instruction"] = "same evidence check"
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [first])
+    root = db_session.get(models.AgentTaskNode, run.id)
+    root.status = "summarizing"
+    repeat = _subtask("different-key", "VE-0002")
+    repeat["instruction"] = "  SAME   evidence CHECK  "
+    with pytest.raises(CollaborationConflict, match="duplicate_semantic_subtask"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [repeat], key="semantic-repeat")
+
+
+def test_two_prerequisites_release_a_blocked_child_once(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [
+        _subtask("a", "VE-0002"), _subtask("b", "VE-0003"),
+        _subtask("c", "RPA-0001", depends_on=["a", "b"]),
+    ])
+    nodes = {n.client_task_key: n for n in db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id)}
+    for key in ("a", "b"):
+        _start_node(db_session, run, nodes[key])
+        _apply_node_message(db_session, run, nodes[key], type="task.result", key=f"{key}-done", payload={"result": key})
+    assert nodes["c"].status == "assigned"
+    assert db_session.query(models.AgentMessage).filter_by(task_id=nodes["c"].id, message_type="task.assign").count() == 1
+
+
+def test_duplicate_message_from_another_session_has_no_second_effect(db_session):
+    from app.database import SessionLocal
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService
+    run, leader = _create_run(db_session)
+    message = _protocol(root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="platform", type="task.delegate", key=f"{run.id}:multi-session", payload={"subtasks": [_subtask("one", "VE-0002")]})
+    service = AgentTeamsCollaborationService()
+    service.apply_message(db_session, matrix_sender=_matrix_sender(leader.runtime_ref), message=message)
+    db_session.commit()
+    other = SessionLocal()
+    try:
+        assert service.apply_message(other, matrix_sender=_matrix_sender(leader.runtime_ref), message=message) == []
+        assert other.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 1
+    finally:
+        other.close()
 
 
 def test_task_summary_completes_root_and_task_run(db_session):

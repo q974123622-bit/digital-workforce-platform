@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -69,6 +70,8 @@ _MAX_TOOL_RESULT_DEPTH = 4
 _MAX_TOOL_RESULT_ITEMS = 20
 _MAX_TOOL_RESULT_STRING_LENGTH = 512
 _MAX_TOOL_RESULT_BYTES = 4096
+_MAX_SAFE_NODE_RESULT_BYTES = 1024
+_MAX_SAFE_RESULT_COLLECTION_BYTES = 4096
 _SECRET_FIELD_PATTERN = re.compile(
     r"(?:password|passwd|pwd|token|secret|key|authorization|credential|cookie|header|endpoint|url|uri|"
     r"stack|traceback|exception)",
@@ -192,7 +195,8 @@ class AgentTeamsCollaborationService:
         message: AgentProtocolMessage,
     ) -> list[models.AgentTaskEvent]:
         run, node = self._validate_context(db, message)
-        if self._protocol_seen(db, message.idempotency_key):
+        self._lock_root_and_node(db, run.id, node.id)
+        if not self._reserve_protocol(db, message):
             return []
 
         if message.type == "task.delegate":
@@ -235,7 +239,6 @@ class AgentTeamsCollaborationService:
         else:
             raise CollaborationConflict("unsupported_message_type")
 
-        self._record_protocol(db, message)
         db.flush()
         return events
 
@@ -342,6 +345,8 @@ class AgentTeamsCollaborationService:
             raise CollaborationConflict("invalid_transition")
 
         subtasks = [self._validate_subtask(item) for item in raw_subtasks]
+        if not any(item["required"] for item in subtasks):
+            raise CollaborationConflict("required_subtask_required")
         keys = [item["client_task_key"] for item in subtasks]
         if len(keys) != len(set(keys)):
             raise CollaborationConflict("duplicate_client_task_key")
@@ -359,6 +364,8 @@ class AgentTeamsCollaborationService:
         )
         if existing_keys.intersection(keys):
             raise CollaborationConflict("duplicate_client_task_key")
+        if self._has_semantic_duplicate(db, parent, subtasks):
+            raise CollaborationConflict("duplicate_semantic_subtask")
         total_nodes = db.scalar(
             select(func.count(models.AgentTaskNode.id)).where(
                 models.AgentTaskNode.root_task_id == parent.root_task_id
@@ -520,6 +527,7 @@ class AgentTeamsCollaborationService:
             events.extend(self._propagate_required_failure(db, node, message.sender))
         else:
             events.extend(self._maybe_request_parent_summary(db, node, message.sender))
+        events.extend(self._cancel_dependency_descendants(db, node, message.sender))
         return events
 
     def _apply_summary(
@@ -844,7 +852,7 @@ class AgentTeamsCollaborationService:
             )
         )
         dependencies = [db.get(models.AgentTaskNode, dependency_id) for dependency_id in dependency_ids]
-        return [self._safe_node_result(item) for item in dependencies if item is not None]
+        return self._bound_result_collection([self._safe_node_result(item) for item in dependencies if item is not None])
 
     def _safe_child_results(self, db: Session, parent_id: str) -> list[dict[str, Any]]:
         children = list(
@@ -854,7 +862,7 @@ class AgentTeamsCollaborationService:
                 .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
             )
         )
-        return [self._safe_node_result(child) for child in children]
+        return self._bound_result_collection([self._safe_node_result(child) for child in children])
 
     def _safe_node_result(self, node: models.AgentTaskNode) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -866,7 +874,23 @@ class AgentTeamsCollaborationService:
             result["error_code"] = self._safe_tool_text(node.error_code)
         if node.error_message:
             result["error_message"] = self._safe_tool_text(node.error_message)
-        return result
+        if self._serialized_tool_result_size(result) <= _MAX_SAFE_NODE_RESULT_BYTES:
+            return result
+        return {
+            "client_task_key": node.client_task_key,
+            "status": node.status,
+            "result": {"summary": self._safe_tool_text(str((node.output_payload or {}).get("summary", ""))), "audit_ids": self._safe_audit_ids((node.output_payload or {}).get("audit_ids", []))},
+            "truncated": True,
+        }
+
+    def _bound_result_collection(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        kept: list[dict[str, Any]] = []
+        for result in results:
+            if self._serialized_tool_result_size([*kept, result]) > _MAX_SAFE_RESULT_COLLECTION_BYTES:
+                kept.append({"truncated": True})
+                break
+            kept.append(result)
+        return kept
 
     def _queue_assignment(
         self,
@@ -932,6 +956,38 @@ class AgentTeamsCollaborationService:
             run.status = "failed"
         return events
 
+    def _cancel_dependency_descendants(
+        self, db: Session, failed_node: models.AgentTaskNode, actor_agent_id: str
+    ) -> list[models.AgentTaskEvent]:
+        """End every transitive dependant instead of leaving blocked task nodes behind."""
+        pending = [failed_node.id]
+        events: list[models.AgentTaskEvent] = []
+        while pending:
+            predecessor_id = pending.pop()
+            dependent_ids = list(db.scalars(select(models.AgentTaskDependency.task_id).where(
+                models.AgentTaskDependency.depends_on_task_id == predecessor_id
+            )))
+            for dependent_id in dependent_ids:
+                dependent = db.get(models.AgentTaskNode, dependent_id)
+                if dependent is None or dependent.status in {"completed", "failed", "cancelled", "timed_out"}:
+                    continue
+                self._transition(dependent, "cancelled")
+                dependent.error_code = "dependency_failed"
+                dependent.error_message = "A prerequisite task did not complete."
+                dependent.finished_at = datetime.now()
+                events.append(self._append_event(
+                    db, root_task_id=dependent.root_task_id, task_id=dependent.id,
+                    event_type="task.cancelled", actor_agent_id=actor_agent_id,
+                    target_agent_id=dependent.assignee_agent_id,
+                    summary="cancelled because a dependency failed", detail={"depends_on_task_id": predecessor_id},
+                ))
+                if dependent.required:
+                    events.extend(self._propagate_required_failure(db, dependent, actor_agent_id))
+                else:
+                    events.extend(self._maybe_request_parent_summary(db, dependent, actor_agent_id))
+                pending.append(dependent.id)
+        return events
+
     def _maybe_request_parent_summary(
         self, db: Session, child: models.AgentTaskNode, actor_agent_id: str
     ) -> list[models.AgentTaskEvent]:
@@ -970,7 +1026,7 @@ class AgentTeamsCollaborationService:
                 "child_results": self._safe_child_results(db, parent.id),
                 "current_round": coordination["round"],
                 "remaining_limits": {
-                    "rounds": max(0, self.max_rounds - coordination["round"]),
+                    "rounds": max(0, 1 + self.max_rounds - coordination["round"]),
                     "nodes": max(0, self.max_nodes - self._root_node_count(db, parent.root_task_id)),
                     "children": self.max_children,
                     "depth": max(0, self.max_depth - parent.depth),
@@ -1046,7 +1102,7 @@ class AgentTeamsCollaborationService:
             next_round = existing["round"] + 1
         else:
             return None
-        if next_round > self.max_rounds:
+        if next_round > 1 + self.max_rounds:
             raise CollaborationConflict("max_rounds_exceeded")
         selected = payload.get("selected_skill_ids", existing["selected_skill_ids"])
         if not isinstance(selected, list) or not all(isinstance(item, str) and item.strip() for item in selected):
@@ -1087,6 +1143,35 @@ class AgentTeamsCollaborationService:
                 break
             current = db.get(models.AgentTaskNode, current.parent_task_id)
         return assignees
+
+    def _has_semantic_duplicate(
+        self, db: Session, parent: models.AgentTaskNode, subtasks: list[dict[str, Any]]
+    ) -> bool:
+        existing = list(db.scalars(select(models.AgentTaskNode).where(
+            models.AgentTaskNode.parent_task_id == parent.id
+        )))
+        fingerprints = {self._node_semantic_fingerprint(db, node) for node in existing}
+        return any(self._subtask_semantic_fingerprint(item) in fingerprints for item in subtasks)
+
+    @staticmethod
+    def _subtask_semantic_fingerprint(subtask: Mapping[str, Any]) -> str:
+        payload = {
+            "assignee": subtask["assignee_agent_id"], "instruction": " ".join(subtask["instruction"].casefold().split()),
+            "capability": subtask["capability"].casefold(), "required": subtask["required"],
+            "depends_on": sorted(subtask["depends_on"]),
+        }
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+    def _node_semantic_fingerprint(self, db: Session, node: models.AgentTaskNode) -> str:
+        dependency_ids = list(db.scalars(select(models.AgentTaskDependency.depends_on_task_id).where(
+            models.AgentTaskDependency.task_id == node.id
+        )))
+        dependencies = [db.get(models.AgentTaskNode, item) for item in dependency_ids]
+        return self._subtask_semantic_fingerprint({
+            "assignee_agent_id": node.assignee_agent_id, "instruction": node.instruction,
+            "capability": node.capability, "required": node.required,
+            "depends_on": [item.client_task_key for item in dependencies if item is not None],
+        })
 
     def _team_capability_catalog(self, db: Session, team_id: str) -> list[dict[str, Any]]:
         """Expose only active, runtime-bound current-team members and granted tools."""
@@ -1130,6 +1215,9 @@ class AgentTeamsCollaborationService:
         dependencies = raw.get("depends_on", [])
         material = raw.get("material", raw.get("input_payload", {}))
         required = raw.get("required", True)
+        strict_mode = config.agentteams_mode() == "agentteams_strict"
+        if strict_mode and ("required_capability" not in raw or not isinstance(raw.get("required_capability"), str) or not raw.get("required_capability").strip()):
+            raise CollaborationConflict("required_capability_required")
         capability = raw.get("required_capability", raw.get("capability", ""))
         if not all(isinstance(value, str) and value.strip() for value in (key, title, instruction, assignee)):
             raise CollaborationConflict("invalid_subtask")
@@ -1146,7 +1234,7 @@ class AgentTeamsCollaborationService:
             "material": dict(material),
             "required": required,
             "capability": capability,
-            "requires_capability": "required_capability" in raw,
+            "requires_capability": strict_mode or "required_capability" in raw,
         }
 
     @staticmethod
@@ -1278,6 +1366,23 @@ class AgentTeamsCollaborationService:
             direction="inbound",
             delivery_status="received",
         ))
+
+    def _reserve_protocol(self, db: Session, message: AgentProtocolMessage) -> bool:
+        """Atomically claim the inbound idempotency key before any state change."""
+        try:
+            with db.begin_nested():
+                self._record_protocol(db, message)
+                db.flush()
+        except IntegrityError:
+            return False
+        return True
+
+    @staticmethod
+    def _lock_root_and_node(db: Session, root_task_id: str, node_id: str) -> None:
+        # PostgreSQL serializes event sequences on these rows; SQLite ignores FOR UPDATE.
+        db.scalar(select(models.AgentTaskNode.id).where(models.AgentTaskNode.id == root_task_id).with_for_update())
+        if node_id != root_task_id:
+            db.scalar(select(models.AgentTaskNode.id).where(models.AgentTaskNode.id == node_id).with_for_update())
 
     @staticmethod
     def _protocol_seen(db: Session, idempotency_key: str) -> bool:
