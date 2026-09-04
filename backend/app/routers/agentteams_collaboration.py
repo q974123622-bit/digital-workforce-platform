@@ -72,7 +72,7 @@ def _worker_health(db: Session) -> list[dict]:
 
 def _normalise_health(raw_health: dict) -> dict:
     """Derive safe readiness facts rather than trusting a caller-provided flag."""
-    mode = os.environ.get("DWP_AGENTTEAMS_MODE", "agentteams_strict").strip().lower()
+    mode = config.agentteams_mode()
     strict_mode = mode != "local_demo"
     workers = []
     raw_workers = raw_health.get("workers")
@@ -218,7 +218,7 @@ def _strict_environment(db: Session, enabled: bool) -> dict:
 def inspect_environment(db: Session) -> dict:
     """Use only local state in explicit demo mode and strict proof otherwise."""
     enabled = config.agentteams_collaboration_enabled()
-    if os.environ.get("DWP_AGENTTEAMS_MODE", "agentteams_strict").strip().lower() == "local_demo":
+    if config.agentteams_mode() == "local_demo":
         return _normalise_health({
             "enabled": enabled, "matrix": "not_connected", "room": "local",
             "manager": "not_configured", "platform_team": "missing", "workers": [],

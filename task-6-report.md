@@ -122,3 +122,60 @@ coverage (`29 passed, 1 skipped` where symlink creation is unavailable).
 CLI-loaded non-empty HR tool catalogs now drive real runtime `tool.request`
 messages with the configured tool name and capability; an unlisted tool emits
 no request (`34 passed`).
+
+## Review fix round 4
+
+- State reads request `O_NOFOLLOW` where the host exposes it, check the opened
+  handle against a non-link/non-reparse path identity before reading, bound the
+  read, then recheck the path identity after reading. A replacement detected at
+  either point is treated as empty state.
+- State writes retain the exclusive temporary-file identity through the final
+  path safety check and verify that the post-replace target is a regular,
+  non-reparse file with that exact identity. Cleanup only removes a temporary
+  file still owned by this write. Windows does not offer a portable Python
+  no-follow open flag; static links/reparse points and detectable races are
+  rejected. A hostile process already running as the same OS account remains
+  inside the deployment trust boundary because it can already read the Matrix
+  token; Task7 deployment must enforce private runtime-directory ACLs.
+- Runtime tool catalogs normalize an omitted action to `read`, reject explicit
+  empty or unknown actions, and runtime dispatch refuses to emit an empty
+  action even if a configuration object was constructed outside the loader.
+- The health normalizer and environment inspector use the single
+  `config.agentteams_mode()` selector. Unknown mode strings therefore expose a
+  safe `agentteams_strict`, unready HTTP health response rather than a schema
+  error or local-demo fallback.
+
+Round-4 focused regression:
+
+```text
+backend/.venv/Scripts/python.exe -m pytest \
+  backend/tests/test_agentteams_collaboration_smoke_contract.py \
+  backend/tests/test_agentteams_round3_hardening.py \
+  backend/tests/test_agentteams_strict_runtime_config.py -q
+17 passed, 1 skipped, 2 warnings
+```
+
+The one skip is only for a host where symlink creation is unavailable. The two
+warnings are the existing Starlette/httpx deprecation and pytest cache path
+permission warning.
+
+The final runner/API/runtime/gateway/strict-config/smoke regression for this
+round completed in 11.33 seconds: `117 passed, 1 skipped, 2 warnings`.
+
+### Round-4 clean-tree and dirty-file evidence
+
+The staged index was exported from `git write-tree` and imported from a clean
+temporary tree containing no untracked local-demo modules. It directly called
+the committed `config.agentteams_mode()` and `_normalise_health()` with an
+unknown mode (`clean-import-health-ok`), then ran the staged five-identity
+fixture, unknown-mode HTTP health fixture, post-read state identity fixture,
+and tool-action fixture: `4 passed, 1 warning`.
+
+The original API test file remains pre-existing dirty due local-demo-only test
+blocks. Its automatic B/O/A merge conflicted exactly around those blocks, so
+the staged synthetic blob was instead reviewed as `HEAD B` plus only the
+existing strict five-identity fixture's required allowlist/tool-catalog
+fields. The cached diff is 12 lines and contains no local-demo imports, tests,
+or transport fields. The working-tree local-demo test is updated to expect the
+strict configured-team gate; an equivalent clean strict-team-bypass regression
+is committed in the smoke-contract test.

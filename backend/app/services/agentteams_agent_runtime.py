@@ -671,8 +671,12 @@ class AgentRuntime:
         if not isinstance(name, str):
             return None
         for item in self.config.safe_tool_catalog:
-            if item.get("name") == name and isinstance(item.get("plugin_id"), str):
-                return {"plugin_id": item["plugin_id"], "action": str(item.get("action", "read")), "required_capability": str(item.get("required_capability", ""))}
+            action = item.get("action", "read")
+            if (item.get("name") == name
+                    and isinstance(item.get("plugin_id"), str)
+                    and item["plugin_id"]
+                    and action in {"read", "query", "execute"}):
+                return {"plugin_id": item["plugin_id"], "action": action, "required_capability": str(item.get("required_capability", ""))}
         return None
 
     def _safe_selected(self, values: Any, allowed: set[str]) -> list[str]:
@@ -701,12 +705,22 @@ class AgentRuntime:
         try:
             require_safe_path(self.config.state_dir, allow_missing=True)
             require_safe_path(self._state_path)
-            descriptor = os.open(self._state_path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            descriptor = os.open(self._state_path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(descriptor, "rb") as handle:
                 metadata = os.fstat(handle.fileno())
-                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_STATE_BYTES:
+                path_metadata = os.lstat(self._state_path)
+                if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(path_metadata.st_mode) or getattr(path_metadata, "st_file_attributes", 0) & 0x400 or (metadata.st_dev, metadata.st_ino) != (path_metadata.st_dev, path_metadata.st_ino) or metadata.st_size > _MAX_STATE_BYTES:
                     return default
-                raw = json.loads(handle.read(_MAX_STATE_BYTES + 1).decode("utf-8"))
+                contents = handle.read(_MAX_STATE_BYTES + 1)
+                if len(contents) > _MAX_STATE_BYTES:
+                    return default
+                final_path_metadata = os.lstat(self._state_path)
+                if (stat.S_ISLNK(final_path_metadata.st_mode)
+                        or getattr(final_path_metadata, "st_file_attributes", 0) & 0x400
+                        or not stat.S_ISREG(final_path_metadata.st_mode)
+                        or (metadata.st_dev, metadata.st_ino) != (final_path_metadata.st_dev, final_path_metadata.st_ino)):
+                    return default
+                raw = json.loads(contents.decode("utf-8"))
         except (OSError, ValueError, TypeError):
             return default
         if not isinstance(raw, dict):
@@ -746,7 +760,16 @@ class AgentRuntime:
                 os.fsync(handle.fileno())
             require_safe_path(self.config.state_dir)
             require_safe_path(temporary)
+            path_metadata = os.lstat(temporary)
+            if stat.S_ISLNK(path_metadata.st_mode) or getattr(path_metadata, "st_file_attributes", 0) & 0x400 or not stat.S_ISREG(path_metadata.st_mode) or temporary_identity != (path_metadata.st_dev, path_metadata.st_ino):
+                raise ValueError("invalid_runtime_config")
             os.replace(temporary, self._state_path)
+            final_metadata = os.lstat(self._state_path)
+            if (stat.S_ISLNK(final_metadata.st_mode)
+                    or getattr(final_metadata, "st_file_attributes", 0) & 0x400
+                    or not stat.S_ISREG(final_metadata.st_mode)
+                    or temporary_identity != (final_metadata.st_dev, final_metadata.st_ino)):
+                raise ValueError("invalid_runtime_config")
         finally:
             if temporary.exists():
                 try:

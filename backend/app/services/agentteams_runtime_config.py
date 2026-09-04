@@ -181,7 +181,11 @@ def _tool_catalog(value: object, *, required: bool) -> tuple[dict[str, str], ...
         if not isinstance(item, dict) or set(item) - {"name", "plugin_id", "action", "required_capability"}:
             raise ValueError("invalid_runtime_config")
         normalized = {key: _text(item.get(key)) for key in ("name", "plugin_id", "action", "required_capability")}
+        if "action" not in item:
+            normalized["action"] = "read"
         if not normalized["name"] or not normalized["plugin_id"] or any(len(part) > 128 for part in normalized.values()):
+            raise ValueError("invalid_runtime_config")
+        if normalized["action"] not in {"read", "query", "execute"}:
             raise ValueError("invalid_runtime_config")
         if any("token" in key.lower() or "secret" in key.lower() or "password" in key.lower() for key in item):
             raise ValueError("invalid_runtime_config")

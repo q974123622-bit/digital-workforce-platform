@@ -6,6 +6,7 @@ import json
 from app import models
 from app.routers import agentteams_collaboration
 from app.services.agentteams_gateway import AgentTeamsResult
+from app.services.agentteams_agent_runtime import heartbeat_signature
 
 
 ONE_WORKER_HEALTH = {
@@ -40,6 +41,20 @@ def test_health_requires_room_manager_and_two_workers(client, monkeypatch):
     assert "至少需要两个Worker" in response.json()["reason"]
 
 
+def test_health_normalises_unknown_mode_to_unready_strict(client, monkeypatch):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "typo")
+    monkeypatch.delenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", raising=False)
+
+    response = client.get("/api/v1/agentteams-collaboration/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "agentteams_strict"
+    assert body["strict_ready"] is False
+    assert body["ready_for_demo"] is False
+
+
 def test_task_submission_cannot_bypass_the_normalized_health_gate(client, db_session, monkeypatch):
     """Task creation must use the same derived readiness as the health route."""
     monkeypatch.setattr(
@@ -56,6 +71,43 @@ def test_task_submission_cannot_bypass_the_normalized_health_gate(client, db_ses
             "title": "入职协作",
             "instruction": "完成制度和账号核查",
             "material": {},
+        },
+    )
+
+    assert response.status_code == 503
+
+
+def test_strict_readiness_for_one_team_cannot_authorize_another_team(client, db_session, monkeypatch):
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    monkeypatch.setattr(
+        "app.routers.agentteams_collaboration.inspect_environment",
+        lambda _db: {
+            "enabled": True, "matrix": "ready", "room": "ready", "manager": "ready",
+            "platform_team": "ready", "strict_ready": True, "configured_team_id": "TEAM-ONBOARD",
+            "workers": [
+                {"agent_id": agent_id, "matrix_user_id": mxid, "status": "ready"}
+                for agent_id, mxid in (
+                    ("VE-0001", "@manager:test"), ("VE-0002", "@hr:test"),
+                    ("VE-0003", "@it:test"), ("VE-0005", "@audit:test"),
+                )
+            ],
+        },
+    )
+    db_session.add(models.Team(
+        id="TEAM-ALT", name="Other team", leader_employee_id="VE-0002", description="strict gate test",
+    ))
+    db_session.add_all([
+        models.TeamMember(team_id="TEAM-ALT", employee_id="VE-0002", role="leader"),
+        models.TeamMember(team_id="TEAM-ALT", employee_id="VE-0003", role="worker"),
+    ])
+    db_session.flush()
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": "E10281"},
+        json={
+            "team_id": "TEAM-ALT", "leader_agent_id": "VE-0002", "title": "其他团队",
+            "instruction": "strict readiness must remain bound", "material": {},
         },
     )
 
@@ -107,14 +159,18 @@ def test_health_closes_every_constructed_gateway_when_membership_check_raises(
     monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
     monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
     config_path = tmp_path / "runtime.json"
+    skills = {
+        "manager": "agentteams-onboarding-readiness", "hr": "hr-onboarding-assistant",
+        "it": "it-service-assistant", "audit": "audit-evidence-review",
+    }
     config_path.write_text(json.dumps({
         "matrix_url": "https://matrix.test", "room_id": "!room:matrix.test", "team_id": "TEAM-ONBOARD",
         "platform": {"mxid": "@platform:matrix.test", "token": "platform-secret"},
         "agents": {
-            "manager": {"agent_id": "VE-0001", "mxid": "@manager:matrix.test", "token": "manager-secret"},
-            "hr": {"agent_id": "VE-0002", "mxid": "@hr:matrix.test", "token": "hr-secret"},
-            "it": {"agent_id": "VE-0003", "mxid": "@it:matrix.test", "token": "it-secret"},
-            "audit": {"agent_id": "VE-0005", "mxid": "@audit:matrix.test", "token": "audit-secret"},
+            "manager": {"agent_id": "VE-0001", "mxid": "@manager:matrix.test", "token": "manager-secret", "allowed_skill_ids": [skills["manager"]], "safe_tool_catalog": []},
+            "hr": {"agent_id": "VE-0002", "mxid": "@hr:matrix.test", "token": "hr-secret", "allowed_skill_ids": [skills["hr"]], "safe_tool_catalog": []},
+            "it": {"agent_id": "VE-0003", "mxid": "@it:matrix.test", "token": "it-secret", "allowed_skill_ids": [skills["it"]], "safe_tool_catalog": []},
+            "audit": {"agent_id": "VE-0005", "mxid": "@audit:matrix.test", "token": "audit-secret", "allowed_skill_ids": [skills["audit"]], "safe_tool_catalog": []},
         }, "team_catalog": {},
     }), encoding="utf-8")
     monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(config_path))
@@ -124,8 +180,18 @@ def test_health_closes_every_constructed_gateway_when_membership_check_raises(
     db_session.flush()
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    for agent_id in ("VE-0001", "VE-0002", "VE-0003", "VE-0005"):
-        (state_dir / f"{agent_id}.json").write_text(json.dumps({"heartbeat_at": datetime.now(timezone.utc).isoformat()}), encoding="utf-8")
+    identities = {
+        "VE-0001": ("@manager:matrix.test", "manager-secret"),
+        "VE-0002": ("@hr:matrix.test", "hr-secret"),
+        "VE-0003": ("@it:matrix.test", "it-secret"),
+        "VE-0005": ("@audit:matrix.test", "audit-secret"),
+    }
+    for agent_id, (mxid, token) in identities.items():
+        heartbeat = datetime.now(timezone.utc).isoformat()
+        (state_dir / f"{agent_id}.json").write_text(json.dumps({
+            "agent_id": agent_id, "mxid": mxid, "heartbeat_at": heartbeat,
+            "heartbeat_signature": heartbeat_signature(agent_id, mxid, heartbeat, token),
+        }), encoding="utf-8")
 
     class FailingGateway:
         constructed = []

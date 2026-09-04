@@ -51,3 +51,19 @@ def test_runtime_config_fails_closed_for_duplicate_or_missing_credentials(tmp_pa
 
     with pytest.raises(ValueError, match="invalid_runtime_config"):
         load_strict_runtime_config(path, environ={})
+
+
+def test_tool_catalog_defaults_missing_action_and_rejects_explicit_invalid_actions(tmp_path):
+    from app.services.agentteams_runtime_config import load_strict_runtime_config
+
+    value = _runtime_config()
+    value["agents"]["hr"]["safe_tool_catalog"] = [{"name": "lookup", "plugin_id": "hr-employee-mcp"}]
+    path = tmp_path / "runtime.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    assert load_strict_runtime_config(path, environ={}).agents["hr"].safe_tool_catalog[0]["action"] == "read"
+
+    for action in ("", "delete"):
+        value["agents"]["hr"]["safe_tool_catalog"][0]["action"] = action
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with pytest.raises(ValueError, match="invalid_runtime_config"):
+            load_strict_runtime_config(path, environ={})

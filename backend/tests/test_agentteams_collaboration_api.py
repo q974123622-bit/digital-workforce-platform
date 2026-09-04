@@ -87,15 +87,19 @@ def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbe
 ):
     monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
     monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    skills = {
+        "manager": "agentteams-onboarding-readiness", "hr": "hr-onboarding-assistant",
+        "it": "it-service-assistant", "audit": "audit-evidence-review",
+    }
     config_path = tmp_path / "runtime.json"
     config_path.write_text(json.dumps({
         "matrix_url": "http://matrix.test", "room_id": "!team:test", "team_id": "TEAM-ONBOARD",
         "platform": {"mxid": "@platform:test", "token": "platform-token"},
         "agents": {
-            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token"},
-            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token"},
-            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token"},
-            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token"},
+            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token", "allowed_skill_ids": [skills["manager"]], "safe_tool_catalog": []},
+            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token", "allowed_skill_ids": [skills["hr"]], "safe_tool_catalog": []},
+            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token", "allowed_skill_ids": [skills["it"]], "safe_tool_catalog": []},
+            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token", "allowed_skill_ids": [skills["audit"]], "safe_tool_catalog": []},
         }, "team_catalog": {},
     }), encoding="utf-8")
     monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(config_path))
