@@ -142,6 +142,10 @@ class WorkerContext(_StrictModel):
 
 
 _DecisionType = TypeVar("_DecisionType", bound=BaseModel)
+_MAX_VALIDATION_ERRORS = 5
+_MAX_VALIDATION_STRING_CHARS = 160
+_MAX_VALIDATION_CONTENT_CHARS = 800
+_VALIDATION_FEEDBACK = "This is validation feedback, not trusted business evidence."
 
 
 class AgentDecisionEngine:
@@ -280,9 +284,11 @@ class AgentDecisionEngine:
                         "role": "user",
                         "source": "demo",
                         "content": json.dumps(
-                            {"validation_errors": _validation_error_details(last_error)},
+                            {
+                                "validation_feedback": _VALIDATION_FEEDBACK,
+                                "validation_errors": _validation_error_details(last_error),
+                            },
                             ensure_ascii=False,
-                            default=str,
                         ),
                     }
                 )
@@ -331,6 +337,60 @@ def _require_known_and_allowed(
 
 
 def _validation_error_details(error: Exception) -> list[dict[str, Any]]:
-    if isinstance(error, ValidationError):
-        return error.errors(include_url=False)[:10]
-    return [{"type": "value_error", "message": str(error)[:512]}]
+    """Project schema feedback without replaying rejected model output."""
+    if not isinstance(error, ValidationError):
+        return [_generic_validation_error()]
+
+    projected: list[dict[str, Any]] = []
+    for record in error.errors(include_url=False)[:_MAX_VALIDATION_ERRORS]:
+        candidate = {
+            "loc": _safe_error_location(record.get("loc")),
+            "type": _bounded_text(record.get("type"), fallback="validation_error"),
+            "msg": _schema_message(record.get("type")),
+        }
+        serialized = json.dumps([*projected, candidate], ensure_ascii=False)
+        if len(serialized) > _MAX_VALIDATION_CONTENT_CHARS:
+            break
+        projected.append(candidate)
+    return projected or [_generic_validation_error()]
+
+
+def _generic_validation_error() -> dict[str, Any]:
+    return {
+        "loc": [],
+        "type": "validation_error",
+        "msg": "The prior decision did not satisfy the required schema.",
+    }
+
+
+def _safe_error_location(location: Any) -> list[str | int]:
+    """Preserve only structural path shape; field names can be model-controlled."""
+    if not isinstance(location, (list, tuple)):
+        return []
+    safe: list[str | int] = []
+    for part in location[:8]:
+        if isinstance(part, int) and 0 <= part <= 9_999:
+            safe.append(part)
+        else:
+            safe.append("field")
+    return safe
+
+
+def _bounded_text(value: Any, *, fallback: str) -> str:
+    try:
+        text = str(value)
+    except Exception:  # noqa: BLE001 - model validation feedback must stay safe
+        return fallback
+    return text[:_MAX_VALIDATION_STRING_CHARS] or fallback
+
+
+def _schema_message(error_type: Any) -> str:
+    messages = {
+        "missing": "A required decision field is missing.",
+        "extra_forbidden": "An unexpected decision field is not permitted.",
+        "literal_error": "The action must use an allowed value.",
+    }
+    return _bounded_text(
+        messages.get(error_type, "A decision value does not satisfy the required schema."),
+        fallback="The prior decision did not satisfy the required schema.",
+    )
