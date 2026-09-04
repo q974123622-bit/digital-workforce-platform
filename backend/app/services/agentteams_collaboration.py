@@ -72,6 +72,10 @@ _MAX_TOOL_RESULT_STRING_LENGTH = 512
 _MAX_TOOL_RESULT_BYTES = 4096
 _MAX_SAFE_NODE_RESULT_BYTES = 1024
 _MAX_SAFE_RESULT_COLLECTION_BYTES = 4096
+_MAX_SUBTASK_TITLE_LENGTH = 256
+_MAX_SUBTASK_INSTRUCTION_LENGTH = 512
+_MAX_SUBTASK_CAPABILITY_LENGTH = 128
+_SAFE_CLIENT_TASK_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _SECRET_FIELD_PATTERN = re.compile(
     r"(?:password|passwd|pwd|token|secret|key|authorization|credential|cookie|header|endpoint|url|uri|"
     r"stack|traceback|exception)",
@@ -194,8 +198,7 @@ class AgentTeamsCollaborationService:
         matrix_sender: str,
         message: AgentProtocolMessage,
     ) -> list[models.AgentTaskEvent]:
-        run, node = self._validate_context(db, message)
-        self._lock_root_and_node(db, run.id, node.id)
+        run, node = self._locked_context(db, message)
         if not self._reserve_protocol(db, message):
             return []
 
@@ -866,7 +869,7 @@ class AgentTeamsCollaborationService:
 
     def _safe_node_result(self, node: models.AgentTaskNode) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "client_task_key": node.client_task_key,
+            "client_task_key": self._safe_client_task_key(node.client_task_key),
             "status": node.status,
             "result": self._sanitize_tool_result_data(dict(node.output_payload or {})),
         }
@@ -877,7 +880,7 @@ class AgentTeamsCollaborationService:
         if self._serialized_tool_result_size(result) <= _MAX_SAFE_NODE_RESULT_BYTES:
             return result
         return {
-            "client_task_key": node.client_task_key,
+            "client_task_key": self._safe_client_task_key(node.client_task_key),
             "status": node.status,
             "result": {"summary": self._safe_tool_text(str((node.output_payload or {}).get("summary", ""))), "audit_ids": self._safe_audit_ids((node.output_payload or {}).get("audit_ids", []))},
             "truncated": True,
@@ -901,9 +904,9 @@ class AgentTeamsCollaborationService:
         dependency_results: list[dict[str, Any]] | None = None,
     ) -> None:
         payload: dict[str, Any] = {
-            "title": child.title,
-            "client_task_key": child.client_task_key,
-            "depends_on": dependency_keys,
+            "title": self._safe_cross_agent_text(child.title, _MAX_SUBTASK_TITLE_LENGTH),
+            "client_task_key": self._safe_client_task_key(child.client_task_key),
+            "depends_on": [self._safe_client_task_key(key) for key in dependency_keys],
         }
         if dependency_results:
             payload["dependency_results"] = dependency_results
@@ -915,7 +918,7 @@ class AgentTeamsCollaborationService:
             message_type="task.assign",
             sender_agent_id=child.coordinator_agent_id,
             receiver_agent_id=child.assignee_agent_id,
-            body=child.instruction,
+            body=self._safe_cross_agent_text(child.instruction, _MAX_SUBTASK_INSTRUCTION_LENGTH),
             payload=payload,
             idempotency_key=f"{child.id}:task.assign",
         )
@@ -1047,14 +1050,34 @@ class AgentTeamsCollaborationService:
             )
         ]
 
-    def _validate_context(
+    def _locked_context(
         self, db: Session, message: AgentProtocolMessage
     ) -> tuple[models.TaskRun, models.AgentTaskNode]:
-        run = db.get(models.TaskRun, message.root_task_id)
+        """Resolve IDs, then validate against locked, fresh ORM rows."""
+        # Preserve caller-owned updates made in this same transaction before
+        # populate_existing replaces identity-map state with the database row.
+        db.flush()
+        run_id = db.scalar(select(models.TaskRun.id).where(
+            models.TaskRun.id == message.root_task_id,
+            models.TaskRun.source == "agentteams",
+        ))
+        if run_id is None:
+            raise CollaborationConflict("unknown_root_task")
+        node_id = db.scalar(select(models.AgentTaskNode.id).where(
+            models.AgentTaskNode.id == message.task_id,
+        ))
+        if node_id is None:
+            raise CollaborationConflict("invalid_task_scope")
+        root, node = self._lock_root_and_node(db, message.root_task_id, node_id)
+        run = db.scalar(
+            select(models.TaskRun)
+            .where(models.TaskRun.id == run_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
         if run is None or run.source != "agentteams":
             raise CollaborationConflict("unknown_root_task")
-        node = db.get(models.AgentTaskNode, message.task_id)
-        if node is None or node.root_task_id != run.id:
+        if node.root_task_id != run.id or root.root_task_id != run.id:
             raise CollaborationConflict("invalid_task_scope")
         if node.trace_id != run.trace_id or message.trace_id != run.trace_id:
             raise CollaborationConflict("invalid_trace")
@@ -1151,7 +1174,8 @@ class AgentTeamsCollaborationService:
             models.AgentTaskNode.parent_task_id == parent.id
         )))
         fingerprints = {self._node_semantic_fingerprint(db, node) for node in existing}
-        return any(self._subtask_semantic_fingerprint(item) in fingerprints for item in subtasks)
+        candidates = [self._subtask_semantic_fingerprint(item) for item in subtasks]
+        return len(candidates) != len(set(candidates)) or bool(fingerprints.intersection(candidates))
 
     @staticmethod
     def _subtask_semantic_fingerprint(subtask: Mapping[str, Any]) -> str:
@@ -1159,8 +1183,9 @@ class AgentTeamsCollaborationService:
             "assignee": subtask["assignee_agent_id"], "instruction": " ".join(subtask["instruction"].casefold().split()),
             "capability": subtask["capability"].casefold(), "required": subtask["required"],
             "depends_on": sorted(subtask["depends_on"]),
+            "material_hash": AgentTeamsCollaborationService._material_hash(subtask["material"]),
         }
-        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def _node_semantic_fingerprint(self, db: Session, node: models.AgentTaskNode) -> str:
         dependency_ids = list(db.scalars(select(models.AgentTaskDependency.depends_on_task_id).where(
@@ -1171,6 +1196,7 @@ class AgentTeamsCollaborationService:
             "assignee_agent_id": node.assignee_agent_id, "instruction": node.instruction,
             "capability": node.capability, "required": node.required,
             "depends_on": [item.client_task_key for item in dependencies if item is not None],
+            "material": dict(node.input_payload or {}),
         })
 
     def _team_capability_catalog(self, db: Session, team_id: str) -> list[dict[str, Any]]:
@@ -1225,6 +1251,17 @@ class AgentTeamsCollaborationService:
             raise CollaborationConflict("invalid_subtask")
         if not isinstance(material, Mapping) or not isinstance(required, bool) or not isinstance(capability, str):
             raise CollaborationConflict("invalid_subtask")
+        if not _SAFE_CLIENT_TASK_KEY_PATTERN.fullmatch(key) or any(
+            not _SAFE_CLIENT_TASK_KEY_PATTERN.fullmatch(value) for value in dependencies
+        ):
+            raise CollaborationConflict("invalid_client_task_key")
+        if not all((
+            AgentTeamsCollaborationService._is_safe_cross_agent_text(title, _MAX_SUBTASK_TITLE_LENGTH),
+            AgentTeamsCollaborationService._is_safe_cross_agent_text(instruction, _MAX_SUBTASK_INSTRUCTION_LENGTH),
+            AgentTeamsCollaborationService._is_safe_cross_agent_text(capability, _MAX_SUBTASK_CAPABILITY_LENGTH),
+        )):
+            raise CollaborationConflict("unsafe_subtask_metadata")
+        AgentTeamsCollaborationService._material_hash(material)
         return {
             "client_task_key": key,
             "title": title,
@@ -1378,11 +1415,55 @@ class AgentTeamsCollaborationService:
         return True
 
     @staticmethod
-    def _lock_root_and_node(db: Session, root_task_id: str, node_id: str) -> None:
-        # PostgreSQL serializes event sequences on these rows; SQLite ignores FOR UPDATE.
-        db.scalar(select(models.AgentTaskNode.id).where(models.AgentTaskNode.id == root_task_id).with_for_update())
-        if node_id != root_task_id:
-            db.scalar(select(models.AgentTaskNode.id).where(models.AgentTaskNode.id == node_id).with_for_update())
+    def _lock_root_and_node(
+        db: Session, root_task_id: str, node_id: str
+    ) -> tuple[models.AgentTaskNode, models.AgentTaskNode]:
+        # Always lock root before the current node.  populate_existing prevents a
+        # prior identity-map read from authorizing a stale transition or round.
+        root = db.scalar(
+            select(models.AgentTaskNode)
+            .where(models.AgentTaskNode.id == root_task_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        if root is None:
+            raise CollaborationConflict("unknown_root_task")
+        if node_id == root_task_id:
+            return root, root
+        node = db.scalar(
+            select(models.AgentTaskNode)
+            .where(models.AgentTaskNode.id == node_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        if node is None:
+            raise CollaborationConflict("invalid_task_scope")
+        return root, node
+
+    @staticmethod
+    def _material_hash(material: Mapping[str, Any]) -> str:
+        try:
+            canonical = json.dumps(
+                material, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            )
+        except (TypeError, ValueError, UnicodeEncodeError) as error:
+            raise CollaborationConflict("invalid_subtask") from error
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _is_safe_cross_agent_text(value: str, limit: int) -> bool:
+        return len(value) <= limit and AgentTeamsCollaborationService._safe_tool_text(value) == value
+
+    @staticmethod
+    def _safe_cross_agent_text(value: Any, limit: int) -> str:
+        if not isinstance(value, str):
+            return "[redacted]"
+        safe = AgentTeamsCollaborationService._safe_tool_text(value)
+        return safe if len(value) <= limit and safe == value else "[redacted]"
+
+    @staticmethod
+    def _safe_client_task_key(value: Any) -> str:
+        return value if isinstance(value, str) and _SAFE_CLIENT_TASK_KEY_PATTERN.fullmatch(value) else "[redacted]"
 
     @staticmethod
     def _protocol_seen(db: Session, idempotency_key: str) -> bool:

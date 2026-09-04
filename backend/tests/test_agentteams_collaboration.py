@@ -672,6 +672,101 @@ def test_semantic_duplicate_follow_up_is_rejected_with_a_new_client_key(db_sessi
         _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [repeat], key="semantic-repeat")
 
 
+def test_delegate_rejects_unsafe_cross_agent_metadata_without_mutation(db_session):
+    from app.services.agentteams_collaboration import CollaborationConflict
+
+    run, leader = _create_run(db_session)
+    unsafe_key = _subtask("https://secret.example/task?token=top-secret", "VE-0002")
+    with pytest.raises(CollaborationConflict, match="invalid_client_task_key"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [unsafe_key])
+
+    unsafe_title = _subtask("safe-key", "VE-0002")
+    unsafe_title["title"] = "https://secret.example/title"
+    with pytest.raises(CollaborationConflict, match="unsafe_subtask_metadata"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [unsafe_title], key="unsafe-title")
+
+    unsafe_capability = _subtask("safe-capability", "VE-0002")
+    unsafe_capability["required_capability"] = "Bearer secret-token"
+    with pytest.raises(CollaborationConflict, match="unsafe_subtask_metadata"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [unsafe_capability], key="unsafe-capability")
+
+    root = db_session.get(models.AgentTaskNode, run.id)
+    assert root.status == "planning"
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+
+
+def test_safe_dependency_results_redact_historical_unsafe_client_key(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [
+        _subtask("predecessor", "VE-0002"),
+        _subtask("dependent", "VE-0003", depends_on=["predecessor"]),
+    ])
+    nodes = {node.client_task_key: node for node in db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id)}
+    leaked_key = "https://secret.example/task?token=top-secret"
+    nodes["predecessor"].client_task_key = leaked_key
+    db_session.flush()
+    _start_node(db_session, run, nodes["predecessor"])
+    _apply_node_message(db_session, run, nodes["predecessor"], type="task.result", key="done", payload={"result": "complete"})
+
+    assignment = db_session.query(models.AgentMessage).filter_by(
+        task_id=nodes["dependent"].id, message_type="task.assign",
+    ).one()
+    assert leaked_key not in json.dumps(assignment.payload)
+    assert assignment.payload["dependency_results"][0]["client_task_key"] == "[redacted]"
+
+
+def test_delegate_rejects_same_batch_semantic_duplicate(db_session):
+    from app.services.agentteams_collaboration import CollaborationConflict
+
+    run, leader = _create_run(db_session)
+    first = _subtask("first", "VE-0002")
+    second = _subtask("second", "VE-0002")
+    for item in (first, second):
+        item["instruction"] = "Collect the same evidence"
+        item["material"] = {"employee": "E-001", "scope": ["contract"]}
+    with pytest.raises(CollaborationConflict, match="duplicate_semantic_subtask"):
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [first, second])
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+
+
+def test_same_instruction_with_distinct_material_is_a_new_semantic_subtask(db_session):
+    run, leader = _create_run(db_session)
+    first = _subtask("first", "VE-0002")
+    second = _subtask("second", "VE-0002")
+    for item in (first, second):
+        item["instruction"] = "Collect employee evidence"
+    first["material"] = {"employee": "E-001", "scope": ["contract"]}
+    second["material"] = {"employee": "E-002", "scope": ["contract"]}
+
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [first, second])
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 2
+
+
+def test_locked_context_refresh_rejects_second_delegate_from_stale_session(db_session):
+    from app.database import SessionLocal
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict
+
+    run, leader = _create_run(db_session)
+    matrix_sender = _matrix_sender(leader.runtime_ref)
+    db_session.commit()
+    stale = SessionLocal()
+    current = SessionLocal()
+    try:
+        # Keep the pre-delegation state in this identity map.  The second call
+        # must refresh the locked root before testing its transition/round state.
+        assert stale.get(models.AgentTaskNode, run.id).status == "planning"
+        service = AgentTeamsCollaborationService()
+        first = _protocol(root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="platform", type="task.delegate", key=f"{run.id}:fresh", payload={"subtasks": [_subtask("first", "VE-0002")]})
+        service.apply_message(current, matrix_sender=matrix_sender, message=first)
+        current.commit()
+        second = _protocol(root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="platform", type="task.delegate", key=f"{run.id}:stale-second", payload={"subtasks": [_subtask("second", "VE-0003")]})
+        with pytest.raises(CollaborationConflict, match="invalid_transition"):
+            service.apply_message(stale, matrix_sender=matrix_sender, message=second)
+    finally:
+        stale.close()
+        current.close()
+
+
 def test_two_prerequisites_release_a_blocked_child_once(db_session):
     run, leader = _create_run(db_session)
     _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [
