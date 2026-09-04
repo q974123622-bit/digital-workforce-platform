@@ -390,7 +390,8 @@ class AgentRuntime:
             if tool is None:
                 raise AgentDecisionError("decision_failed")
             return [self._reply(message, "tool.request", "platform", {
-                "plugin_id": tool["plugin_id"], "action": tool["action"],
+                "tool_name": decision.tool_name, "plugin_id": tool["plugin_id"], "action": tool["action"],
+                **({"required_capability": tool["required_capability"]} if tool.get("required_capability") else {}),
                 "params": self._bounded_value(decision.tool_arguments or {}),
             }, sequence)]
         if decision.action == "ask":
@@ -671,7 +672,7 @@ class AgentRuntime:
             return None
         for item in self.config.safe_tool_catalog:
             if item.get("name") == name and isinstance(item.get("plugin_id"), str):
-                return {"plugin_id": item["plugin_id"], "action": str(item.get("action", "read"))}
+                return {"plugin_id": item["plugin_id"], "action": str(item.get("action", "read")), "required_capability": str(item.get("required_capability", ""))}
         return None
 
     def _safe_selected(self, values: Any, allowed: set[str]) -> list[str]:

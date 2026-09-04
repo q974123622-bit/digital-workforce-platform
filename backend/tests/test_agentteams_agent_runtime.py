@@ -199,6 +199,28 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     assert "101" in saved
 
 
+def test_cli_loaded_tool_catalog_controls_runtime_tool_requests(tmp_path):
+    from scripts.run_agentteams_agent import load_runtime_config
+    agents = {}
+    for role, agent_id, mxid, skill in (("manager", "VE-0001", MXIDS["VE-0001"], "agentteams-onboarding-readiness"), ("hr", "VE-0002", MXIDS["VE-0002"], "hr-onboarding-assistant"), ("it", "VE-0003", MXIDS["VE-0003"], "it-service-assistant"), ("audit", "VE-0005", MXIDS["VE-0005"], "audit-evidence-review")):
+        agents[role] = {"agent_id": agent_id, "mxid": mxid, "token": role + "-token", "allowed_skill_ids": [skill], "safe_tool_catalog": ([{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "hr-employee-mcp", "action": "read", "required_capability": "hr.onboarding.read"}] if role == "hr" else [])}
+    path = tmp_path / "runtime.json"
+    path.write_text(json.dumps({"matrix_url": "https://matrix.test", "room_id": "!team:local", "team_id": "TEAM-X", "platform": {"mxid": MXIDS["platform"], "token": "platform-token"}, "agents": agents, "team_catalog": TEAM}), encoding="utf-8")
+    config, _ = load_runtime_config("hr", path, env={"DEEPSEEK_API_KEY": "x", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
+    gateway, engine = FakeGateway(), FakeEngine(); engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [WorkerDecision(action="tool", tool_name="agentteams.hr.lookup_onboarding", tool_arguments={})]
+    gateway.events = [event(message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload()), sender=MXIDS["VE-0001"])]
+    AgentRuntime(config, gateway, engine, pause=lambda _: None).run_once()
+    request = [item for item in sent_protocols(gateway) if item.type == "tool.request"][-1]
+    assert request.payload["tool_name"] == "agentteams.hr.lookup_onboarding"
+    assert request.payload["required_capability"] == "hr.onboarding.read"
+    gateway, engine = FakeGateway(), FakeEngine(); engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [WorkerDecision(action="tool", tool_name="not-listed", tool_arguments={})]
+    gateway.events = [event(message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload()), sender=MXIDS["VE-0001"])]
+    AgentRuntime(config, gateway, engine, pause=lambda _: None).run_once()
+    assert all(item.type != "tool.request" for item in sent_protocols(gateway))
+
+
 @pytest.mark.parametrize("decision, expected", [
     (WorkerDecision(action="ask", recipient_agent_id="VE-0003", message="请确认账号"), "agent.message"),
     (WorkerDecision(action="delegate", subtask=PlannedSubtask(client_task_key="audit", title="审计", goal="复核", required_capability="audit.evidence.read", assignee_agent_id="VE-0005", reason="审计证据")), "task.delegate"),

@@ -118,3 +118,7 @@ process-tree probe: `taskkill.exe` returns `Access denied` in this sandbox.
 
 Round 3 follow-up adds identity-safe temporary cleanup and symlink-authority
 coverage (`29 passed, 1 skipped` where symlink creation is unavailable).
+
+CLI-loaded non-empty HR tool catalogs now drive real runtime `tool.request`
+messages with the configured tool name and capability; an unlisted tool emits
+no request (`34 passed`).
