@@ -491,3 +491,135 @@ def test_run_forever_waits_after_empty_poll_and_default_pause_is_three_seconds(t
     subject.run_forever(StopAfterOnePoll())
     assert observed_waits == [1.0]
     assert subject.config.pause_seconds == 3.0
+
+
+def test_pending_replay_resumes_same_batch_without_skipping_later_events(tmp_path):
+    """A failed B response may replay, but C must still be read from the old cursor once."""
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])] * 3
+    engine.plans = [plan("summarize")] * 3
+    batch = [
+        event(message(type="task.submit", sender="platform", receiver="VE-0001", task_id=task_id, key=task_id, payload=manager_payload()), event_id=f"${task_id}", ts=index)
+        for index, task_id in enumerate(("A", "B", "C"), start=1)
+    ]
+    gateway.events = batch
+    gateway.fail_on_send = 4  # A's two envelopes succeed; B's delegate fails.
+
+    assert subject.run_once() == 1
+    assert subject._state["cursor"] is None
+    assert subject._state["pending_outbox"]["source"]["idempotency_key"] == "B"
+
+    restarted_gateway = FakeGateway()
+    restarted_gateway.events = batch
+    restarted_engine = FakeEngine()
+    restarted_engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    restarted_engine.plans = [plan("summarize")]
+    restarted = AgentRuntime(subject.config, restarted_gateway, restarted_engine, pause=lambda _: None)
+
+    assert restarted.run_once() == 2
+    replayed = sent_protocols(restarted_gateway)
+    assert [item.task_id for item in replayed] == ["B", "B", "C", "C"]
+    assert restarted._state["cursor"] == "cursor-1"
+    assert restarted_engine.selections == [] and restarted_engine.plans == []
+
+
+def test_pending_replay_resumes_second_protocol_line_in_one_matrix_event(tmp_path):
+    """Replaying line one must not mark the enclosing Matrix event completed."""
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])] * 2
+    engine.plans = [plan("summarize")] * 2
+    first = message(type="task.submit", sender="platform", receiver="VE-0001", task_id="one", key="one", payload=manager_payload())
+    second = message(type="task.submit", sender="platform", receiver="VE-0001", task_id="two", key="two", payload=manager_payload())
+    combined = MatrixEvent(
+        event_id="$both", room_id="!team:local", sender=MXIDS["platform"],
+        body="bad text\n" + render_protocol_line(first) + "\nDWP_EVENT {broken}\n" + render_protocol_line(second), ts=1,
+    )
+    gateway.events = [combined]
+    gateway.fail_on_send = 2
+
+    assert subject.run_once() == 0
+    assert subject._state["cursor"] is None
+
+    restarted_gateway = FakeGateway()
+    restarted_gateway.events = [combined]
+    restarted_engine = FakeEngine()
+    restarted_engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    restarted_engine.plans = [plan("summarize")]
+    restarted = AgentRuntime(subject.config, restarted_gateway, restarted_engine, pause=lambda _: None)
+
+    assert restarted.run_once() == 2
+    assert [item.task_id for item in sent_protocols(restarted_gateway)] == ["one", "one", "two", "two"]
+    assert restarted._state["security"]["parse_error"] == 1
+
+
+def test_completed_protocol_progress_is_durable_before_its_matrix_event_finishes(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    engine.plans = [plan("summarize")]
+    protocol = message(type="task.submit", sender="platform", receiver="VE-0001", task_id="first", key="first", payload=manager_payload())
+    matrix_event = event(protocol, event_id="$combined")
+    trial = json.loads(json.dumps(subject._state))
+    subject._active_pending = {"event_id": "$combined", "trial": trial, "source": None}
+
+    assert subject._process_protocol_message(protocol, matrix_event, trial) == 1
+    saved = json.loads((tmp_path / "state" / "VE-0001.json").read_text(encoding="utf-8"))
+    assert "first" in saved["processed_idempotency_keys"]
+    assert "$combined" not in saved["processed_event_ids"]
+    assert saved["cursor"] is None
+
+
+def test_corrupt_pending_is_dropped_without_sending_or_advancing_cursor(tmp_path):
+    subject, gateway, _, _ = runtime(tmp_path)
+    subject._state["pending_outbox"] = {
+        "version": 1, "event_id": "$bad", "source_idempotency_key": "bad", "next_cursor": "cursor-1",
+        "trial_state": {"cursor": None},
+        "messages": [message(type="task.summary", sender="VE-0002", receiver="platform", payload={"summary": "bad"}).model_dump(mode="json")],
+    }
+
+    assert subject.run_once() == 0
+    assert gateway.sent == []
+    assert subject._state["cursor"] is None
+    assert subject._state["pending_outbox"] is None
+    assert subject._state["security"]["pending_corrupt"] == 1
+
+
+def test_canonical_pending_envelope_redacts_model_text_before_first_or_replay_send(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    secret = "Bearer very-secret-token api_key: exposed https://secret.example/path"
+    engine.work = [WorkerDecision(action="ask", recipient_agent_id="VE-0001", message=secret)]
+    gateway.events = [event(message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload()))]
+    gateway.fail_on_send = 2
+
+    assert subject.run_once() == 0
+    first_bodies = [line for _, _, line in gateway.sent]
+    assert all("very-secret-token" not in line and "secret.example" not in line for line in first_bodies)
+
+    gateway.fail_on_send = None
+    assert subject.run_once() == 1
+    all_bodies = [line for _, _, line in gateway.sent]
+    assert all("very-secret-token" not in line and "secret.example" not in line for line in all_bodies)
+
+
+def test_secret_canonical_envelope_is_byte_identical_on_first_send_and_replay(tmp_path):
+    subject, gateway, _, _ = runtime(tmp_path)
+    source = message(type="task.submit", sender="platform", receiver="VE-0001", key="source", payload=manager_payload())
+    source_event = event(source, event_id="$source")
+    trial = json.loads(json.dumps(subject._state))
+    subject._active_pending = {"event_id": "$source", "trial": trial, "source": subject._pending_source(source_event, source)}
+    secret = "Bearer very-secret-token api_key=exposed https://secret.example/path"
+    replies = [
+        subject._reply(source, "agent.message", "platform", {"kind": "peer.ask", "text": secret}, 0),
+        subject._reply(source, "task.failed", "platform", {"error_code": "decision_failed"}, 1),
+    ]
+    gateway.fail_on_send = 2
+
+    assert subject._send_responses(replies) is False
+    first_body = gateway.sent[0][2]
+    assert "very-secret-token" not in first_body and "secret.example" not in first_body
+
+    replay_gateway = FakeGateway()
+    replay = AgentRuntime(subject.config, replay_gateway, FakeEngine(), pause=lambda _: None)
+    assert replay.run_once() == 1
+    assert replay_gateway.sent[0][2] == first_body
+    assert all("very-secret-token" not in line and "secret.example" not in line for _, _, line in replay_gateway.sent)

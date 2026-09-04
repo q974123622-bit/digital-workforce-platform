@@ -51,7 +51,10 @@ _MAX_EVIDENCE_ITEMS = 8
 _MAX_EVIDENCE_BYTES = 4096
 _MAX_TEXT = 512
 _MAX_STATE_BYTES = 16_384
+_MAX_PENDING_ENVELOPE_BYTES = 8_192
+_PENDING_VERSION = 1
 _SENSITIVE_TEXT = re.compile(r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+|\b(?:https?|wss?|file|ftp)://\S+|\b(?:api[_-]?key|password|token|authorization|credential)\s*[:=]\s*\S+|\b[a-z_][a-z0-9_]*\s*=\s*\S+|traceback\s*\(|\bfile\s+['\"]?[a-z]:[/\\])", re.I)
+_OUTBOUND_TYPES = {"agent.message", "task.accepted", "task.progress", "task.delegate", "task.summary", "task.failed", "tool.request", "task.result"}
 
 
 class MatrixProtocolTransport(Protocol):
@@ -123,8 +126,11 @@ class AgentRuntime:
         sent, so a retry can replay the exact envelopes without another model
         call.
         """
+        replayed = 0
         if self._state.get("pending_outbox"):
-            return self._replay_pending()
+            replayed = self._replay_pending()
+            if not replayed:
+                return 0
         try:
             batch = self.gateway.sync_messages(self._state.get("cursor"), {self.config.room_id})
         except Exception:
@@ -136,7 +142,7 @@ class AgentRuntime:
             (item for item in getattr(batch, "events", []) if item.room_id == self.config.room_id),
             key=lambda item: (item.ts, item.event_id),
         )
-        handled = 0
+        handled = replayed
         for event in events:
             if not isinstance(event.event_id, str) or not event.event_id:
                 continue
@@ -145,9 +151,8 @@ class AgentRuntime:
             trial = deepcopy(self._state)
             self._active_pending = {
                 "event_id": event.event_id,
-                "next_cursor": next_cursor,
                 "trial": trial,
-                "source_idempotency_key": "",
+                "source": None,
             }
             outcome = self._process_event(event, trial)
             self._active_pending = None
@@ -167,13 +172,8 @@ class AgentRuntime:
 
     def _replay_pending(self) -> int:
         pending = self._state.get("pending_outbox")
-        try:
-            if not isinstance(pending, Mapping) or not isinstance(pending.get("trial_state"), Mapping):
-                raise ValueError()
-            messages = [AgentProtocolMessage.model_validate(item) for item in pending.get("messages", [])]
-            if not messages or len(messages) > 8:
-                raise ValueError()
-        except (ValueError, ValidationError, TypeError):
+        messages = self._validated_pending_messages(pending)
+        if messages is None:
             self._state["pending_outbox"] = None
             self._security(self._state, "pending_corrupt")
             self._save_state()
@@ -181,11 +181,12 @@ class AgentRuntime:
         if not self._send_direct(messages):
             return 0
         trial = deepcopy(dict(pending["trial_state"]))
-        self._mark_processed(trial, str(pending.get("event_id", "")))
-        source_key = pending.get("source_idempotency_key")
-        if isinstance(source_key, str) and source_key:
-            self._mark_idempotency(trial, source_key)
-        trial["cursor"] = pending.get("next_cursor")
+        source = pending["source"]
+        self._mark_idempotency(trial, source["idempotency_key"])
+        # A protocol envelope, rather than its entire Matrix event, has now
+        # completed.  Keep the old cursor and let the next sync skip this line
+        # by idempotency while it handles its siblings and later events.
+        trial["cursor"] = self._state.get("cursor")
         trial["pending_outbox"] = None
         self._state = trial
         self._save_state()
@@ -230,7 +231,7 @@ class AgentRuntime:
         if message.idempotency_key in state["processed_idempotency_keys"]:
             return 0
         if self._active_pending is not None:
-            self._active_pending["source_idempotency_key"] = message.idempotency_key
+            self._active_pending["source"] = self._pending_source(event, message)
         try:
             responses = self._handle_message(message, event, state)
         except AgentDecisionError as exc:
@@ -240,6 +241,7 @@ class AgentRuntime:
         if not self._send_responses(responses):
             return None
         self._mark_idempotency(state, message.idempotency_key)
+        self._persist_protocol_progress(state)
         return 1
 
     def _handle_message(
@@ -401,20 +403,39 @@ class AgentRuntime:
         return self._reply(source, "task.failed", "platform", {"error_code": self._safe_code(code)}, sequence)
 
     def _send_responses(self, messages: list[AgentProtocolMessage]) -> bool:
+        if not messages:
+            return True
+        canonical = self._canonical_envelopes(messages)
+        if canonical is None:
+            self._security(self._state, "outbound_rejected")
+            self._save_state()
+            return False
         if self._active_pending is not None:
             trial = self._active_pending["trial"]
+            source = self._active_pending.get("source")
             pending = {
-                "event_id": self._active_pending["event_id"],
-                "source_idempotency_key": self._active_pending["source_idempotency_key"],
-                "next_cursor": self._active_pending["next_cursor"],
-                "messages": [message.model_dump(mode="json") for message in messages],
-                "trial_state": self._bounded_state({key: value for key, value in trial.items() if key != "pending_outbox"}),
+                "version": _PENDING_VERSION,
+                "source": source,
+                "messages": [message.model_dump(mode="json") for message in canonical],
+                "trial_state": self._bounded_state({
+                    **{key: value for key, value in trial.items() if key != "pending_outbox"},
+                    "pending_outbox": None,
+                }),
             }
-            if len(messages) > 8 or len(json.dumps(pending, ensure_ascii=False).encode("utf-8")) > _MAX_STATE_BYTES:
+            if self._validated_pending_messages(pending) is None:
+                self._security(self._state, "outbound_rejected")
+                self._save_state()
                 return False
             self._state["pending_outbox"] = pending
             self._save_state()
-        return self._send_direct(messages)
+        return self._send_direct(canonical)
+
+    def _persist_protocol_progress(self, state: Mapping[str, Any]) -> None:
+        """Commit an acknowledged protocol line without completing its event."""
+        durable = deepcopy(dict(state))
+        durable["pending_outbox"] = None
+        self._state = durable
+        self._save_state()
 
     def _send_direct(self, messages: list[AgentProtocolMessage]) -> bool:
         try:
@@ -425,6 +446,126 @@ class AgentRuntime:
         except Exception:
             return False
         return True
+
+    @staticmethod
+    def _pending_source(event: MatrixEvent, message: AgentProtocolMessage) -> dict[str, Any]:
+        return {
+            "event_id": event.event_id,
+            "idempotency_key": message.idempotency_key,
+            "root_task_id": message.root_task_id,
+            "task_id": message.task_id,
+            "parent_task_id": message.parent_task_id,
+            "trace_id": message.trace_id,
+        }
+
+    def _canonical_envelopes(self, messages: list[AgentProtocolMessage]) -> list[AgentProtocolMessage] | None:
+        """Create the one safe byte-stable representation used for all sends."""
+        if not messages or len(messages) > 8:
+            return None
+        canonical: list[AgentProtocolMessage] = []
+        for message in messages:
+            if not self._reasonable_outbound(message):
+                return None
+            payload = self._safe_value(message.payload)
+            if not isinstance(payload, dict):
+                return None
+            try:
+                envelope = AgentProtocolMessage(
+                    version=message.version, message_id=message.message_id, type=message.type,
+                    root_task_id=message.root_task_id, task_id=message.task_id,
+                    parent_task_id=message.parent_task_id, trace_id=message.trace_id,
+                    sender=message.sender, receiver=message.receiver,
+                    timestamp=message.timestamp, idempotency_key=message.idempotency_key,
+                    payload=payload,
+                )
+            except ValidationError:
+                return None
+            canonical.append(envelope)
+        if sum(len(render_protocol_line(message).encode("utf-8")) for message in canonical) > _MAX_PENDING_ENVELOPE_BYTES:
+            return None
+        return canonical
+
+    def _reasonable_outbound(self, message: AgentProtocolMessage) -> bool:
+        if message.version != "1.0" or message.type not in _OUTBOUND_TYPES or message.sender != self.config.agent_id:
+            return False
+        if message.receiver not in self.config.trusted_sender_mxids or message.receiver == self.config.agent_id:
+            return False
+        if message.type != "agent.message" and message.receiver != "platform":
+            return False
+        values = (message.message_id, message.root_task_id, message.task_id, message.trace_id, message.timestamp, message.idempotency_key)
+        if any(not self._safe_protocol_text(value) for value in values):
+            return False
+        return message.parent_task_id is None or self._safe_protocol_text(message.parent_task_id)
+
+    @staticmethod
+    def _safe_protocol_text(value: Any) -> bool:
+        return isinstance(value, str) and 0 < len(value) <= 512 and not _SENSITIVE_TEXT.search(value)
+
+    def _validated_pending_messages(self, pending: Any) -> list[AgentProtocolMessage] | None:
+        """Fail closed before any outbound send when durable replay data is malformed."""
+        if not isinstance(pending, Mapping) or set(pending) != {"version", "source", "messages", "trial_state"} or pending.get("version") != _PENDING_VERSION:
+            return None
+        source = pending.get("source")
+        trial = pending.get("trial_state")
+        raw_messages = pending.get("messages")
+        if not self._valid_pending_source(source) or not self._complete_state(trial):
+            return None
+        if not isinstance(raw_messages, list) or not 1 <= len(raw_messages) <= 8:
+            return None
+        try:
+            messages = [AgentProtocolMessage.model_validate(item) for item in raw_messages]
+        except (ValidationError, TypeError, ValueError):
+            return None
+        if sum(len(render_protocol_line(message).encode("utf-8")) for message in messages) > _MAX_PENDING_ENVELOPE_BYTES:
+            return None
+        for message in messages:
+            if not self._reasonable_outbound(message):
+                return None
+            if (
+                message.root_task_id != source["root_task_id"]
+                or message.task_id != source["task_id"]
+                or message.parent_task_id != source["parent_task_id"]
+                or message.trace_id != source["trace_id"]
+            ):
+                return None
+            # Pending messages must already be the redacted canonical form.
+            safe_payload = self._safe_value(message.payload)
+            if safe_payload != message.payload:
+                return None
+        try:
+            pending_bytes = len(json.dumps(pending, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        except (TypeError, ValueError):
+            return None
+        return messages if pending_bytes <= _MAX_STATE_BYTES else None
+
+    def _valid_pending_source(self, source: Any) -> bool:
+        if not isinstance(source, Mapping) or set(source) != {"event_id", "idempotency_key", "root_task_id", "task_id", "parent_task_id", "trace_id"}:
+            return False
+        required = ("event_id", "idempotency_key", "root_task_id", "task_id", "trace_id")
+        if any(not self._safe_protocol_text(source.get(name)) for name in required):
+            return False
+        return source.get("parent_task_id") is None or self._safe_protocol_text(source.get("parent_task_id"))
+
+    @staticmethod
+    def _complete_state(value: Any) -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        required = {"cursor", "processed_event_ids", "processed_idempotency_keys", "tasks", "security", "pending_outbox"}
+        if set(value) != required:
+            return False
+        if value.get("cursor") is not None and not isinstance(value.get("cursor"), str):
+            return False
+        if value.get("pending_outbox") is not None or not isinstance(value.get("tasks"), Mapping):
+            return False
+        for name in ("processed_event_ids", "processed_idempotency_keys"):
+            tracked = value.get(name)
+            if not isinstance(tracked, list) or len(tracked) > _MAX_TRACKED or any(not isinstance(item, str) or not item for item in tracked):
+                return False
+        security = value.get("security")
+        return isinstance(security, Mapping) and all(
+            isinstance(key, str) and isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 9999
+            for key, count in security.items()
+        )
 
     def _manager_context(self, *, goal, selected, catalog, child_results, current_round, limits) -> ManagerContext:
         safe_limits = limits if isinstance(limits, Mapping) else {}
@@ -537,6 +678,16 @@ class AgentRuntime:
     def _save_state(self) -> None:
         self.config.state_dir.mkdir(parents=True, exist_ok=True)
         safe = self._bounded_state({key: value for key, value in self._state.items() if key != "matrix_token"})
+        # Pending envelopes have already been canonicalized and validated.  Do
+        # not run them through a second lossy normalizer, or a crash recovery
+        # could emit a different protocol line than the first send attempt.
+        pending = self._state.get("pending_outbox")
+        if pending is not None and self._validated_pending_messages(pending) is not None:
+            safe["pending_outbox"] = pending
+        elif pending is not None:
+            safe["pending_outbox"] = None
+            security = safe.setdefault("security", {})
+            security["pending_corrupt"] = min(9999, int(security.get("pending_corrupt", 0)) + 1)
         temporary = self._state_path.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
             json.dump(safe, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
