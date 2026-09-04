@@ -64,6 +64,59 @@ def test_registry_rejects_skill_file_below_the_single_directory_level(tmp_path):
         ProjectSkillRegistry.from_root(tmp_path)
 
 
+@pytest.mark.parametrize("link_kind", ("directory", "file"))
+def test_registry_rejects_symlinked_skill_path_outside_project_root(
+    tmp_path, monkeypatch, link_kind,
+):
+    skills_root = tmp_path / ".agents" / "skills"
+    skills_root.mkdir(parents=True)
+    skill_directory = skills_root / "linked-skill"
+    skill_directory.mkdir()
+    skill_path = skill_directory / "SKILL.md"
+    skill_path.write_text(
+        "---\nname: External\ndescription: Use when external\nwhenToUse: external\n---\nbody\n",
+        encoding="utf-8",
+    )
+    symlinked_path = skill_directory if link_kind == "directory" else skill_path
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path == symlinked_path or original_is_symlink(path),
+    )
+
+    with pytest.raises(SkillRegistryError, match="symlinked_skill_path"):
+        ProjectSkillRegistry.from_root(tmp_path)
+
+
+@pytest.mark.parametrize("candidate_kind", ("directory", "file"))
+def test_registry_rejects_resolved_skill_path_outside_project_root(
+    tmp_path, monkeypatch, candidate_kind,
+):
+    skills_root = tmp_path / ".agents" / "skills"
+    skill_directory = skills_root / "inside-root"
+    skill_directory.mkdir(parents=True)
+    skill_path = skill_directory / "SKILL.md"
+    skill_path.write_text(
+        "---\nname: Inside\ndescription: Use when inside\nwhenToUse: inside\n---\nbody\n",
+        encoding="utf-8",
+    )
+    external_path = tmp_path / "outside-root"
+    external_path.mkdir()
+    escaped_path = skill_directory if candidate_kind == "directory" else skill_path
+    original_resolve = Path.resolve
+
+    def resolve_with_escape(path, strict=False):
+        if path == escaped_path:
+            return external_path
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve_with_escape)
+
+    with pytest.raises(SkillRegistryError, match="skill_path_outside_root"):
+        ProjectSkillRegistry.from_root(tmp_path)
+
+
 def test_registry_rejects_duplicate_skill_ids():
     skill = ProjectSkill(
         skill_id="duplicate-skill",

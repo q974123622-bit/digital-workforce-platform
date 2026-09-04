@@ -72,8 +72,12 @@ def parse_skill_directories(skills_root: Path) -> list[ProjectSkill]:
     """Read direct ``<skill-id>/SKILL.md`` children with strict frontmatter."""
     if not skills_root.is_dir():
         raise SkillRegistryError(f"skills_directory_not_found:{skills_root}")
+    _reject_symlink(skills_root)
+    resolved_skills_root = skills_root.resolve()
 
     for path in skills_root.rglob("SKILL.md"):
+        _reject_symlink(path)
+        _require_within_skills_root(path, resolved_skills_root)
         if path.parent.parent != skills_root:
             raise SkillRegistryError(f"invalid_skill_depth:{path}")
 
@@ -81,9 +85,17 @@ def parse_skill_directories(skills_root: Path) -> list[ProjectSkill]:
     for directory in sorted(skills_root.iterdir(), key=lambda path: path.name):
         if not directory.is_dir():
             continue
+        _reject_symlink(directory)
+        resolved_directory = _require_within_skills_root(directory, resolved_skills_root)
+        if resolved_directory.parent != resolved_skills_root:
+            raise SkillRegistryError(f"skill_path_outside_root:{directory}")
         skill_path = directory / "SKILL.md"
         if not skill_path.is_file():
             raise SkillRegistryError(f"missing_skill_file:{directory}")
+        _reject_symlink(skill_path)
+        resolved_skill_path = _require_within_skills_root(skill_path, resolved_skills_root)
+        if resolved_skill_path.parent != resolved_directory:
+            raise SkillRegistryError(f"skill_path_outside_root:{skill_path}")
         skill_id = directory.name
         if not _SKILL_ID_PATTERN.fullmatch(skill_id):
             raise SkillRegistryError(f"invalid_skill_id:{skill_id}")
@@ -98,6 +110,18 @@ def parse_skill_directories(skills_root: Path) -> list[ProjectSkill]:
             path=skill_path,
         ))
     return skills
+
+
+def _reject_symlink(path: Path) -> None:
+    if path.is_symlink():
+        raise SkillRegistryError(f"symlinked_skill_path:{path}")
+
+
+def _require_within_skills_root(path: Path, resolved_skills_root: Path) -> Path:
+    resolved_path = path.resolve()
+    if not resolved_path.is_relative_to(resolved_skills_root):
+        raise SkillRegistryError(f"skill_path_outside_root:{path}")
+    return resolved_path
 
 
 def _parse_frontmatter(content: str, path: Path) -> dict[str, str]:
