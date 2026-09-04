@@ -128,6 +128,7 @@ def assign_payload():
     return {
         "title": "HR 核查", "instruction": "核验新员工A的完整HR入职材料，并报告缺口。",
         "client_task_key": "hr", "dependency_results": [], "parent_chain_agent_ids": ["VE-0001"],
+        "team_capability_catalog": manager_payload()["team_capability_catalog"], "team_catalog_version": 1,
     }
 
 
@@ -182,7 +183,7 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
         WorkerDecision(action="complete", result="资料齐全"),
     ]
     assignment = message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload())
-    tool_result = message(type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1", payload={"ok": True, "audit_ids": ["AUD-1"], "data": {"source": "demo"}}, key="tool")
+    tool_result = message(type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1", payload={"ok": True, "audit_ids": ["AUD-1"], "data": {"source": "demo", "key": "drop", "note": "api_key: exposed password=hidden"}}, key="tool")
     gateway.events = [event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1), event(tool_result, event_id="$tool", ts=2)]
 
     subject.run_once()
@@ -193,6 +194,9 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     assert sent[3].payload["plugin_id"] == "agentteams-onboarding-employee"
     assert sent[-1].payload["audit_ids"] == ["AUD-1"]
     assert engine.worker_contexts[0].task["goal"] == "核验新员工A的完整HR入职材料，并报告缺口。"
+    saved = (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
+    assert "exposed" not in saved and "password" not in saved and '"key"' not in saved
+    assert "AUD-1" in saved
 
 
 @pytest.mark.parametrize("decision, expected", [
@@ -252,7 +256,7 @@ def test_restart_uses_atomic_state_without_secret_and_send_failure_does_not_adva
     gateway.events = [event(protocol)]
     gateway.fail_sends = True
     assert subject.run_once() == 0
-    assert not (tmp_path / "state" / "VE-0001.json").exists()
+    assert json.loads((tmp_path / "state" / "VE-0001.json").read_text(encoding="utf-8"))["pending_outbox"]
 
     gateway.fail_sends = False
     assert subject.run_once() == 1
@@ -421,14 +425,17 @@ def test_valid_protocol_lines_survive_bad_lines_in_same_matrix_event(tmp_path):
 
 def test_partial_manager_send_retries_same_protocol_ids_without_cursor_advance(tmp_path):
     subject, gateway, engine, _ = runtime(tmp_path)
-    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"]), SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
-    engine.plans = [plan(), plan()]
+    # If recovery reruns the model, these deliberately different second answers
+    # would change the reply.  A durable pending outbox must never consume them.
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"]), SkillSelection(selected_skill_ids=["audit-evidence-review"])]
+    engine.plans = [plan(), plan("summarize")]
     gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
     gateway.fail_on_send = 2
 
     assert subject.run_once() == 0
     first_attempt = sent_protocols(gateway)
     assert [item.type for item in first_attempt] == ["agent.message"]
+    first_body = gateway.sent[0][2]
     assert subject._state["cursor"] is None
 
     gateway.fail_on_send = None
@@ -436,8 +443,35 @@ def test_partial_manager_send_retries_same_protocol_ids_without_cursor_advance(t
     resent = sent_protocols(gateway)[1:]
     assert resent[0].message_id == first_attempt[0].message_id
     assert resent[0].idempotency_key == first_attempt[0].idempotency_key
+    assert gateway.sent[1][2] == first_body
     assert [item.type for item in resent] == ["agent.message", "task.delegate"]
     assert subject._state["cursor"] == "cursor-1"
+    assert "key-1" in subject._state["processed_idempotency_keys"]
+    assert len(engine.selections) == 1 and len(engine.plans) == 1
+
+
+def test_worker_rejects_stale_delegate_candidate_after_platform_catalog_refresh(tmp_path):
+    """A later platform summary revokes the old assignment snapshot before delegation."""
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [
+        WorkerDecision(action="ask", recipient_agent_id="VE-0001", message="need manager context"),
+        WorkerDecision(action="delegate", subtask=PlannedSubtask(
+            client_task_key="audit", title="audit", goal="review", required_capability="audit.evidence.read",
+            assignee_agent_id="VE-0005", reason="old snapshot candidate",
+        )),
+    ]
+    assignment = message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload())
+    refreshed_catalog = [item for item in manager_payload()["team_capability_catalog"] if item["agent_id"] != "VE-0005"]
+    summary = message(
+        type="task.summary", sender="platform", receiver="VE-0002", parent_task_id="root-1", key="fresh-summary",
+        payload={"request": "task.summary", "team_capability_catalog": refreshed_catalog, "team_catalog_version": 2},
+    )
+    gateway.events = [event(assignment, event_id="$assign", ts=1), event(summary, event_id="$summary", ts=2)]
+
+    assert subject.run_once() == 2
+    assert [item.type for item in sent_protocols(gateway)] == ["task.accepted", "task.progress", "agent.message", "agent.message", "task.failed"]
+    assert subject._state["tasks"]["task-1"]["team_catalog_version"] == 2
 
 
 def test_run_forever_waits_after_empty_poll_and_default_pause_is_three_seconds(tmp_path):

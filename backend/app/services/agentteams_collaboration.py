@@ -196,6 +196,7 @@ class AgentTeamsCollaborationService:
             summary="task created",
             detail={"title": title},
         )
+        catalog, catalog_version = self._next_catalog_snapshot(db, root, team.id)
         self._queue_outbound(
             db,
             root_task_id=task_id,
@@ -209,7 +210,8 @@ class AgentTeamsCollaborationService:
                 "title": title,
                 "instruction": instruction,
                 "material": dict(material),
-                "team_capability_catalog": self._team_capability_catalog(db, team.id),
+                "team_capability_catalog": catalog,
+                "team_catalog_version": catalog_version,
             },
             idempotency_key=f"{task_id}:task.submit",
         )
@@ -931,12 +933,19 @@ class AgentTeamsCollaborationService:
         *,
         dependency_results: list[dict[str, Any]] | None = None,
     ) -> None:
+        root = db.get(models.AgentTaskNode, child.root_task_id)
+        run = db.get(models.TaskRun, child.root_task_id)
+        if root is None or run is None:
+            raise CollaborationConflict("unknown_root_task")
+        catalog, catalog_version = self._next_catalog_snapshot(db, root, run.team_id)
         payload: dict[str, Any] = {
             "title": self._safe_cross_agent_text(child.title, _MAX_SUBTASK_TITLE_LENGTH),
             "instruction": self._safe_cross_agent_text(child.instruction, _MAX_SUBTASK_INSTRUCTION_LENGTH),
             "client_task_key": self._safe_client_task_key(child.client_task_key),
             "depends_on": [self._safe_client_task_key(key) for key in dependency_keys],
             "parent_chain_agent_ids": self._assignment_parent_chain(db, child),
+            "team_capability_catalog": catalog,
+            "team_catalog_version": catalog_version,
         }
         if dependency_results:
             payload["dependency_results"] = dependency_results
@@ -970,6 +979,18 @@ class AgentTeamsCollaborationService:
         if not chain or child.coordinator_agent_id not in chain:
             raise CollaborationConflict("invalid_parent_task")
         return chain
+
+    def _next_catalog_snapshot(
+        self, db: Session, root: models.AgentTaskNode, team_id: str
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Persist a root-local, transaction-bound sequence for live team authority."""
+        coordination = self._coordination(root)
+        version = coordination.get("team_catalog_version", 0) + 1
+        root.input_payload = {
+            **dict(root.input_payload or {}),
+            "coordination": {**coordination, "team_catalog_version": version},
+        }
+        return self._team_capability_catalog(db, team_id), version
 
     def _propagate_required_failure(
         self, db: Session, failed_node: models.AgentTaskNode, actor_agent_id: str
@@ -1061,7 +1082,11 @@ class AgentTeamsCollaborationService:
             return []
         self._transition(parent, "summarizing")
         root = db.get(models.AgentTaskNode, parent.root_task_id)
+        run = db.get(models.TaskRun, parent.root_task_id)
+        if root is None or run is None:
+            raise CollaborationConflict("unknown_root_task")
         coordination = self._coordination(root) if root is not None else {"round": 0, "selected_skill_ids": []}
+        catalog, catalog_version = self._next_catalog_snapshot(db, root, run.team_id)
         self._queue_outbound(
             db,
             root_task_id=parent.root_task_id,
@@ -1076,6 +1101,8 @@ class AgentTeamsCollaborationService:
                 "parent_task_id": parent.id,
                 "child_results": self._safe_child_results(db, parent.id),
                 "current_round": coordination["round"],
+                "team_capability_catalog": catalog,
+                "team_catalog_version": catalog_version,
                 "remaining_limits": {
                     "rounds": max(0, 1 + self.max_rounds - coordination["round"]),
                     "nodes": max(0, self.max_nodes - self._root_node_count(db, parent.root_task_id)),
@@ -1180,20 +1207,23 @@ class AgentTeamsCollaborationService:
             raise CollaborationConflict("invalid_selected_skill_ids")
         if len(selected) != len(set(selected)):
             raise CollaborationConflict("invalid_selected_skill_ids")
-        return {"round": next_round, "selected_skill_ids": list(selected)}
+        return {"round": next_round, "selected_skill_ids": list(selected), "team_catalog_version": existing["team_catalog_version"]}
 
     @staticmethod
     def _coordination(node: models.AgentTaskNode | None) -> dict[str, Any]:
         raw = dict(node.input_payload or {}).get("coordination") if node is not None else None
         if not isinstance(raw, Mapping):
-            return {"round": 0, "selected_skill_ids": []}
+            return {"round": 0, "selected_skill_ids": [], "team_catalog_version": 0}
         round_number = raw.get("round", 0)
         selected = raw.get("selected_skill_ids", [])
+        catalog_version = raw.get("team_catalog_version", 0)
         if isinstance(round_number, bool) or not isinstance(round_number, int) or round_number < 0:
             round_number = 0
         if not isinstance(selected, list) or not all(isinstance(item, str) for item in selected):
             selected = []
-        return {"round": round_number, "selected_skill_ids": list(selected)}
+        if isinstance(catalog_version, bool) or not isinstance(catalog_version, int) or catalog_version < 0:
+            catalog_version = 0
+        return {"round": round_number, "selected_skill_ids": list(selected), "team_catalog_version": catalog_version}
 
     @staticmethod
     def _root_node_count(db: Session, root_task_id: str) -> int:

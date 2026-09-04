@@ -179,6 +179,8 @@ def test_create_task_writes_root_and_outbox(db_session):
     assert len(outbox) == 1
     assert outbox[0].message_type == "task.submit"
     assert outbox[0].delivery_status == "pending"
+    assert outbox[0].payload["team_catalog_version"] == 1
+    assert outbox[0].payload["team_capability_catalog"]
 
 
 def test_manager_delegate_creates_recursive_children(db_session):
@@ -373,6 +375,8 @@ def test_required_children_trigger_parent_summarizing(db_session):
     assert root.status == "summarizing"
     assert summary_request.receiver_agent_id == "DT-E10281"
     assert summary_request.delivery_status == "pending"
+    assert summary_request.payload["team_catalog_version"] == 3
+    assert summary_request.payload["team_capability_catalog"]
 
 
 def test_optional_child_failure_does_not_block_parent(db_session):
@@ -462,6 +466,7 @@ def test_manager_can_delegate_follow_up_round_from_summarizing(db_session):
     assert root.input_payload["coordination"] == {
         "round": 2,
         "selected_skill_ids": ["scenario-a"],
+        "team_catalog_version": 1,
     }
 
 
@@ -1027,6 +1032,14 @@ def test_assignment_payload_carries_instruction_and_complete_parent_chain(db_ses
 
     assert assignment.payload["instruction"] == "complete policy"
     assert assignment.payload["parent_chain_agent_ids"] == ["DT-E10281"]
+    # Each platform-owned outbound is a freshly persisted root snapshot, not a
+    # static config catalog.  The root submit owns sequence 1; assignment is 2.
+    root_submit = db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id, message_type="task.submit", direction="outbound",
+    ).one()
+    assert root_submit.payload["team_catalog_version"] == 1
+    assert assignment.payload["team_catalog_version"] == 2
+    assert assignment.payload["team_capability_catalog"]
 
     from app.services.agentteams_agent_runtime import AgentRuntime, AgentRuntimeConfig
     from app.services.agentteams_protocol import AgentProtocolMessage

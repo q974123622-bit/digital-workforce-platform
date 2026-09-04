@@ -51,7 +51,7 @@ _MAX_EVIDENCE_ITEMS = 8
 _MAX_EVIDENCE_BYTES = 4096
 _MAX_TEXT = 512
 _MAX_STATE_BYTES = 16_384
-_SENSITIVE_TEXT = re.compile(r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+|\b(?:https?|wss?|file|ftp)://\S+|\b[a-z_][a-z0-9_]*\s*=\s*\S+|traceback\s*\(|\bfile\s+['\"]?[a-z]:[/\\])", re.I)
+_SENSITIVE_TEXT = re.compile(r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+|\b(?:https?|wss?|file|ftp)://\S+|\b(?:api[_-]?key|password|token|authorization|credential)\s*[:=]\s*\S+|\b[a-z_][a-z0-9_]*\s*=\s*\S+|traceback\s*\(|\bfile\s+['\"]?[a-z]:[/\\])", re.I)
 
 
 class MatrixProtocolTransport(Protocol):
@@ -113,14 +113,18 @@ class AgentRuntime:
         self.pause = pause
         self._state_path = config.state_dir / f"{config.agent_id}.json"
         self._state = self._load_state()
+        self._active_pending: dict[str, Any] | None = None
 
     def run_once(self) -> int:
         """Handle one ordered Matrix sync batch and return handled protocol count.
 
         The persisted Matrix cursor moves only once every event in the batch has
-        completed safely. Individual event IDs are persisted immediately after a
-        successful response, so a later send failure cannot replay them.
+        completed safely. A pending outbox is committed before a response is
+        sent, so a retry can replay the exact envelopes without another model
+        call.
         """
+        if self._state.get("pending_outbox"):
+            return self._replay_pending()
         try:
             batch = self.gateway.sync_messages(self._state.get("cursor"), {self.config.room_id})
         except Exception:
@@ -139,19 +143,53 @@ class AgentRuntime:
             if event.event_id in self._state["processed_event_ids"]:
                 continue
             trial = deepcopy(self._state)
+            self._active_pending = {
+                "event_id": event.event_id,
+                "next_cursor": next_cursor,
+                "trial": trial,
+                "source_idempotency_key": "",
+            }
             outcome = self._process_event(event, trial)
+            self._active_pending = None
             if outcome is None:
                 # A network failure left this event wholly uncommitted.
                 return handled
             if outcome:
                 handled += outcome
             self._mark_processed(trial, event.event_id)
+            trial.pop("pending_outbox", None)
             self._state = trial
             self._save_state()
         # Only a fully-consumed batch advances the opaque Matrix token.
         self._state["cursor"] = next_cursor
         self._save_state()
         return handled
+
+    def _replay_pending(self) -> int:
+        pending = self._state.get("pending_outbox")
+        try:
+            if not isinstance(pending, Mapping) or not isinstance(pending.get("trial_state"), Mapping):
+                raise ValueError()
+            messages = [AgentProtocolMessage.model_validate(item) for item in pending.get("messages", [])]
+            if not messages or len(messages) > 8:
+                raise ValueError()
+        except (ValueError, ValidationError, TypeError):
+            self._state["pending_outbox"] = None
+            self._security(self._state, "pending_corrupt")
+            self._save_state()
+            return 0
+        if not self._send_direct(messages):
+            return 0
+        trial = deepcopy(dict(pending["trial_state"]))
+        self._mark_processed(trial, str(pending.get("event_id", "")))
+        source_key = pending.get("source_idempotency_key")
+        if isinstance(source_key, str) and source_key:
+            self._mark_idempotency(trial, source_key)
+        trial["cursor"] = pending.get("next_cursor")
+        trial["pending_outbox"] = None
+        self._state = trial
+        self._save_state()
+        return 1
 
     def run_forever(self, stop_event: Any) -> None:
         while not stop_event.is_set():
@@ -191,6 +229,8 @@ class AgentRuntime:
             return 0
         if message.idempotency_key in state["processed_idempotency_keys"]:
             return 0
+        if self._active_pending is not None:
+            self._active_pending["source_idempotency_key"] = message.idempotency_key
         try:
             responses = self._handle_message(message, event, state)
         except AgentDecisionError as exc:
@@ -303,6 +343,10 @@ class AgentRuntime:
         context = state["tasks"].get(message.task_id)
         if not isinstance(context, dict):
             raise AgentDecisionError("decision_failed")
+        if evidence_kind == "child.summary":
+            catalog, version = self._fresh_team_catalog(message.payload, previous_version=context.get("team_catalog_version"))
+            context["team_catalog"] = catalog
+            context["team_catalog_version"] = version
         evidence = {"kind": evidence_kind, "value": self._bounded_value(message.payload)}
         context["evidence"] = self._append_evidence(context.get("evidence", []), evidence)
         self._visible_pause()
@@ -330,7 +374,7 @@ class AgentRuntime:
                 raise AgentDecisionError("decision_failed")
             return [self._reply(message, "agent.message", recipient, {"kind": "peer.ask", "text": self._text(decision.message)}, sequence)]
         if decision.action == "delegate":
-            subtask = self._safe_subtask(decision.subtask, self.config.team_catalog, parent_chain=context["parent_chain_agent_ids"])
+            subtask = self._safe_subtask(decision.subtask, context.get("team_catalog", {}), parent_chain=context["parent_chain_agent_ids"])
             return [self._reply(message, "task.delegate", "platform", {"subtasks": [subtask]}, sequence)]
         if decision.action == "complete":
             audit_ids = self._successful_audit_ids(context.get("evidence", []))
@@ -357,6 +401,22 @@ class AgentRuntime:
         return self._reply(source, "task.failed", "platform", {"error_code": self._safe_code(code)}, sequence)
 
     def _send_responses(self, messages: list[AgentProtocolMessage]) -> bool:
+        if self._active_pending is not None:
+            trial = self._active_pending["trial"]
+            pending = {
+                "event_id": self._active_pending["event_id"],
+                "source_idempotency_key": self._active_pending["source_idempotency_key"],
+                "next_cursor": self._active_pending["next_cursor"],
+                "messages": [message.model_dump(mode="json") for message in messages],
+                "trial_state": self._bounded_state({key: value for key, value in trial.items() if key != "pending_outbox"}),
+            }
+            if len(messages) > 8 or len(json.dumps(pending, ensure_ascii=False).encode("utf-8")) > _MAX_STATE_BYTES:
+                return False
+            self._state["pending_outbox"] = pending
+            self._save_state()
+        return self._send_direct(messages)
+
+    def _send_direct(self, messages: list[AgentProtocolMessage]) -> bool:
         try:
             for message in messages:
                 event_id = self.gateway.send_protocol_message(self.config.room_id, message.type, render_protocol_line(message))
@@ -392,9 +452,11 @@ class AgentRuntime:
             raise AgentDecisionError("invalid_parent_chain")
         if message.sender not in parent_chain or self.config.agent_id in parent_chain or len(parent_chain) != len(set(parent_chain)):
             raise AgentDecisionError("invalid_parent_chain")
+        catalog, version = self._fresh_team_catalog(message.payload)
         return {
             "kind": "worker", "selected_skill_ids": selected, "completion_corrected": False, "evidence": [],
             "parent_chain_agent_ids": self._bounded_text_list(parent_chain, 8),
+            "team_catalog": catalog, "team_catalog_version": version,
             "task": {"title": self._text(message.payload.get("title", "task")), "goal": self._goal(message),
                      "client_task_key": self._text(message.payload.get("client_task_key", "task")),
                      "dependency_results": self._bounded_collection(message.payload.get("dependency_results"))},
@@ -459,7 +521,7 @@ class AgentRuntime:
         return []
 
     def _load_state(self) -> dict[str, Any]:
-        default = {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}}
+        default = {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}, "pending_outbox": None}
         try:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
@@ -533,7 +595,10 @@ class AgentRuntime:
         return self._safe_value(value, depth)
 
     def _safe_value(self, value: Any, depth: int = 0) -> Any:
-        if depth >= 4:
+        # Evidence frequently has one more layer (kind/value/result/audit_ids)
+        # than task context.  The state byte budget below is the hard limit;
+        # this depth bound merely prevents pathological nesting from reaching it.
+        if depth >= 10:
             return "[truncated]"
         if value is None or isinstance(value, (bool, int, float)):
             return value
@@ -576,6 +641,6 @@ def _is_sensitive_key(key: str) -> bool:
     """Match whole configuration/data-field terms, never incidental substrings."""
     spaced = re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower()
     words = {part for part in re.split(r"[^a-z0-9]+", spaced) if part}
-    if words.intersection({"token", "secret", "password", "passwd", "pwd", "authorization", "credential", "cookie", "header", "private", "endpoint", "url", "uri", "stack", "traceback", "exception"}):
+    if words.intersection({"token", "secret", "password", "passwd", "pwd", "authorization", "credential", "cookie", "header", "private", "endpoint", "url", "uri", "stack", "traceback", "exception"}) or words == {"key"}:
         return True
     return ("api" in words and "key" in words) or ("access" in words and "key" in words)
