@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
+
 from app import models
 from app.services.agentteams_collaboration import AgentTeamsCollaborationService
 
@@ -10,6 +13,7 @@ READY_HEALTH = {
     "room": "ready",
     "manager": "configured",
     "platform_team": "ready",
+    "strict_ready": True,
     "ready_for_demo": True,
     "reason": "",
     "workers": [
@@ -76,6 +80,53 @@ def test_health_reports_matrix_room_manager_and_workers(client):
     assert {"matrix", "room", "manager", "platform_team", "workers", "ready_for_demo"} <= body.keys()
     assert body["ready_for_demo"] is False
 
+
+def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbeats(
+    client, db_session, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    config_path = tmp_path / "runtime.json"
+    config_path.write_text(json.dumps({
+        "matrix_url": "http://matrix.test", "room_id": "!team:test",
+        "platform": {"mxid": "@platform:test", "token": "platform-token"},
+        "agents": {
+            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token"},
+            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token"},
+            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token"},
+            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token"},
+        }, "team_catalog": {},
+    }), encoding="utf-8")
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(config_path))
+    for agent_id, mxid in (("VE-0001", "@manager:test"), ("VE-0002", "@hr:test"), ("VE-0003", "@it:test"), ("VE-0005", "@audit:test")):
+        employee = db_session.get(models.DigitalEmployee, agent_id)
+        employee.runtime_ref, employee.runtime_type, employee.status = mxid, "agentteams", "active"
+    db_session.flush()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    for agent_id in ("VE-0001", "VE-0002", "VE-0003", "VE-0005"):
+        (state_dir / f"{agent_id}.json").write_text(json.dumps({"heartbeat_at": datetime.now(timezone.utc).isoformat()}), encoding="utf-8")
+
+    class FakeGateway:
+        def __init__(self, *, matrix_token, **_kwargs):
+            self.matrix_token = matrix_token
+        def whoami(self):
+            return {
+                "platform-token": "@platform:test", "manager-token": "@manager:test",
+                "hr-token": "@hr:test", "it-token": "@it:test", "audit-token": "@audit:test",
+            }[self.matrix_token]
+        def joined_members(self, _room_id):
+            return {"@platform:test", "@manager:test", "@hr:test", "@it:test", "@audit:test"}
+        def close(self):
+            pass
+
+    from app.routers import agentteams_collaboration
+    monkeypatch.setattr(agentteams_collaboration, "AgentTeamsGateway", FakeGateway)
+    body = client.get("/api/v1/agentteams-collaboration/health").json()
+    assert body["ready_for_demo"] is True
+    assert {item["agent_id"] for item in body["workers"]} == {"VE-0001", "VE-0002", "VE-0003", "VE-0005"}
+    assert all(item["status"] == "ready" for item in body["workers"])
+    assert "token" not in json.dumps(body).lower()
 
 def test_submit_returns_created_agentteams_task(client, db_session, monkeypatch):
     _prepare_leader(db_session)

@@ -106,6 +106,44 @@ class AgentTeamsGateway:
             detail="ready" if room_id in rooms else "room_not_joined",
         )
 
+    def whoami(self) -> str:
+        """Return only this token's Matrix MXID, never credential material."""
+        payload = self._get_json("/_matrix/client/v3/account/whoami", "whoami")
+        user_id = payload.get("user_id") if isinstance(payload, dict) else None
+        if not isinstance(user_id, str) or not user_id.startswith("@"):
+            raise AgentTeamsUnavailableError("whoami 响应缺少 user_id")
+        return user_id
+
+    def joined_members(self, room_id: str) -> set[str]:
+        """Return the joined-member MXID set for one room and no profile data."""
+        if not isinstance(room_id, str) or not room_id:
+            raise AgentTeamsUnavailableError("joined_members 房间无效")
+        payload = self._get_json(
+            f"/_matrix/client/v3/rooms/{room_id}/joined_members", "joined_members"
+        )
+        joined = payload.get("joined") if isinstance(payload, dict) else None
+        if not isinstance(joined, dict):
+            raise AgentTeamsUnavailableError("joined_members 响应无效")
+        return {member for member in joined if isinstance(member, str) and member.startswith("@")}
+
+    def _get_json(self, suffix: str, operation: str) -> dict:
+        token = self.login()
+        try:
+            response = self._client.get(
+                f"{self.base_url}{suffix}", headers={"Authorization": f"Bearer {token}"}
+            )
+        except httpx.HTTPError as exc:
+            raise AgentTeamsUnavailableError(f"{operation} 连接失败：{exc.__class__.__name__}") from exc
+        if response.status_code != 200:
+            raise AgentTeamsUnavailableError(f"{operation} 失败：HTTP {response.status_code}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise AgentTeamsUnavailableError(f"{operation} 响应无效") from exc
+        if not isinstance(payload, dict):
+            raise AgentTeamsUnavailableError(f"{operation} 响应无效")
+        return payload
+
     # ---------- 消息 ----------
 
     def send_message(self, room_id: str, text: str) -> str:

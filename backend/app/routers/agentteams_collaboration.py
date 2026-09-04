@@ -7,7 +7,11 @@ submission after a live Matrix room check has succeeded.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import stat
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,6 +27,7 @@ from ..services.agentteams_collaboration import (
     matrix_user_id_for_runtime,
 )
 from ..services.agentteams_gateway import AgentTeamsGateway
+from ..services.agentteams_runtime_config import default_runtime_config_path, load_strict_runtime_config
 
 
 router = APIRouter(prefix="/agentteams-collaboration", tags=["agentteams-collaboration"])
@@ -64,15 +69,11 @@ def _worker_health(db: Session) -> list[dict]:
 
 
 def _normalise_health(raw_health: dict) -> dict:
-    """Derive safe readiness facts rather than trusting a caller-provided flag.
-
-    ``inspect_environment`` normally returns these facts itself, but both the
-    public health endpoint and submission gate pass through this function.  It
-    therefore remains impossible for a test double or future caller to bypass
-    the submission gate by merely setting ``ready_for_demo`` to ``True``.
-    """
-    raw_workers = raw_health.get("workers")
+    """Derive safe readiness facts rather than trusting a caller-provided flag."""
+    mode = os.environ.get("DWP_AGENTTEAMS_MODE", "agentteams_strict").strip().lower()
+    strict_mode = mode != "local_demo"
     workers = []
+    raw_workers = raw_health.get("workers")
     if isinstance(raw_workers, list):
         for raw_worker in raw_workers:
             if not isinstance(raw_worker, dict):
@@ -85,8 +86,8 @@ def _normalise_health(raw_health: dict) -> dict:
                 and matrix_user_id_for_runtime(matrix_user_id) == matrix_user_id
             )
             if raw_status in {"configured", "ready"} and agent_id and is_exact_mxid:
-                status = "configured"
-            elif not raw_worker.get("matrix_user_id"):
+                status = "ready" if raw_status == "ready" else "configured"
+            elif not matrix_user_id:
                 status = "missing_runtime_ref"
             else:
                 status = "invalid_matrix_user_id"
@@ -94,28 +95,24 @@ def _normalise_health(raw_health: dict) -> dict:
                 "agent_id": agent_id,
                 "matrix_user_id": matrix_user_id,
                 "status": status,
+                **({"last_heartbeat_at": raw_worker["last_heartbeat_at"]}
+                   if isinstance(raw_worker.get("last_heartbeat_at"), str) else {}),
             })
-
     enabled = raw_health.get("enabled") is True
     matrix = str(raw_health.get("matrix") or "not_configured")
     room = str(raw_health.get("room") or "not_configured")
     manager = "configured" if raw_health.get("manager") in {"configured", "ready"} else "not_configured"
     platform_team = "ready" if raw_health.get("platform_team") == "ready" else "missing"
-
-    configured_workers = [
-        worker for worker in workers
-        if worker["status"] == "configured"
-    ]
+    configured_workers = [worker for worker in workers if worker["status"] in {"configured", "ready"}]
     worker_ids = {worker["agent_id"] for worker in configured_workers}
     worker_mxids = {worker["matrix_user_id"] for worker in configured_workers}
-    workers_ready = len(worker_ids) >= 2 and len(worker_mxids) >= 2
-
+    workers_ready = raw_health.get("strict_ready") is True if strict_mode else len(worker_ids) >= 2 and len(worker_mxids) >= 2
     reasons = []
     if not enabled:
         reasons.append("AgentTeams协作功能未启用")
-    if matrix != "ready":
+    if strict_mode and matrix != "ready":
         reasons.append("Matrix登录未成功")
-    if room != "ready":
+    if strict_mode and room != "ready":
         reasons.append("配置的Matrix房间未加入")
     if manager != "configured":
         reasons.append("Manager MXID未配置")
@@ -123,80 +120,103 @@ def _normalise_health(raw_health: dict) -> dict:
         reasons.append("平台至少需要一个Team")
     if not workers_ready:
         reasons.append("至少需要两个Worker，且均须配置不同的可解析Matrix ID")
-
     return {
         "enabled": enabled,
         "ready_for_demo": not reasons,
         "reason": "；".join(reasons),
-        "matrix": matrix,
+        "mode": mode,
+        "transport": "local" if not strict_mode else "matrix",
+        "matrix": "not_connected" if not strict_mode else matrix,
         "room": room,
-        # Presence is the only Manager fact available here; it is not a
-        # remote connection assertion.
         "manager": manager,
-        # Health has no user-selected team.  This is intentionally a system
-        # check; the submitted team remains validated by create_task.
         "platform_team": platform_team,
         "workers": workers,
+        "strict_ready": raw_health.get("strict_ready") is True,
     }
 
 
+def _heartbeat_max_age_seconds() -> int:
+    try:
+        return max(5, min(int(os.environ.get("DWP_AGENTTEAMS_HEARTBEAT_MAX_AGE_SECONDS", "30")), 300))
+    except ValueError:
+        return 30
+
+
+def _state_heartbeat(state_dir: Path, agent_id: str, *, now: datetime) -> str | None:
+    """Read one bounded regular state file; malformed/old state is not live."""
+    path = state_dir / f"{agent_id}.json"
+    try:
+        if path.is_symlink():
+            return None
+        metadata = path.stat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 16_384:
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+        heartbeat = value.get("heartbeat_at") if isinstance(value, dict) else None
+        parsed = datetime.fromisoformat(heartbeat) if isinstance(heartbeat, str) else None
+        if parsed is None or parsed.tzinfo is None:
+            return None
+        age = (now - parsed.astimezone(timezone.utc)).total_seconds()
+        if age < -5 or age > _heartbeat_max_age_seconds():
+            return None
+        return parsed.astimezone(timezone.utc).isoformat()
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _strict_environment(db: Session, enabled: bool) -> dict:
+    """Verify five independent configured identities without exposing credentials."""
+    try:
+        runtime = load_strict_runtime_config()
+    except ValueError:
+        return _normalise_health({"enabled": enabled, "matrix": "not_configured", "room": "not_configured", "manager": "not_configured", "platform_team": "missing", "workers": [], "strict_ready": False})
+    expected_members = {runtime.platform.mxid, *(identity.mxid for identity in runtime.agents.values())}
+    verified: dict[str, bool] = {}
+    members: set[str] = set()
+    gateways = []
+    try:
+        identities = [("platform", runtime.platform), *runtime.agents.items()]
+        for role, identity in identities:
+            gateway = AgentTeamsGateway(base_url=runtime.matrix_url, matrix_token=identity.token)
+            gateways.append((role, gateway))
+            verified[role] = gateway.whoami() == identity.mxid
+        platform_gateway = next(gateway for role, gateway in gateways if role == "platform")
+        members = platform_gateway.joined_members(runtime.room_id)
+    except Exception:
+        verified = {}
+        members = set()
+    finally:
+        for _role, gateway in gateways:
+            try:
+                gateway.close()
+            except Exception:
+                pass
+    team = db.get(models.Team, "TEAM-ONBOARD")
+    member_ids = set(db.scalars(select(models.TeamMember.employee_id).where(models.TeamMember.team_id == "TEAM-ONBOARD"))) if team is not None else set()
+    state_root = default_runtime_config_path().parent / "state"
+    now = datetime.now(timezone.utc)
+    workers = []
+    team_bound = team is not None and team.leader_employee_id == runtime.agents["manager"].agent_id
+    for role, identity in runtime.agents.items():
+        employee = db.get(models.DigitalEmployee, identity.agent_id)
+        bound = bool(employee and employee.status == "active" and employee.runtime_type == "agentteams" and identity.agent_id in member_ids and matrix_user_id_for_runtime(employee.runtime_ref) == identity.mxid)
+        heartbeat = _state_heartbeat(state_root, identity.agent_id, now=now)
+        ready = bool(verified.get(role) and bound and heartbeat)
+        team_bound = team_bound and bound
+        workers.append({"agent_id": identity.agent_id, "matrix_user_id": identity.mxid, "status": "ready" if ready else "unavailable", **({"last_heartbeat_at": heartbeat} if heartbeat else {})})
+    strict_ready = bool(enabled and verified.get("platform") and all(verified.get(role) for role in runtime.agents) and expected_members <= members and team_bound and all(item["status"] == "ready" for item in workers))
+    return _normalise_health({"enabled": enabled, "matrix": "ready" if verified.get("platform") else "unavailable", "room": "ready" if expected_members <= members else "unavailable", "manager": "ready" if verified.get("manager") else "not_configured", "platform_team": "ready" if team_bound else "missing", "workers": workers, "strict_ready": strict_ready})
+
+
 def inspect_environment(db: Session) -> dict:
-    """Perform a bounded, truthful readiness check for task submission.
-
-    No Matrix request is made while the collaboration loop is disabled.  When
-    enabled, ``ready`` for Matrix/room is only returned after the gateway's
-    joined-room check succeeds; Manager and worker values are explicitly
-    marked as configured rather than as proven remote connections.
-    """
+    """Use only local state in explicit demo mode and strict proof otherwise."""
     enabled = config.agentteams_collaboration_enabled()
-    workers = _worker_health(db)
-    platform_team = "ready" if db.scalar(select(models.Team.id).limit(1)) else "missing"
-    manager_mxid = config.get(config.AGENTTEAMS_MANAGER_MXID)
-    if not enabled:
+    if os.environ.get("DWP_AGENTTEAMS_MODE", "agentteams_strict").strip().lower() == "local_demo":
         return _normalise_health({
-            "enabled": False,
-            "matrix": "disabled",
-            "room": "disabled",
-            "manager": "configured" if _configured(manager_mxid) else "not_configured",
-            "platform_team": platform_team,
-            "workers": workers,
+            "enabled": enabled, "matrix": "not_connected", "room": "local",
+            "manager": "not_configured", "platform_team": "missing", "workers": [],
         })
-
-    matrix_url = config.get(config.AGENTTEAMS_MATRIX_URL)
-    token = config.get(config.AGENTTEAMS_MATRIX_TOKEN)
-    user = config.get(config.AGENTTEAMS_ADMIN_USER)
-    password = config.get(config.AGENTTEAMS_ADMIN_PASSWORD)
-    room_id = config.get(config.AGENTTEAMS_ROOM_ID)
-    matrix_configured = _configured(matrix_url) and (
-        _configured(token) or (_configured(user) and _configured(password))
-    )
-
-    matrix = "not_configured"
-    room = "not_configured" if not _configured(room_id) else "unchecked"
-    matrix_room_ready = False
-    if matrix_configured and _configured(room_id):
-        gateway = AgentTeamsGateway()
-        try:
-            gateway_health = gateway.health(room_id.strip())
-        except Exception:
-            matrix = "unavailable"
-            room = "unavailable"
-        else:
-            matrix_room_ready = gateway_health.ok is True
-            matrix = "ready" if matrix_room_ready else "unavailable"
-            room = "ready" if matrix_room_ready else gateway_health.detail
-        finally:
-            gateway.close()
-
-    return _normalise_health({
-        "enabled": True,
-        "matrix": matrix,
-        "room": room,
-        "manager": "configured" if _configured(manager_mxid) else "not_configured",
-        "platform_team": platform_team,
-        "workers": workers,
-    })
-
+    return _strict_environment(db, enabled)
 
 def _service() -> AgentTeamsCollaborationService:
     return AgentTeamsCollaborationService(

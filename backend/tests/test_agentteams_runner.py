@@ -121,6 +121,7 @@ def _delegate_one_child(db_session, service, run, leader):
                 "title": "制度核查",
                 "instruction": "核查制度",
                 "assignee_agent_id": "VE-0002",
+                "required_capability": "hr-employee-mcp",
                 "depends_on": [],
             }]},
         ),
@@ -803,6 +804,21 @@ def test_runner_leaves_outbox_pending_when_send_fails(db_session):
     assert outbox.delivery_status == "pending"
     assert outbox.matrix_event_id is None
 
+
+def test_runner_keeps_outbox_pending_when_transport_returns_non_matrix_event_id(db_session):
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    service, run, _leader = _create_run(db_session)
+    gateway = FakeGateway()
+    gateway.send_protocol_message = lambda *_args: "not-a-matrix-event"
+
+    AgentTeamsCollaborationRunner(gateway=gateway, service=service, room_id=ROOM_ID).tick_once(db_session)
+
+    outbox = db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id, direction="outbound", message_type="task.submit",
+    ).one()
+    assert outbox.delivery_status == "pending"
+    assert outbox.matrix_event_id is None
 
 def test_runner_does_not_advance_cursor_when_technical_batch_processing_fails(db_session, monkeypatch):
     from app.services.agentteams_runner import AgentTeamsCollaborationRunner

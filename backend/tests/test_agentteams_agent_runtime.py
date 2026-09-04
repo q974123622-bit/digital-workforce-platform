@@ -493,6 +493,26 @@ def test_run_forever_waits_after_empty_poll_and_default_pause_is_three_seconds(t
     assert subject.config.pause_seconds == 3.0
 
 
+def test_empty_poll_persists_a_safe_utc_heartbeat(tmp_path):
+    subject, _, _, _ = runtime(tmp_path, role="hr")
+
+    assert subject.run_once() == 0
+
+    persisted = json.loads((tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8"))
+    assert persisted["heartbeat_at"].endswith("+00:00")
+    assert "never-persist" not in json.dumps(persisted)
+
+
+def test_runtime_config_rejects_agent_id_that_can_escape_the_state_directory(tmp_path):
+    with pytest.raises(ValueError, match="invalid_runtime_config"):
+        AgentRuntimeConfig(
+            agent_id="../outside", role="manager", matrix_mxid="@manager:local",
+            matrix_token="token", room_id="!team:local",
+            trusted_sender_mxids={"platform": "@platform:local", "../outside": "@manager:local"},
+            allowed_skill_ids={"agentteams-onboarding-readiness"}, state_dir=tmp_path / "state",
+        )
+
+
 def test_pending_replay_resumes_same_batch_without_skipping_later_events(tmp_path):
     """A failed B response may replay, but C must still be read from the old cursor once."""
     subject, gateway, engine, _ = runtime(tmp_path)

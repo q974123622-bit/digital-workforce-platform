@@ -112,7 +112,14 @@ class AgentTeamsCollaborationRunner:
                     outbound.body,
                     render_protocol_line(protocol),
                 )
-                if not matrix_event_id:
+                valid_event_id = (
+                    isinstance(matrix_event_id, str)
+                    and (
+                        (self.transport_mode == "local_demo" and matrix_event_id.startswith("local-out-"))
+                        or (self.transport_mode == "agentteams_strict" and matrix_event_id.startswith("$") and len(matrix_event_id) > 1)
+                    )
+                )
+                if not valid_event_id:
                     raise ValueError("matrix_send_missing_event_id")
             except Exception:
                 # Do not mutate the durable outbox on an uncertain delivery.  The

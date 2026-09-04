@@ -706,6 +706,7 @@ class AgentWorkerHealthOut(BaseModel):
     agent_id: str
     matrix_user_id: str
     status: str
+    last_heartbeat_at: str | None = None
 
 
 class AgentCollaborationHealthOut(BaseModel):
