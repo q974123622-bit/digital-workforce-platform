@@ -43,6 +43,17 @@ def test_compose_contract_is_private_pinned_and_persistent():
     assert "SYNAPSE_REGISTRATION_SHARED_SECRET" not in compose
 
 
+def test_compose_mounts_a_real_read_only_synapse_log_configuration():
+    log_config = DEPLOYMENT / "log.config"
+    assert log_config.is_file(), "Synapse log configuration is missing"
+    compose = COMPOSE.read_text(encoding="utf-8")
+    contents = log_config.read_text(encoding="utf-8")
+
+    assert "./log.config:/data/matrix.log.config:ro" in compose
+    assert "handlers:" in contents
+    assert "root:" in contents
+
+
 def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(tmp_path, capsys):
     bootstrap = _bootstrap_module()
     credentials = {
@@ -73,6 +84,17 @@ def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(t
     assert "secret-" not in output
     assert "secret-" in rendered
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_bootstrap_refuses_a_reparse_runtime_ancestor_before_writing(tmp_path, monkeypatch):
+    bootstrap = _bootstrap_module()
+
+    def reject_reparse(_path, *, allow_missing=False):
+        raise ValueError("invalid_runtime_config")
+
+    monkeypatch.setattr(bootstrap, "require_safe_path", reject_reparse, raising=False)
+    with pytest.raises(bootstrap.BootstrapError, match="invalid_runtime_path"):
+        bootstrap.write_runtime_configuration(tmp_path / "runtime.json", {"safe": True})
 
 
 def test_bootstrap_is_idempotent_and_verifies_private_membership():
@@ -115,9 +137,9 @@ def test_bootstrap_is_idempotent_and_verifies_private_membership():
 def test_start_script_launches_each_named_role_with_the_single_runtime_path(role):
     assert START.is_file(), "Task 7 start script is missing"
     source = START.read_text(encoding="utf-8")
-    assert f"--role {role}" in source
+    assert f"'--role','{role}'" in source
     assert "DWP_AGENTTEAMS_RUNTIME_CONFIG" in source
-    assert "-WindowStyle Hidden" in source
+    assert "CreateNoWindow=$true" in source
     assert ".agentteams-runtime\\pids.json" in source
 
 
@@ -133,3 +155,37 @@ def test_stop_script_targets_only_proven_recorded_processes_and_named_compose_pr
     assert "get-process python" not in lowered
     assert "taskkill" not in lowered
     assert " down -v" not in lowered
+
+
+def test_start_script_uses_space_safe_argument_list_and_rolls_back_only_owned_compose():
+    source = START.read_text(encoding="utf-8")
+
+    assert "System.Diagnostics.ProcessStartInfo" in source
+    assert ".ArgumentList.Add" in source
+    assert "function Start-OwnedProcess" in source
+    assert "Start-Process" not in source
+    assert "ownedCompose" in source
+    assert "docker compose -p dwp-agentteams -f $composeFile down" in source
+    assert "finally" in source
+    assert source.index("if (-not $NoFrontend") < source.index("Test-CommandAvailable 'node'")
+
+
+def test_no_frontend_path_skips_node_and_vite_preflight():
+    source = START.read_text(encoding="utf-8")
+
+    preflight = source[source.index("if (-not $NoFrontend)"):source.index("$alreadyRunning")]
+    frontend_guard = preflight.index("if (-not $NoFrontend)")
+    node_check = preflight.index("Test-CommandAvailable 'node'")
+    vite_check = preflight.index("vite\\bin\\vite.js")
+    assert frontend_guard < node_check < vite_check
+    assert "if (-not $NoFrontend) { $records+=Start-OwnedProcess 'frontend'" in source
+    assert "if ($NoFrontend -and $record.name -eq 'frontend') { continue }" in source
+
+
+def test_stop_script_fails_closed_when_executable_arguments_or_start_time_do_not_match():
+    source = STOP.read_text(encoding="utf-8")
+
+    for required in ("executable_path", "argv", "started_at", "ExecutablePath", "CreationDate", "CommandLine"):
+        assert required in source
+    assert "Test-RecordedWorktreeProcess" in source
+    assert "return $null" in source

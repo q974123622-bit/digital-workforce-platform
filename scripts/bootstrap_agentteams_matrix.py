@@ -22,6 +22,11 @@ import httpx
 
 
 ROOT = Path(__file__).resolve().parents[1]
+BACKEND = ROOT / "backend"
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
+
+from app.services.agentteams_runtime_config import require_safe_path
 DEFAULT_MATRIX_URL = "http://127.0.0.1:8008"
 TEAM_ID = "TEAM-ONBOARD"
 ACCOUNT_NAMES = ("platform", "manager", "hr", "it", "audit")
@@ -55,37 +60,78 @@ def default_runtime_dir() -> Path:
     return ROOT / ".agentteams-runtime"
 
 
+def _require_runtime_path(path: Path, *, allow_missing: bool = False) -> None:
+    try:
+        require_safe_path(path, allow_missing=allow_missing)
+    except ValueError as exc:
+        raise BootstrapError("invalid_runtime_path") from exc
+
+
 def _write_private_text(path: Path, value: str) -> None:
-    """Atomically replace one runtime secret file without logging its contents."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Atomically replace one runtime secret file without logging its contents.
+
+    ``chmod`` is best-effort only on Windows: processes under the same OS
+    account remain inside this local deployment trust boundary, so it is not
+    represented as a portable ACL guarantee.
+    """
+    try:
+        _require_runtime_path(path.parent, allow_missing=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _require_runtime_path(path.parent)
+        _require_runtime_path(path, allow_missing=True)
+    except ValueError as exc:
+        raise BootstrapError("invalid_runtime_path") from exc
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
         pass
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True)
     temporary = Path(temporary_name)
+    temporary_identity: tuple[int, int] | None = None
     try:
         try:
             os.chmod(temporary, 0o600)
         except OSError:
             pass
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            metadata = os.fstat(handle.fileno())
+            temporary_identity = (metadata.st_dev, metadata.st_ino)
             handle.write(value)
             handle.flush()
             os.fsync(handle.fileno())
+        _require_runtime_path(path.parent)
+        _require_runtime_path(temporary)
+        path_metadata = os.lstat(temporary)
+        if (not os.path.isfile(temporary)
+                or (path_metadata.st_dev, path_metadata.st_ino) != temporary_identity
+                or getattr(path_metadata, "st_file_attributes", 0) & 0x400):
+            raise BootstrapError("invalid_runtime_path")
         os.replace(temporary, path)
+        final_metadata = os.lstat(path)
+        if ((final_metadata.st_dev, final_metadata.st_ino) != temporary_identity
+                or getattr(final_metadata, "st_file_attributes", 0) & 0x400):
+            raise BootstrapError("invalid_runtime_path")
         try:
             os.chmod(path, 0o600)
         except OSError:
             pass
+    except ValueError as exc:
+        raise BootstrapError("invalid_runtime_path") from exc
     finally:
         if temporary.exists():
-            temporary.unlink()
+            try:
+                metadata = temporary.stat(follow_symlinks=False)
+                if temporary_identity == (metadata.st_dev, metadata.st_ino):
+                    temporary.unlink()
+            except OSError:
+                pass
 
 
 def ensure_synapse_environment(runtime_dir: Path) -> Path:
     """Create the local shared secret once; later invocations reuse it."""
     target = runtime_dir / "synapse-registration-secret"
+    _require_runtime_path(runtime_dir, allow_missing=True)
+    _require_runtime_path(target, allow_missing=True)
     if target.is_file():
         if len(target.read_text(encoding="utf-8").strip()) > 48:
             return target
@@ -94,6 +140,7 @@ def ensure_synapse_environment(runtime_dir: Path) -> Path:
     # Reuse it if present so an existing local Synapse keeps accepting the
     # persisted runtime credentials after upgrading this launcher.
     legacy = runtime_dir / "synapse.env"
+    _require_runtime_path(legacy, allow_missing=True)
     if legacy.is_file():
         prefix = "SYNAPSE_REGISTRATION_SHARED_SECRET="
         for line in legacy.read_text(encoding="utf-8").splitlines():
@@ -106,6 +153,7 @@ def ensure_synapse_environment(runtime_dir: Path) -> Path:
 
 def _read_synapse_secret(runtime_dir: Path) -> str:
     target = ensure_synapse_environment(runtime_dir)
+    _require_runtime_path(target)
     value = target.read_text(encoding="utf-8").strip()
     if value:
         return value
@@ -245,6 +293,7 @@ def bootstrap_matrix(matrix: Any, *, password_factory: Callable[[str], str] | No
 
 def _existing_runtime(path: Path) -> tuple[dict[str, dict[str, str]], str | None]:
     try:
+        _require_runtime_path(path)
         raw = json.loads(path.read_text(encoding="utf-8"))
         accounts = {"platform": raw["platform"]}
         accounts.update(raw["agents"])

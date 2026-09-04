@@ -12,6 +12,7 @@ services:
     volumes:
       - dwp-agentteams-synapse-data:/data
       - ./homeserver.template.yaml:/data/homeserver.yaml:ro
+      - ./log.config:/data/matrix.log.config:ro
       - ../../.agentteams-runtime/synapse-registration-secret:/run/agentteams/registration-secret:ro
 
 volumes:
