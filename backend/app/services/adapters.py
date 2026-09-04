@@ -4,7 +4,94 @@
 必须经 Plugin Gateway（gateway.invoke_plugin）。
 """
 
+import json
+from pathlib import Path
+
 from .. import models
+
+
+_ONBOARDING_FIXTURE = (
+    Path(__file__).resolve().parents[3] / "mock-data" / "agentteams" / "onboarding-a.json"
+)
+_ONBOARDING_EMPLOYEE_REF = "新员工A"
+
+
+def _onboarding_fixture_section(params: dict, section_name: str) -> dict:
+    """Read one fixed fictional fixture section after strict request validation.
+
+    The request controls neither fixture location nor section selection. Callers
+    receive a newly built domain view, never the parsed fixture itself.
+    """
+    if not isinstance(params, dict) or set(params) != {"employee_ref"}:
+        raise ValueError("invalid_params")
+    employee_ref = params.get("employee_ref")
+    if not isinstance(employee_ref, str) or employee_ref != _ONBOARDING_EMPLOYEE_REF:
+        raise ValueError("invalid_employee_ref")
+
+    try:
+        fixture = json.loads(_ONBOARDING_FIXTURE.read_text(encoding="utf-8"))
+        section = fixture[section_name][_ONBOARDING_EMPLOYEE_REF]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RuntimeError("onboarding_demo_fixture_unavailable") from error
+    if not isinstance(section, dict):
+        raise RuntimeError("onboarding_demo_fixture_unavailable")
+    return section
+
+
+def _bounded_evidence(items: object) -> list[dict[str, str]]:
+    if not isinstance(items, list):
+        raise RuntimeError("onboarding_demo_fixture_unavailable")
+    bounded: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise RuntimeError("onboarding_demo_fixture_unavailable")
+        evidence_id = item.get("evidence_id")
+        label = item.get("item")
+        status = item.get("status")
+        if not all(isinstance(value, str) and value for value in (evidence_id, label, status)):
+            raise RuntimeError("onboarding_demo_fixture_unavailable")
+        bounded.append({"evidence_id": evidence_id, "item": label, "status": status})
+    return bounded
+
+
+def _mock_agentteams_onboarding_employee(_plugin: models.Plugin, params: dict) -> dict:
+    section = _onboarding_fixture_section(params, "hr_materials")
+    materials = _bounded_evidence(section.get("materials"))
+    return {
+        "source": "demo",
+        "employee_ref": _ONBOARDING_EMPLOYEE_REF,
+        "readiness": str(section.get("readiness", "")),
+        "evidence_ids": [item["evidence_id"] for item in materials],
+        "materials": materials,
+    }
+
+
+def _mock_agentteams_it_readiness(_plugin: models.Plugin, params: dict) -> dict:
+    section = _onboarding_fixture_section(params, "it_readiness")
+    accounts = _bounded_evidence(section.get("accounts"))
+    pending_items = _bounded_evidence(section.get("pending_items"))
+    return {
+        "source": "demo",
+        "employee_ref": _ONBOARDING_EMPLOYEE_REF,
+        "readiness": str(section.get("readiness", "")),
+        "evidence_ids": [item["evidence_id"] for item in accounts + pending_items],
+        "accounts": accounts,
+        "pending_items": pending_items,
+    }
+
+
+def _mock_agentteams_onboarding_evidence(_plugin: models.Plugin, params: dict) -> dict:
+    section = _onboarding_fixture_section(params, "audit_evidence")
+    evidence = _bounded_evidence(section.get("evidence"))
+    open_gaps = _bounded_evidence(section.get("open_gaps"))
+    return {
+        "source": "demo",
+        "employee_ref": _ONBOARDING_EMPLOYEE_REF,
+        "readiness": str(section.get("readiness", "")),
+        "evidence_ids": [item["evidence_id"] for item in evidence + open_gaps],
+        "evidence": evidence,
+        "open_gaps": open_gaps,
+    }
 
 
 def _mock_kb_l1(_plugin: models.Plugin, params: dict) -> dict:
@@ -130,6 +217,9 @@ def _mock_purchase_request(_plugin: models.Plugin, params: dict) -> dict:
 
 
 REGISTRY: dict[str, callable] = {
+    "mock://agentteams/onboarding-employee": _mock_agentteams_onboarding_employee,
+    "mock://agentteams/it-readiness": _mock_agentteams_it_readiness,
+    "mock://agentteams/onboarding-evidence": _mock_agentteams_onboarding_evidence,
     "mock://kb/l1": _mock_kb_l1,
     "mock://kb/l2": _mock_kb_l2,
     "mock://mcp/hr-employee": _mock_hr_mcp,

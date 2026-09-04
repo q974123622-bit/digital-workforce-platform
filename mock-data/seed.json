@@ -77,6 +77,20 @@
       "allowed_domains": ["PUB", "IT_L2_DEMO"]
     },
     {
+      "employee_no": "VE-0005",
+      "name": "审计证据助理",
+      "type": "virtual",
+      "owner_human_no": "E10021",
+      "department": "审计部",
+      "role_prompt": "你是审计证据助理，只核查新员工入职演示中的审计证据与缺口。",
+      "runtime_type": "agentteams",
+      "runtime_ref": "audit-worker",
+      "location": "remote",
+      "internet": "deny",
+      "max_data_level": "L2",
+      "allowed_domains": ["AUDIT_DEMO"]
+    },
+    {
       "employee_no": "RPA-0001",
       "name": "自动化报表机器人",
       "type": "rpa",
@@ -112,6 +126,9 @@
     {"id": "hr-employee-mcp", "name": "员工查询 MCP", "type": "mcp", "endpoint_ref": "mock://mcp/hr-employee", "data_level": "L2", "status": "active", "description": "查询员工基本信息（Mock）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "executor": {"primary": "harness", "tool": "adapter", "adapter_ref": "mock://mcp/hr-employee", "fallback": "demo_adapter"}}},
     {"id": "adp-onboarding", "name": "入职流程 Workflow", "type": "workflow", "endpoint_ref": "mock://adp/onboarding", "data_level": "L2", "status": "active", "description": "ADP 入职流程（Mock）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "executor": {"primary": "harness", "tool": "adapter", "adapter_ref": "mock://adp/onboarding", "fallback": "demo_adapter"}}},
     {"id": "internet-search", "name": "公网搜索", "type": "http", "endpoint_ref": "mock://http/internet-search", "data_level": "L1", "status": "active", "description": "公网搜索插件（Mock，演示互联网禁止策略）", "runtime_meta": {"contract_version": "1.0", "actions": ["search"], "executor": {"primary": "adapter", "adapter_ref": "mock://http/internet-search", "fallback": "none"}}},
+    {"id": "agentteams-onboarding-employee", "name": "AgentTeams HR 入职材料", "type": "mcp", "endpoint_ref": "mock://agentteams/onboarding-employee", "data_level": "L2", "status": "active", "description": "仅读取新员工A的虚构 HR 入职材料（Demo）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "input_schema": {"type": "object", "required": ["employee_ref"], "additionalProperties": false}, "executor": {"primary": "adapter", "tool": "adapter", "adapter_ref": "mock://agentteams/onboarding-employee", "fallback": "none"}}},
+    {"id": "agentteams-it-readiness", "name": "AgentTeams IT 就绪检查", "type": "mcp", "endpoint_ref": "mock://agentteams/it-readiness", "data_level": "L2", "status": "active", "description": "仅读取新员工A的虚构 IT 准备状态（Demo）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "input_schema": {"type": "object", "required": ["employee_ref"], "additionalProperties": false}, "executor": {"primary": "adapter", "tool": "adapter", "adapter_ref": "mock://agentteams/it-readiness", "fallback": "none"}}},
+    {"id": "agentteams-onboarding-evidence", "name": "AgentTeams 入职审计证据", "type": "mcp", "endpoint_ref": "mock://agentteams/onboarding-evidence", "data_level": "L2", "status": "active", "description": "仅读取新员工A的虚构审计证据与缺口（Demo）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "input_schema": {"type": "object", "required": ["employee_ref"], "additionalProperties": false}, "executor": {"primary": "adapter", "tool": "adapter", "adapter_ref": "mock://agentteams/onboarding-evidence", "fallback": "none"}}},
     {"id": "rpa-report", "name": "报表机器人", "type": "rpa", "endpoint_ref": "mock://rpa/report", "data_level": "L3", "status": "active", "description": "自动生成报表（Mock，敏感）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "executor": {"primary": "harness", "tool": "adapter", "adapter_ref": "mock://rpa/report", "fallback": "demo_adapter"}}},
     {"id": "expense-claim", "name": "差旅报销流程", "type": "workflow", "endpoint_ref": "mock://workflow/expense-claim", "data_level": "L2", "status": "active", "description": "差旅报销申请与审批打款流程（Mock）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "executor": {"primary": "harness", "tool": "adapter", "adapter_ref": "mock://workflow/expense-claim", "fallback": "demo_adapter"}}},
     {"id": "leave-request", "name": "请假审批流程", "type": "workflow", "endpoint_ref": "mock://workflow/leave-request", "data_level": "L2", "status": "active", "description": "请假申请与考勤同步流程（Mock）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "executor": {"primary": "harness", "tool": "adapter", "adapter_ref": "mock://workflow/leave-request", "fallback": "demo_adapter"}}},
@@ -134,6 +151,9 @@
     {"employee_id": "VE-0002", "plugin_id": "expense-claim", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "VE-0002", "plugin_id": "leave-request", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "VE-0003", "plugin_id": "adp-onboarding", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0002", "plugin_id": "agentteams-onboarding-employee", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0003", "plugin_id": "agentteams-it-readiness", "action": "execute", "decision_mode": "allow"},
+    {"employee_id": "VE-0005", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "RPA-0001", "plugin_id": "rpa-report", "action": "execute", "decision_mode": "approval"},
     {"employee_id": "RPA-0001", "plugin_id": "weekly-report", "action": "execute", "decision_mode": "allow"},
     {"employee_id": "VE-0004", "plugin_id": "purchase-request", "action": "execute", "decision_mode": "approval"}
@@ -164,6 +184,7 @@
         {"employee_id": "VE-0001", "role": "leader"},
         {"employee_id": "VE-0002", "role": "worker"},
         {"employee_id": "VE-0003", "role": "worker"},
+        {"employee_id": "VE-0005", "role": "worker"},
         {"employee_id": "RPA-0001", "role": "worker"}
       ]
     }

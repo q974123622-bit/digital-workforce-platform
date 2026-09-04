@@ -1,0 +1,40 @@
+{
+  "fixture_metadata": {
+    "source": "demo",
+    "fictional": true,
+    "notice": "仅含本地虚构演示材料；不含真实个人数据、凭据或公网端点。"
+  },
+  "hr_materials": {
+    "新员工A": {
+      "readiness": "ready",
+      "materials": [
+        {"evidence_id": "HR-A-001", "item": "身份证明材料核验", "status": "complete"},
+        {"evidence_id": "HR-A-002", "item": "劳动合同签署确认", "status": "complete"}
+      ]
+    }
+  },
+  "it_readiness": {
+    "新员工A": {
+      "readiness": "at_risk",
+      "accounts": [
+        {"evidence_id": "IT-A-001", "item": "企业邮箱账号", "status": "ready"},
+        {"evidence_id": "IT-A-002", "item": "笔记本电脑资产", "status": "ready"}
+      ],
+      "pending_items": [
+        {"evidence_id": "IT-A-003", "item": "多因素认证注册确认", "status": "missing"}
+      ]
+    }
+  },
+  "audit_evidence": {
+    "新员工A": {
+      "readiness": "incomplete",
+      "evidence": [
+        {"evidence_id": "AUD-A-001", "item": "HR 材料核验记录", "status": "verified"},
+        {"evidence_id": "AUD-A-002", "item": "IT 设备交接记录", "status": "verified"}
+      ],
+      "open_gaps": [
+        {"evidence_id": "AUD-A-003", "item": "多因素认证注册证据", "status": "missing"}
+      ]
+    }
+  }
+}

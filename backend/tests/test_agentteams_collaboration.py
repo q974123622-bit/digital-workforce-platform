@@ -538,7 +538,7 @@ def test_team_capability_catalog_only_lists_active_runtime_bound_team_members(db
 
     catalog = AgentTeamsCollaborationService()._team_capability_catalog(db_session, "TEAM-ONBOARD")
 
-    assert {item["agent_id"] for item in catalog} == {"VE-0001", "VE-0002", "VE-0003", "RPA-0001"}
+    assert {item["agent_id"] for item in catalog} == {"VE-0001", "VE-0002", "VE-0003", "VE-0005", "RPA-0001"}
     assert "VE-0004" not in {item["agent_id"] for item in catalog}
     assert all(item["runtime_bound"] is True for item in catalog)
 
