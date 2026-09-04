@@ -12,6 +12,7 @@ $bootstrap = Join-Path $workspace 'scripts\bootstrap_agentteams_matrix.py'
 $agentScript = Join-Path $workspace 'scripts\run_agentteams_agent.py'
 $backend = Join-Path $workspace 'backend'
 $python = Join-Path $backend '.venv\Scripts\python.exe'
+. (Join-Path $PSScriptRoot 'agentteams_process_helpers.ps1')
 
 function Test-CommandAvailable([string]$Name) { return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue) }
 function Test-DeepSeekConfigured {
@@ -56,12 +57,10 @@ function Test-OwnedRecordedProcess([object]$Record) {
     } catch { return $false }
 }
 function Start-OwnedProcess([string]$Name,[string]$WorkingDirectory,[string]$ExecutablePath,[object[]]$Arguments) {
-    $info=[System.Diagnostics.ProcessStartInfo]::new(); $info.FileName=(Resolve-Path -LiteralPath $ExecutablePath).Path; $info.WorkingDirectory=(Resolve-Path -LiteralPath $WorkingDirectory).Path; $info.UseShellExecute=$false; $info.CreateNoWindow=$true
-    foreach ($argument in $Arguments) { [void]$info.ArgumentList.Add([string]$argument) }
-    $process=[System.Diagnostics.Process]::new(); $process.StartInfo=$info
-    if (-not $process.Start()) { throw "Failed to launch $Name." }; Start-Sleep -Milliseconds 700
+    $started=Start-AgentTeamsOwnedProcess -ExecutablePath $ExecutablePath -WorkingDirectory $WorkingDirectory -Arguments $Arguments
+    $process=$started.Process; Start-Sleep -Milliseconds 700
     if ($process.HasExited) { throw "$Name exited during startup (exit code $($process.ExitCode))." }
-    return @{name=$Name;process_id=[int]$process.Id;executable_path=$info.FileName;working_directory=$info.WorkingDirectory;argv=@($Arguments);workspace=$workspace;started_at=$process.StartTime.ToUniversalTime().ToString('o')}
+    return @{name=$Name;process_id=[int]$process.Id;executable_path=$started.ExecutablePath;working_directory=$started.WorkingDirectory;argv=@($started.Arguments);workspace=$workspace;started_at=$process.StartTime.ToUniversalTime().ToString('o')}
 }
 function Write-ProcessRecord([object[]]$Processes,[string]$Status) {
     New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null; $payload=@{workspace=$workspace;status=$Status;created_at=[DateTime]::UtcNow.ToString('o');processes=$Processes}|ConvertTo-Json -Depth 6

@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -15,6 +17,8 @@ HOMESERVER = DEPLOYMENT / "homeserver.template.yaml"
 BOOTSTRAP = PROJECT_ROOT / "scripts" / "bootstrap_agentteams_matrix.py"
 START = PROJECT_ROOT / "scripts" / "start_agentteams_real_demo.ps1"
 STOP = PROJECT_ROOT / "scripts" / "stop_agentteams_real_demo.ps1"
+PROCESS_HELPERS = PROJECT_ROOT / "scripts" / "agentteams_process_helpers.ps1"
+POWERSHELL_51 = shutil.which("powershell")
 
 
 def _bootstrap_module():
@@ -139,7 +143,8 @@ def test_start_script_launches_each_named_role_with_the_single_runtime_path(role
     source = START.read_text(encoding="utf-8")
     assert f"'--role','{role}'" in source
     assert "DWP_AGENTTEAMS_RUNTIME_CONFIG" in source
-    assert "CreateNoWindow=$true" in source
+    assert "agentteams_process_helpers.ps1" in source
+    assert "CreateNoWindow = $true" in PROCESS_HELPERS.read_text(encoding="utf-8")
     assert ".agentteams-runtime\\pids.json" in source
 
 
@@ -159,9 +164,11 @@ def test_stop_script_targets_only_proven_recorded_processes_and_named_compose_pr
 
 def test_start_script_uses_space_safe_argument_list_and_rolls_back_only_owned_compose():
     source = START.read_text(encoding="utf-8")
+    helpers = PROCESS_HELPERS.read_text(encoding="utf-8")
 
-    assert "System.Diagnostics.ProcessStartInfo" in source
-    assert ".ArgumentList.Add" in source
+    assert "System.Diagnostics.ProcessStartInfo" in helpers
+    assert ".ArgumentList.Add" in helpers
+    assert "ConvertTo-AgentTeamsWindowsArgument" in helpers
     assert "function Start-OwnedProcess" in source
     assert "Start-Process" not in source
     assert "ownedCompose" in source
@@ -189,3 +196,60 @@ def test_stop_script_fails_closed_when_executable_arguments_or_start_time_do_not
         assert required in source
     assert "Test-RecordedWorktreeProcess" in source
     assert "return $null" in source
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_process_helper_round_trips_difficult_arguments_through_real_windows_powershell(tmp_path):
+    """Exercise the PS5.1 fallback against CreateProcess, not a string mock."""
+    capture = tmp_path / "capture argv.py"
+    output = tmp_path / "captured.json"
+    capture.write_text(
+        "import json, pathlib, sys\npathlib.Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    arguments = [str(capture), str(output), "", "has space", 'embedded"quote', 'slashes\\\\"quote', "trailing\\"]
+    literals = ",".join("'" + value.replace("'", "''") + "'" for value in arguments)
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{PROCESS_HELPERS.as_posix()}'; "
+        f"$started = Start-AgentTeamsOwnedProcess -ExecutablePath '{sys.executable}' -WorkingDirectory '{tmp_path.as_posix()}' -Arguments @({literals}); "
+        "$started.Process.WaitForExit(); "
+        "if ($started.Process.ExitCode -ne 0) { throw 'capture failed' }; "
+        "[Console]::WriteLine($started.UsedArgumentList)"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip().lower() == "false", "powershell.exe must exercise the PS5.1 fallback"
+    assert json.loads(output.read_text(encoding="utf-8")) == arguments[2:]
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_process_helper_uses_argument_list_when_the_property_is_available():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{PROCESS_HELPERS.as_posix()}'; "
+        "$list = [System.Collections.ArrayList]::new(); "
+        "$info = [pscustomobject]@{ ArgumentList = $list; Arguments = '' }; "
+        "$used = Set-AgentTeamsProcessArguments -Info $info -Arguments @('', 'space value', 'quote\"value', 'trailing\\'); "
+        "if (-not $used -or @($list).Count -ne 4 -or $list[0] -ne '' -or $list[1] -ne 'space value' -or $list[2] -ne 'quote\"value' -or $list[3] -ne 'trailing\\') { throw 'ArgumentList not preserved' }; "
+        "[Console]::WriteLine('argument-list-ok')"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "argument-list-ok"
