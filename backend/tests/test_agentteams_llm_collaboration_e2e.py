@@ -211,7 +211,7 @@ def test_platform_transport_serializes_assignment_as_platform_sender(db_session)
     )
     db_session.add(outbound)
     db_session.flush()
-    runner = AgentTeamsCollaborationRunner(service=service, transport=_MatrixBus().endpoint("@platform:matrix.test"), room_id="!task9:matrix.test")
+    runner = AgentTeamsCollaborationRunner(service=service, gateway=_MatrixBus().endpoint("@platform:matrix.test"), room_id="!task9:matrix.test")
     try:
         assert runner._outbound_protocol(db_session, outbound).sender == "platform"
     finally:
@@ -277,7 +277,7 @@ def test_runner_records_new_matrix_event_but_deduplicates_reused_protocol_key(db
     run.owner_human_no = "E10281"
     db_session.commit()
     bus = _MatrixBus()
-    runner = AgentTeamsCollaborationRunner(service=service, transport=bus.endpoint(mxids["platform"]), room_id="!task9:matrix.test")
+    runner = AgentTeamsCollaborationRunner(service=service, gateway=bus.endpoint(mxids["platform"]), room_id="!task9:matrix.test")
     message = _required_hr_delegate(run)
     protocol_line = render_protocol_line(message)
     try:
@@ -438,7 +438,7 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     run = service.create_task(db_session, team_id="TEAM-ONBOARD", leader_agent_id="VE-0001", title="新员工A按期入职评估", instruction="评估新员工A是否可以按期入职。", material={})
     run.owner_human_no = "E10281"
     db_session.commit()
-    runner = AgentTeamsCollaborationRunner(service=service, transport=bus.endpoint(mxids["platform"]), room_id="!task9:matrix.test")
+    runner = AgentTeamsCollaborationRunner(service=service, gateway=bus.endpoint(mxids["platform"]), room_id="!task9:matrix.test")
     assert runner.transport_mode == "agentteams_strict"
     registry = ProjectSkillRegistry.from_root(ROOT)
     manager_out, hr_out, it_out, audit_out = _decision_outputs()

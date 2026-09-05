@@ -20,3 +20,6 @@ summary exists without outputting summary text.  The test suite additionally
 proves strict `$` IDs, new-event/protocol-key deduplication without state replay,
 and required-child failure propagation/deduplication under the existing service
 contract.
+
+The clean export uses the committed strict Runner `gateway=` injection seam;
+it does not depend on the later untracked local-demo `transport=` extension.

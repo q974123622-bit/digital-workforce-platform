@@ -79,3 +79,7 @@ verification scripts remain independently commit-safe.
   `task.failed` message.  The failure contract is the current service behavior:
   the failed required child, its root ancestor, and the TaskRun become failed;
   a duplicate failure idempotency key adds no state events.
+- Clean-export correction: strict E2E fixtures use the committed Runner
+  `gateway=` seam, not the uncommitted local-demo `transport=` extension.
+  The deterministic Matrix bus is therefore injected through the same strict
+  Runner interface available in the clean Task 9 commit.
