@@ -6,7 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .database import Base, engine, ensure_schema_compatibility
+from .database import Base, SessionLocal, engine, ensure_schema_compatibility
 from .routers import (
     access,
     agentteams_collaboration,
@@ -21,9 +21,10 @@ from .routers import (
     teams,
     workplace,
 )
-from .seed import seed_if_empty
+from .seed import seed_if_empty, sync_strict_runtime_bindings
 from .services import config
 from .services.agentteams_runner import AgentTeamsCollaborationRunner
+from .services.agentteams_runtime_config import load_strict_runtime_config
 
 
 runner_stop = threading.Event()
@@ -53,6 +54,17 @@ async def lifespan(_: FastAPI):
     if not config.skip_auto_seed():
         seed_if_empty()
     if config.agentteams_collaboration_enabled():
+        if config.agentteams_mode() == "agentteams_strict":
+            try:
+                runtime = load_strict_runtime_config()
+            except ValueError:
+                runtime = None
+            if runtime is not None:
+                db = SessionLocal()
+                try:
+                    sync_strict_runtime_bindings(db, runtime)
+                finally:
+                    db.close()
         runner_stop.clear()
         runner_thread = start_agentteams_runner(runner_stop)
     try:

@@ -102,6 +102,27 @@ def test_start_cleanup_preserves_the_original_startup_error_when_scoped_compose_
     assert "caught=startup-root-error" in completed.stdout
 
 
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_strict_start_environment_enables_the_collaboration_loop():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        "Set-AgentTeamsStrictRuntimeEnvironment; "
+        "[Console]::WriteLine($env:DWP_AGENTTEAMS_MODE + '|' + $env:DWP_AGENTTEAMS_COLLAB_ENABLED)"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "agentteams_strict|1"
+
+
 def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(tmp_path, capsys):
     bootstrap = _bootstrap_module()
     credentials = {

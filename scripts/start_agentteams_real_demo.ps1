@@ -77,6 +77,11 @@ function Stop-OwnedComposeProject {
         Write-Warning 'Owned Synapse compose cleanup raised an error; preserving the original startup error.'
     }
 }
+function Set-AgentTeamsStrictRuntimeEnvironment {
+    $env:DWP_AGENTTEAMS_MODE = 'agentteams_strict'
+    $env:DWP_AGENTTEAMS_COLLAB_ENABLED = '1'
+    $env:DWP_AGENTTEAMS_RUNTIME_CONFIG = $runtimeConfig
+}
 function Assert-NoExistingDemoProcesses {
     if (-not (Test-Path -LiteralPath $pidsPath)) { return }; try { $saved=Get-Content -LiteralPath $pidsPath -Raw|ConvertFrom-Json } catch { throw 'Invalid existing AgentTeams PID record; refusing duplicate start.' }
     if ($saved.status -eq 'running') { foreach ($record in @($saved.processes)) { if ($NoFrontend -and $record.name -eq 'frontend') { continue }; if (Test-OwnedRecordedProcess $record) { throw "An AgentTeams real-demo process is already running for this worktree (PID $($record.process_id))." } } }
@@ -88,7 +93,7 @@ if (-not (Test-CommandAvailable 'docker')) { throw 'Docker Desktop CLI is unavai
 if (-not (Test-Path -LiteralPath $python)) { throw 'Backend virtual environment Python is missing.' }; if (-not (Test-DeepSeekConfigured)) { throw 'DEEPSEEK_API_KEY is required for the strict real demo (value not shown).' }; Assert-NoExistingDemoProcesses
 if (-not $NoFrontend) { if (-not (Test-CommandAvailable 'node')) { throw 'Node.js is unavailable.' }; if (-not (Test-Path -LiteralPath (Join-Path $workspace 'frontend\node_modules\vite\bin\vite.js'))) { throw 'Frontend dependencies are missing.' } }
 $alreadyRunning=@(& docker compose -p dwp-agentteams -f $composeFile ps --status running --services 2>$null); if ($LASTEXITCODE -ne 0) { throw 'Unable to determine whether the scoped Synapse project is already running.' }; if (@($alreadyRunning|Where-Object {$_ -eq 'synapse'}).Count -gt 0) { throw 'The dwp-agentteams Synapse project is already running; refusing to claim or stop it.' }
-$env:DWP_AGENTTEAMS_MODE='agentteams_strict'; $env:DWP_AGENTTEAMS_RUNTIME_CONFIG=$runtimeConfig; $records=@(); $ownedCompose=$false; $success=$false
+Set-AgentTeamsStrictRuntimeEnvironment; $records=@(); $ownedCompose=$false; $success=$false
 try {
     Import-DeepSeekKeyForChildProcesses; & $python $bootstrap --runtime-dir $runtimeDirectory --prepare-synapse-env; if ($LASTEXITCODE -ne 0) { throw 'Synapse secret preparation failed.' }
     $ownedCompose=$true; & docker compose -p dwp-agentteams -f $composeFile up -d; if ($LASTEXITCODE -ne 0) { throw 'Synapse compose startup failed.' }; if (-not (Wait-SynapseReady)) { throw 'Synapse did not become ready at 127.0.0.1:8008.' }

@@ -79,6 +79,69 @@ def seed_if_empty() -> None:
         db.close()
 
 
+def sync_strict_runtime_bindings(db, runtime) -> None:
+    """Synchronize the fixed strict demo Team from the validated runtime file.
+
+    The Matrix bootstrap is intentionally credential-only.  This narrowly
+    bridges its public identity facts into the platform's durable Team and
+    digital-employee records, so a clean strict startup never requires an
+    operator to edit the database by hand.
+    """
+    templates = {
+        row["employee_no"]: row
+        for row in load_seed().get("digital_employees", [])
+        if isinstance(row, dict) and isinstance(row.get("employee_no"), str)
+    }
+    expected_roles = {
+        "manager": "leader",
+        "hr": "worker",
+        "it": "worker",
+        "audit": "worker",
+    }
+    agent_ids = {identity.agent_id for identity in runtime.agents.values()}
+    if set(runtime.agents) != set(expected_roles) or None in agent_ids:
+        raise ValueError("invalid_strict_runtime")
+
+    team = db.get(models.Team, runtime.team_id)
+    manager_id = runtime.agents["manager"].agent_id
+    if team is None:
+        team = models.Team(
+            id=runtime.team_id,
+            name="AgentTeams 入职协作团队",
+            leader_employee_id=manager_id,
+            description="本地 Matrix 严格演示的受控协作团队",
+        )
+        db.add(team)
+    else:
+        team.leader_employee_id = manager_id
+
+    for role, member_role in expected_roles.items():
+        identity = runtime.agents[role]
+        employee = db.get(models.DigitalEmployee, identity.agent_id)
+        if employee is None:
+            template = templates.get(identity.agent_id)
+            if template is None:
+                raise ValueError("missing_strict_seed_employee")
+            employee = models.DigitalEmployee(**template)
+            db.add(employee)
+        employee.status = "active"
+        employee.runtime_type = "agentteams"
+        employee.runtime_ref = identity.mxid
+
+        member = db.query(models.TeamMember).filter_by(
+            team_id=runtime.team_id, employee_id=identity.agent_id
+        ).first()
+        if member is None:
+            db.add(models.TeamMember(
+                team_id=runtime.team_id,
+                employee_id=identity.agent_id,
+                role=member_role,
+            ))
+        else:
+            member.role = member_role
+    db.commit()
+
+
 def main() -> None:
     if "--reset" in sys.argv and DATABASE_URL.startswith("sqlite"):
         db_file = Path(DATABASE_URL.replace("sqlite:///", ""))
