@@ -29,6 +29,8 @@ const readyHealth: AgentCollaborationHealth = {
   enabled: true,
   ready_for_demo: true,
   reason: '',
+  mode: 'agentteams_strict',
+  transport: 'matrix',
   matrix: 'ready',
   room: 'ready',
   manager: 'configured',
@@ -37,6 +39,14 @@ const readyHealth: AgentCollaborationHealth = {
     { agent_id: 'VE-0001', matrix_user_id: '@ve-0001:matrix.test', status: 'configured' },
     { agent_id: 'VE-0002', matrix_user_id: '@ve-0002:matrix.test', status: 'configured' },
   ],
+};
+
+const localReadyHealth: AgentCollaborationHealth = {
+  ...readyHealth,
+  mode: 'local_demo',
+  transport: 'local',
+  matrix: 'not_connected',
+  room: 'local',
 };
 
 const teams: Team[] = [
@@ -325,6 +335,147 @@ describe('AgentTeams collaboration API client', () => {
 });
 
 describe('AgentTeams collaboration page', () => {
+  it('renders persisted skills, round, blocked dependency, audit, and real Matrix evidence', async () => {
+    const blockedNode = {
+      ...workerNode,
+      id: 'AT-IT',
+      title: 'IT 依赖核查',
+      status: 'blocked' as const,
+      progress: 0,
+      output_payload: {},
+    };
+    const task = { ...completedTask, nodes: [rootNode, workerNode, blockedNode] };
+    const graph = {
+      ...completedGraph,
+      nodes: [rootNode, workerNode, blockedNode],
+      current_round: 2,
+      selected_skill_ids: ['agentteams-onboarding-readiness'],
+      dependency_edges: [{ depends_on_task_id: 'AT-POLICY', task_id: 'AT-IT' }],
+    } as unknown as AgentTaskGraph;
+    const messages = [
+      {
+        ...completedMessages[0],
+        message_type: 'tool.result',
+        task_id: 'AT-ROOT',
+        parent_task_id: null,
+        matrix_event_id: '$event-101',
+        payload: {
+          tool_name: 'agentteams-onboarding-employee',
+          decision: 'allow',
+          audit_ids: [101],
+          source: 'demo',
+        },
+      },
+    ];
+    mockPageApi({
+      ...completedTaskRoutes(task),
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/graph': graph,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages': messages,
+    });
+    renderPage();
+
+    expect(await screen.findByText('已选择 Skill：agentteams-onboarding-readiness')).toBeInTheDocument();
+    expect(screen.getByText('第 2 轮')).toBeInTheDocument();
+    expect(screen.getByText('已阻塞，等待依赖：AT-POLICY')).toBeInTheDocument();
+    expect(screen.getByText('工具调用：agentteams-onboarding-employee')).toBeInTheDocument();
+    expect(screen.getByText('权限检查：允许')).toBeInTheDocument();
+    expect(screen.getByText('审计记录ID：101')).toBeInTheDocument();
+    expect(screen.getByText(/Matrix事件：\$event-101/)).toBeInTheDocument();
+  });
+
+  it('keeps the one-line goal editable instead of pre-filling a detailed scenario', async () => {
+    mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': readyHealth,
+      'GET /api/v1/teams': teams,
+      'GET /api/v1/agentteams-collaboration/tasks': [],
+    });
+    renderPage();
+
+    const instruction = await screen.findByLabelText('任务说明');
+    expect(instruction).toHaveValue('评估新员工A是否可以按期入职。');
+    expect(instruction).not.toBeDisabled();
+    expect(screen.getByLabelText('任务标题')).not.toBeDisabled();
+    expect(screen.getByLabelText('补充材料（可选 JSON）')).not.toBeDisabled();
+  });
+
+  it('shows the server-reported local boundary and labels local message IDs as transport events', async () => {
+    mockPageApi({
+      ...completedTaskRoutes(),
+      'GET /api/v1/agentteams-collaboration/health': localReadyHealth,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages': [
+        { ...completedMessages[0], task_id: 'AT-ROOT', parent_task_id: null },
+      ],
+    });
+    renderPage();
+
+    expect(await screen.findByText('本地Demo（未连接Matrix）')).toBeInTheDocument();
+    expect(screen.queryByText('真实AgentTeams / Matrix')).not.toBeInTheDocument();
+    expect(await screen.findByText(/Transport事件ID：\$matrix-policy-1/)).toBeInTheDocument();
+    expect(screen.queryByText(/Matrix事件ID：/)).not.toBeInTheDocument();
+  });
+
+  it('shows the strict boundary and labels strict message IDs as Matrix events', async () => {
+    mockPageApi({
+      ...completedTaskRoutes(),
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages': [
+        { ...completedMessages[0], task_id: 'AT-ROOT', parent_task_id: null },
+      ],
+    });
+    renderPage();
+
+    expect(await screen.findByText('真实AgentTeams / Matrix')).toBeInTheDocument();
+    expect(screen.queryByText('本地Demo（未连接Matrix）')).not.toBeInTheDocument();
+    expect(await screen.findByText(/Matrix事件：\$matrix-policy-1/)).toBeInTheDocument();
+  });
+
+  it('keeps the local team binding while leaving the submitted goal editable', async () => {
+    const otherTeam: Team = {
+      id: 'TEAM-OTHER',
+      name: '其他团队',
+      leader_employee_id: 'VE-OTHER',
+      description: '不支持本地固定场景',
+    };
+    const localOnboardTeam: Team = {
+      ...teams[0],
+      leader_employee_id: 'VE-0001',
+    };
+    const fetchMock = mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': localReadyHealth,
+      'GET /api/v1/teams': [otherTeam, localOnboardTeam],
+      'GET /api/v1/agentteams-collaboration/tasks': [],
+      'POST /api/v1/agentteams-collaboration/tasks': completedTask,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT': completedTask,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/graph': completedGraph,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/events': completedEvents,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages': completedMessages,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/result': completedResult,
+    });
+    renderPage();
+
+    const teamSelect = await screen.findByRole('combobox', { name: '协作团队' });
+    expect(teamSelect).toBeDisabled();
+    expect(screen.getByText('负责人 Agent：VE-0001')).toBeInTheDocument();
+    expect(screen.getByLabelText('任务标题')).not.toBeDisabled();
+    expect(screen.getByLabelText('任务标题')).toHaveValue('新员工入职评估');
+    expect(screen.getByLabelText('任务说明')).not.toBeDisabled();
+    expect(screen.getByLabelText('任务说明')).toHaveValue('评估新员工A是否可以按期入职。');
+    expect(screen.getByLabelText('补充材料（可选 JSON）')).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '提交协作任务' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks') && init?.method === 'POST',
+      );
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
+        team_id: 'TEAM-ONBOARD',
+        leader_agent_id: 'VE-0001',
+        title: '新员工入职准备复核',
+        instruction: '请协作完成新员工入职准备复核：HR核查制度和材料，IT核查账号与服务状态，至少一次跨Agent澄清或继续委派，最后汇总完成项、风险和后续动作。',
+        material: {},
+      });
+    });
+  });
+
   it('submits a task only when the server health gate is ready', async () => {
     const submittedTask: AgentCollaborationTask = {
       ...completedTask,
@@ -709,7 +860,7 @@ describe('AgentTeams collaboration page', () => {
     expect(after).toBe(before);
   }, 3000);
 
-  it('polls a running root task at one-second intervals', async () => {
+  it('polls a running root task every three seconds without changing server state locally', async () => {
     const runningNode = { ...rootNode, status: 'running' as const, progress: 30 };
     const runningTask: AgentCollaborationTask = {
       ...completedTask,
@@ -738,11 +889,17 @@ describe('AgentTeams collaboration page', () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1100));
     });
+    const beforeThreeSeconds = fetchMock.mock.calls.filter(([input]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
+    expect(beforeThreeSeconds).toBe(before);
+    expect(screen.getAllByText('执行中').length).toBeGreaterThan(0);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+    });
     await waitFor(() => {
       const after = fetchMock.mock.calls.filter(([input]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
       expect(after).toBeGreaterThan(before);
     });
-  }, 4000);
+  }, 6000);
 
   it('shows the backend error when cancelling a running task fails', async () => {
     const runningNode = { ...rootNode, status: 'running' as const, progress: 30 };

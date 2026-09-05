@@ -682,6 +682,8 @@ class AgentMessageOut(BaseModel):
 
 
 class AgentTaskGraphOut(BaseModel):
+    current_round: int = 0
+    selected_skill_ids: list[str] = Field(default_factory=list)
     nodes: list[AgentTaskNodeOut] = Field(default_factory=list)
     parent_edges: list[dict] = Field(default_factory=list)
     dependency_edges: list[dict] = Field(default_factory=list)
@@ -713,15 +715,16 @@ class AgentCollaborationHealthOut(BaseModel):
     enabled: bool
     ready_for_demo: bool
     reason: str
-    mode: Literal["local_demo", "agentteams_strict"] = "agentteams_strict"
-    transport: Literal["local", "matrix"] = "matrix"
     strict_ready: bool = False
     configured_team_id: str = ""
+    mode: Literal["local_demo", "agentteams_strict"]
+    transport: Literal["local", "matrix"]
     matrix: str
     room: str
     manager: str
     platform_team: str
     workers: list[AgentWorkerHealthOut] = Field(default_factory=list)
+
 
 class AgentFinalResultOut(BaseModel):
     task_id: str

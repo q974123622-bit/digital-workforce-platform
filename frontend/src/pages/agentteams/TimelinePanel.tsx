@@ -4,7 +4,9 @@ import type { AgentMessage, AgentTaskEvent } from '@dwp/shared-schema';
 interface Props {
   events: AgentTaskEvent[];
   messages: AgentMessage[];
+  newEventIds?: Set<number>;
   selectedTaskId?: string | null;
+  isRealMatrix?: boolean;
 }
 
 const PLAIN_MATRIX_TYPES = new Set(['matrix.text', 'matrix.duplicate', 'matrix.terminal_late']);
@@ -28,6 +30,17 @@ function auditIds(payload: Record<string, unknown>) {
   return values.filter((value): value is number => typeof value === 'number').slice(0, 8);
 }
 
+function positiveAuditIds(payload: Record<string, unknown>) {
+  return auditIds(payload).filter((value) => Number.isInteger(value) && value > 0);
+}
+
+function policyLabel(decision: string) {
+  if (decision === 'allow') return '允许';
+  if (decision === 'deny') return '拒绝';
+  if (decision === 'failed') return '执行失败';
+  return '未产生';
+}
+
 function isProtocolMessage(message: AgentMessage) {
   return !PLAIN_MATRIX_TYPES.has(message.message_type) && message.message_type !== 'protocol.invalid';
 }
@@ -38,7 +51,7 @@ function messageSummary(message: AgentMessage) {
   return safeText(message.body || '未提供正文');
 }
 
-export function TimelinePanel({ events, messages, selectedTaskId }: Props) {
+export function TimelinePanel({ events, messages, newEventIds = new Set(), selectedTaskId, isRealMatrix = false }: Props) {
   const visibleEvents = selectedTaskId ? events.filter((event) => event.task_id === selectedTaskId) : events;
   const visibleMessages = selectedTaskId ? messages.filter((message) => message.task_id === selectedTaskId) : messages;
   const toolMessages = visibleMessages.filter((message) => message.message_type.startsWith('tool.'));
@@ -65,10 +78,12 @@ export function TimelinePanel({ events, messages, selectedTaskId }: Props) {
             items={visibleEvents.map((event) => ({
               color: event.event_type.includes('failed') || event.event_type === 'protocol.invalid' ? 'red' : 'blue',
               children: (
-                <div className="at-timeline-event">
+                <div className={`at-timeline-event ${newEventIds.has(event.id) ? 'at-new-evidence' : ''}`}>
                   <Space size={[6, 4]} wrap>
                     <Tag color="blue">#{event.event_seq}</Tag>
                     <Tag>{event.event_type}</Tag>
+                    {newEventIds.has(event.id) && <Tag color="gold">新到证据</Tag>}
+                    {event.event_type === 'skill.selected' && <Tag color="purple">DeepSeek 决策</Tag>}
                     <Typography.Text strong>{event.actor_agent_id}</Typography.Text>
                     {event.target_agent_id && <Typography.Text type="secondary">→ {event.target_agent_id}</Typography.Text>}
                   </Space>
@@ -101,7 +116,9 @@ export function TimelinePanel({ events, messages, selectedTaskId }: Props) {
                   </Space>
                   <Typography.Paragraph className="at-message-summary">{messageSummary(message)}</Typography.Paragraph>
                   <Typography.Text type="secondary" className="at-time">
-                    Matrix event ID：{message.matrix_event_id ?? '尚未回写'} · {formatTime(message.created_at)}
+                    {isRealMatrix && typeof message.matrix_event_id === 'string' && message.matrix_event_id.startsWith('$')
+                      ? `Matrix事件：${message.matrix_event_id}`
+                      : `Transport事件ID：${message.matrix_event_id ?? '尚未产生'}`} · {formatTime(message.created_at)}
                   </Typography.Text>
                 </div>
               </List.Item>
@@ -119,7 +136,7 @@ export function TimelinePanel({ events, messages, selectedTaskId }: Props) {
             dataSource={toolMessages}
             renderItem={(message) => {
               const decision = payloadString(message.payload, 'decision') || '未返回';
-              const ids = auditIds(message.payload);
+              const ids = positiveAuditIds(message.payload);
               const toolName = payloadString(message.payload, 'tool_name') || payloadString(message.payload, 'tool_type') || '未提供';
               const result = typeof message.payload.data === 'string'
                 ? safeText(message.payload.data, 160)
@@ -129,12 +146,14 @@ export function TimelinePanel({ events, messages, selectedTaskId }: Props) {
               return (
                 <List.Item>
                   <div className="at-tool-row">
-                    <Typography.Text strong>工具：{toolName}</Typography.Text>
+                    <Typography.Text strong>工具调用：{toolName}</Typography.Text>
                     <Space size={[6, 4]} wrap>
                       <Tag color={decision === 'allow' ? 'success' : decision === 'deny' ? 'error' : 'warning'}>
-                        Policy：{decision}
+                        权限检查：{policyLabel(decision)}
                       </Tag>
-                      <Tag>审计：{ids.length > 0 ? ids.join(', ') : '无'}</Tag>
+                      {ids.length > 0
+                        ? ids.map((id) => <Tag key={id}>审计记录ID：{id}</Tag>)
+                        : <Tag>审计记录ID：未产生</Tag>}
                     </Space>
                     <Typography.Text type="secondary">结果摘要：{result}</Typography.Text>
                   </div>

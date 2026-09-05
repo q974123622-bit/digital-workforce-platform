@@ -4,6 +4,7 @@ import type { AgentTaskGraph, AgentTaskNode } from '@dwp/shared-schema';
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
   planning: { label: '规划中', color: 'blue' },
+  blocked: { label: '已阻塞', color: 'orange' },
   assigned: { label: '已分派', color: 'cyan' },
   accepted: { label: '已接单', color: 'processing' },
   running: { label: '执行中', color: 'processing' },
@@ -43,6 +44,14 @@ export function TaskTree({ nodes, graph, selectedId, onSelect }: Props) {
   const parentEdges: Edge[] = graph?.parent_edges ?? nodes
     .filter((node) => node.parent_task_id)
     .map((node) => ({ parent_task_id: node.parent_task_id ?? '', task_id: node.id }));
+  const dependencyIdsByNode = new Map<string, string[]>();
+  for (const edge of graph?.dependency_edges ?? []) {
+    const taskId = edge.task_id;
+    const dependsOnTaskId = edge.depends_on_task_id;
+    if (taskId && dependsOnTaskId) {
+      dependencyIdsByNode.set(taskId, [...(dependencyIdsByNode.get(taskId) ?? []), dependsOnTaskId]);
+    }
+  }
 
   for (const node of nodes) {
     const parentId = node.parent_task_id && nodeIds.has(node.parent_task_id) ? node.parent_task_id : null;
@@ -52,6 +61,7 @@ export function TaskTree({ nodes, graph, selectedId, onSelect }: Props) {
   const renderNode = (node: AgentTaskNode) => {
     const status = STATUS_META[node.status] ?? { label: node.status, color: 'default' };
     const nested = children.get(node.id) ?? [];
+    const dependencies = dependencyIdsByNode.get(node.id) ?? [];
     return (
       <li key={node.id} className="at-tree-item">
         <button
@@ -69,6 +79,9 @@ export function TaskTree({ nodes, graph, selectedId, onSelect }: Props) {
             <span>{node.assignee_agent_id}</span>
             <span>层级 {node.depth}</span>
           </span>
+          {node.status === 'blocked' && dependencies.length > 0 && (
+            <span className="at-tree-meta">已阻塞，等待依赖：{dependencies.join('、')}</span>
+          )}
           <Progress percent={Math.max(0, Math.min(100, node.progress))} size="small" showInfo={false} />
         </button>
         {nested.length > 0 && <ul className="at-tree-children">{nested.map(renderNode)}</ul>}

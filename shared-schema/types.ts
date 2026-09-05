@@ -358,6 +358,7 @@ export type AgentTaskTerminalStatus = 'completed' | 'failed' | 'timed_out' | 'ca
 
 export type AgentTaskStatus =
   | 'planning'
+  | 'blocked'
   | 'assigned'
   | 'accepted'
   | 'running'
@@ -426,6 +427,8 @@ export interface AgentMessage {
 }
 
 export interface AgentTaskGraph {
+  current_round?: number;
+  selected_skill_ids?: string[];
   nodes: AgentTaskNode[];
   parent_edges: Array<Record<string, string>>;
   dependency_edges: Array<Record<string, string>>;
@@ -442,6 +445,10 @@ export interface AgentCollaborationHealth {
   enabled: boolean;
   ready_for_demo: boolean;
   reason: string;
+  strict_ready?: boolean;
+  configured_team_id?: string;
+  mode: 'local_demo' | 'agentteams_strict';
+  transport: 'local' | 'matrix';
   matrix: string;
   room: string;
   manager: string;

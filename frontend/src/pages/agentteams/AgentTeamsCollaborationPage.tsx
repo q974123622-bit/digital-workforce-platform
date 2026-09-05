@@ -22,6 +22,11 @@ import { TaskTree, AGENT_TASK_STATUS_META } from './TaskTree';
 import { TimelinePanel } from './TimelinePanel';
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out', 'cancelled']);
+const LOCAL_DEMO_TEAM_ID = 'TEAM-ONBOARD';
+const LOCAL_DEMO_TITLE = '新员工入职准备复核';
+const LOCAL_DEMO_INSTRUCTION = '请协作完成新员工入职准备复核：HR核查制度和材料，IT核查账号与服务状态，至少一次跨Agent澄清或继续委派，最后汇总完成项、风险和后续动作。';
+const DEFAULT_TASK_TITLE = '新员工入职评估';
+const DEFAULT_TASK_GOAL = '评估新员工A是否可以按期入职。';
 
 const EMPTY_GRAPH: AgentTaskGraph = {
   nodes: [],
@@ -93,6 +98,7 @@ export default function AgentTeamsCollaborationPage() {
   const [selectedTask, setSelectedTask] = useState<AgentCollaborationTask | null>(null);
   const [graph, setGraph] = useState<AgentTaskGraph>(EMPTY_GRAPH);
   const [events, setEvents] = useState<AgentTaskEvent[]>([]);
+  const [newEventIds, setNewEventIds] = useState<Set<number>>(() => new Set());
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [result, setResult] = useState<AgentFinalResult | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -135,7 +141,11 @@ export default function AgentTeamsCollaborationPage() {
       setHealth(nextHealth);
       setTeams(nextTeams);
       setTasks(nextTasks);
-      setTeamId((current) => current ?? nextTeams[0]?.id);
+      setTitle((current) => current || DEFAULT_TASK_TITLE);
+      setInstruction((current) => current || DEFAULT_TASK_GOAL);
+      setTeamId((current) => nextHealth.mode === 'local_demo'
+        ? nextTeams.find((team) => team.id === LOCAL_DEMO_TEAM_ID)?.id
+        : current ?? nextTeams[0]?.id);
       setSelectedTaskId((current) => current ?? nextTasks[0]?.id ?? null);
     } catch (error) {
       if (actorVersionRef.current === actorVersion) setLoadError(errorText(error));
@@ -165,7 +175,15 @@ export default function AgentTeamsCollaborationPage() {
       setGraph(nextGraph);
       setMessages(nextMessages);
       setResult(nextResult);
-      setEvents((current) => afterEventId === undefined ? nextEvents : mergeEvents(current, nextEvents));
+      setEvents((current) => {
+        if (afterEventId === undefined) {
+          setNewEventIds(new Set());
+          return nextEvents;
+        }
+        const known = new Set(current.map((event) => event.id));
+        setNewEventIds(new Set(nextEvents.filter((event) => !known.has(event.id)).map((event) => event.id)));
+        return mergeEvents(current, nextEvents);
+      });
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       setSelectedNodeId((current) => current ?? task.id);
       return { task, graph: nextGraph, events: nextEvents, messages: nextMessages, result: nextResult };
@@ -185,6 +203,7 @@ export default function AgentTeamsCollaborationPage() {
     setSelectedTask(null);
     setGraph(EMPTY_GRAPH);
     setEvents([]);
+    setNewEventIds(new Set());
     setMessages([]);
     setResult(null);
     setSelectedNodeId(null);
@@ -219,7 +238,7 @@ export default function AgentTeamsCollaborationPage() {
     const requestVersion = taskSelectionVersionRef.current;
     const timer = window.setTimeout(() => {
       void loadTask(selectedTaskId, requestVersion, selectedTask.latest_event_id);
-    }, 1000);
+    }, 3000);
     return () => window.clearTimeout(timer);
   }, [loadTask, selectedTask, selectedTaskId]);
 
@@ -251,21 +270,22 @@ export default function AgentTeamsCollaborationPage() {
       const task = await api.createAgentTeamsTask(actorNo, {
         team_id: selectedTeam.id,
         leader_agent_id: selectedTeam.leader_employee_id,
-        title: trimmedTitle,
-        instruction: trimmedInstruction,
-        material: parsedMaterial,
+        title: health?.mode === 'local_demo' ? LOCAL_DEMO_TITLE : trimmedTitle,
+        instruction: health?.mode === 'local_demo' ? LOCAL_DEMO_INSTRUCTION : trimmedInstruction,
+        material: health?.mode === 'local_demo' ? {} : parsedMaterial,
       });
       if (actorVersionRef.current !== actorVersion) return;
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       setSelectedTask(task);
       setGraph({ ...EMPTY_GRAPH, nodes: task.nodes });
       setEvents([]);
+      setNewEventIds(new Set());
       setMessages([]);
       setResult(null);
       setSelectedNodeId(task.id);
       selectTask(task.id);
-      setTitle('');
-      setInstruction('');
+      setTitle(DEFAULT_TASK_TITLE);
+      setInstruction(DEFAULT_TASK_GOAL);
       setMaterial('');
     } catch (error) {
       if (actorVersionRef.current === actorVersion) setActionError(`提交协作任务失败：${errorText(error)}`);
@@ -315,6 +335,7 @@ export default function AgentTeamsCollaborationPage() {
       setSelectedTask(task);
       setGraph({ ...EMPTY_GRAPH, nodes: task.nodes });
       setEvents([]);
+      setNewEventIds(new Set());
       setMessages([]);
       setResult(null);
       setSelectedNodeId(task.id);
@@ -334,6 +355,8 @@ export default function AgentTeamsCollaborationPage() {
 
   const canSubmit = Boolean(health?.ready_for_demo && selectedTeam && title.trim() && instruction.trim() && !submitting);
   const nodes: AgentTaskNode[] = graph.nodes.length > 0 ? graph.nodes : selectedTask?.nodes ?? [];
+  const isLocalDemo = health?.mode === 'local_demo';
+  const selectableTeams = isLocalDemo ? teams.filter((team) => team.id === LOCAL_DEMO_TEAM_ID) : teams;
 
   return (
     <div className="agentteams-page">
@@ -344,7 +367,11 @@ export default function AgentTeamsCollaborationPage() {
             数据只来自服务端已持久化的协作状态；页面不会生成本地演示任务，也不会自行判定 Matrix 已连接。
           </Typography.Paragraph>
         </div>
-        <Tag icon={<RobotOutlined />} color="geekblue">AgentTeams 协作链路</Tag>
+        {health && (
+          <Tag icon={<RobotOutlined />} color={isLocalDemo ? 'gold' : 'geekblue'}>
+            {isLocalDemo ? '本地Demo（未连接Matrix）' : '真实AgentTeams / Matrix'}
+          </Tag>
+        )}
       </div>
 
       {loading ? (
@@ -369,14 +396,20 @@ export default function AgentTeamsCollaborationPage() {
               description={
                 <Space direction="vertical" size={6}>
                   <Space size={[6, 6]} wrap>
-                    {healthTag('Matrix', health.matrix)}
-                    {healthTag('房间', health.room)}
+                    {!isLocalDemo && healthTag('Matrix', health.matrix)}
+                    {!isLocalDemo && healthTag('房间', health.room)}
                     {healthTag('Manager', health.manager)}
                     {workerHealthTag(health.workers)}
                   </Space>
                   <Space size={4}>
                     <Typography.Text>服务端原因：</Typography.Text>
                     <Typography.Text>{health.reason}</Typography.Text>
+                  </Space>
+                  <Space size={[6, 6]} wrap>
+                    <Tag>运行模式：{health.mode === 'agentteams_strict' ? '真实 AgentTeams' : '本地 Demo'}</Tag>
+                    <Tag>消息传输：{health.transport === 'matrix' ? 'Matrix' : '本地传输'}</Tag>
+                    <Tag>严格就绪：{health.strict_ready ? '是' : '否'}</Tag>
+                    <Tag>已配置团队：{health.configured_team_id || '未产生'}</Tag>
                   </Space>
                 </Space>
               }
@@ -394,7 +427,8 @@ export default function AgentTeamsCollaborationPage() {
                     aria-label="协作团队"
                     value={teamId}
                     onChange={setTeamId}
-                    options={teams.map((team) => ({ value: team.id, label: `${team.name}（${team.id}）` }))}
+                    options={selectableTeams.map((team) => ({ value: team.id, label: `${team.name}（${team.id}）` }))}
+                    disabled={isLocalDemo}
                     placeholder="选择协作团队"
                   />
                   <Typography.Text type="secondary" className="at-leader-text">
@@ -494,6 +528,12 @@ export default function AgentTeamsCollaborationPage() {
                 }
               >
                 <Typography.Paragraph>{selectedTask.instruction}</Typography.Paragraph>
+                <Space size={[6, 6]} wrap>
+                  <Tag color="blue">{graph.current_round ? `第 ${graph.current_round} 轮` : '轮次：尚未产生'}</Tag>
+                  {(graph.selected_skill_ids ?? []).length > 0
+                    ? graph.selected_skill_ids?.map((skillId) => <Tag color="purple" key={skillId}>已选择 Skill：{skillId}</Tag>)
+                    : <Tag>已选择 Skill：尚未产生</Tag>}
+                </Space>
                 {taskLoading && <Typography.Text type="secondary">正在刷新服务端协作轨迹…</Typography.Text>}
                 <Row gutter={[16, 16]}>
                   <Col xs={24} lg={12}>
@@ -523,7 +563,13 @@ export default function AgentTeamsCollaborationPage() {
                 </Row>
               </Card>
 
-              <TimelinePanel events={events} messages={messages} selectedTaskId={selectedNodeId} />
+              <TimelinePanel
+                events={events}
+                messages={messages}
+                newEventIds={newEventIds}
+                selectedTaskId={selectedNodeId}
+                isRealMatrix={health?.transport === 'matrix'}
+              />
 
               {isTerminal(selectedTask.status) && (
                 <Card title="最终汇总" className="at-card at-final-result">

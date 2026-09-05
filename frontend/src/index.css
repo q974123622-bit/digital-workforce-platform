@@ -780,6 +780,12 @@ body {
   min-width: 0;
 }
 
+.at-timeline-event.at-new-evidence {
+  border-left: 3px solid #d48806;
+  padding-left: 8px;
+  background: #fffbe6;
+}
+
 .at-time {
   font-size: 12px;
 }
