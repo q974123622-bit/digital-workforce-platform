@@ -72,6 +72,73 @@ def test_matrix_verifier_uses_five_real_format_events_without_exposing_tokens():
     assert "secret" not in str(evidence).lower()
 
 
+def test_matrix_verifier_advances_each_cursor_and_accumulates_split_ping_batches():
+    """Dropping a per-account sync cursor loses pings when initial sync is state-limited."""
+    matrix = _load_script("verify_agentteams_matrix.py")
+    identities = {
+        "platform": MatrixIdentity("@platform:matrix.test", "platform-secret"),
+        "manager": MatrixIdentity("@manager:matrix.test", "manager-secret", "VE-0001", (), ()),
+        "hr": MatrixIdentity("@hr:matrix.test", "hr-secret", "VE-0002", (), ()),
+        "it": MatrixIdentity("@it:matrix.test", "it-secret", "VE-0003", (), ()),
+        "audit": MatrixIdentity("@audit:matrix.test", "audit-secret", "VE-0005", (), ()),
+    }
+    runtime = StrictRuntimeConfig("https://matrix.test", "!task9:matrix.test", identities["platform"], {name: identities[name] for name in ("manager", "hr", "it", "audit")}, "TEAM-ONBOARD", {})
+    sent: list[str] = []
+    initial_cursors: dict[str, str] = {}
+    incremental_cursors: dict[str, list[str]] = {name: [] for name in identities}
+
+    class _LimitedGateway:
+        def __init__(self, name, identity): self.name, self.identity, self.incremental = name, identity, 0
+        def whoami(self): return self.identity.mxid
+        def joined_members(self, _room): return {item.mxid for item in identities.values()}
+        def send_message(self, _room, _body):
+            event_id = f"$ping-{len(sent) + 1}"; sent.append(event_id); return event_id
+        def sync_messages(self, since, _rooms):
+            if since is None:
+                cursor = f"{self.name}-cursor-0"; initial_cursors[self.name] = cursor
+                return MatrixSyncBatch([MatrixEvent(f"$state-{self.name}", runtime.room_id, self.identity.mxid, "state", 0)], cursor)
+            incremental_cursors[self.name].append(since)
+            self.incremental += 1
+            batch_ids = sent[:2] if self.incremental == 1 else sent[2:]
+            return MatrixSyncBatch([MatrixEvent(event_id, runtime.room_id, self.identity.mxid, "ping", self.incremental) for event_id in batch_ids], f"{self.name}-cursor-{self.incremental}")
+        def close(self): pass
+
+    evidence = matrix.verify_matrix_environment(runtime, gateway_factory=lambda _runtime, identity: _LimitedGateway(next(name for name, item in identities.items() if item is identity), identity), pause=lambda _: None, sync_attempts=2)
+    assert evidence["ok"] is True
+    assert set(evidence["event_ids"].values()) == set(sent)
+    assert set(initial_cursors) == set(identities)
+    assert all(cursors == [f"{name}-cursor-0", f"{name}-cursor-1"] for name, cursors in incremental_cursors.items())
+    assert "secret" not in str(evidence).lower()
+
+
+def test_matrix_verifier_timeout_still_polls_every_account_after_cursor_snapshot():
+    """Breaking after the first missing account hides per-account Matrix visibility failures."""
+    matrix = _load_script("verify_agentteams_matrix.py")
+    identities = {
+        "platform": MatrixIdentity("@platform:matrix.test", "platform-secret"),
+        "manager": MatrixIdentity("@manager:matrix.test", "manager-secret", "VE-0001", (), ()),
+        "hr": MatrixIdentity("@hr:matrix.test", "hr-secret", "VE-0002", (), ()),
+        "it": MatrixIdentity("@it:matrix.test", "it-secret", "VE-0003", (), ()),
+        "audit": MatrixIdentity("@audit:matrix.test", "audit-secret", "VE-0005", (), ()),
+    }
+    runtime = StrictRuntimeConfig("https://matrix.test", "!task9:matrix.test", identities["platform"], {name: identities[name] for name in ("manager", "hr", "it", "audit")}, "TEAM-ONBOARD", {})
+    polled: list[str] = []
+
+    class _MissingGateway:
+        def __init__(self, name, identity): self.name, self.identity = name, identity
+        def whoami(self): return self.identity.mxid
+        def joined_members(self, _room): return {item.mxid for item in identities.values()}
+        def send_message(self, _room, _body): return f"$ping-{self.name}"
+        def sync_messages(self, since, _rooms):
+            if since is None: return MatrixSyncBatch([], f"{self.name}-cursor-0")
+            polled.append(self.name); return MatrixSyncBatch([], f"{self.name}-cursor-1")
+        def close(self): pass
+
+    evidence = matrix.verify_matrix_environment(runtime, gateway_factory=lambda _runtime, identity: _MissingGateway(next(name for name, item in identities.items() if item is identity), identity), pause=lambda _: None, sync_attempts=1)
+    assert evidence == {"ok": False, "accounts": [], "event_ids": {}, "reason": "matrix_sync_missing_verifier_events"}
+    assert set(polled) == set(identities)
+
+
 def test_real_smoke_evidence_rejects_non_strict_or_incomplete_persistence_without_bodies():
     smoke = _load_script("run_agentteams_real_smoke.py")
     detail = {"nodes": [

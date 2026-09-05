@@ -83,3 +83,24 @@ verification scripts remain independently commit-safe.
   `gateway=` seam, not the uncommitted local-demo `transport=` extension.
   The deterministic Matrix bus is therefore injected through the same strict
   Runner interface available in the clean Task 9 commit.
+
+## Matrix incremental-sync remediation
+
+- A live Synapse verification exposed a pagination boundary: an initial room
+  sync can be timeline-limited to membership/state events and therefore omit
+  verifier pings that were sent afterwards.  The verifier now snapshots a
+  per-account cursor before sending the five pings, then advances every
+  account through incremental syncs and accumulates visible event IDs across
+  attempts.  It does not stop polling later accounts when an earlier account
+  is still missing an ID.
+- Valid RED: the new split-batch fake transport returned state-only initial
+  syncs and two later ping batches.  Before the repair, the success assertion
+  failed and the timeout case showed that no incremental cursors were used.
+  After the repair, the verifier contract tests passed (`3 passed`) and the
+  full deterministic E2E file passed (`14 passed`).
+- Current-worktree focused regression passed `88 passed, 2 warnings`, which
+  includes excluded pre-existing local-demo regression files.  The strict
+  clean export at the remediation commit passed `14 passed, 1 warning` for the
+  deterministic E2E and `81 passed, 1 warning` for the strict E2E/Runner/Runtime
+  focus.  Those runs used an isolated checkout and the committed `gateway=`
+  seam only.

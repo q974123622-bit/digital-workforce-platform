@@ -23,3 +23,18 @@ contract.
 
 The clean export uses the committed strict Runner `gateway=` injection seam;
 it does not depend on the later untracked local-demo `transport=` extension.
+
+## Matrix incremental-sync remediation
+
+A live Synapse verification showed that initial room sync can be limited to
+state/member timeline entries and omit the later verifier pings.  The verifier
+therefore takes one cursor per account before sending its five pings, performs
+incremental sync from every cursor on every attempt, advances those cursors,
+and accumulates seen `$` IDs across batches.  It never breaks out before all
+five accounts have been polled.  The fake contract test covers a state-only
+initial sync, split later batches, cursor advancement, all-account timeout
+polling, and redacted evidence.  It was validly RED before the source change;
+the focused verifier contract then passed `3 passed` and the full deterministic
+E2E file passed `14 passed`.  The isolated clean export passed `14 passed` for
+that file and `81 passed` for strict E2E/Runner/Runtime, proving it uses no
+uncommitted local-demo transport files.

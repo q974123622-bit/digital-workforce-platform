@@ -65,6 +65,18 @@ def verify_matrix_environment(
         if set(members) != expected_mxids:
             return _safe_failure("room_membership_mismatch")
 
+        # A full initial sync can be timeline-limited to room state/member
+        # events.  Capture each account's cursor before adding verifier pings,
+        # then read only its incremental timeline afterwards.
+        cursors: dict[str, str] = {}
+        seen_by_account: dict[str, set[str]] = {name: set() for name in clients}
+        for name, client in clients.items():
+            initial = client.sync_messages(None, {runtime.room_id})
+            cursor = getattr(initial, "next_cursor", None)
+            if not isinstance(cursor, str) or not cursor:
+                raise ValueError("matrix_initial_sync_missing_cursor")
+            cursors[name] = cursor
+
         event_ids: dict[str, str] = {}
         for name, client in clients.items():
             event_id = client.send_message(
@@ -77,16 +89,19 @@ def verify_matrix_environment(
         expected_events = set(event_ids.values())
         for _ in range(max(1, sync_attempts)):
             all_seen = True
-            for client in clients.values():
-                batch = client.sync_messages(None, {runtime.room_id})
-                seen = {
+            for name, client in clients.items():
+                batch = client.sync_messages(cursors[name], {runtime.room_id})
+                cursor = getattr(batch, "next_cursor", None)
+                if not isinstance(cursor, str) or not cursor:
+                    raise ValueError("matrix_incremental_sync_missing_cursor")
+                cursors[name] = cursor
+                seen_by_account[name].update(
                     event.event_id
                     for event in getattr(batch, "events", [])
                     if event.room_id == runtime.room_id
-                }
-                if not expected_events.issubset(seen):
+                )
+                if not expected_events.issubset(seen_by_account[name]):
                     all_seen = False
-                    break
             if all_seen:
                 return {
                     "ok": True,
