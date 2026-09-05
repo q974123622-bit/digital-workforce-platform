@@ -66,3 +66,16 @@ requests return `task.result`, while root requests return `task.summary`,
 matching the real Runtime state machine.  It is regression evidence only and
 is excluded from the Task 9 commit; the strict production fixes, new test, and
 verification scripts remain independently commit-safe.
+
+## Review remediation
+
+- The real smoke script now emits only structured, whitelisted evidence.  It
+  validates that a final summary exists but reports `final_summary_present`
+  instead of any summary text, so Bearer/Basic credentials and JSON credential
+  fields cannot leak through an arbitrary service response.
+- The strict test suite now asserts persisted `$` Matrix IDs, injects a new
+  Matrix event that reuses a real protocol idempotency key and verifies no task
+  node/event/audit state is replayed, and exercises a required worker
+  `task.failed` message.  The failure contract is the current service behavior:
+  the failed required child, its root ancestor, and the TaskRun become failed;
+  a duplicate failure idempotency key adds no state events.

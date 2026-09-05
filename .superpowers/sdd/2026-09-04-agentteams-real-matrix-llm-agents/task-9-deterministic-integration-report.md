@@ -14,3 +14,9 @@ accounts, exact private membership, sent `$` IDs, and sync visibility; the
 smoke runner refuses local mode and reports redacted persisted acceptance
 evidence.  Live Synapse/DeepSeek/Matrix execution remains Task 10 acceptance,
 not a claim of this deterministic test.
+
+Review remediation keeps smoke output strictly whitelisted: it proves a final
+summary exists without outputting summary text.  The test suite additionally
+proves strict `$` IDs, new-event/protocol-key deduplication without state replay,
+and required-child failure propagation/deduplication under the existing service
+contract.

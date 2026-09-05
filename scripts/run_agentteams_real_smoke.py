@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -31,9 +30,6 @@ ACTOR_NO = os.environ.get("DWP_SMOKE_ACTOR_NO", "E10281")
 FIXED_GOAL = "评估新员工A是否可以按期入职。"
 TERMINAL = {"completed", "failed", "timed_out", "cancelled"}
 DEMO_DATA_BOUNDARY = "业务事实来自项目内演示数据；Matrix、DeepSeek、平台状态与审计需由本次严格验收确认。"
-_SENSITIVE_VALUE = re.compile(
-    r"(?i)\b(?:api[_-]?key|token|password|authorization|credential)\s*[:=]\s*\S+"
-)
 
 
 def _items(value: Any) -> list[dict[str, Any]]:
@@ -54,11 +50,6 @@ def _post(client: httpx.Client, path: str, payload: dict[str, Any]) -> Any:
 
 def _is_real_event_id(value: object) -> bool:
     return isinstance(value, str) and value.startswith("$") and len(value) > 1
-
-
-def _safe_summary(value: object) -> str:
-    """Keep the presentation summary useful without exposing accidental secrets."""
-    return _SENSITIVE_VALUE.sub("[REDACTED]", str(value or "")).strip()
 
 
 def _overlap(nodes: list[dict[str, Any]]) -> bool:
@@ -121,14 +112,18 @@ def build_evidence(
         "selected_skill_ids": skill_ids,
         "audit_ids": audit_ids,
         "rounds": rounds,
-        "summary": _safe_summary(result.get("summary")),
+        # The persisted final summary proves completion, but its arbitrary text
+        # is never an operator-script output channel.  Reporting only this
+        # whitelist boolean avoids credential-shaped data leaking through an
+        # unexpected model or service response.
+        "final_summary_present": bool(str(result.get("summary") or "").strip()),
         "data_boundary": DEMO_DATA_BOUNDARY,
         "missing_criteria": missing,
     }
 
 
 def _safe_empty(reason: str) -> dict[str, Any]:
-    return {"ok": False, "task_id": "", "participant_ids": [], "matrix_event_ids": [], "selected_skill_ids": [], "audit_ids": [], "rounds": [], "summary": "", "data_boundary": DEMO_DATA_BOUNDARY, "missing_criteria": [reason]}
+    return {"ok": False, "task_id": "", "participant_ids": [], "matrix_event_ids": [], "selected_skill_ids": [], "audit_ids": [], "rounds": [], "final_summary_present": False, "data_boundary": DEMO_DATA_BOUNDARY, "missing_criteria": [reason]}
 
 
 def main(argv: list[str] | None = None) -> int:

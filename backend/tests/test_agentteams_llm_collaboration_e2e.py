@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from app.services.agentteams_agent_runtime import AgentRuntime, AgentRuntimeConf
 from app.services.agentteams_collaboration import AgentTeamsCollaborationService
 from app.services.agentteams_decisions import AgentDecisionEngine, AgentDecisionError
 from app.services.agentteams_gateway import MatrixEvent, MatrixSyncBatch
-from app.services.agentteams_protocol import AgentProtocolMessage
+from app.services.agentteams_protocol import AgentProtocolMessage, render_protocol_line
 from app.services.agentteams_runtime_config import MatrixIdentity, StrictRuntimeConfig
 from app.services.agentteams_runner import AgentTeamsCollaborationRunner
 from app.services.agentteams_skills import ProjectSkillRegistry
@@ -163,6 +164,37 @@ def test_matrix_verifier_invalid_config_has_safe_nonzero_exit(monkeypatch, capsy
     assert "must-not-leak" not in output
 
 
+def test_real_smoke_evidence_redacts_bearer_basic_and_json_credentials():
+    """Changing the smoke output to pass through a service summary leaks credentials."""
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    secrets = {
+        "bearer-credential-42",
+        "basic-credential-42",
+        "json-token-42",
+        "access-token-42",
+        "password-42",
+        "secret-42",
+    }
+    summary = (
+        "authorization: Bearer bearer-credential-42; "
+        "Authorization: Basic basic-credential-42; "
+        '{"token":"json-token-42","access_token":"access-token-42",'
+        '"password":"password-42","secret":"secret-42"}'
+    )
+    evidence = smoke.build_evidence(
+        "AT-redaction",
+        {"ready_for_demo": True, "mode": "agentteams_strict", "transport": "matrix", "workers": [{"status": "ready"}] * 4},
+        {"nodes": [{"assignee_agent_id": "VE-0001", "depth": 0}, {"assignee_agent_id": "VE-0002", "depth": 1, "started_at": "2026-09-05T00:00:00", "finished_at": "2026-09-05T00:01:00"}, {"assignee_agent_id": "VE-0003", "depth": 1, "started_at": "2026-09-05T00:00:30", "finished_at": "2026-09-05T00:01:30"}, {"assignee_agent_id": "VE-0005", "depth": 2}]},
+        [{"event_type": "task.delegate", "detail": {"round": 1, "selected_skill_ids": ["agentteams-onboarding-readiness"]}}, {"event_type": "tool.result", "detail": {"audit_ids": [11, 12, 13]}}, {"event_type": "task.summarizing", "detail": {}}],
+        [{"matrix_event_id": "$event-1"}, {"matrix_event_id": "$event-2"}, {"matrix_event_id": "$event-3"}, {"matrix_event_id": "$event-4"}],
+        {"status": "completed", "summary": summary},
+    )
+
+    rendered = json.dumps(evidence)
+    assert evidence["ok"] is True
+    assert all(secret not in rendered for secret in secrets)
+
+
 def test_platform_transport_serializes_assignment_as_platform_sender(db_session):
     """The Matrix account, not a logical coordinator, authenticates platform outbox work."""
     service = AgentTeamsCollaborationService()
@@ -210,6 +242,96 @@ def test_worker_accepts_platform_signed_assignment_but_rejects_non_parent_sender
             runtime._new_worker_context(forged_assignment, ["hr-onboarding-assistant"])
     finally:
         runtime.close()
+
+
+def _activate_matrix_agent(db_session, agent_id, mxid):
+    employee = db_session.get(models.DigitalEmployee, agent_id)
+    employee.runtime_type, employee.runtime_ref, employee.status = "agentteams", mxid, "active"
+
+
+def _required_hr_delegate(run):
+    return AgentProtocolMessage(
+        version="1.0", message_id="MSG-task9-delegate", type="task.delegate",
+        root_task_id=run.id, task_id=run.id, parent_task_id=None, trace_id=run.trace_id,
+        sender="VE-0001", receiver="platform", timestamp="2026-09-05T00:00:00+00:00",
+        idempotency_key=f"{run.id}:delegate:hr", payload={
+            "selected_skill_ids": ["agentteams-onboarding-readiness"],
+            "subtasks": [{
+                "client_task_key": "hr-required", "title": "HR必需核查",
+                "instruction": "核查新员工A材料。", "assignee_agent_id": "VE-0002",
+                "required_capability": "agentteams-onboarding-employee", "depends_on": [],
+                "material": {}, "required": True,
+            }],
+        },
+    )
+
+
+def test_runner_records_new_matrix_event_but_deduplicates_reused_protocol_key(db_session, monkeypatch):
+    """Removing protocol-key reservation would replay a new Matrix event into a second task tree."""
+    monkeypatch.setenv("DWP_AGENTTEAMS_MATRIX_DOMAIN", "matrix.test")
+    mxids = {"platform": "@platform:matrix.test", "manager": "@manager:matrix.test", "hr": "@hr:matrix.test"}
+    _activate_matrix_agent(db_session, "VE-0001", mxids["manager"])
+    _activate_matrix_agent(db_session, "VE-0002", mxids["hr"])
+    service = AgentTeamsCollaborationService()
+    run = service.create_task(db_session, team_id="TEAM-ONBOARD", leader_agent_id="VE-0001", title="idempotency", instruction="评估新员工A是否可以按期入职。", material={})
+    run.owner_human_no = "E10281"
+    db_session.commit()
+    bus = _MatrixBus()
+    runner = AgentTeamsCollaborationRunner(service=service, transport=bus.endpoint(mxids["platform"]), room_id="!task9:matrix.test")
+    message = _required_hr_delegate(run)
+    protocol_line = render_protocol_line(message)
+    try:
+        bus.endpoint(mxids["manager"]).send_protocol_message("!task9:matrix.test", "delegate", protocol_line)
+        runner.tick_once(db_session)
+        db_session.commit()
+        before = {
+            "nodes": db_session.query(models.AgentTaskNode).filter_by(root_task_id=run.id).count(),
+            "events": db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id).count(),
+            "audits": db_session.query(models.AuditEvent).count(),
+        }
+        bus.events.append(MatrixEvent("$task9-reused-protocol-key", "!task9:matrix.test", mxids["manager"], protocol_line, len(bus.events) + 1))
+        runner.tick_once(db_session)
+        db_session.commit()
+    finally:
+        runner.close()
+
+    after = {
+        "nodes": db_session.query(models.AgentTaskNode).filter_by(root_task_id=run.id).count(),
+        "events": db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id).count(),
+        "audits": db_session.query(models.AuditEvent).count(),
+    }
+    assert after == before
+    duplicate = db_session.query(models.AgentMessage).filter_by(matrix_event_id="$task9-reused-protocol-key").one()
+    assert duplicate.message_type == "matrix.duplicate"
+
+
+def test_required_worker_failure_fails_ancestor_root_and_deduplicates(db_session, monkeypatch):
+    """Removing required-failure propagation would leave the root planning after an auditable worker failure."""
+    monkeypatch.setenv("DWP_AGENTTEAMS_MATRIX_DOMAIN", "matrix.test")
+    mxids = {"manager": "@manager:matrix.test", "hr": "@hr:matrix.test"}
+    _activate_matrix_agent(db_session, "VE-0001", mxids["manager"])
+    _activate_matrix_agent(db_session, "VE-0002", mxids["hr"])
+    service = AgentTeamsCollaborationService()
+    run = service.create_task(db_session, team_id="TEAM-ONBOARD", leader_agent_id="VE-0001", title="required failure", instruction="评估新员工A是否可以按期入职。", material={})
+    run.owner_human_no = "E10281"
+    service.apply_message(db_session, matrix_sender=mxids["manager"], message=_required_hr_delegate(run))
+    child = db_session.query(models.AgentTaskNode).filter_by(root_task_id=run.id, client_task_key="hr-required").one()
+    failure = AgentProtocolMessage(
+        version="1.0", message_id="MSG-task9-failed", type="task.failed", root_task_id=run.id,
+        task_id=child.id, parent_task_id=run.id, trace_id=run.trace_id, sender="VE-0002",
+        receiver="platform", timestamp="2026-09-05T00:01:00+00:00", idempotency_key=f"{child.id}:failed",
+        payload={"error_code": "tool_evidence_unavailable", "error_message": "governed evidence unavailable"},
+    )
+
+    service.apply_message(db_session, matrix_sender=mxids["hr"], message=failure)
+    first_event_count = db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id).count()
+    assert service.apply_message(db_session, matrix_sender=mxids["hr"], message=failure) == []
+
+    root = db_session.get(models.AgentTaskNode, run.id)
+    assert child.status == "failed"
+    assert root.status == "failed"
+    assert run.status == "failed"
+    assert db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id).count() == first_event_count
 
 
 class _ScriptedLLM(LLMProvider):
@@ -374,6 +496,7 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     assert db_session.query(models.AuditEvent).filter(models.AuditEvent.id.in_(audit_ids)).count() == len(audit_ids)
     messages = db_session.query(models.AgentMessage).filter_by(root_task_id=run.id).all()
     assert all(not str(message.matrix_event_id or "").startswith("local-") for message in messages)
+    assert any(str(message.matrix_event_id or "").startswith("$") for message in messages)
     # Replay does not reapply already-recorded Matrix protocol effects.
     completed_count = len([event for event in events if event.event_type == "task.completed"])
     runner.tick_once(db_session); db_session.commit()
