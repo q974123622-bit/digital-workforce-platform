@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 import pytest
+import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -56,6 +57,49 @@ def test_compose_mounts_a_real_read_only_synapse_log_configuration():
     assert "./log.config:/data/matrix.log.config:ro" in compose
     assert "handlers:" in contents
     assert "root:" in contents
+
+
+def test_compose_initializes_only_the_project_synapse_volume_before_running_as_synapse_user():
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+    init = compose["services"]["synapse-volume-init"]
+    synapse = compose["services"]["synapse"]
+
+    assert init["image"] == "matrixdotorg/synapse:v1.117.0"
+    assert init["user"] == "0:0"
+    assert init["restart"] == "no"
+    assert init["volumes"] == ["dwp-agentteams-synapse-data:/data"]
+    assert init["command"] == ["chown -R 991:991 /data && chmod 750 /data"]
+    assert "777" not in init["command"][0]
+    assert synapse["depends_on"]["synapse-volume-init"]["condition"] == "service_completed_successfully"
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_start_cleanup_preserves_the_original_startup_error_when_scoped_compose_down_fails():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        "function docker { "
+        "[Console]::WriteLine('docker=' + ($args -join ' ')); $global:LASTEXITCODE = 17 }; "
+        f". '{START.as_posix()}'; "
+        "try { try { throw 'startup-root-error' } finally { Stop-OwnedComposeProject } } "
+        "catch { [Console]::WriteLine('caught=' + $_.Exception.Message) }"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    docker_call = next(line for line in completed.stdout.splitlines() if line.startswith("docker="))
+    assert docker_call.startswith("docker=compose ")
+    assert "-p dwp-agentteams" in docker_call
+    assert "-f " in docker_call
+    assert docker_call.endswith(" down")
+    assert "caught=startup-root-error" in completed.stdout
 
 
 def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(tmp_path, capsys):

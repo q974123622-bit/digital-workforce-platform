@@ -67,6 +67,16 @@ function Write-ProcessRecord([object[]]$Processes,[string]$Status) {
     $temporary=Join-Path $runtimeDirectory ('.pids.'+[guid]::NewGuid().ToString('N')+'.tmp'); [IO.File]::WriteAllText($temporary,$payload,[Text.UTF8Encoding]::new($false)); Move-Item -LiteralPath $temporary -Destination $pidsPath -Force
 }
 function Stop-OnlyOwnedRecords([object[]]$Records) { foreach ($record in $Records) { if (Test-OwnedRecordedProcess $record) { Stop-Process -Id $record.process_id -Force -ErrorAction SilentlyContinue } } }
+function Stop-OwnedComposeProject {
+    try {
+        & docker compose -p dwp-agentteams -f $composeFile down 1>$null 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'Owned Synapse compose cleanup failed; preserving the original startup error.'
+        }
+    } catch {
+        Write-Warning 'Owned Synapse compose cleanup raised an error; preserving the original startup error.'
+    }
+}
 function Assert-NoExistingDemoProcesses {
     if (-not (Test-Path -LiteralPath $pidsPath)) { return }; try { $saved=Get-Content -LiteralPath $pidsPath -Raw|ConvertFrom-Json } catch { throw 'Invalid existing AgentTeams PID record; refusing duplicate start.' }
     if ($saved.status -eq 'running') { foreach ($record in @($saved.processes)) { if ($NoFrontend -and $record.name -eq 'frontend') { continue }; if (Test-OwnedRecordedProcess $record) { throw "An AgentTeams real-demo process is already running for this worktree (PID $($record.process_id))." } } }
@@ -85,4 +95,4 @@ try {
     & $python $bootstrap --runtime-dir $runtimeDirectory --matrix-url 'http://127.0.0.1:8008'; if ($LASTEXITCODE -ne 0) { throw 'Matrix account and private-room bootstrap failed.' }
     $records+=Start-OwnedProcess 'backend' $backend $python (Get-ExpectedArguments 'backend'); foreach ($role in 'manager','hr','it','audit') { $records+=Start-OwnedProcess $role $workspace $python (Get-ExpectedArguments $role) }; if (-not $NoFrontend) { $records+=Start-OwnedProcess 'frontend' (Join-Path $workspace 'frontend') (Get-ExpectedExecutable 'frontend') (Get-ExpectedArguments 'frontend') }
     Write-ProcessRecord $records 'running'; $success=$true; Write-Host "AgentTeams strict demo started: recorded $($records.Count) worktree-owned processes."
-} catch { try { Write-ProcessRecord @() 'failed' } catch {}; throw } finally { if (-not $success) { Stop-OnlyOwnedRecords $records; if ($ownedCompose) { & docker compose -p dwp-agentteams -f $composeFile down 1>$null 2>$null } } }
+} catch { try { Write-ProcessRecord @() 'failed' } catch {}; throw } finally { if (-not $success) { Stop-OnlyOwnedRecords $records; if ($ownedCompose) { Stop-OwnedComposeProject } } }

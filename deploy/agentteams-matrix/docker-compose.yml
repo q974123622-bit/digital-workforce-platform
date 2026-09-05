@@ -2,9 +2,21 @@
 name: dwp-agentteams
 
 services:
+  synapse-volume-init:
+    image: matrixdotorg/synapse:v1.117.0
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["chown -R 991:991 /data && chmod 750 /data"]
+    restart: "no"
+    volumes:
+      - dwp-agentteams-synapse-data:/data
+
   synapse:
     image: matrixdotorg/synapse:v1.117.0
     restart: unless-stopped
+    depends_on:
+      synapse-volume-init:
+        condition: service_completed_successfully
     environment:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
     ports:
