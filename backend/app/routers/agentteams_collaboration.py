@@ -342,59 +342,6 @@ def inspect_environment(db: Session) -> dict:
     return _strict_environment(db, enabled)
 
 
-def _legacy_inspect_environment(db: Session) -> dict:
-
-    workers = _worker_health(db)
-    platform_team = "ready" if db.scalar(select(models.Team.id).limit(1)) else "missing"
-    manager_mxid = config.get(config.AGENTTEAMS_MANAGER_MXID)
-    if not enabled:
-        return _normalise_health({
-            "mode": mode,
-            "enabled": False,
-            "matrix": "disabled",
-            "room": "disabled",
-            "manager": "configured" if _configured(manager_mxid) else "not_configured",
-            "platform_team": platform_team,
-            "workers": workers,
-        })
-
-    matrix_url = config.get(config.AGENTTEAMS_MATRIX_URL)
-    token = config.get(config.AGENTTEAMS_MATRIX_TOKEN)
-    user = config.get(config.AGENTTEAMS_ADMIN_USER)
-    password = config.get(config.AGENTTEAMS_ADMIN_PASSWORD)
-    room_id = config.get(config.AGENTTEAMS_ROOM_ID)
-    matrix_configured = _configured(matrix_url) and (
-        _configured(token) or (_configured(user) and _configured(password))
-    )
-
-    matrix = "not_configured"
-    room = "not_configured" if not _configured(room_id) else "unchecked"
-    matrix_room_ready = False
-    if matrix_configured and _configured(room_id):
-        gateway = AgentTeamsGateway()
-        try:
-            gateway_health = gateway.health(room_id.strip())
-        except Exception:
-            matrix = "unavailable"
-            room = "unavailable"
-        else:
-            matrix_room_ready = gateway_health.ok is True
-            matrix = "ready" if matrix_room_ready else "unavailable"
-            room = "ready" if matrix_room_ready else gateway_health.detail
-        finally:
-            gateway.close()
-
-    return _normalise_health({
-        "mode": mode,
-        "enabled": True,
-        "matrix": matrix,
-        "room": room,
-        "manager": "configured" if _configured(manager_mxid) else "not_configured",
-        "platform_team": platform_team,
-        "workers": workers,
-    })
-
-
 def _service() -> AgentTeamsCollaborationService:
     return AgentTeamsCollaborationService(
         max_depth=config.agentteams_max_depth(),
