@@ -1094,7 +1094,10 @@ class AgentTeamsCollaborationService:
             parent_task_id=parent.parent_task_id,
             message_type="task.summary",
             sender_agent_id="platform",
-            receiver_agent_id=parent.coordinator_agent_id,
+            # The assignee owns this node's runtime context and must combine
+            # its child results before returning a result to its coordinator.
+            # For the root node assignee and coordinator are the same Manager.
+            receiver_agent_id=parent.assignee_agent_id,
             body="All required child tasks are complete; submit a task.summary.",
             payload={
                 "request": "task.summary",

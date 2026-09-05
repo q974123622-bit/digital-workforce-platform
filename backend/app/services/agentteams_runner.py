@@ -345,7 +345,12 @@ class AgentTeamsCollaborationRunner:
             task_id=outbound.task_id,
             parent_task_id=outbound.parent_task_id,
             trace_id=run.trace_id if run is not None else outbound.root_task_id,
-            sender=outbound.sender_agent_id,
+            # Strict Matrix outbox work is transmitted by the platform account.
+            # Keep its logical coordinator in persisted message/event fields,
+            # but make this protocol sender match the Matrix event sender so
+            # Workers retain anti-spoofing.  Offline local_demo retains its
+            # deterministic compatibility envelope and is never real evidence.
+            sender="platform" if self.transport_mode == "agentteams_strict" else outbound.sender_agent_id,
             receiver=outbound.receiver_agent_id,
             timestamp=outbound.created_at.isoformat(),
             idempotency_key=outbound.idempotency_key,

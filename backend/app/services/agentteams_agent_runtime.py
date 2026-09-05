@@ -623,7 +623,15 @@ class AgentRuntime:
         parent_chain = message.payload.get("parent_chain_agent_ids")
         if not isinstance(parent_chain, list) or not parent_chain or any(not isinstance(item, str) or not item for item in parent_chain):
             raise AgentDecisionError("invalid_parent_chain")
-        if message.sender not in parent_chain or self.config.agent_id in parent_chain or len(parent_chain) != len(set(parent_chain)):
+        # The platform persistently signs and forwards assignments over Matrix;
+        # its authenticated protocol sender is therefore not itself a business
+        # ancestor.  A direct parent-agent envelope remains valid for protocol
+        # compatibility, while any other sender is rejected before planning.
+        if (
+            message.sender not in {"platform", *parent_chain}
+            or self.config.agent_id in parent_chain
+            or len(parent_chain) != len(set(parent_chain))
+        ):
             raise AgentDecisionError("invalid_parent_chain")
         catalog, version = self._fresh_team_catalog(message.payload)
         return {
