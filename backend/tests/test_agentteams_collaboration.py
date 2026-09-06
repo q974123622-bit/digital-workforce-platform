@@ -377,6 +377,7 @@ def test_required_children_trigger_parent_summarizing(db_session):
     assert summary_request.delivery_status == "pending"
     assert summary_request.payload["team_catalog_version"] == 3
     assert summary_request.payload["team_capability_catalog"]
+    assert summary_request.payload["existing_child_task_keys"] == ["policy"]
 
 
 def test_optional_child_failure_does_not_block_parent(db_session):

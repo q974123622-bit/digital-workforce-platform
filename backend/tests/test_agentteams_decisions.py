@@ -165,6 +165,42 @@ def test_manager_capability_feedback_is_specific_without_replaying_model_values(
     }]
 
 
+def test_manager_reused_existing_child_key_is_corrected_before_delegate(
+    fake_llm, registry, manager_context,
+):
+    context = manager_context.model_copy(update={"existing_child_task_keys": ["hr-check"]})
+    corrected = {
+        **VALID_MANAGER_PLAN,
+        "subtasks": [{**VALID_MANAGER_PLAN["subtasks"][0], "client_task_key": "hr-follow-up"}],
+    }
+    fake_llm.outputs = [VALID_MANAGER_PLAN, corrected]
+
+    decision = AgentDecisionEngine(fake_llm, registry).plan(context)
+
+    assert decision.subtasks[0].client_task_key == "hr-follow-up"
+    assert len(fake_llm.calls) == 2
+    feedback = fake_llm.calls[1][-1]["content"]
+    assert "hr-check" not in feedback
+    assert json.loads(feedback)["validation_errors"][0]["msg"] == (
+        "New client_task_key values must not reuse an existing child task key."
+    )
+
+
+def test_manager_all_optional_delegate_plan_fails_with_bounded_correction(
+    fake_llm, registry, manager_context,
+):
+    all_optional = {
+        **VALID_MANAGER_PLAN,
+        "subtasks": [{**VALID_MANAGER_PLAN["subtasks"][0], "required": False}],
+    }
+    fake_llm.outputs = [all_optional, all_optional]
+
+    with pytest.raises(AgentDecisionError, match="planning_failed"):
+        AgentDecisionEngine(fake_llm, registry).plan(manager_context)
+
+    assert len(fake_llm.calls) == 2
+
+
 def test_dynamic_validation_error_keeps_generic_feedback_without_replaying_value(
     fake_llm, registry, skill_context,
 ):

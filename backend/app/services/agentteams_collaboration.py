@@ -1104,6 +1104,11 @@ class AgentTeamsCollaborationService:
                 "request": "task.summary",
                 "parent_task_id": parent.id,
                 "child_results": self._safe_child_results(db, parent.id),
+                "existing_child_task_keys": list(db.scalars(
+                    select(models.AgentTaskNode.client_task_key)
+                    .where(models.AgentTaskNode.parent_task_id == parent.id)
+                    .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
+                )),
                 "current_round": coordination["round"],
                 "team_capability_catalog": catalog,
                 "team_catalog_version": catalog_version,

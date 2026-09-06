@@ -299,7 +299,7 @@ class AgentRuntime:
         }, 0)
         self._visible_pause()
         decision = self.decisions.plan(self._manager_context(
-            goal=goal, selected=selected, catalog=catalog, child_results=[], current_round=1, limits={}
+            goal=goal, selected=selected, catalog=catalog, child_results=[], existing_child_task_keys=[], current_round=1, limits={}
         ))
         self._remember_manager(state, message, goal, selected, catalog_version)
         return [skill_message, *self._manager_decision(message, decision, catalog, 1)]
@@ -317,6 +317,7 @@ class AgentRuntime:
         decision = self.decisions.plan(self._manager_context(
             goal=self._goal(message, stored.get("goal")), selected=selected, catalog=catalog,
             child_results=self._bounded_collection(message.payload.get("child_results")),
+            existing_child_task_keys=message.payload.get("existing_child_task_keys"),
             current_round=current_round, limits=message.payload.get("remaining_limits", {}),
         ))
         self._remember_manager(state, message, self._goal(message, stored.get("goal")), selected, catalog_version)
@@ -619,12 +620,14 @@ class AgentRuntime:
             for key, count in security.items()
         )
 
-    def _manager_context(self, *, goal, selected, catalog, child_results, current_round, limits) -> ManagerContext:
+    def _manager_context(self, *, goal, selected, catalog, child_results, existing_child_task_keys, current_round, limits) -> ManagerContext:
         safe_limits = limits if isinstance(limits, Mapping) else {}
         return ManagerContext(
             user_goal=goal, manager_skill_id="agentteams-manager-coordination", selected_skill_ids=selected,
             team_capability_catalog=[{"agent_id": key, **self._bounded_value(value)} for key, value in catalog.items()],
-            child_results=child_results, current_round=current_round,
+            child_results=child_results,
+            existing_child_task_keys=self._bounded_text_list(existing_child_task_keys, limit=20),
+            current_round=current_round,
             max_rounds=self._positive_int(safe_limits.get("rounds"), 3),
             max_children=self._positive_int(safe_limits.get("children"), 5),
             max_nodes=self._positive_int(safe_limits.get("nodes"), 20),

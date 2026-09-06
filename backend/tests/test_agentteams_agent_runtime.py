@@ -164,7 +164,7 @@ def test_manager_summary_can_follow_up_or_finish(tmp_path):
     engine.plans = [plan(), plan("summarize")]
     engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
     submit = message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload())
-    summary = message(type="task.summary", sender="platform", receiver="VE-0001", payload={"request": "task.summary", "child_results": [{"result": "ok"}], "current_round": 1, "remaining_limits": {"rounds": 3, "nodes": 18, "children": 5}, "team_capability_catalog": manager_payload()["team_capability_catalog"], "team_catalog_version": 2} , key="summary")
+    summary = message(type="task.summary", sender="platform", receiver="VE-0001", payload={"request": "task.summary", "child_results": [{"result": "ok"}], "existing_child_task_keys": ["hr-check", "it-check"], "current_round": 1, "remaining_limits": {"rounds": 3, "nodes": 18, "children": 5}, "team_capability_catalog": manager_payload()["team_capability_catalog"], "team_catalog_version": 2} , key="summary")
     gateway.events = [event(submit, event_id="$1", ts=1), event(summary, event_id="$2", ts=2)]
 
     subject.run_once()
@@ -173,6 +173,7 @@ def test_manager_summary_can_follow_up_or_finish(tmp_path):
     assert [item.type for item in sent] == ["agent.message", "task.delegate", "task.summary"]
     assert sent[-1].payload["summary"] == "可按期入职"
     assert engine.plan_contexts[-1].child_results == [{"result": "ok"}]
+    assert engine.plan_contexts[-1].existing_child_task_keys == ["hr-check", "it-check"]
 
 
 def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tmp_path):

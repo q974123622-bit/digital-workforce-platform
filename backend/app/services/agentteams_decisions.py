@@ -131,6 +131,7 @@ class ManagerContext(_StrictModel):
     selected_skill_ids: list[str] = Field(min_length=1)
     team_capability_catalog: list[dict[str, Any]] = Field(default_factory=list)
     child_results: list[dict[str, Any]] = Field(default_factory=list)
+    existing_child_task_keys: list[str] = Field(default_factory=list)
     current_round: int = Field(ge=1)
     max_rounds: int = Field(ge=1)
     max_children: int = Field(ge=1)
@@ -161,6 +162,8 @@ _BUSINESS_RULE_FEEDBACK = {
     "max_children_exceeded": "The delegate plan must not exceed the maximum child count.",
     "max_nodes_exceeded": "The delegate plan must not exceed the remaining node limit.",
     "duplicate_client_task_key": "Each client_task_key must be unique within a single delegate plan.",
+    "existing_client_task_key": "New client_task_key values must not reuse an existing child task key.",
+    "required_subtask_required": "A delegate plan must include at least one required subtask.",
     "duplicate_dependency": "Each dependency may appear only once for a subtask.",
     "self_dependency": "A subtask cannot depend on itself.",
     "unknown_dependency": "Each dependency must reference a subtask in the same delegate plan.",
@@ -222,13 +225,15 @@ class AgentDecisionEngine:
             "and capabilities only from the current team catalog. Within one delegate plan, every "
             "client_task_key must be unique; depends_on may reference only keys in that same batch "
             "and must be acyclic. Each assignee and required capability must exactly match the "
-            "current team catalog; do not assert unobserved facts.",
+            "current team catalog. New client_task_key values must not reuse an existing child task key; "
+            "do not assert unobserved facts.",
             {
                 "user_goal": context.user_goal,
                 "manager_runtime_skill": _skill_payload(manager_skill),
                 "selected_scenario_skills": [_skill_payload(skill) for skill in selected_skills],
                 "current_team_capability_catalog": context.team_capability_catalog,
                 "completed_direct_child_results": context.child_results,
+                "existing_child_task_keys": context.existing_child_task_keys,
                 "current_round": context.current_round,
                 "limits": {
                     "max_rounds": context.max_rounds,
@@ -411,6 +416,10 @@ def _validate_manager_delegate_plan(context: ManagerContext, subtasks: list[Plan
     by_key = {subtask.client_task_key: subtask for subtask in subtasks}
     if len(by_key) != len(subtasks):
         raise _DecisionValidationError("duplicate_client_task_key")
+    if set(by_key).intersection(context.existing_child_task_keys):
+        raise _DecisionValidationError("existing_client_task_key")
+    if not any(subtask.required for subtask in subtasks):
+        raise _DecisionValidationError("required_subtask_required")
     for subtask in subtasks:
         dependencies = set(subtask.depends_on)
         if len(dependencies) != len(subtask.depends_on):
