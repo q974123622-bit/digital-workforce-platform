@@ -28,6 +28,24 @@ def provider() -> DeepSeekProvider:
     return DeepSeekProvider(api_key="test-key", base_url="https://example.invalid", model="test")
 
 
+def test_deepseek_structured_output_adds_json_instruction_to_outbound_messages(monkeypatch):
+    captured_payload = {}
+
+    def capture_post(*_args, **kwargs):
+        captured_payload.update(kwargs["json"])
+        return StubResponse(data={"choices": [{"message": {"content": "{}"}}]})
+
+    monkeypatch.setattr(llm.httpx, "post", capture_post)
+
+    assert provider().structured_output(DEMO_MESSAGES, {"type": "object"}) == {}
+    assert captured_payload["response_format"] == {"type": "json_object"}
+    assert any(
+        "json" in message.get("content", "")
+        for message in captured_payload["messages"]
+    )
+    assert captured_payload["messages"][0] == {"role": "user", "content": "demo"}
+
+
 def test_deepseek_network_failure_has_safe_machine_code(monkeypatch):
     request = httpx.Request("POST", "https://example.invalid/chat/completions")
 

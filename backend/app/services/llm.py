@@ -194,10 +194,18 @@ class DeepSeekProvider(LLMProvider):
         return resp
 
     def structured_output(self, messages: list[dict], schema: dict) -> dict:
-        _assert_safemode(messages)
+        structured_messages = [
+            *messages,
+            {
+                "role": "system",
+                "content": "Return a valid json object.",
+                "source": "demo",
+            },
+        ]
+        _assert_safemode(structured_messages)
         payload: dict = {
             "model": self.model,
-            "messages": [{k: v for k, v in m.items() if k != "source"} for m in messages],
+            "messages": [{k: v for k, v in m.items() if k != "source"} for m in structured_messages],
             "response_format": {"type": "json_object"},
             "temperature": 0.1,
         }
