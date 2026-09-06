@@ -98,3 +98,29 @@ function Get-AgentTeamsVenvBasePython {
     $candidate = (($line -split '=', 2)[1]).Trim()
     return (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
 }
+
+function Test-AgentTeamsRecordMember {
+    param(
+        [Parameter(Mandatory = $true)][object]$Record,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($Record -is [Collections.IDictionary]) {
+        return $Record.Contains($Name)
+    }
+    return $null -ne $Record.PSObject.Properties[$Name]
+}
+
+function Get-AgentTeamsRecordMember {
+    param(
+        [Parameter(Mandatory = $true)][object]$Record,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($Record -is [Collections.IDictionary]) {
+        return $Record[$Name]
+    }
+    $property = $Record.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}

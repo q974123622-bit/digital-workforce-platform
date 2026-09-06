@@ -98,8 +98,8 @@ function Get-StartProvenProcessIds([object]$Record) {
     if ($Record.name -cne 'backend') { return @([int]$Record.process_id) }
     try {
         $actual=Get-OwnedBackendListenerRecord $Record
-        if ($null -ne $Record.PSObject.Properties['listener']) {
-            $recorded=$Record.listener
+        if (Test-AgentTeamsRecordMember $Record 'listener') {
+            $recorded=Get-AgentTeamsRecordMember $Record 'listener'
             if ([int]$actual.process_id -ne [int]$recorded.process_id -or [int]$actual.port -ne [int]$recorded.port -or [IO.Path]::GetFullPath([string]$actual.executable_path) -ine [IO.Path]::GetFullPath([string]$recorded.executable_path)) { return @() }
             if ([Math]::Abs(((ConvertTo-AgentTeamsUtcDateTime $actual.started_at)-(ConvertTo-AgentTeamsUtcDateTime $recorded.started_at)).TotalSeconds) -gt 2) { return @() }
             if ([int]$actual.process_id -ne [int]$Record.process_id -and [int]$recorded.parent_process_id -ne [int]$Record.process_id) { return @() }
@@ -107,7 +107,7 @@ function Get-StartProvenProcessIds([object]$Record) {
         if ([int]$actual.process_id -eq [int]$Record.process_id) { return @([int]$Record.process_id) }
         if ([int]$actual.parent_process_id -ne [int]$Record.process_id) { return @() }
         return @([int]$actual.process_id,[int]$Record.process_id)
-    } catch { return @() }
+    } catch { return @([int]$Record.process_id) }
 }
 function Stop-OnlyOwnedRecords([object[]]$Records) { foreach ($record in $Records) { foreach ($processId in @(Get-StartProvenProcessIds $record)) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue } } }
 function Stop-OwnedComposeProject {

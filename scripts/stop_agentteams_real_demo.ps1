@@ -72,8 +72,8 @@ function Get-ProvenRecordedProcessIds([object]$Record) {
     if ($Record.name -cne 'backend') { return @([int]$Record.process_id) }
     try {
         $actual=Get-CurrentOwnedBackendListenerRecord $Record
-        if ($null -ne $Record.PSObject.Properties['listener']) {
-            $recorded=$Record.listener
+        if (Test-AgentTeamsRecordMember $Record 'listener') {
+            $recorded=Get-AgentTeamsRecordMember $Record 'listener'
             if ($null -eq $recorded -or -not ($recorded.process_id -is [int] -or $recorded.process_id -is [long]) -or -not ($recorded.port -is [int] -or $recorded.port -is [long]) -or [int]$recorded.port -ne 8000 -or [string]::IsNullOrWhiteSpace($recorded.executable_path) -or [string]::IsNullOrWhiteSpace($recorded.started_at)) { return @() }
             if ([int]$actual.process_id -ne [int]$recorded.process_id -or [int]$actual.port -ne [int]$recorded.port -or [IO.Path]::GetFullPath([string]$actual.executable_path) -ine [IO.Path]::GetFullPath([string]$recorded.executable_path)) { return @() }
             if ([Math]::Abs(((ConvertTo-AgentTeamsUtcDateTime $actual.started_at)-(ConvertTo-AgentTeamsUtcDateTime $recorded.started_at)).TotalSeconds) -gt 2) { return @() }

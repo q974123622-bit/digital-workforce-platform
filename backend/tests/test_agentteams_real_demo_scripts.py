@@ -484,6 +484,58 @@ def test_legacy_launcher_only_record_can_prove_its_current_backend_listener_chil
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_startup_rollback_still_stops_a_proven_launcher_when_listener_probe_fails():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        "$rootStart = [DateTime]::UtcNow.AddSeconds(-1); $args = @(Get-ExpectedArguments 'backend'); "
+        "$line = ('\"' + $python + '\" ' + ($args -join ' ') + ' ' + $workspace); "
+        "$record = @{ name='backend'; process_id=[int]43001; executable_path=$python; working_directory=$backend; argv=$args; workspace=$workspace; started_at=$rootStart.ToString('o') }; "
+        "$global:rootProcess = [pscustomobject]@{ ProcessId=[int]43001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$line; CreationDate=$rootStart }; "
+        "function Get-CimInstance { return $global:rootProcess }; function Get-NetTCPConnection { return @() }; "
+        "$ids = @(Get-StartProvenProcessIds $record); [Console]::WriteLine($ids -join ',')"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "43001"
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_startup_rollback_reads_listener_metadata_from_the_real_hashtable_record_shape():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        "$rootStart = [DateTime]::UtcNow.AddSeconds(-2); $childStart = $rootStart.AddMilliseconds(300); $args = @(Get-ExpectedArguments 'backend'); "
+        "$line = ('\"' + $python + '\" ' + ($args -join ' ') + ' ' + $workspace); "
+        "$record = @{ name='backend'; process_id=[int]42001; executable_path=$python; working_directory=$backend; argv=$args; workspace=$workspace; started_at=$rootStart.ToString('o'); listener=@{ process_id=[int]49999; parent_process_id=[int]42001; executable_path='D:\\python\\python.exe'; started_at=$childStart.ToString('o'); port=[int]8000 } }; "
+        "$global:rootProcess = [pscustomobject]@{ ProcessId=[int]42001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$line; CreationDate=$rootStart }; "
+        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$line; CreationDate=$childStart }; "
+        "function Get-CimInstance { param($ClassName, $Filter); if ($Filter -match '42002') { return $global:childProcess }; return $global:rootProcess }; "
+        "function Get-NetTCPConnection { return [pscustomobject]@{ OwningProcess=[int]42002; LocalPort=[int]8000; State='Listen' } }; "
+        "$ids = @(Get-StartProvenProcessIds $record); [Console]::WriteLine($ids.Count)"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "0"
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
 def test_stop_proves_recorded_backend_listener_child_before_returning_exact_stop_order():
     command = (
         "$ErrorActionPreference = 'Stop'; "
