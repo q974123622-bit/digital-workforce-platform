@@ -115,7 +115,14 @@ def build_evidence(
     audit_ids = sorted({audit for event in events for audit in (event.get("detail", {}).get("audit_ids", []) if isinstance(event.get("detail"), dict) else []) if isinstance(audit, int) and audit > 0})
     participants = sorted({str(node.get("assignee_agent_id")) for node in nodes if node.get("assignee_agent_id")})
     depths = [node.get("depth") for node in nodes if isinstance(node.get("depth"), int)]
-    rounds = [event.get("detail", {}).get("round") for event in events if event.get("event_type") == "task.delegate" and isinstance(event.get("detail"), dict)]
+    rounds = [
+        round_number
+        for event in events
+        if event.get("event_type") == "task.delegate"
+        and isinstance(event.get("detail"), dict)
+        for round_number in [event["detail"].get("round")]
+        if isinstance(round_number, int) and not isinstance(round_number, bool) and round_number > 0
+    ]
     missing: list[str] = []
     if not (health.get("ready_for_demo") is True and health.get("mode") == "agentteams_strict" and health.get("transport") == "matrix"):
         missing.append("strict_matrix_health")

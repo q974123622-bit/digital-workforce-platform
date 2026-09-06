@@ -649,6 +649,12 @@ class AgentTeamsCollaborationService:
                 event_type = "tool.failed"
                 summary = "tool request failed"
 
+        catalog, catalog_version = self._next_catalog_snapshot(db, root, run.team_id)
+        result_payload = {
+            **result_payload,
+            "team_capability_catalog": catalog,
+            "team_catalog_version": catalog_version,
+        }
         self._queue_outbound(
             db,
             root_task_id=node.root_task_id,

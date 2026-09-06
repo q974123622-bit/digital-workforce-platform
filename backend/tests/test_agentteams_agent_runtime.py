@@ -277,7 +277,7 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
         member["mxid"] = f"@{member['agent_id'].lower()}:must-not-reach-model"
         member["token"] = "must-not-reach-model"
     assignment = message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=payload)
-    tool_result = message(type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1", payload={"ok": True, "audit_ids": [101], "data": {"source": "demo", "key": "drop", "note": "api_key: exposed password=hidden"}}, key="tool")
+    tool_result = message(type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1", payload={"ok": True, "audit_ids": [101], "data": {"source": "demo", "key": "drop", "note": "api_key: exposed password=hidden"}, "team_capability_catalog": manager_payload()["team_capability_catalog"], "team_catalog_version": 2}, key="tool")
     gateway.events = [event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1), event(tool_result, event_id="$tool", ts=2)]
 
     subject.run_once()
@@ -299,6 +299,80 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     saved = (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
     assert "exposed" not in saved and "password" not in saved and '"key"' not in saved
     assert "101" in saved
+
+
+def test_worker_refreshes_tool_result_catalog_before_delegating(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [
+        WorkerDecision(action="tool", tool_name="query_onboarding_employee", tool_arguments={}),
+        WorkerDecision(
+            action="delegate",
+            subtask=PlannedSubtask(
+                client_task_key="audit", title="审计复核", goal="核验审计证据",
+                required_capability="audit.evidence.read", assignee_agent_id="VE-0005", reason="缺少审计证据",
+            ),
+        ),
+    ]
+    assignment = message(
+        type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1",
+        payload=assign_payload(),
+    )
+    refreshed_catalog = [{
+        "agent_id": "VE-0005", "capabilities": ["audit.evidence.read"],
+    }]
+    tool_result = message(
+        type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1",
+        payload={
+            "ok": True, "audit_ids": [101], "team_capability_catalog": refreshed_catalog,
+            "team_catalog_version": 2,
+        },
+        key="refreshed-tool",
+    )
+    gateway.events = [
+        event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1),
+        event(tool_result, event_id="$tool", ts=2),
+    ]
+
+    assert subject.run_once() == 2
+
+    assert sent_protocols(gateway)[-1].type == "task.delegate"
+    assert engine.worker_contexts[-1].current_team_capability_catalog == refreshed_catalog
+    assert subject._state["tasks"]["task-1"]["team_catalog_version"] == 2
+
+
+@pytest.mark.parametrize("stale_version", [1, 0])
+def test_worker_rejects_stale_or_invalid_tool_result_catalog(tmp_path, stale_version):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [
+        WorkerDecision(action="tool", tool_name="query_onboarding_employee", tool_arguments={}),
+        WorkerDecision(action="complete", result="must not use stale authority"),
+    ]
+    assignment_payload = assign_payload()
+    assignment_payload["team_catalog_version"] = 1
+    assignment = message(
+        type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1",
+        payload=assignment_payload,
+    )
+    tool_result = message(
+        type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1",
+        payload={
+            "ok": True, "audit_ids": [101],
+            "team_capability_catalog": manager_payload()["team_capability_catalog"],
+            "team_catalog_version": stale_version,
+        },
+        key=f"stale-tool-{stale_version}",
+    )
+    gateway.events = [
+        event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1),
+        event(tool_result, event_id="$tool", ts=2),
+    ]
+
+    assert subject.run_once() == 2
+
+    assert sent_protocols(gateway)[-1].type == "task.failed"
+    assert sent_protocols(gateway)[-1].payload == {"error_code": "invalid_team_catalog"}
 
 
 def test_cli_loaded_tool_catalog_controls_runtime_tool_requests(tmp_path):

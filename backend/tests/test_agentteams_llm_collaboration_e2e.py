@@ -160,6 +160,38 @@ def test_real_smoke_evidence_rejects_non_strict_or_incomplete_persistence_withou
     assert "token" not in str(evidence).lower()
 
 
+def test_real_smoke_does_not_count_null_as_a_delegation_round():
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    health = {
+        "ready_for_demo": True,
+        "mode": "agentteams_strict",
+        "transport": "matrix",
+        "workers": [{"status": "ready"}] * 4,
+    }
+    detail = {"nodes": [
+        {"id": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0},
+        {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1, "started_at": "2026-09-05T00:00:00", "finished_at": "2026-09-05T00:01:00"},
+        {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1, "started_at": "2026-09-05T00:00:30", "finished_at": "2026-09-05T00:01:30"},
+        {"id": "audit", "parent_task_id": "hr", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0002", "depth": 2},
+    ]}
+    events = [
+        {"event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": None, "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
+        {"event_type": "task.delegate", "task_id": "hr", "actor_agent_id": "VE-0002", "detail": {}},
+        {"event_type": "tool.result", "detail": {"audit_ids": [11, 12, 13]}},
+        {"event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {}},
+    ]
+
+    evidence = smoke.build_evidence(
+        "AT-null-round", health, detail, events,
+        [{"matrix_event_id": f"$event-{index}"} for index in range(1, 5)],
+        {"status": "completed", "summary": "done"},
+    )
+
+    assert evidence["ok"] is False
+    assert evidence["rounds"] == []
+    assert "delegation_round" in evidence["missing_criteria"]
+
+
 def test_real_smoke_exits_safely_when_the_started_api_is_not_strict(monkeypatch, capsys):
     """The real-only script must reject a local API rather than silently demo it."""
     smoke = _load_script("run_agentteams_real_smoke.py")

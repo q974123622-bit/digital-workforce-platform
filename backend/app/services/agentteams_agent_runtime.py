@@ -374,7 +374,7 @@ class AgentRuntime:
         context = state["tasks"].get(message.task_id)
         if not isinstance(context, dict):
             raise AgentDecisionError("decision_failed")
-        if evidence_kind == "child.summary":
+        if evidence_kind in {"child.summary", "tool.result"}:
             catalog, version = self._fresh_team_catalog(message.payload, previous_version=context.get("team_catalog_version"))
             context["team_catalog"] = catalog
             context["team_catalog_version"] = version

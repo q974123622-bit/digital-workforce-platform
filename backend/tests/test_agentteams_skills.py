@@ -158,8 +158,8 @@ def test_registry_requires_each_frontmatter_field(tmp_path):
         ),
         (
             "employee-collaboration",
-            ("Tool", "Ask", "Delegate", "Handoff", "父链", "能力目录", "等待子任务结果"),
-            ("VE-",),
+            ("Tool", "Ask", "Delegate", "Complete", "Fail", "父链", "能力目录", "等待子任务结果"),
+            ("VE-", "Handoff"),
         ),
         (
             "hr-onboarding-assistant",
