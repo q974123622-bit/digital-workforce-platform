@@ -26,23 +26,35 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from app.services.agentteams_runtime_config import require_safe_path
+from app.services.agentteams_runtime_config import demo_employee_ref_input_schema, require_safe_path
 DEFAULT_MATRIX_URL = "http://127.0.0.1:8008"
 TEAM_ID = "TEAM-ONBOARD"
 ACCOUNT_NAMES = ("platform", "manager", "hr", "it", "audit")
+
+
+def _demo_tool(name: str, plugin_id: str, required_capability: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "plugin_id": plugin_id,
+        "action": "execute",
+        "required_capability": required_capability,
+        "input_schema": demo_employee_ref_input_schema(),
+    }
+
+
 ROLE_IDENTITIES = {
     "manager": {"agent_id": "VE-0001", "skill": "agentteams-onboarding-readiness", "tools": []},
     "hr": {
         "agent_id": "VE-0002", "skill": "hr-onboarding-assistant",
-        "tools": [{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "agentteams-onboarding-employee", "action": "execute", "required_capability": "hr.onboarding.read"}],
+        "tools": [_demo_tool("agentteams.hr.lookup_onboarding", "agentteams-onboarding-employee", "hr.onboarding.read")],
     },
     "it": {
         "agent_id": "VE-0003", "skill": "it-service-assistant",
-        "tools": [{"name": "agentteams.it.lookup_readiness", "plugin_id": "agentteams-it-readiness", "action": "execute", "required_capability": "it.readiness.read"}],
+        "tools": [_demo_tool("agentteams.it.lookup_readiness", "agentteams-it-readiness", "it.readiness.read")],
     },
     "audit": {
         "agent_id": "VE-0005", "skill": "audit-evidence-review",
-        "tools": [{"name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "audit.evidence.read"}],
+        "tools": [_demo_tool("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read")],
     },
 }
 TEAM_CATALOG = {

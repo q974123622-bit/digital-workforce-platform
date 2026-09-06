@@ -1,11 +1,18 @@
 import json
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 from . import models
 from .database import DATABASE_URL, Base, SessionLocal, engine
 
 SEED_PATH = Path(__file__).resolve().parents[2] / "mock-data" / "seed.json"
+_STRICT_DEMO_ROLE_PLUGINS = {
+    "manager": ("VE-0001", ()),
+    "hr": ("VE-0002", ("agentteams-onboarding-employee",)),
+    "it": ("VE-0003", ("agentteams-it-readiness",)),
+    "audit": ("VE-0005", ("agentteams-onboarding-evidence",)),
+}
 
 
 def load_seed() -> dict:
@@ -77,6 +84,99 @@ def seed_if_empty() -> None:
             seed_data(db, load_seed())
     finally:
         db.close()
+
+
+def sync_strict_runtime_demo_tools(db, runtime) -> None:
+    """Additively synchronize only the strict demo Tools named by the runtime.
+
+    The checked-in seed remains the plugin/grant authority.  Runtime entries
+    must match it exactly before any database row is changed, so an invented
+    plugin, mismatched employee, or drifted input contract fails closed.
+    """
+    plugin_rows, grant_rows = _strict_runtime_demo_seed_records(runtime)
+
+    existing_plugins = {
+        plugin_id: db.get(models.Plugin, plugin_id)
+        for plugin_id in plugin_rows
+    }
+    existing_grants = {}
+    for key in grant_rows:
+        employee_id, plugin_id = key
+        matches = db.query(models.EmployeePluginGrant).filter_by(
+            employee_id=employee_id,
+            plugin_id=plugin_id,
+        ).all()
+        if len(matches) > 1:
+            raise ValueError("invalid_strict_runtime")
+        existing_grants[key] = matches[0] if matches else None
+
+    for plugin_id, row in plugin_rows.items():
+        plugin = existing_plugins[plugin_id]
+        if plugin is None:
+            db.add(models.Plugin(**deepcopy(row)))
+            continue
+        for field in (
+            "name", "type", "endpoint_ref", "data_level", "status", "description", "runtime_meta",
+        ):
+            setattr(plugin, field, deepcopy(row[field]))
+
+    for key, row in grant_rows.items():
+        grant = existing_grants[key]
+        if grant is None:
+            db.add(models.EmployeePluginGrant(**deepcopy(row)))
+            continue
+        grant.action = row["action"]
+        grant.decision_mode = row["decision_mode"]
+    db.commit()
+
+
+def _strict_runtime_demo_seed_records(runtime) -> tuple[dict[str, dict], dict[tuple[str, str], dict]]:
+    if set(runtime.agents) != set(_STRICT_DEMO_ROLE_PLUGINS):
+        raise ValueError("invalid_strict_runtime")
+
+    seed = load_seed()
+    seed_plugins: dict[str, list[dict]] = {}
+    for row in seed.get("plugins", []):
+        if isinstance(row, dict) and isinstance(row.get("id"), str):
+            seed_plugins.setdefault(row["id"], []).append(row)
+    seed_grants = [row for row in seed.get("employee_plugin_grants", []) if isinstance(row, dict)]
+
+    selected_plugins: dict[str, dict] = {}
+    selected_grants: dict[tuple[str, str], dict] = {}
+    for role, (expected_employee_id, expected_plugin_ids) in _STRICT_DEMO_ROLE_PLUGINS.items():
+        identity = runtime.agents[role]
+        if identity.agent_id != expected_employee_id:
+            raise ValueError("invalid_strict_runtime")
+        tools = list(identity.safe_tool_catalog)
+        if tuple(tool.get("plugin_id") for tool in tools) != expected_plugin_ids:
+            raise ValueError("invalid_strict_runtime")
+        for tool in tools:
+            plugin_id = tool["plugin_id"]
+            candidates = seed_plugins.get(plugin_id, [])
+            if len(candidates) != 1:
+                raise ValueError("invalid_strict_runtime")
+            plugin_row = candidates[0]
+            runtime_meta = plugin_row.get("runtime_meta")
+            if (
+                not isinstance(runtime_meta, dict)
+                or runtime_meta.get("input_schema") != tool.get("input_schema")
+                or tool.get("action") not in runtime_meta.get("actions", [])
+            ):
+                raise ValueError("invalid_strict_runtime")
+            matching_grants = [
+                row for row in seed_grants
+                if row.get("employee_id") == identity.agent_id
+                and row.get("plugin_id") == plugin_id
+            ]
+            if (
+                len(matching_grants) != 1
+                or matching_grants[0].get("action") != tool.get("action")
+                or matching_grants[0].get("decision_mode") != "allow"
+            ):
+                raise ValueError("invalid_strict_runtime")
+            selected_plugins[plugin_id] = plugin_row
+            selected_grants[(identity.agent_id, plugin_id)] = matching_grants[0]
+    return selected_plugins, selected_grants
 
 
 def sync_strict_runtime_bindings(db, runtime) -> None:

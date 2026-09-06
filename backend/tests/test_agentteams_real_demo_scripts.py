@@ -324,6 +324,18 @@ def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(t
     assert runtime["agents"]["manager"]["allowed_skill_ids"] == ["agentteams-onboarding-readiness"]
     assert runtime["agents"]["manager"]["safe_tool_catalog"] == []
     assert all(runtime["agents"][role]["safe_tool_catalog"] for role in ("hr", "it", "audit"))
+    expected_schema = {
+        "type": "object",
+        "required": ["employee_ref"],
+        "properties": {
+            "employee_ref": {"type": "string", "const": "新员工A", "maxLength": 16},
+        },
+        "additionalProperties": False,
+    }
+    assert {
+        role: runtime["agents"][role]["safe_tool_catalog"][0]["input_schema"]
+        for role in ("hr", "it", "audit")
+    } == {role: expected_schema for role in ("hr", "it", "audit")}
     assert set(runtime["team_catalog"]) == {"VE-0002", "VE-0003", "VE-0005"}
 
     from app.services.agentteams_runtime_config import load_strict_runtime_config
@@ -331,6 +343,7 @@ def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(t
     loaded = load_strict_runtime_config(target, environ={})
     assert loaded.team_id == "TEAM-ONBOARD"
     assert set(loaded.agents) == {"manager", "hr", "it", "audit"}
+    assert loaded.agents["hr"].safe_tool_catalog[0]["input_schema"] == expected_schema
     rendered = target.read_text(encoding="utf-8")
     output = capsys.readouterr().out
     assert "secret-" not in output

@@ -21,7 +21,7 @@ from .routers import (
     teams,
     workplace,
 )
-from .seed import seed_if_empty, sync_strict_runtime_bindings
+from .seed import seed_if_empty, sync_strict_runtime_bindings, sync_strict_runtime_demo_tools
 from .services import config
 from .services.agentteams_runner import AgentTeamsCollaborationRunner
 from .services.agentteams_runtime_config import load_strict_runtime_config
@@ -62,6 +62,7 @@ async def lifespan(_: FastAPI):
             if runtime is not None:
                 db = SessionLocal()
                 try:
+                    sync_strict_runtime_demo_tools(db, runtime)
                     sync_strict_runtime_bindings(db, runtime)
                 finally:
                     db.close()

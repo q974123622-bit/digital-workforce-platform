@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.services.agentteams_decisions import (
+    AgentDecisionEngine,
     AgentDecisionError,
     FinalSummary,
     ManagerDecision,
@@ -13,10 +14,11 @@ from app.services.agentteams_decisions import (
     SkillSelection,
     WorkerDecision,
 )
+from app.services.agentteams_skills import ProjectSkillRegistry
 from app.services.agentteams_gateway import MatrixEvent, MatrixSyncBatch
 from app.services.agentteams_protocol import AgentProtocolMessage, parse_protocol_lines, render_protocol_line
 from app.services.agentteams_agent_runtime import AgentRuntime, AgentRuntimeConfig
-from app.services.llm import LLMUnavailableError
+from app.services.llm import LLMProvider, LLMUnavailableError
 
 
 class FakeGateway:
@@ -301,6 +303,86 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     assert "101" in saved
 
 
+def test_worker_prompt_receives_tool_input_schema_and_exact_arguments_reach_tool_request(tmp_path):
+    """Dropping the schema from the real Worker catalog must break this outbound behavior."""
+    class CapturingLLM(LLMProvider):
+        def __init__(self):
+            self.outputs = [
+                {"selected_skill_ids": ["hr-onboarding-assistant"]},
+                {
+                    "action": "tool",
+                    "tool_name": "agentteams.hr.lookup_onboarding",
+                    "tool_arguments": {"employee_ref": "新员工A"},
+                },
+            ]
+            self.calls = []
+
+        def structured_output(self, messages, schema):
+            self.calls.append(messages)
+            return self.outputs.pop(0)
+
+        def chat(self, messages, tools=None):  # pragma: no cover - wrong boundary
+            raise AssertionError("runtime decisions must use structured_output")
+
+        def tool_call(self, messages, tools):  # pragma: no cover - wrong boundary
+            raise AssertionError("runtime decisions must use structured_output")
+
+    input_schema = {
+        "type": "object",
+        "required": ["employee_ref"],
+        "properties": {
+            "employee_ref": {"type": "string", "const": "新员工A", "maxLength": 16},
+        },
+        "additionalProperties": False,
+    }
+    gateway = FakeGateway()
+    provider = CapturingLLM()
+    decisions = AgentDecisionEngine(
+        provider,
+        ProjectSkillRegistry.from_root(Path(__file__).resolve().parents[2]),
+    )
+    config = AgentRuntimeConfig(
+        agent_id="VE-0002",
+        role="hr",
+        matrix_mxid=MXIDS["VE-0002"],
+        matrix_token="never-persist",
+        room_id="!team:local",
+        trusted_sender_mxids=MXIDS,
+        allowed_skill_ids={"hr-onboarding-assistant"},
+        team_catalog=TEAM,
+        safe_tool_catalog=[{
+            "name": "agentteams.hr.lookup_onboarding",
+            "plugin_id": "agentteams-onboarding-employee",
+            "action": "execute",
+            "required_capability": "hr.onboarding.read",
+            "input_schema": input_schema,
+        }],
+        state_dir=tmp_path / "state",
+        pause_seconds=0,
+    )
+    assignment = message(
+        type="task.assign",
+        sender="VE-0001",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload=assign_payload(),
+    )
+    gateway.events = [event(assignment, sender=MXIDS["VE-0001"])]
+
+    assert AgentRuntime(config, gateway, decisions, pause=lambda _seconds: None).run_once() == 1
+
+    worker_payload = next(
+        json.loads(message["content"])
+        for message in provider.calls[1]
+        if '"safe_tool_catalog"' in message["content"]
+    )
+    assert worker_payload["safe_tool_catalog"][0]["input_schema"] == input_schema
+    request = sent_protocols(gateway)[-1]
+    assert request.type == "tool.request"
+    assert request.payload["plugin_id"] == "agentteams-onboarding-employee"
+    assert request.payload["params"] == {"employee_ref": "新员工A"}
+
+
 def test_worker_refreshes_tool_result_catalog_before_delegating(tmp_path):
     subject, gateway, engine, _ = runtime(tmp_path, role="hr")
     engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
@@ -377,9 +459,18 @@ def test_worker_rejects_stale_or_invalid_tool_result_catalog(tmp_path, stale_ver
 
 def test_cli_loaded_tool_catalog_controls_runtime_tool_requests(tmp_path):
     from scripts.run_agentteams_agent import load_runtime_config
+
+    input_schema = {
+        "type": "object",
+        "required": ["employee_ref"],
+        "properties": {
+            "employee_ref": {"type": "string", "const": "新员工A", "maxLength": 16},
+        },
+        "additionalProperties": False,
+    }
     agents = {}
     for role, agent_id, mxid, skill in (("manager", "VE-0001", MXIDS["VE-0001"], "agentteams-onboarding-readiness"), ("hr", "VE-0002", MXIDS["VE-0002"], "hr-onboarding-assistant"), ("it", "VE-0003", MXIDS["VE-0003"], "it-service-assistant"), ("audit", "VE-0005", MXIDS["VE-0005"], "audit-evidence-review")):
-        agents[role] = {"agent_id": agent_id, "mxid": mxid, "token": role + "-token", "allowed_skill_ids": [skill], "safe_tool_catalog": ([{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "hr-employee-mcp", "action": "read", "required_capability": "hr.onboarding.read"}] if role == "hr" else [])}
+        agents[role] = {"agent_id": agent_id, "mxid": mxid, "token": role + "-token", "allowed_skill_ids": [skill], "safe_tool_catalog": ([{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "hr-employee-mcp", "action": "read", "required_capability": "hr.onboarding.read", "input_schema": input_schema}] if role == "hr" else [])}
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps({"matrix_url": "https://matrix.test", "room_id": "!team:local", "team_id": "TEAM-X", "platform": {"mxid": MXIDS["platform"], "token": "platform-token"}, "agents": agents, "team_catalog": TEAM}), encoding="utf-8")
     config, _ = load_runtime_config("hr", path, env={"DEEPSEEK_API_KEY_HR": "x", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})

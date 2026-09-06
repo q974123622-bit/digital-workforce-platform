@@ -7,19 +7,38 @@ need observability use :meth:`StrictRuntimeConfig.public_view` instead.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import re
 import stat
-from typing import Mapping
+from typing import Any, Mapping
 
 
 _ROLES = ("manager", "hr", "it", "audit")
 _MAX_RUNTIME_CONFIG_BYTES = 65_536
+_MAX_TOOL_INPUT_SCHEMA_BYTES = 2_048
+_MAX_TOOL_SCHEMA_PROPERTIES = 8
+_MAX_TOOL_SCHEMA_TEXT = 128
 _SAFE_AGENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}")
+_SENSITIVE_SCHEMA_FIELD = re.compile(r"token|secret|password", re.I)
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
+
+_DEMO_EMPLOYEE_REF_INPUT_SCHEMA = {
+    "type": "object",
+    "required": ["employee_ref"],
+    "properties": {
+        "employee_ref": {"type": "string", "const": "新员工A", "maxLength": 16},
+    },
+    "additionalProperties": False,
+}
+
+
+def demo_employee_ref_input_schema() -> dict[str, Any]:
+    """Return an isolated copy of the strict demo's single bounded input contract."""
+    return deepcopy(_DEMO_EMPLOYEE_REF_INPUT_SCHEMA)
 
 
 @dataclass(frozen=True)
@@ -28,7 +47,7 @@ class MatrixIdentity:
     token: str
     agent_id: str | None = None
     allowed_skill_ids: tuple[str, ...] = ()
-    safe_tool_catalog: tuple[dict[str, str], ...] = ()
+    safe_tool_catalog: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,12 +192,14 @@ def _string_list(value: object, *, maximum: int, required: bool) -> tuple[str, .
     return values
 
 
-def _tool_catalog(value: object, *, required: bool) -> tuple[dict[str, str], ...]:
+def _tool_catalog(value: object, *, required: bool) -> tuple[dict[str, Any], ...]:
     if not isinstance(value, list) or len(value) > 32:
         raise ValueError("invalid_runtime_config")
     result = []
     for item in value:
-        if not isinstance(item, dict) or set(item) - {"name", "plugin_id", "action", "required_capability"}:
+        if not isinstance(item, dict) or set(item) - {
+            "name", "plugin_id", "action", "required_capability", "input_schema",
+        }:
             raise ValueError("invalid_runtime_config")
         normalized = {key: _text(item.get(key)) for key in ("name", "plugin_id", "action", "required_capability")}
         if "action" not in item:
@@ -189,7 +210,77 @@ def _tool_catalog(value: object, *, required: bool) -> tuple[dict[str, str], ...
             raise ValueError("invalid_runtime_config")
         if any("token" in key.lower() or "secret" in key.lower() or "password" in key.lower() for key in item):
             raise ValueError("invalid_runtime_config")
+        normalized["input_schema"] = _tool_input_schema(item.get("input_schema"))
         result.append(normalized)
     if len({item["name"] for item in result}) != len(result):
         raise ValueError("invalid_runtime_config")
     return tuple(result)
+
+
+def _tool_input_schema(value: object) -> dict[str, Any]:
+    """Validate the intentionally small JSON-Schema subset exposed to demo Workers."""
+    if not isinstance(value, dict):
+        raise ValueError("invalid_runtime_config")
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError):
+        raise ValueError("invalid_runtime_config") from None
+    if len(encoded) > _MAX_TOOL_INPUT_SCHEMA_BYTES or set(value) != {
+        "type", "required", "properties", "additionalProperties",
+    }:
+        raise ValueError("invalid_runtime_config")
+    if value.get("type") != "object" or value.get("additionalProperties") is not False:
+        raise ValueError("invalid_runtime_config")
+
+    required = value.get("required")
+    properties = value.get("properties")
+    if (
+        not isinstance(required, list)
+        or not required
+        or len(required) > _MAX_TOOL_SCHEMA_PROPERTIES
+        or not isinstance(properties, dict)
+        or not properties
+        or len(properties) > _MAX_TOOL_SCHEMA_PROPERTIES
+    ):
+        raise ValueError("invalid_runtime_config")
+    if any(
+        not isinstance(field_name, str)
+        or not field_name
+        or len(field_name) > 64
+        or _SENSITIVE_SCHEMA_FIELD.search(field_name)
+        for field_name in required
+    ):
+        raise ValueError("invalid_runtime_config")
+    if len(required) != len(set(required)) or set(required) != set(properties):
+        raise ValueError("invalid_runtime_config")
+
+    normalized_properties: dict[str, dict[str, Any]] = {}
+    for field_name in required:
+        field_schema = properties.get(field_name)
+        if not isinstance(field_schema, dict) or set(field_schema) != {"type", "const", "maxLength"}:
+            raise ValueError("invalid_runtime_config")
+        const = field_schema.get("const")
+        maximum = field_schema.get("maxLength")
+        if (
+            field_schema.get("type") != "string"
+            or not isinstance(const, str)
+            or not const
+            or len(const) > _MAX_TOOL_SCHEMA_TEXT
+            or isinstance(maximum, bool)
+            or not isinstance(maximum, int)
+            or maximum < 1
+            or maximum > _MAX_TOOL_SCHEMA_TEXT
+            or len(const) > maximum
+        ):
+            raise ValueError("invalid_runtime_config")
+        normalized_properties[field_name] = {
+            "type": "string",
+            "const": const,
+            "maxLength": maximum,
+        }
+    return {
+        "type": "object",
+        "required": list(required),
+        "properties": normalized_properties,
+        "additionalProperties": False,
+    }
