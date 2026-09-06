@@ -50,11 +50,38 @@ function Test-OwnedRecordedProcess([object]$Record) {
     $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($Record.process_id)" -ErrorAction SilentlyContinue
     if ($null -eq $process -or [string]::IsNullOrWhiteSpace($process.CommandLine) -or [string]::IsNullOrWhiteSpace($process.ExecutablePath) -or [string]::IsNullOrWhiteSpace($process.CreationDate)) { return $false }
     try {
-        $recordedStart=[DateTime]::Parse([string]$Record.started_at).ToUniversalTime(); $actualStart=[System.Management.ManagementDateTimeConverter]::ToDateTime([string]$process.CreationDate).ToUniversalTime()
+        $recordedStart=ConvertTo-AgentTeamsUtcDateTime $Record.started_at; $actualStart=ConvertTo-AgentTeamsUtcDateTime $process.CreationDate
         if ([Math]::Abs(($recordedStart-$actualStart).TotalSeconds) -gt 2 -or [IO.Path]::GetFullPath([string]$process.ExecutablePath) -ine (Resolve-Path -LiteralPath $Record.executable_path).Path) { return $false }
         foreach ($argument in @($Record.argv)) { if ($process.CommandLine.IndexOf([string]$argument,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false } }
         return $process.CommandLine.IndexOf($workspace,[System.StringComparison]::OrdinalIgnoreCase) -ge 0
     } catch { return $false }
+}
+function Get-OwnedBackendListenerRecord([object]$Record) {
+    if ($Record.name -cne 'backend' -or -not (Test-OwnedRecordedProcess $Record)) { throw 'backend_launcher_not_proven' }
+    $owners = @(
+        Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue |
+            ForEach-Object { [int]$_.OwningProcess } |
+            Sort-Object -Unique
+    )
+    if ($owners.Count -ne 1) { throw 'backend_listener_not_proven' }
+    $listenerId = [int]$owners[0]
+    $listener = Get-CimInstance Win32_Process -Filter "ProcessId = $listenerId" -ErrorAction SilentlyContinue
+    if ($null -eq $listener -or [string]::IsNullOrWhiteSpace($listener.ExecutablePath) -or [string]::IsNullOrWhiteSpace($listener.CommandLine) -or [string]::IsNullOrWhiteSpace($listener.CreationDate)) { throw 'backend_listener_not_proven' }
+    $rootStart = ConvertTo-AgentTeamsUtcDateTime $Record.started_at
+    $listenerStart = ConvertTo-AgentTeamsUtcDateTime $listener.CreationDate
+    if ($listenerId -ne [int]$Record.process_id) {
+        if ([int]$listener.ParentProcessId -ne [int]$Record.process_id -or $listenerStart -lt $rootStart.AddSeconds(-2) -or $listenerStart -gt $rootStart.AddSeconds(10)) { throw 'backend_listener_parent_not_proven' }
+        if ([IO.Path]::GetFullPath([string]$listener.ExecutablePath) -ine (Get-AgentTeamsVenvBasePython $Record.executable_path)) { throw 'backend_listener_executable_not_proven' }
+    }
+    foreach ($argument in @($Record.argv)) { if ($listener.CommandLine.IndexOf([string]$argument,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'backend_listener_command_not_proven' } }
+    if ($listener.CommandLine.IndexOf($workspace,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'backend_listener_workspace_not_proven' }
+    return @{
+        process_id=$listenerId
+        parent_process_id=$(if ($listenerId -eq [int]$Record.process_id) { $null } else { [int]$Record.process_id })
+        executable_path=[IO.Path]::GetFullPath([string]$listener.ExecutablePath)
+        started_at=$listenerStart.ToString('o')
+        port=[int]8000
+    }
 }
 function Start-OwnedProcess([string]$Name,[string]$WorkingDirectory,[string]$ExecutablePath,[object[]]$Arguments) {
     $started=Start-AgentTeamsOwnedProcess -ExecutablePath $ExecutablePath -WorkingDirectory $WorkingDirectory -Arguments $Arguments
@@ -66,7 +93,23 @@ function Write-ProcessRecord([object[]]$Processes,[string]$Status) {
     New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null; $payload=@{workspace=$workspace;status=$Status;created_at=[DateTime]::UtcNow.ToString('o');processes=$Processes}|ConvertTo-Json -Depth 6
     $temporary=Join-Path $runtimeDirectory ('.pids.'+[guid]::NewGuid().ToString('N')+'.tmp'); [IO.File]::WriteAllText($temporary,$payload,[Text.UTF8Encoding]::new($false)); Move-Item -LiteralPath $temporary -Destination $pidsPath -Force
 }
-function Stop-OnlyOwnedRecords([object[]]$Records) { foreach ($record in $Records) { if (Test-OwnedRecordedProcess $record) { Stop-Process -Id $record.process_id -Force -ErrorAction SilentlyContinue } } }
+function Get-StartProvenProcessIds([object]$Record) {
+    if (-not (Test-OwnedRecordedProcess $Record)) { return @() }
+    if ($Record.name -cne 'backend') { return @([int]$Record.process_id) }
+    try {
+        $actual=Get-OwnedBackendListenerRecord $Record
+        if ($null -ne $Record.PSObject.Properties['listener']) {
+            $recorded=$Record.listener
+            if ([int]$actual.process_id -ne [int]$recorded.process_id -or [int]$actual.port -ne [int]$recorded.port -or [IO.Path]::GetFullPath([string]$actual.executable_path) -ine [IO.Path]::GetFullPath([string]$recorded.executable_path)) { return @() }
+            if ([Math]::Abs(((ConvertTo-AgentTeamsUtcDateTime $actual.started_at)-(ConvertTo-AgentTeamsUtcDateTime $recorded.started_at)).TotalSeconds) -gt 2) { return @() }
+            if ([int]$actual.process_id -ne [int]$Record.process_id -and [int]$recorded.parent_process_id -ne [int]$Record.process_id) { return @() }
+        }
+        if ([int]$actual.process_id -eq [int]$Record.process_id) { return @([int]$Record.process_id) }
+        if ([int]$actual.parent_process_id -ne [int]$Record.process_id) { return @() }
+        return @([int]$actual.process_id,[int]$Record.process_id)
+    } catch { return @() }
+}
+function Stop-OnlyOwnedRecords([object[]]$Records) { foreach ($record in $Records) { foreach ($processId in @(Get-StartProvenProcessIds $record)) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue } } }
 function Stop-OwnedComposeProject {
     try {
         & docker compose -p dwp-agentteams -f $composeFile down 1>$null 2>$null
@@ -98,6 +141,8 @@ try {
     Import-DeepSeekKeyForChildProcesses; & $python $bootstrap --runtime-dir $runtimeDirectory --prepare-synapse-env; if ($LASTEXITCODE -ne 0) { throw 'Synapse secret preparation failed.' }
     $ownedCompose=$true; & docker compose -p dwp-agentteams -f $composeFile up -d; if ($LASTEXITCODE -ne 0) { throw 'Synapse compose startup failed.' }; if (-not (Wait-SynapseReady)) { throw 'Synapse did not become ready at 127.0.0.1:8008.' }
     & $python $bootstrap --runtime-dir $runtimeDirectory --matrix-url 'http://127.0.0.1:8008'; if ($LASTEXITCODE -ne 0) { throw 'Matrix account and private-room bootstrap failed.' }
-    $records+=Start-OwnedProcess 'backend' $backend $python (Get-ExpectedArguments 'backend'); foreach ($role in 'manager','hr','it','audit') { $records+=Start-OwnedProcess $role $workspace $python (Get-ExpectedArguments $role) }; if (-not $NoFrontend) { $records+=Start-OwnedProcess 'frontend' (Join-Path $workspace 'frontend') (Get-ExpectedExecutable 'frontend') (Get-ExpectedArguments 'frontend') }
+    $backendRecord=Start-OwnedProcess 'backend' $backend $python (Get-ExpectedArguments 'backend'); $records+=$backendRecord
+    $listener=$null; for ($attempt=0;$attempt -lt 40 -and $null -eq $listener;$attempt++) { try { $listener=Get-OwnedBackendListenerRecord $backendRecord } catch { if ($attempt -eq 39) { throw }; Start-Sleep -Milliseconds 250 } }; $backendRecord.listener=$listener
+    foreach ($role in 'manager','hr','it','audit') { $records+=Start-OwnedProcess $role $workspace $python (Get-ExpectedArguments $role) }; if (-not $NoFrontend) { $records+=Start-OwnedProcess 'frontend' (Join-Path $workspace 'frontend') (Get-ExpectedExecutable 'frontend') (Get-ExpectedArguments 'frontend') }
     Write-ProcessRecord $records 'running'; $success=$true; Write-Host "AgentTeams strict demo started: recorded $($records.Count) worktree-owned processes."
 } catch { try { Write-ProcessRecord @() 'failed' } catch {}; throw } finally { if (-not $success) { Stop-OnlyOwnedRecords $records; if ($ownedCompose) { Stop-OwnedComposeProject } } }

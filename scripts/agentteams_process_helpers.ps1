@@ -63,3 +63,38 @@ function Start-AgentTeamsOwnedProcess {
         UsedArgumentList = $usedArgumentList
     }
 }
+
+function ConvertTo-AgentTeamsUtcDateTime {
+    param([Parameter(Mandatory = $true)][object]$Value)
+
+    if ($Value -is [DateTime]) {
+        return ([DateTime]$Value).ToUniversalTime()
+    }
+    if ($Value -is [DateTimeOffset]) {
+        return ([DateTimeOffset]$Value).UtcDateTime
+    }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw 'invalid_process_creation_time'
+    }
+    if ($text -match '^\d{14}\.\d{6}[+-]\d{3}$') {
+        return [System.Management.ManagementDateTimeConverter]::ToDateTime($text).ToUniversalTime()
+    }
+    return [DateTimeOffset]::Parse(
+        $text,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind
+    ).UtcDateTime
+}
+
+function Get-AgentTeamsVenvBasePython {
+    param([Parameter(Mandatory = $true)][string]$LauncherPath)
+
+    $configuration = Join-Path (Split-Path (Split-Path $LauncherPath -Parent) -Parent) 'pyvenv.cfg'
+    $line = Get-Content -LiteralPath $configuration -ErrorAction Stop |
+        Where-Object { $_ -match '^\s*executable\s*=\s*\S' } |
+        Select-Object -First 1
+    if ($null -eq $line) { throw 'venv_base_python_not_found' }
+    $candidate = (($line -split '=', 2)[1]).Trim()
+    return (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
+}
