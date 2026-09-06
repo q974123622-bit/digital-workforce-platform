@@ -225,6 +225,8 @@ class AgentDecisionEngine:
             decision = ManagerDecision.model_validate(raw)
             if set(decision.selected_skill_ids) != set(context.selected_skill_ids):
                 raise _DecisionValidationError("selected_skills_must_match_loaded_skill_context")
+            if decision.action == "delegate":
+                _validate_manager_delegate_plan(context, decision.subtasks)
             return decision
 
         return self._structured_with_retry(
@@ -371,6 +373,58 @@ def _require_known_and_allowed(
             registry.load([skill_id])
         except SkillRegistryError as exc:
             raise _DecisionValidationError(f"unknown_skill:{skill_id}") from exc
+
+
+def _validate_manager_delegate_plan(context: ManagerContext, subtasks: list[PlannedSubtask]) -> None:
+    """Reject protocol-invalid plans before the manager can emit task.delegate."""
+    if len(subtasks) > context.max_children:
+        raise _DecisionValidationError("max_children_exceeded")
+    if len(subtasks) > context.max_nodes:
+        raise _DecisionValidationError("max_nodes_exceeded")
+
+    by_key = {subtask.client_task_key: subtask for subtask in subtasks}
+    if len(by_key) != len(subtasks):
+        raise _DecisionValidationError("duplicate_client_task_key")
+    for subtask in subtasks:
+        dependencies = set(subtask.depends_on)
+        if len(dependencies) != len(subtask.depends_on):
+            raise _DecisionValidationError("duplicate_dependency")
+        if subtask.client_task_key in dependencies:
+            raise _DecisionValidationError("self_dependency")
+        if not dependencies.issubset(by_key):
+            raise _DecisionValidationError("unknown_dependency")
+
+    capabilities_by_agent: dict[str, set[str]] = {}
+    for entry in context.team_capability_catalog:
+        agent_id = entry.get("agent_id")
+        capabilities = entry.get("capabilities")
+        if not isinstance(agent_id, str) or not isinstance(capabilities, list):
+            continue
+        capability_ids = {item for item in capabilities if isinstance(item, str)}
+        capabilities_by_agent.setdefault(agent_id, set()).update(capability_ids)
+    for subtask in subtasks:
+        permitted = capabilities_by_agent.get(subtask.assignee_agent_id)
+        if permitted is None:
+            raise _DecisionValidationError("invalid_team_assignee")
+        if subtask.required_capability not in permitted:
+            raise _DecisionValidationError("capability_not_available")
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(key: str) -> None:
+        if key in visiting:
+            raise _DecisionValidationError("cyclic_dependency")
+        if key in visited:
+            return
+        visiting.add(key)
+        for dependency in by_key[key].depends_on:
+            visit(dependency)
+        visiting.remove(key)
+        visited.add(key)
+
+    for key in by_key:
+        visit(key)
 
 
 def _validation_error_details(error: Exception) -> list[dict[str, Any]]:

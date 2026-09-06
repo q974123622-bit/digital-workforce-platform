@@ -107,6 +107,70 @@ def test_manager_plan_is_validated_and_retried_once(fake_llm, registry, manager_
     assert "bad" not in retry["content"]
 
 
+def test_manager_duplicate_delegate_key_is_corrected_without_replaying_model_output(
+    fake_llm, registry, manager_context,
+):
+    hostile_title = "untrusted-manager-output-" + ("x" * 512)
+    first = dict(VALID_MANAGER_PLAN["subtasks"][0])
+    duplicate = {
+        **VALID_MANAGER_PLAN,
+        "subtasks": [first, {**first, "title": hostile_title}],
+    }
+    fake_llm.outputs = [duplicate, VALID_MANAGER_PLAN]
+
+    decision = AgentDecisionEngine(fake_llm, registry).plan(manager_context)
+
+    assert decision.action == "delegate"
+    assert decision.subtasks[0].client_task_key == "hr-check"
+    assert len(fake_llm.calls) == 2
+    feedback = fake_llm.calls[1][-1]
+    assert feedback["source"] == "demo"
+    assert hostile_title not in feedback["content"]
+    assert "validation_errors" in feedback["content"]
+
+
+@pytest.mark.parametrize(
+    "invalid_plan",
+    [
+        {
+            **VALID_MANAGER_PLAN,
+            "subtasks": [{**VALID_MANAGER_PLAN["subtasks"][0], "depends_on": ["missing"]}],
+        },
+        {
+            **VALID_MANAGER_PLAN,
+            "subtasks": [
+                {**VALID_MANAGER_PLAN["subtasks"][0], "client_task_key": "first", "depends_on": ["second"]},
+                {**VALID_MANAGER_PLAN["subtasks"][0], "client_task_key": "second", "depends_on": ["first"]},
+            ],
+        },
+        {
+            **VALID_MANAGER_PLAN,
+            "subtasks": [{**VALID_MANAGER_PLAN["subtasks"][0], "assignee_agent_id": "VE-9999"}],
+        },
+        {
+            **VALID_MANAGER_PLAN,
+            "subtasks": [{**VALID_MANAGER_PLAN["subtasks"][0], "required_capability": "audit.evidence.read"}],
+        },
+        {
+            **VALID_MANAGER_PLAN,
+            "subtasks": [
+                {**VALID_MANAGER_PLAN["subtasks"][0], "client_task_key": f"child-{index}"}
+                for index in range(6)
+            ],
+        },
+    ],
+)
+def test_manager_invalid_delegate_topology_or_capability_fails_with_bounded_correction(
+    fake_llm, registry, manager_context, invalid_plan,
+):
+    fake_llm.outputs = [invalid_plan, invalid_plan]
+
+    with pytest.raises(AgentDecisionError, match="planning_failed"):
+        AgentDecisionEngine(fake_llm, registry).plan(manager_context)
+
+    assert len(fake_llm.calls) == 2
+
+
 def test_skill_selection_only_receives_catalog_summaries(fake_llm, registry, skill_context):
     """Changing a Skill body must not make it into the catalog-selection call."""
     fake_llm.outputs = [{"selected_skill_ids": ["agentteams-onboarding-readiness"]}]
