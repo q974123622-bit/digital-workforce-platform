@@ -150,6 +150,50 @@ def test_strict_tool_sync_fails_closed_for_a_runtime_plugin_absent_from_demo_see
     assert db_session.get(models.Plugin, "invented-plugin") is None
 
 
+def test_strict_runtime_sync_rolls_back_tools_when_binding_phase_fails(
+    db_session, tmp_path, monkeypatch,
+):
+    from app import models, seed
+    from app.services.agentteams_runtime_config import load_strict_runtime_config
+
+    path = tmp_path / "runtime.json"
+    path.write_text(json.dumps(_runtime_config()), encoding="utf-8")
+    runtime = load_strict_runtime_config(path, environ={})
+    demo_plugin_ids = {
+        "agentteams-onboarding-employee",
+        "agentteams-it-readiness",
+        "agentteams-onboarding-evidence",
+    }
+    db_session.query(models.EmployeePluginGrant).filter(
+        models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
+    ).delete(synchronize_session=False)
+    db_session.query(models.Plugin).filter(
+        models.Plugin.id.in_(demo_plugin_ids)
+    ).delete(synchronize_session=False)
+    db_session.query(models.TeamMember).filter_by(employee_id="VE-0001").delete(
+        synchronize_session=False
+    )
+    db_session.query(models.DigitalEmployee).filter_by(employee_no="VE-0001").delete(
+        synchronize_session=False
+    )
+    db_session.commit()
+    incomplete_seed = seed.load_seed()
+    incomplete_seed["digital_employees"] = [
+        row for row in incomplete_seed["digital_employees"]
+        if row.get("employee_no") != "VE-0001"
+    ]
+    monkeypatch.setattr(seed, "load_seed", lambda: incomplete_seed)
+
+    with pytest.raises(ValueError, match="missing_strict_seed_employee"):
+        seed.sync_strict_runtime_state(db_session, runtime)
+
+    db_session.expire_all()
+    assert db_session.query(models.Plugin).filter(models.Plugin.id.in_(demo_plugin_ids)).count() == 0
+    assert db_session.query(models.EmployeePluginGrant).filter(
+        models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
+    ).count() == 0
+
+
 def test_strict_enabled_lifespan_syncs_bindings_before_starting_runner(db_session, tmp_path, monkeypatch):
     """The real startup path, rather than an operator, performs the sync."""
     from app import main, models
@@ -332,6 +376,33 @@ def test_runtime_config_rejects_unsafe_or_malformed_tool_input_schema(tmp_path, 
         tool.pop("input_schema")
     else:
         tool["input_schema"] = input_schema
+    path = tmp_path / "runtime.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid_runtime_config"):
+        load_strict_runtime_config(path, environ={})
+
+
+@pytest.mark.parametrize(
+    "sensitive_const",
+    [
+        "token=synthetic-value",
+        "secret: synthetic-value",
+        "password = synthetic-value",
+        "api-key: synthetic-value",
+        "sk-abcdefghijklmnopqrstuvwxyz0123456789",
+    ],
+    ids=["token", "secret", "password", "api-key-assignment", "api-key-shape"],
+)
+def test_runtime_config_rejects_sensitive_tool_schema_constant_content(tmp_path, sensitive_const):
+    from app.services.agentteams_runtime_config import load_strict_runtime_config
+
+    value = _runtime_config()
+    field_schema = value["agents"]["hr"]["safe_tool_catalog"][0]["input_schema"][
+        "properties"
+    ]["employee_ref"]
+    field_schema["const"] = sensitive_const
+    field_schema["maxLength"] = 128
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps(value), encoding="utf-8")
 

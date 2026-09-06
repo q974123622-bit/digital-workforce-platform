@@ -24,6 +24,10 @@ _MAX_TOOL_SCHEMA_PROPERTIES = 8
 _MAX_TOOL_SCHEMA_TEXT = 128
 _SAFE_AGENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}")
 _SENSITIVE_SCHEMA_FIELD = re.compile(r"token|secret|password", re.I)
+_SENSITIVE_SCHEMA_VALUE = re.compile(
+    r"(?:\b(?:token|secret|password|api[_-]?key)\s*[:=]\s*\S+|\bsk-[A-Za-z0-9_-]{16,})",
+    re.I,
+)
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
 
 _DEMO_EMPLOYEE_REF_INPUT_SCHEMA = {
@@ -266,6 +270,7 @@ def _tool_input_schema(value: object) -> dict[str, Any]:
             or not isinstance(const, str)
             or not const
             or len(const) > _MAX_TOOL_SCHEMA_TEXT
+            or _SENSITIVE_SCHEMA_VALUE.search(const)
             or isinstance(maximum, bool)
             or not isinstance(maximum, int)
             or maximum < 1

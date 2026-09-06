@@ -86,7 +86,7 @@ def seed_if_empty() -> None:
         db.close()
 
 
-def sync_strict_runtime_demo_tools(db, runtime) -> None:
+def sync_strict_runtime_demo_tools(db, runtime, *, commit: bool = True) -> None:
     """Additively synchronize only the strict demo Tools named by the runtime.
 
     The checked-in seed remains the plugin/grant authority.  Runtime entries
@@ -127,7 +127,8 @@ def sync_strict_runtime_demo_tools(db, runtime) -> None:
             continue
         grant.action = row["action"]
         grant.decision_mode = row["decision_mode"]
-    db.commit()
+    if commit:
+        db.commit()
 
 
 def _strict_runtime_demo_seed_records(runtime) -> tuple[dict[str, dict], dict[tuple[str, str], dict]]:
@@ -179,7 +180,7 @@ def _strict_runtime_demo_seed_records(runtime) -> tuple[dict[str, dict], dict[tu
     return selected_plugins, selected_grants
 
 
-def sync_strict_runtime_bindings(db, runtime) -> None:
+def sync_strict_runtime_bindings(db, runtime, *, commit: bool = True) -> None:
     """Synchronize the fixed strict demo Team from the validated runtime file.
 
     The Matrix bootstrap is intentionally credential-only.  This narrowly
@@ -239,7 +240,19 @@ def sync_strict_runtime_bindings(db, runtime) -> None:
             ))
         else:
             member.role = member_role
-    db.commit()
+    if commit:
+        db.commit()
+
+
+def sync_strict_runtime_state(db, runtime) -> None:
+    """Atomically synchronize strict demo Tools, grants, employees, and Team bindings."""
+    try:
+        sync_strict_runtime_demo_tools(db, runtime, commit=False)
+        sync_strict_runtime_bindings(db, runtime, commit=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 def main() -> None:
