@@ -151,6 +151,8 @@ Manager 通过任务载荷中的团队目录知道“谁会做什么”。团队
 
 第一轮模型选择场景 Skill。Runtime 加载完整正文后，第二轮模型返回结构化计划：
 
+固定入职演示中，Manager 第一轮只创建 HR 材料核查和 IT 就绪核查两个直接子任务，两项任务的 `depends_on` 都为空并在同一批释放。Manager 不在第一轮预先创建审计任务；审计是否需要参与，由拿到一手 Tool 证据的 Worker 再判断。
+
 ```json
 {
   "selected_skill_ids": ["agentteams-onboarding-readiness"],
@@ -186,13 +188,19 @@ Manager 通过任务载荷中的团队目录知道“谁会做什么”。团队
 任务树不在首次规划时一次写死。
 
 ```text
-Manager 粗分和第一轮派发
-  → Worker 执行并发现信息缺口
-    → 调用 Tool，或询问同级 Agent，或向下委派
-  → Manager 收集当前轮结果
-    → 信息不足：新增下一轮任务
+Manager 同批派发 HR 与 IT
+  → HR 调用 HR Tool，形成材料核查结果
+  → IT 调用 IT Tool，发现 MFA 确认证据缺失
+    → IT 从最新团队能力目录选择审计 Agent
+    → IT 发送 task.delegate，创建受跟踪的二级审计任务
+    → 审计 Agent 调用 Audit Tool，回传独立复核结果
+    → IT 等待并整合审计结果后完成
+  → Manager 收到 HR、IT 两个直接子任务结果
     → 信息完整：生成最终汇总
+    → 仍有新的独立缺口：进入下一轮派发
 ```
+
+这条标准演示链只固定职责边界和必须核验的证据，不固定模型输出文本。业务事实来自本地 Mock；Skill 选择、Tool/Delegate/Complete 决策、Agent 选择、Matrix 消息和最终汇总由各独立 Agent 的真实 DeepSeek 调用产生。
 
 ### 7.1 三种缺口处理
 
@@ -220,6 +228,8 @@ Manager 粗分和第一轮派发
 - `query_onboarding_employee`：读取新员工A及入职材料 Fixture。
 - `query_it_readiness`：读取账号、设备和服务准备 Fixture。
 - `review_onboarding_evidence`：读取审计证据 Fixture 并返回证据缺口。
+
+标准演示中，IT Tool 返回 MFA 确认证据缺失。IT 不能直接把该缺口当成已复核结论，而是按团队能力目录动态委派审计 Agent；审计 Agent 必须再调用自己的 Tool，IT 收到其结果后才能完成本节点。
 
 执行链：
 
@@ -337,8 +347,9 @@ Worker 决定调用 Tool
 - 四个独立 Agent 进程正常运行。
 - 页面提交自由文本目标成功。
 - Manager 真实选择 Skill、拆解和派发。
-- 至少两个 Worker 参与并存在重叠执行时间。
-- 至少一次 Worker 向下动态委派。
+- Manager 第一轮同批、无依赖地释放 HR 和 IT 两个直接子任务；以持久化事件顺序验收，不以模型调用耗时是否恰好重叠推断。
+- IT Tool 先返回 MFA 证据缺口，随后由 IT Worker 向审计 Agent 动态委派一个受跟踪的二级任务。
+- 审计 Agent 调用自己的受治理 Tool；审计完成后 IT 才能整合并完成，HR 和 IT 均完成后 Manager 才能最终汇总。
 - 至少一次真实 Gateway Tool 调用和审计记录。
 - 每个关键协议消息具有真实 Matrix Event ID。
 - Manager 基于 Worker 结果生成最终汇总。
