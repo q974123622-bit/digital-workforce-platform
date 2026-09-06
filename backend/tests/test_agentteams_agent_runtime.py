@@ -742,6 +742,61 @@ def test_partial_manager_send_retries_same_protocol_ids_without_cursor_advance(t
     assert len(engine.selections) == 1 and len(engine.plans) == 1
 
 
+def test_near_limit_state_preserves_restartable_pending_worker_assignment(tmp_path):
+    seeded, _, _, _ = runtime(tmp_path, role="hr")
+    seeded._state["tasks"] = {
+        f"old-{index:02d}": {
+            "kind": "manager",
+            "goal": f"old-{index:02d}-" + ("x" * 500),
+            "selected_skill_ids": ["agentteams-onboarding-readiness"],
+            "team_catalog_version": 1,
+        }
+        for index in range(32)
+    }
+    seeded._state["processed_event_ids"] = [
+        f"$historic-{index:02d}-" + ("y" * 130) for index in range(20)
+    ]
+    seeded._save_state()
+    state_path = tmp_path / "state" / "VE-0002.json"
+    assert 15_000 < state_path.stat().st_size <= 16_384
+
+    gateway = FakeGateway()
+    engine = FakeEngine()
+    subject = AgentRuntime(seeded.config, gateway, engine, pause=lambda _: None)
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [WorkerDecision(
+        action="tool", tool_name="query_onboarding_employee",
+        tool_arguments={"employee_ref": "新员工A"},
+    )]
+    assignment = message(
+        type="task.assign", sender="VE-0001", receiver="VE-0002", task_id="current",
+        parent_task_id="root-1", key="current-assignment", payload=assign_payload(),
+    )
+    gateway.events = [event(assignment, event_id="$current", sender=MXIDS["VE-0001"])]
+    gateway.fail_on_send = 1
+
+    assert subject.run_once() == 0
+    assert gateway.send_attempts == 1
+    persisted_pending = json.loads(state_path.read_text(encoding="utf-8"))["pending_outbox"]
+    assert persisted_pending is not None
+    assert "current" in persisted_pending["trial_state"]["tasks"]
+    assert state_path.stat().st_size <= 16_384
+
+    replay_gateway = FakeGateway()
+    replay_gateway.events = [event(assignment, event_id="$current", sender=MXIDS["VE-0001"])]
+    replay_engine = FakeEngine()
+    restarted = AgentRuntime(seeded.config, replay_gateway, replay_engine, pause=lambda _: None)
+
+    assert restarted.run_once() == 1
+    assert [item.type for item in sent_protocols(replay_gateway)] == [
+        "task.accepted", "task.progress", "agent.message", "tool.request",
+    ]
+    assert restarted._state["cursor"] == "cursor-1"
+    assert restarted._state["tasks"]["current"]["task"]["goal"] == assign_payload()["instruction"]
+    assert replay_engine.selections == [] and replay_engine.work == []
+    assert state_path.stat().st_size <= 16_384
+
+
 def test_worker_rejects_stale_delegate_candidate_after_platform_catalog_refresh(tmp_path):
     """A later platform summary revokes the old assignment snapshot before delegation."""
     subject, gateway, engine, _ = runtime(tmp_path, role="hr")

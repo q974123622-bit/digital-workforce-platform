@@ -467,12 +467,28 @@ class AgentRuntime:
                 "version": _PENDING_VERSION,
                 "source": source,
                 "messages": [message.model_dump(mode="json") for message in canonical],
-                "trial_state": self._bounded_state({
+                "trial_state": {},
+            }
+            # Budget the trial against the complete crash-recovery document,
+            # not against the standalone state limit.  Its JSON fragment is
+            # the only variable part of this otherwise canonical envelope.
+            recovery_with_placeholder = self._pending_recovery_state(pending, self._state)
+            trial_budget = _MAX_STATE_BYTES - (
+                self._serialized_size(recovery_with_placeholder) - self._serialized_size({})
+            )
+            pending["trial_state"] = self._bounded_state(
+                {
                     **{key: value for key, value in trial.items() if key != "pending_outbox"},
                     "pending_outbox": None,
-                }),
-            }
-            if self._validated_pending_messages(pending) is None:
+                },
+                max_bytes=trial_budget,
+                preserve_task_id=source.get("task_id") if isinstance(source, Mapping) else None,
+            )
+            recovery = self._pending_recovery_state(pending, self._state)
+            if (
+                self._validated_pending_messages(pending) is None
+                or self._serialized_size(recovery) > _MAX_STATE_BYTES
+            ):
                 self._security(self._state, "outbound_rejected")
                 self._save_state()
                 return False
@@ -777,7 +793,13 @@ class AgentRuntime:
         # could emit a different protocol line than the first send attempt.
         pending = self._state.get("pending_outbox")
         if pending is not None and self._validated_pending_messages(pending) is not None:
-            safe["pending_outbox"] = pending
+            recovery = self._pending_recovery_state(pending, safe)
+            if self._serialized_size(recovery) <= _MAX_STATE_BYTES:
+                safe = recovery
+            else:
+                safe["pending_outbox"] = None
+                security = safe.setdefault("security", {})
+                security["pending_corrupt"] = min(9999, int(security.get("pending_corrupt", 0)) + 1)
         elif pending is not None:
             safe["pending_outbox"] = None
             security = safe.setdefault("security", {})
@@ -885,21 +907,56 @@ class AgentRuntime:
             return [self._safe_value(item, depth + 1) for item in value[:20]]
         return "[unsupported]"
 
-    def _bounded_state(self, value: Mapping[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _serialized_size(value: Any) -> int:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+    def _pending_recovery_state(self, pending: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist one authoritative trial instead of duplicating task state."""
+        return {
+            "cursor": state.get("cursor"),
+            "processed_event_ids": [],
+            "processed_idempotency_keys": [],
+            "tasks": {},
+            "security": {},
+            "pending_outbox": pending,
+            "agent_id": state.get("agent_id"),
+            "mxid": state.get("mxid"),
+            "heartbeat_at": state.get("heartbeat_at"),
+            "heartbeat_signature": state.get("heartbeat_signature"),
+        }
+
+    def _bounded_state(
+        self,
+        value: Mapping[str, Any],
+        *,
+        max_bytes: int = _MAX_STATE_BYTES,
+        preserve_task_id: str | None = None,
+    ) -> dict[str, Any]:
         """Return a redacted, finite JSON document before any filesystem write."""
-        safe = self._safe_value(value)
+        bounded_input = dict(value)
+        raw_tasks = value.get("tasks")
+        if preserve_task_id is not None and isinstance(raw_tasks, Mapping) and preserve_task_id in raw_tasks:
+            # `_safe_value` bounds mappings to twenty entries. Put the active
+            # task first so a state already at that bound cannot erase the
+            # context which the pending protocol line commits.
+            bounded_input["tasks"] = {
+                preserve_task_id: raw_tasks[preserve_task_id],
+                **{key: item for key, item in raw_tasks.items() if key != preserve_task_id},
+            }
+        safe = self._safe_value(bounded_input)
         if not isinstance(safe, dict):
             return {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}}
         def size() -> int:
-            return len(json.dumps(safe, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            return self._serialized_size(safe)
         tasks = safe.get("tasks")
-        while size() > _MAX_STATE_BYTES and isinstance(tasks, dict) and tasks:
-            tasks.pop(next(iter(tasks)))
+        while size() > max_bytes and isinstance(tasks, dict) and any(key != preserve_task_id for key in tasks):
+            tasks.pop(next(key for key in tasks if key != preserve_task_id))
         for key in ("processed_event_ids", "processed_idempotency_keys"):
             values = safe.get(key)
-            while size() > _MAX_STATE_BYTES and isinstance(values, list) and values:
+            while size() > max_bytes and isinstance(values, list) and values:
                 del values[: max(1, len(values) // 2)]
-        if size() > _MAX_STATE_BYTES:
+        if size() > max_bytes:
             safe["security"] = {"state_truncated": 1}
         return safe
 
