@@ -138,9 +138,11 @@ class ManagerContext(_StrictModel):
 
 
 class WorkerContext(_StrictModel):
+    current_agent_id: str = Field(min_length=1)
     task: dict[str, Any]
     professional_skill_ids: list[str] = Field(min_length=1)
     safe_tool_catalog: list[dict[str, Any]] = Field(default_factory=list)
+    current_team_capability_catalog: list[dict[str, Any]] = Field(default_factory=list)
     dependency_results: list[dict[str, Any]] = Field(default_factory=list)
     parent_chain_agent_ids: list[str] = Field(default_factory=list)
     previous_results: list[dict[str, Any]] = Field(default_factory=list)
@@ -256,20 +258,29 @@ class AgentDecisionEngine:
         messages = _messages(
             "You are an AgentTeams worker. Select exactly one action permitted by the supplied "
             "schema. Do not invent facts, tools, agents, or Tool results. Delegate only bounded "
-            "work and never delegate to an agent in the parent chain.",
+            "work and never delegate to yourself or an agent in the parent chain. Choose Ask and "
+            "Delegate recipients by capability from the supplied current-team catalog.",
             {
+                "current_agent_id": context.current_agent_id,
                 "task": context.task,
                 "professional_skills": [_skill_payload(skill) for skill in professional_skills],
                 "safe_tool_catalog": context.safe_tool_catalog,
+                "current_team_capability_catalog": context.current_team_capability_catalog,
                 "dependency_results": context.dependency_results,
                 "parent_chain_agent_ids": context.parent_chain_agent_ids,
                 "previous_tool_or_message_results": context.previous_results,
             },
         )
+
+        def validate(raw: dict[str, Any]) -> WorkerDecision:
+            decision = WorkerDecision.model_validate(raw)
+            _validate_worker_decision(context, decision)
+            return decision
+
         return self._structured_with_retry(
             messages,
             WorkerDecision,
-            WorkerDecision.model_validate,
+            validate,
             error_code="decision_failed",
         )
 
@@ -440,6 +451,51 @@ def _validate_manager_delegate_plan(context: ManagerContext, subtasks: list[Plan
 
     for key in by_key:
         visit(key)
+
+
+def _validate_worker_decision(context: WorkerContext, decision: WorkerDecision) -> None:
+    """Reject invented worker targets before the runtime performs an action."""
+    tool_names = {
+        item.get("name")
+        for item in context.safe_tool_catalog
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    capabilities_by_agent: dict[str, set[str]] = {}
+    for entry in context.current_team_capability_catalog:
+        agent_id = entry.get("agent_id")
+        capabilities = entry.get("capabilities")
+        if not isinstance(agent_id, str) or not isinstance(capabilities, list):
+            continue
+        capabilities_by_agent.setdefault(agent_id, set()).update(
+            item for item in capabilities if isinstance(item, str)
+        )
+
+    if decision.action == "tool":
+        if decision.tool_name not in tool_names:
+            raise _DecisionValidationError("tool_not_available")
+        return
+    if decision.action == "ask":
+        known_recipients = set(capabilities_by_agent).union(context.parent_chain_agent_ids)
+        if (
+            decision.recipient_agent_id == context.current_agent_id
+            or decision.recipient_agent_id not in known_recipients
+        ):
+            raise _DecisionValidationError("ask_recipient_not_available")
+        return
+    if decision.action == "delegate":
+        subtask = decision.subtask
+        if subtask is None:
+            raise _DecisionValidationError("delegate_missing_subtask")
+        if (
+            subtask.assignee_agent_id == context.current_agent_id
+            or subtask.assignee_agent_id in context.parent_chain_agent_ids
+        ):
+            raise _DecisionValidationError("delegate_target_in_parent_chain")
+        permitted = capabilities_by_agent.get(subtask.assignee_agent_id)
+        if permitted is None:
+            raise _DecisionValidationError("delegate_assignee_not_available")
+        if subtask.required_capability not in permitted:
+            raise _DecisionValidationError("delegate_capability_not_available")
 
 
 def _validation_error_details(error: Exception) -> list[dict[str, Any]]:

@@ -182,7 +182,11 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
         WorkerDecision(action="tool", tool_name="query_onboarding_employee", tool_arguments={"employee_ref": "新员工A"}),
         WorkerDecision(action="complete", result="资料齐全"),
     ]
-    assignment = message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload())
+    payload = assign_payload()
+    for member in payload["team_capability_catalog"]:
+        member["mxid"] = f"@{member['agent_id'].lower()}:must-not-reach-model"
+        member["token"] = "must-not-reach-model"
+    assignment = message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=payload)
     tool_result = message(type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1", payload={"ok": True, "audit_ids": [101], "data": {"source": "demo", "key": "drop", "note": "api_key: exposed password=hidden"}}, key="tool")
     gateway.events = [event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1), event(tool_result, event_id="$tool", ts=2)]
 
@@ -194,6 +198,14 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     assert sent[3].payload["plugin_id"] == "agentteams-onboarding-employee"
     assert sent[-1].payload["audit_ids"] == [101]
     assert engine.worker_contexts[0].task["goal"] == "核验新员工A的完整HR入职材料，并报告缺口。"
+    assert engine.worker_contexts[0].current_agent_id == "VE-0002"
+    assert engine.worker_contexts[0].current_team_capability_catalog == [
+        {"agent_id": "VE-0002", "capabilities": ["hr.onboarding.read"]},
+        {"agent_id": "VE-0003", "capabilities": ["it.readiness.read"]},
+        {"agent_id": "VE-0005", "capabilities": ["audit.evidence.read"]},
+    ]
+    assert "mxid" not in str(engine.worker_contexts[0].current_team_capability_catalog).lower()
+    assert "token" not in str(engine.worker_contexts[0].current_team_capability_catalog).lower()
     saved = (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
     assert "exposed" not in saved and "password" not in saved and '"key"' not in saved
     assert "101" in saved
@@ -494,6 +506,12 @@ def test_worker_rejects_stale_delegate_candidate_after_platform_catalog_refresh(
     assert subject.run_once() == 2
     assert [item.type for item in sent_protocols(gateway)] == ["task.accepted", "task.progress", "agent.message", "agent.message", "task.failed"]
     assert subject._state["tasks"]["task-1"]["team_catalog_version"] == 2
+    assert {item["agent_id"] for item in engine.worker_contexts[0].current_team_capability_catalog} == {
+        "VE-0002", "VE-0003", "VE-0005",
+    }
+    assert {item["agent_id"] for item in engine.worker_contexts[1].current_team_capability_catalog} == {
+        "VE-0002", "VE-0003",
+    }
 
 
 def test_run_forever_waits_after_empty_poll_and_default_pause_is_three_seconds(tmp_path):

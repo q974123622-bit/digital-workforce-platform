@@ -379,8 +379,12 @@ class AgentRuntime:
 
     def _worker_decide(self, message: AgentProtocolMessage, state: dict[str, Any], context: dict[str, Any], sequence: int) -> list[AgentProtocolMessage]:
         decision = self.decisions.decide_work(WorkerContext(
+            current_agent_id=self.config.agent_id,
             task=dict(context["task"]), professional_skill_ids=["employee-collaboration", *context["selected_skill_ids"]],
             safe_tool_catalog=[self._bounded_value(item) for item in self.config.safe_tool_catalog],
+            current_team_capability_catalog=self._worker_team_capability_catalog(
+                context.get("team_catalog")
+            ),
             dependency_results=self._bounded_collection(context["task"].get("dependency_results")),
             parent_chain_agent_ids=self._bounded_text_list(context["parent_chain_agent_ids"]),
             previous_results=self._bounded_collection(context.get("evidence", [])),
@@ -412,6 +416,22 @@ class AgentRuntime:
                 return self._worker_decide(message, state, context, sequence + 1)
             return [self._failure(message, "completion_without_tool_evidence", sequence=sequence)]
         return [self._failure(message, "decision_failed", sequence=sequence)]
+
+    def _worker_team_capability_catalog(self, raw: Any) -> list[dict[str, Any]]:
+        if not isinstance(raw, Mapping):
+            return []
+        catalog: list[dict[str, Any]] = []
+        for agent_id, value in raw.items():
+            if not isinstance(agent_id, str) or not isinstance(value, Mapping):
+                continue
+            capabilities = value.get("capabilities")
+            if not isinstance(capabilities, list):
+                continue
+            catalog.append({
+                "agent_id": self._text(agent_id, 128),
+                "capabilities": self._bounded_text_list(capabilities, 32),
+            })
+        return catalog
 
     def _reply(self, source: AgentProtocolMessage, type: str, receiver: str, payload: dict[str, Any], sequence: int) -> AgentProtocolMessage:
         digest = hashlib.sha256(f"{source.idempotency_key}:{type}:{sequence}".encode()).hexdigest()[:20]
