@@ -34,6 +34,7 @@ from .agentteams_decisions import (
 from .agentteams_gateway import MatrixEvent
 from .agentteams_protocol import AgentProtocolMessage, parse_protocol_lines, render_protocol_line
 from .agentteams_runtime_config import is_safe_agent_id, require_safe_path
+from .llm import LLMUnavailableError
 
 
 Role = Literal["manager", "hr", "it", "audit"]
@@ -46,7 +47,7 @@ _ROLE_PROFESSIONAL_SKILLS = {
 _SAFE_ERROR_CODES = {
     "skill_selection_failed", "planning_failed", "decision_failed", "summary_failed",
     "completion_without_tool_evidence", "invalid_model_decision", "invalid_team_catalog",
-    "invalid_parent_chain", "runtime_error",
+    "invalid_parent_chain", "llm_unavailable", "runtime_error",
 }
 _MAX_TRACKED = 256
 _MAX_TASK_CONTEXTS = 32
@@ -257,6 +258,8 @@ class AgentRuntime:
             self._active_pending["source"] = self._pending_source(event, message)
         try:
             responses = self._handle_message(message, event, state)
+        except LLMUnavailableError:
+            responses = [self._failure(message, "llm_unavailable")]
         except AgentDecisionError as exc:
             responses = [self._failure(message, self._safe_code(exc.code))]
         except Exception:

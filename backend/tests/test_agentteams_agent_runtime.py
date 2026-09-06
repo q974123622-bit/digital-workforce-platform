@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.services.agentteams_decisions import (
+    AgentDecisionError,
     FinalSummary,
     ManagerDecision,
     PlannedSubtask,
@@ -15,6 +16,7 @@ from app.services.agentteams_decisions import (
 from app.services.agentteams_gateway import MatrixEvent, MatrixSyncBatch
 from app.services.agentteams_protocol import AgentProtocolMessage, parse_protocol_lines, render_protocol_line
 from app.services.agentteams_agent_runtime import AgentRuntime, AgentRuntimeConfig
+from app.services.llm import LLMUnavailableError
 
 
 class FakeGateway:
@@ -157,6 +159,54 @@ def test_manager_selects_skill_then_delegates_without_invalid_root_ack(tmp_path)
     assert {item["assignee_agent_id"] for item in sent[1].payload["subtasks"]} == {"VE-0002", "VE-0003"}
     assert all("required_capability" in item for item in sent[1].payload["subtasks"])
     assert pauses == [3.0, 3.0]
+
+
+def test_runtime_surfaces_persistent_llm_unavailability_as_fixed_failure(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+    raw_provider_error = "Bearer secret-token provider temporarily unavailable"
+
+    def unavailable(_context):
+        raise LLMUnavailableError(raw_provider_error)
+
+    engine.select_skills = unavailable
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
+
+    assert subject.run_once() == 1
+
+    failure = sent_protocols(gateway)[-1]
+    assert failure.type == "task.failed"
+    assert failure.payload == {"error_code": "llm_unavailable"}
+    assert raw_provider_error not in gateway.sent[-1][2]
+
+
+def test_runtime_keeps_programming_errors_as_fixed_runtime_failure(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+    raw_programming_error = "api_key=secret unexpected programming failure"
+
+    def broken(_context):
+        raise RuntimeError(raw_programming_error)
+
+    engine.select_skills = broken
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
+
+    assert subject.run_once() == 1
+
+    failure = sent_protocols(gateway)[-1]
+    assert failure.payload == {"error_code": "runtime_error"}
+    assert raw_programming_error not in gateway.sent[-1][2]
+
+
+def test_runtime_keeps_agent_decision_error_code(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+
+    def invalid_decision(_context):
+        raise AgentDecisionError("planning_failed")
+
+    engine.select_skills = invalid_decision
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
+
+    assert subject.run_once() == 1
+    assert sent_protocols(gateway)[-1].payload == {"error_code": "planning_failed"}
 
 
 def test_manager_summary_can_follow_up_or_finish(tmp_path):
