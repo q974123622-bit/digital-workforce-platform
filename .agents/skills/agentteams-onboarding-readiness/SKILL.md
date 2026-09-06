@@ -18,4 +18,6 @@ Completion requires evidence for every required category, a clear owner for any 
 
 The Manager reviews the HR and IT direct-child summaries, including any nested review evidence, before making the completion decision.
 
+直接 Worker 已整合的嵌套审计结论是足够的最终证据。若证据确认缺失，汇总为 not ready/incomplete 并列出后续动作；不得为了让缺失项变成 ready 再重复派发。只有出现尚未调查、且现有直接 Worker 结果和嵌套审计结论未覆盖的新独立事实问题时，Manager 才能开启下一轮。
+
 State the final decision as ready, not ready, or incomplete with the missing evidence listed.

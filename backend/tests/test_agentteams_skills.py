@@ -192,6 +192,21 @@ def test_onboarding_skills_keep_first_round_parallel_and_audit_evidence_independ
     assert "VE-" not in audit.content
 
 
+def test_readiness_skill_stops_repeating_a_direct_workers_covered_audit_gap(repo_root):
+    """A confirmed missing fact with integrated audit evidence is terminal, not a new IT round."""
+    readiness = ProjectSkillRegistry.from_root(repo_root).load([
+        "agentteams-onboarding-readiness",
+    ])[0]
+
+    assert "直接 Worker 已整合的嵌套审计结论" in readiness.content
+    assert "足够的最终证据" in readiness.content
+    assert "证据确认缺失" in readiness.content
+    assert "not ready/incomplete" in readiness.content
+    assert "不得为了让缺失项变成 ready 再重复派发" in readiness.content
+    assert "尚未调查" in readiness.content
+    assert "新独立事实问题" in readiness.content
+
+
 @pytest.mark.parametrize(
     ("skill_id", "required_terms", "forbidden_terms"),
     [
