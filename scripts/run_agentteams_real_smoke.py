@@ -62,6 +62,44 @@ def _overlap(nodes: list[dict[str, Any]]) -> bool:
     return len(windows) >= 2 and max(start for start, _ in windows) <= min(end for _, end in windows)
 
 
+def _has_expected_onboarding_topology(
+    nodes: list[dict[str, Any]], events: list[dict[str, Any]]
+) -> bool:
+    roots = [node for node in nodes if node.get("depth") == 0 and node.get("parent_task_id") is None]
+    if len(roots) != 1 or roots[0].get("assignee_agent_id") != "VE-0001":
+        return False
+    root_id = roots[0].get("id")
+    if not isinstance(root_id, str) or not root_id:
+        return False
+    direct = [node for node in nodes if node.get("parent_task_id") == root_id]
+    if len(direct) != 2 or {node.get("assignee_agent_id") for node in direct} != {"VE-0002", "VE-0003"}:
+        return False
+    hr = next(node for node in direct if node.get("assignee_agent_id") == "VE-0002")
+    audit_nodes = [node for node in nodes if node.get("assignee_agent_id") == "VE-0005"]
+    if len(audit_nodes) != 1:
+        return False
+    audit = audit_nodes[0]
+    if not (
+        audit.get("parent_task_id") == hr.get("id")
+        and audit.get("depth") == 2
+        and audit.get("coordinator_agent_id") == "VE-0002"
+    ):
+        return False
+    hr_delegated_audit = any(
+        event.get("event_type") == "task.delegate"
+        and event.get("task_id") == hr.get("id")
+        and event.get("actor_agent_id") == "VE-0002"
+        for event in events
+    )
+    manager_reviewed = any(
+        event.get("event_type") == "task.summary"
+        and event.get("task_id") == root_id
+        and event.get("actor_agent_id") == "VE-0001"
+        for event in events
+    )
+    return hr_delegated_audit and manager_reviewed
+
+
 def build_evidence(
     task_id: str,
     health: dict[str, Any],
@@ -92,6 +130,8 @@ def build_evidence(
         missing.append("manager_hr_it_audit_participants")
     if not any(depth >= 2 for depth in depths):
         missing.append("depth_two_delegation")
+    if not _has_expected_onboarding_topology(nodes, events):
+        missing.append("onboarding_collaboration_topology")
     if not _overlap(nodes):
         missing.append("hr_it_overlap")
     if not skill_ids or "agentteams-onboarding-readiness" not in skill_ids:
@@ -102,7 +142,11 @@ def build_evidence(
         missing.append("governed_tool_audits")
     if len(event_ids) < 4:
         missing.append("real_matrix_event_ids")
-    if not any(event.get("event_type") == "task.summarizing" for event in events):
+    if not any(
+        event.get("event_type") == "task.summary"
+        and event.get("actor_agent_id") == "VE-0001"
+        for event in events
+    ):
         missing.append("manager_review")
     return {
         "ok": not missing,

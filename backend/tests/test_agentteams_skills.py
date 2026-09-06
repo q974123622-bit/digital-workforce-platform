@@ -148,23 +148,23 @@ def test_registry_requires_each_frontmatter_field(tmp_path):
     [
         (
             "agentteams-manager-coordination",
-            ("粗粒度", "当前团队", "直接子", "证据", "有界"),
-            (),
+            ("粗粒度", "当前团队", "直接子", "证据", "有界", "首轮", "一手证据", "后续复核"),
+            ("VE-",),
         ),
         (
             "agentteams-onboarding-readiness",
-            ("证据类别", "完成条件", "未知"),
+            ("证据类别", "完成条件", "未知", "首轮", "HR", "IT", "二次复核"),
             ("VE-",),
         ),
         (
             "employee-collaboration",
-            ("Tool", "Ask", "Delegate", "Handoff", "父链"),
-            (),
+            ("Tool", "Ask", "Delegate", "Handoff", "父链", "能力目录", "等待子任务结果"),
+            ("VE-",),
         ),
         (
             "hr-onboarding-assistant",
-            ("Tool", "证据", "未知"),
-            (),
+            ("Tool", "证据", "未知", "先", "Delegate", "审计能力", "子任务结果"),
+            ("VE-",),
         ),
         (
             "it-service-assistant",
