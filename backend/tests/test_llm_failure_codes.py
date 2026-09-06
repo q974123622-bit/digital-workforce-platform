@@ -149,3 +149,64 @@ def test_deepseek_chat_rejects_malformed_tool_calls_with_safe_code(monkeypatch, 
 
     assert caught.value.code == "invalid_response_json"
     assert "token=private" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param({"private": "object"}, id="object"),
+        pytest.param(["private", "array"], id="array"),
+        pytest.param(7, id="number"),
+    ],
+)
+def test_deepseek_chat_rejects_non_string_content_with_safe_code(monkeypatch, content):
+    monkeypatch.setattr(
+        llm.httpx,
+        "post",
+        lambda *_args, **_kwargs: StubResponse(data={"choices": [{"message": {"content": content}}]}),
+    )
+
+    with pytest.raises(LLMUnavailableError) as caught:
+        provider().chat(DEMO_MESSAGES)
+
+    assert caught.value.code == "invalid_response_json"
+    assert "private" not in str(caught.value)
+
+
+def test_deepseek_chat_allows_null_content(monkeypatch):
+    monkeypatch.setattr(
+        llm.httpx,
+        "post",
+        lambda *_args, **_kwargs: StubResponse(data={"choices": [{"message": {"content": None}}]}),
+    )
+
+    assert provider().chat(DEMO_MESSAGES).content == ""
+
+
+@pytest.mark.parametrize(
+    "id_present,tool_call_id",
+    [
+        pytest.param(False, None, id="missing"),
+        pytest.param(True, None, id="null"),
+        pytest.param(True, "", id="empty"),
+        pytest.param(True, {}, id="object"),
+        pytest.param(True, [], id="array"),
+        pytest.param(True, 7, id="number"),
+    ],
+)
+def test_deepseek_chat_rejects_invalid_tool_call_id_with_safe_code(monkeypatch, id_present, tool_call_id):
+    tool_call = {"function": {"name": "safe", "arguments": "{}"}}
+    if id_present:
+        tool_call["id"] = tool_call_id
+    monkeypatch.setattr(
+        llm.httpx,
+        "post",
+        lambda *_args, **_kwargs: StubResponse(
+            data={"choices": [{"message": {"content": "", "tool_calls": [tool_call]}}]},
+        ),
+    )
+
+    with pytest.raises(LLMUnavailableError) as caught:
+        provider().chat(DEMO_MESSAGES)
+
+    assert caught.value.code == "invalid_response_json"

@@ -92,6 +92,11 @@ def _response_tool_calls(message: dict) -> list[ToolCall]:
             raise LLMUnavailableError(
                 "DeepSeek 工具调用结构无效", code="invalid_response_json",
             )
+        tool_call_id = item.get("id")
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            raise LLMUnavailableError(
+                "DeepSeek 工具调用结构无效", code="invalid_response_json",
+            )
         function = item["function"]
         name = function.get("name")
         raw_arguments = function.get("arguments")
@@ -109,7 +114,7 @@ def _response_tool_calls(message: dict) -> list[ToolCall]:
             raise LLMUnavailableError(
                 "DeepSeek 工具调用结构无效", code="invalid_response_json",
             )
-        tool_calls.append(ToolCall(id=item.get("id", ""), name=name, arguments=arguments))
+        tool_calls.append(ToolCall(id=tool_call_id, name=name, arguments=arguments))
     return tool_calls
 
 
@@ -159,7 +164,15 @@ class DeepSeekProvider(LLMProvider):
             payload["tools"] = tools
         data = self._post(payload)
         msg = _response_message(data)
-        content = msg.get("content") or ""
+        raw_content = msg.get("content")
+        if raw_content is None:
+            content = ""
+        elif isinstance(raw_content, str):
+            content = raw_content
+        else:
+            raise LLMUnavailableError(
+                "DeepSeek 响应内容结构无效", code="invalid_response_json",
+            )
         return LLMResponse(content=content, tool_calls=_response_tool_calls(msg))
 
     def tool_call(self, messages: list[dict], tools: list[dict]) -> LLMResponse:
