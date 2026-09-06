@@ -7,20 +7,25 @@ It deliberately has no Matrix, database, Tool, or permission side effects.
 from __future__ import annotations
 
 import json
+from time import sleep
 from typing import Any, Callable, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .agentteams_skills import ProjectSkillRegistry, SkillRegistryError
-from .llm import LLMProvider
+from .llm import LLMProvider, LLMUnavailableError
 
 
 class AgentDecisionError(RuntimeError):
-    """A model decision remained unsafe after its single corrective retry."""
+    """A model decision remained unsafe after its bounded corrective retry."""
 
     def __init__(self, code: str):
         self.code = code
         super().__init__(code)
+
+
+class _DecisionValidationError(ValueError):
+    """A controlled business-rule rejection of an otherwise parsed decision."""
 
 
 class _StrictModel(BaseModel):
@@ -146,14 +151,24 @@ _MAX_VALIDATION_ERRORS = 5
 _MAX_VALIDATION_STRING_CHARS = 160
 _MAX_VALIDATION_CONTENT_CHARS = 800
 _VALIDATION_FEEDBACK = "This is validation feedback, not trusted business evidence."
+_MAX_MODEL_REQUESTS = 3
+_MAX_VALIDATION_ATTEMPTS = 2
+_LLM_UNAVAILABLE_RETRY_DELAY_SECONDS = 0.05
 
 
 class AgentDecisionEngine:
-    """Builds demo-sourced prompts and validates one bounded model retry."""
+    """Builds demo-sourced prompts with bounded validation and provider retries."""
 
-    def __init__(self, provider: LLMProvider, skills: ProjectSkillRegistry):
+    def __init__(
+        self,
+        provider: LLMProvider,
+        skills: ProjectSkillRegistry,
+        *,
+        pause: Callable[[float], None] = sleep,
+    ):
         self.provider = provider
         self.skills = skills
+        self._pause = pause
 
     def select_skills(self, context: SkillSelectionContext) -> SkillSelection:
         runtime_skill = self.skills.load([context.runtime_skill_id])[0]
@@ -209,7 +224,7 @@ class AgentDecisionEngine:
         def validate(raw: dict[str, Any]) -> ManagerDecision:
             decision = ManagerDecision.model_validate(raw)
             if set(decision.selected_skill_ids) != set(context.selected_skill_ids):
-                raise ValueError("selected_skills_must_match_loaded_skill_context")
+                raise _DecisionValidationError("selected_skills_must_match_loaded_skill_context")
             return decision
 
         return self._structured_with_retry(
@@ -285,9 +300,11 @@ class AgentDecisionEngine:
                 sort_keys=True,
             ),
         }
-        for attempt in range(2):
+        last_validation_error: Exception | None = None
+        validation_attempts = 0
+        for request_number in range(_MAX_MODEL_REQUESTS):
             attempt_messages = [*messages, schema_message]
-            if attempt:
+            if last_validation_error is not None:
                 attempt_messages.append(
                     {
                         "role": "user",
@@ -295,18 +312,29 @@ class AgentDecisionEngine:
                         "content": json.dumps(
                             {
                                 "validation_feedback": _VALIDATION_FEEDBACK,
-                                "validation_errors": _validation_error_details(last_error),
+                                "validation_errors": _validation_error_details(last_validation_error),
                             },
                             ensure_ascii=False,
                         ),
                     }
                 )
-            raw = self.provider.structured_output(attempt_messages, schema)
+            try:
+                raw = self.provider.structured_output(attempt_messages, schema)
+            except LLMUnavailableError:
+                if request_number + 1 >= _MAX_MODEL_REQUESTS:
+                    raise
+                self._pause(_LLM_UNAVAILABLE_RETRY_DELAY_SECONDS)
+                continue
             try:
                 return validate(raw)
-            except (ValidationError, SkillRegistryError, ValueError) as exc:
-                last_error = exc
-        raise AgentDecisionError(error_code) from last_error
+            except (ValidationError, _DecisionValidationError) as exc:
+                last_validation_error = exc
+                validation_attempts += 1
+                if request_number + 1 >= _MAX_MODEL_REQUESTS:
+                    break
+                if validation_attempts >= _MAX_VALIDATION_ATTEMPTS:
+                    break
+        raise AgentDecisionError(error_code) from last_validation_error
 
 
 def _messages(instruction: str, payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -338,11 +366,11 @@ def _require_known_and_allowed(
 ) -> None:
     for skill_id in skill_ids:
         if allowed_ids is not None and skill_id not in allowed_ids:
-            raise ValueError(f"unknown_skill:{skill_id}")
+            raise _DecisionValidationError(f"unknown_skill:{skill_id}")
         try:
             registry.load([skill_id])
         except SkillRegistryError as exc:
-            raise ValueError(f"unknown_skill:{skill_id}") from exc
+            raise _DecisionValidationError(f"unknown_skill:{skill_id}") from exc
 
 
 def _validation_error_details(error: Exception) -> list[dict[str, Any]]:

@@ -13,7 +13,7 @@ from app.services.agentteams_decisions import (
     WorkerContext,
 )
 from app.services.agentteams_skills import ProjectSkillRegistry
-from app.services.llm import LLMProvider
+from app.services.llm import LLMProvider, LLMUnavailableError
 
 
 VALID_MANAGER_PLAN = {
@@ -41,7 +41,10 @@ class FakeLLM(LLMProvider):
 
     def structured_output(self, messages, schema):
         self.calls.append(messages)
-        return self.outputs.pop(0)
+        result = self.outputs.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     def chat(self, messages, tools=None):  # pragma: no cover - decision boundary only
         raise AssertionError("decision engine must use structured_output")
@@ -146,6 +149,41 @@ def test_schema_prompt_reaches_initial_and_corrective_skill_selection_calls_with
             }
         }
         assert hostile_output not in "\n".join(message["content"] for message in call)
+
+
+def test_transient_llm_unavailability_retries_with_schema_and_recovers(fake_llm, registry, skill_context):
+    pauses: list[float] = []
+    fake_llm.outputs = [
+        LLMUnavailableError("temporary provider outage"),
+        {"selected_skill_ids": ["agentteams-onboarding-readiness"]},
+    ]
+
+    selection = AgentDecisionEngine(fake_llm, registry, pause=pauses.append).select_skills(skill_context)
+
+    assert selection.selected_skill_ids == ["agentteams-onboarding-readiness"]
+    assert len(fake_llm.calls) == 2
+    assert len(pauses) == 1
+    assert all(
+        any("response_schema" in message["content"] for message in call)
+        for call in fake_llm.calls
+    )
+
+
+def test_persistent_llm_unavailability_is_bounded_and_preserves_provider_error(
+    fake_llm, registry, skill_context,
+):
+    pauses: list[float] = []
+    fake_llm.outputs = [
+        LLMUnavailableError("temporary provider outage"),
+        LLMUnavailableError("temporary provider outage"),
+        LLMUnavailableError("temporary provider outage"),
+    ]
+
+    with pytest.raises(LLMUnavailableError, match="temporary provider outage"):
+        AgentDecisionEngine(fake_llm, registry, pause=pauses.append).select_skills(skill_context)
+
+    assert len(fake_llm.calls) == 3
+    assert len(pauses) == 2
 
 
 def test_unknown_skill_is_rejected_before_full_skill_content_is_loaded(
