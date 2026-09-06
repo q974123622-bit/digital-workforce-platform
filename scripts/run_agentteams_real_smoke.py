@@ -52,43 +52,144 @@ def _is_real_event_id(value: object) -> bool:
     return isinstance(value, str) and value.startswith("$") and len(value) > 1
 
 
-def _overlap(nodes: list[dict[str, Any]]) -> bool:
-    windows: list[tuple[str, str]] = []
-    for node in nodes:
-        if node.get("assignee_agent_id") in {"VE-0002", "VE-0003"}:
-            started, finished = node.get("started_at"), node.get("finished_at")
-            if isinstance(started, str) and isinstance(finished, str):
-                windows.append((started, finished))
-    return len(windows) >= 2 and max(start for start, _ in windows) <= min(end for _, end in windows)
+def _event_seq(event: dict[str, Any]) -> int | None:
+    value = event.get("event_seq")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _has_parallel_root_worker_release(
+    nodes: list[dict[str, Any]], events: list[dict[str, Any]]
+) -> bool:
+    roots = [node for node in nodes if node.get("depth") == 0 and node.get("parent_task_id") is None]
+    if len(roots) != 1:
+        return False
+    root_id = roots[0].get("id")
+    direct = [
+        node for node in nodes
+        if node.get("parent_task_id") == root_id and node.get("assignee_agent_id") in {"VE-0002", "VE-0003"}
+    ]
+    if len(direct) != 2 or {node.get("assignee_agent_id") for node in direct} != {"VE-0002", "VE-0003"}:
+        return False
+    assignment_seqs: list[int] = []
+    completion_seqs: list[int] = []
+    for node in direct:
+        node_id = node.get("id")
+        assignee = node.get("assignee_agent_id")
+        assigned = [
+            seq for event in events
+            if event.get("event_type") == "task.assigned"
+            and event.get("task_id") == node_id
+            and event.get("actor_agent_id") == "VE-0001"
+            and event.get("target_agent_id") == assignee
+            for seq in [_event_seq(event)] if seq is not None
+        ]
+        completed = [
+            seq for event in events
+            if event.get("event_type") == "task.completed" and event.get("task_id") == node_id
+            for seq in [_event_seq(event)] if seq is not None
+        ]
+        if not assigned or not completed:
+            return False
+        assignment_seqs.append(min(assigned))
+        completion_seqs.append(min(completed))
+    return max(assignment_seqs) < min(completion_seqs)
 
 
 def _has_expected_onboarding_topology(
     nodes: list[dict[str, Any]], events: list[dict[str, Any]]
 ) -> bool:
     roots = [node for node in nodes if node.get("depth") == 0 and node.get("parent_task_id") is None]
-    if len(roots) != 1 or roots[0].get("assignee_agent_id") != "VE-0001":
+    if (
+        len(roots) != 1
+        or roots[0].get("assignee_agent_id") != "VE-0001"
+        or roots[0].get("coordinator_agent_id") != "VE-0001"
+    ):
         return False
     root_id = roots[0].get("id")
     if not isinstance(root_id, str) or not root_id:
         return False
     direct = [node for node in nodes if node.get("parent_task_id") == root_id]
-    if len(direct) != 2 or {node.get("assignee_agent_id") for node in direct} != {"VE-0002", "VE-0003"}:
+    if (
+        len(direct) != 2
+        or {node.get("assignee_agent_id") for node in direct} != {"VE-0002", "VE-0003"}
+        or any(node.get("depth") != 1 or node.get("coordinator_agent_id") != "VE-0001" for node in direct)
+    ):
         return False
     hr = next(node for node in direct if node.get("assignee_agent_id") == "VE-0002")
+    it = next(node for node in direct if node.get("assignee_agent_id") == "VE-0003")
     audit_nodes = [node for node in nodes if node.get("assignee_agent_id") == "VE-0005"]
-    if len(audit_nodes) != 1:
+    depth_two = [node for node in nodes if node.get("depth") == 2]
+    if len(audit_nodes) != 1 or len(depth_two) != 1 or depth_two[0].get("id") != audit_nodes[0].get("id"):
         return False
     audit = audit_nodes[0]
     if not (
-        audit.get("parent_task_id") == hr.get("id")
+        audit.get("parent_task_id") == it.get("id")
         and audit.get("depth") == 2
-        and audit.get("coordinator_agent_id") == "VE-0002"
+        and audit.get("coordinator_agent_id") == "VE-0003"
     ):
         return False
-    hr_delegated_audit = any(
+    root_delegations = [
+        event for event in events
+        if event.get("event_type") == "task.delegate"
+        and event.get("task_id") == root_id
+        and event.get("actor_agent_id") == "VE-0001"
+        and isinstance(event.get("detail"), dict)
+        and event["detail"].get("round") == 1
+        and _event_seq(event) is not None
+    ]
+    it_delegate_seqs = [
+        seq for event in events
+        if event.get("event_type") == "task.delegate"
+        and event.get("task_id") == it.get("id")
+        and event.get("actor_agent_id") == "VE-0003"
+        for seq in [_event_seq(event)] if seq is not None
+    ]
+    if not root_delegations or not it_delegate_seqs:
+        return False
+    it_delegate_seq = min(it_delegate_seqs)
+    successful_it_tool_seqs = [
+        seq for event in events
+        if event.get("event_type") == "tool.result"
+        and event.get("task_id") == it.get("id")
+        and event.get("actor_agent_id") == "VE-0003"
+        and isinstance(event.get("detail"), dict)
+        and event["detail"].get("decision") == "allow"
+        and isinstance(event["detail"].get("audit_ids"), list)
+        and any(isinstance(audit_id, int) and not isinstance(audit_id, bool) and audit_id > 0 for audit_id in event["detail"].get("audit_ids", []))
+        for seq in [_event_seq(event)] if seq is not None
+    ]
+    audit_completed = [
+        seq for event in events
+        if event.get("event_type") == "task.completed" and event.get("task_id") == audit.get("id")
+        for seq in [_event_seq(event)] if seq is not None
+    ]
+    hr_completed = [
+        seq for event in events
+        if event.get("event_type") == "task.completed" and event.get("task_id") == hr.get("id")
+        for seq in [_event_seq(event)] if seq is not None
+    ]
+    it_completed = [
+        seq for event in events
+        if event.get("event_type") == "task.completed" and event.get("task_id") == it.get("id")
+        for seq in [_event_seq(event)] if seq is not None
+    ]
+    manager_summaries = [
+        seq for event in events
+        if event.get("event_type") == "task.summary"
+        and event.get("task_id") == root_id
+        and event.get("actor_agent_id") == "VE-0001"
+        for seq in [_event_seq(event)] if seq is not None
+    ]
+    if not all((successful_it_tool_seqs, audit_completed, hr_completed, it_completed, manager_summaries)):
+        return False
+    ordered_worker_evidence = (
+        min(successful_it_tool_seqs) < it_delegate_seq < min(audit_completed) < min(it_completed)
+        and max(min(hr_completed), min(it_completed)) < min(manager_summaries)
+    )
+    it_delegated_audit = any(
         event.get("event_type") == "task.delegate"
-        and event.get("task_id") == hr.get("id")
-        and event.get("actor_agent_id") == "VE-0002"
+        and event.get("task_id") == it.get("id")
+        and event.get("actor_agent_id") == "VE-0003"
         for event in events
     )
     manager_reviewed = any(
@@ -97,7 +198,7 @@ def _has_expected_onboarding_topology(
         and event.get("actor_agent_id") == "VE-0001"
         for event in events
     )
-    return hr_delegated_audit and manager_reviewed
+    return it_delegated_audit and manager_reviewed and ordered_worker_evidence
 
 
 def build_evidence(
@@ -139,8 +240,8 @@ def build_evidence(
         missing.append("depth_two_delegation")
     if not _has_expected_onboarding_topology(nodes, events):
         missing.append("onboarding_collaboration_topology")
-    if not _overlap(nodes):
-        missing.append("hr_it_overlap")
+    if not _has_parallel_root_worker_release(nodes, events):
+        missing.append("parallel_root_worker_release")
     if not skill_ids or "agentteams-onboarding-readiness" not in skill_ids:
         missing.append("selected_skills")
     if not rounds:

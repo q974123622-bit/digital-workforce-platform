@@ -160,6 +160,144 @@ def test_real_smoke_evidence_rejects_non_strict_or_incomplete_persistence_withou
     assert "token" not in str(evidence).lower()
 
 
+def test_real_smoke_accepts_it_worker_delegated_audit_and_parallel_root_release():
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    health = {
+        "ready_for_demo": True, "mode": "agentteams_strict", "transport": "matrix",
+        "workers": [{"status": "ready"}] * 4,
+    }
+    detail = {"nodes": [
+        {"id": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0},
+        {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1},
+        {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1},
+        {"id": "audit", "parent_task_id": "it", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0003", "depth": 2},
+    ]}
+    events = [
+        {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {"round": 1, "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
+        {"event_seq": 2, "event_type": "task.assigned", "task_id": "hr", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0002", "detail": {"parent_task_id": "root"}},
+        {"event_seq": 3, "event_type": "task.assigned", "task_id": "it", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0003", "detail": {"parent_task_id": "root"}},
+        {"event_seq": 4, "event_type": "tool.result", "task_id": "hr", "actor_agent_id": "VE-0002", "target_agent_id": "VE-0002", "detail": {"decision": "allow", "audit_ids": [11]}},
+        {"event_seq": 5, "event_type": "tool.result", "task_id": "it", "actor_agent_id": "VE-0003", "target_agent_id": "VE-0003", "detail": {"decision": "allow", "audit_ids": [12]}},
+        {"event_seq": 6, "event_type": "task.delegate", "task_id": "it", "actor_agent_id": "VE-0003", "target_agent_id": "VE-0003", "detail": {}},
+        {"event_seq": 7, "event_type": "task.completed", "task_id": "hr", "actor_agent_id": "VE-0002", "target_agent_id": "VE-0002", "detail": {}},
+        {"event_seq": 8, "event_type": "tool.result", "task_id": "audit", "actor_agent_id": "VE-0005", "target_agent_id": "VE-0005", "detail": {"decision": "allow", "audit_ids": [13]}},
+        {"event_seq": 9, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005", "target_agent_id": "VE-0005", "detail": {}},
+        {"event_seq": 10, "event_type": "task.completed", "task_id": "it", "actor_agent_id": "VE-0003", "target_agent_id": "VE-0003", "detail": {}},
+        {"event_seq": 11, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {}},
+    ]
+
+    evidence = smoke.build_evidence(
+        "AT-it-audit", health, detail, events,
+        [{"matrix_event_id": f"$event-{index}"} for index in range(1, 5)],
+        {"status": "completed", "summary": "done"},
+    )
+
+    assert evidence["ok"] is True, evidence
+    assert "onboarding_collaboration_topology" not in evidence["missing_criteria"]
+    assert "parallel_root_worker_release" not in evidence["missing_criteria"]
+
+
+def test_real_smoke_rejects_root_workers_released_after_one_already_completed():
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    health = {
+        "ready_for_demo": True, "mode": "agentteams_strict", "transport": "matrix",
+        "workers": [{"status": "ready"}] * 4,
+    }
+    detail = {"nodes": [
+        {"id": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0},
+        {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1},
+        {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1},
+        {"id": "audit", "parent_task_id": "hr", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0002", "depth": 2},
+    ]}
+    events = [
+        {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {"round": 1, "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
+        {"event_seq": 2, "event_type": "task.assigned", "task_id": "hr", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0002", "detail": {"parent_task_id": "root"}},
+        {"event_seq": 3, "event_type": "tool.result", "task_id": "hr", "actor_agent_id": "VE-0002", "target_agent_id": "VE-0002", "detail": {"decision": "allow", "audit_ids": [11]}},
+        {"event_seq": 4, "event_type": "task.completed", "task_id": "hr", "actor_agent_id": "VE-0002", "target_agent_id": "VE-0002", "detail": {}},
+        {"event_seq": 5, "event_type": "task.assigned", "task_id": "it", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0003", "detail": {"parent_task_id": "root"}},
+        {"event_seq": 6, "event_type": "tool.result", "task_id": "it", "actor_agent_id": "VE-0003", "target_agent_id": "VE-0003", "detail": {"decision": "allow", "audit_ids": [12]}},
+        {"event_seq": 7, "event_type": "task.delegate", "task_id": "it", "actor_agent_id": "VE-0003", "target_agent_id": "VE-0003", "detail": {}},
+        {"event_seq": 8, "event_type": "tool.result", "task_id": "audit", "actor_agent_id": "VE-0005", "target_agent_id": "VE-0005", "detail": {"decision": "allow", "audit_ids": [13]}},
+        {"event_seq": 9, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005", "target_agent_id": "VE-0005", "detail": {}},
+        {"event_seq": 10, "event_type": "task.completed", "task_id": "it", "actor_agent_id": "VE-0003", "target_agent_id": "VE-0003", "detail": {}},
+        {"event_seq": 11, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {}},
+    ]
+
+    evidence = smoke.build_evidence(
+        "AT-serial-release", health, detail, events,
+        [{"matrix_event_id": f"$event-{index}"} for index in range(1, 5)],
+        {"status": "completed", "summary": "done"},
+    )
+
+    assert evidence["ok"] is False
+    assert "parallel_root_worker_release" in evidence["missing_criteria"]
+
+
+@pytest.mark.parametrize(
+    ("it_tool_seq", "it_delegate_seq", "audit_complete_seq", "hr_complete_seq", "it_complete_seq", "manager_summary_seq"),
+    [
+        (6, 5, 7, 8, 9, 10),
+        (4, 5, 8, 6, 7, 9),
+        (4, 5, 6, 8, 9, 7),
+    ],
+    ids=["tool-after-delegate", "audit-after-it", "manager-before-workers"],
+)
+def test_real_smoke_rejects_out_of_order_it_audit_chain(
+    it_tool_seq, it_delegate_seq, audit_complete_seq, hr_complete_seq, it_complete_seq, manager_summary_seq,
+):
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    nodes = [
+        {"id": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0},
+        {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1},
+        {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1},
+        {"id": "audit", "parent_task_id": "it", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0003", "depth": 2},
+    ]
+    events = [
+        {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 1}},
+        {"event_seq": it_tool_seq, "event_type": "tool.result", "task_id": "it", "actor_agent_id": "VE-0003", "detail": {"decision": "allow", "audit_ids": [12]}},
+        {"event_seq": it_delegate_seq, "event_type": "task.delegate", "task_id": "it", "actor_agent_id": "VE-0003", "detail": {}},
+        {"event_seq": audit_complete_seq, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {}},
+        {"event_seq": hr_complete_seq, "event_type": "task.completed", "task_id": "hr", "actor_agent_id": "VE-0002", "detail": {}},
+        {"event_seq": it_complete_seq, "event_type": "task.completed", "task_id": "it", "actor_agent_id": "VE-0003", "detail": {}},
+        {"event_seq": manager_summary_seq, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {}},
+    ]
+
+    assert smoke._has_expected_onboarding_topology(nodes, events) is False
+
+
+@pytest.mark.parametrize(
+    ("audit_parent", "audit_coordinator", "delegate_task", "delegate_actor"),
+    [
+        ("hr", "VE-0002", "hr", "VE-0002"),
+        ("it", "VE-0002", "it", "VE-0003"),
+        ("it", "VE-0003", "hr", "VE-0003"),
+        ("it", "VE-0003", "it", "VE-0002"),
+    ],
+    ids=["hr-parent", "wrong-coordinator", "wrong-task", "wrong-actor"],
+)
+def test_real_smoke_rejects_audit_delegation_not_owned_by_it_parent(
+    audit_parent, audit_coordinator, delegate_task, delegate_actor,
+):
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    nodes = [
+        {"id": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0},
+        {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1},
+        {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1},
+        {"id": "audit", "parent_task_id": audit_parent, "assignee_agent_id": "VE-0005", "coordinator_agent_id": audit_coordinator, "depth": 2},
+    ]
+    events = [
+        {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 1}},
+        {"event_seq": 4, "event_type": "tool.result", "task_id": "it", "actor_agent_id": "VE-0003", "detail": {"decision": "allow", "audit_ids": [12]}},
+        {"event_seq": 5, "event_type": "task.delegate", "task_id": delegate_task, "actor_agent_id": delegate_actor, "detail": {}},
+        {"event_seq": 6, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {}},
+        {"event_seq": 7, "event_type": "task.completed", "task_id": "hr", "actor_agent_id": "VE-0002", "detail": {}},
+        {"event_seq": 8, "event_type": "task.completed", "task_id": "it", "actor_agent_id": "VE-0003", "detail": {}},
+        {"event_seq": 9, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {}},
+    ]
+
+    assert smoke._has_expected_onboarding_topology(nodes, events) is False
+
+
 def test_real_smoke_does_not_count_null_as_a_delegation_round():
     smoke = _load_script("run_agentteams_real_smoke.py")
     health = {
@@ -283,8 +421,20 @@ def test_real_smoke_evidence_redacts_bearer_basic_and_json_credentials():
     evidence = smoke.build_evidence(
         "AT-redaction",
         {"ready_for_demo": True, "mode": "agentteams_strict", "transport": "matrix", "workers": [{"status": "ready"}] * 4},
-        {"nodes": [{"id": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0}, {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1, "started_at": "2026-09-05T00:00:00", "finished_at": "2026-09-05T00:01:00"}, {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1, "started_at": "2026-09-05T00:00:30", "finished_at": "2026-09-05T00:01:30"}, {"id": "audit", "parent_task_id": "hr", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0002", "depth": 2}]},
-        [{"event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 1, "selected_skill_ids": ["agentteams-onboarding-readiness"]}}, {"event_type": "task.delegate", "task_id": "hr", "actor_agent_id": "VE-0002", "detail": {"round": 1}}, {"event_type": "tool.result", "detail": {"audit_ids": [11, 12, 13]}}, {"event_type": "task.summarizing", "task_id": "root", "actor_agent_id": "VE-0003", "detail": {}}, {"event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {}}],
+        {"nodes": [{"id": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0}, {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1}, {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1}, {"id": "audit", "parent_task_id": "it", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0003", "depth": 2}]},
+        [
+            {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {"round": 1, "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
+            {"event_seq": 2, "event_type": "task.assigned", "task_id": "hr", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0002", "detail": {}},
+            {"event_seq": 3, "event_type": "task.assigned", "task_id": "it", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0003", "detail": {}},
+            {"event_seq": 4, "event_type": "tool.result", "task_id": "hr", "actor_agent_id": "VE-0002", "detail": {"decision": "allow", "audit_ids": [11]}},
+            {"event_seq": 5, "event_type": "tool.result", "task_id": "it", "actor_agent_id": "VE-0003", "detail": {"decision": "allow", "audit_ids": [12]}},
+            {"event_seq": 6, "event_type": "task.delegate", "task_id": "it", "actor_agent_id": "VE-0003", "detail": {}},
+            {"event_seq": 7, "event_type": "task.completed", "task_id": "hr", "actor_agent_id": "VE-0002", "detail": {}},
+            {"event_seq": 8, "event_type": "tool.result", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {"decision": "allow", "audit_ids": [13]}},
+            {"event_seq": 9, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {}},
+            {"event_seq": 10, "event_type": "task.completed", "task_id": "it", "actor_agent_id": "VE-0003", "detail": {}},
+            {"event_seq": 11, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {}},
+        ],
         [{"matrix_event_id": "$event-1"}, {"matrix_event_id": "$event-2"}, {"matrix_event_id": "$event-3"}, {"matrix_event_id": "$event-4"}],
         {"status": "completed", "summary": summary},
     )
@@ -522,13 +672,13 @@ def _decision_outputs():
     hr = [
         {"selected_skill_ids": ["hr-onboarding-assistant"]},
         {"action": "tool", "tool_name": "agentteams.hr.lookup_onboarding", "tool_arguments": {"employee_ref": "新员工A"}},
-        {"action": "delegate", "subtask": {"client_task_key": "audit-check", "title": "审计证据核查", "goal": "核查HR材料的审计依据。", "required_capability": "agentteams-onboarding-evidence", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "HR发现需要独立审计复核。"}},
-        {"action": "complete", "result": "HR材料与审计复核已完成。"},
+        {"action": "complete", "result": "HR材料已完整核查。"},
     ]
     it = [
         {"selected_skill_ids": ["it-service-assistant"]},
         {"action": "tool", "tool_name": "agentteams.it.lookup_readiness", "tool_arguments": {"employee_ref": "新员工A"}},
-        {"action": "complete", "result": "IT账号和设备准备已完成。"},
+        {"action": "delegate", "subtask": {"client_task_key": "audit-check", "title": "审计证据核查", "goal": "核查IT就绪缺口的审计依据。", "required_capability": "agentteams-onboarding-evidence", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "IT发现MFA缺口，需要独立审计复核。"}},
+        {"action": "complete", "result": "IT缺口与审计复核已完成。"},
     ]
     audit = [
         {"selected_skill_ids": ["audit-evidence-review"]},
@@ -607,18 +757,24 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     root_children = [node for node in nodes if node.parent_task_id == run.id]
     assert {node.assignee_agent_id for node in root_children} == {"VE-0002", "VE-0003"}
     assert len(root_children) == 2
-    assert by_key["audit-check"].parent_task_id == by_key["hr-check"].id
+    assert by_key["audit-check"].parent_task_id == by_key["it-check"].id
     assert by_key["audit-check"].depth == 2
-    assert by_key["audit-check"].coordinator_agent_id == "VE-0002"
-    # Both independent first-round assignments were emitted before either Worker processed one.
+    assert by_key["audit-check"].coordinator_agent_id == "VE-0003"
+    # Both independent first-round assignments were persisted before either
+    # root Worker completed, proving neither was dependency-blocked.
     assignments = [event for event in db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id).all() if event.event_type == "task.assigned"]
     assert {event.target_agent_id for event in assignments} >= {"VE-0002", "VE-0003"}
     events = db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id).all()
+    direct_ids = {by_key["hr-check"].id, by_key["it-check"].id}
+    direct_assignments = [event.event_seq for event in assignments if event.task_id in direct_ids]
+    direct_completions = [event.event_seq for event in events if event.event_type == "task.completed" and event.task_id in direct_ids]
+    assert len(direct_assignments) == 2 and len(direct_completions) == 2
+    assert max(direct_assignments) < min(direct_completions)
     assert {"task.delegate", "tool.result", "task.summarizing", "task.summary"} <= {event.event_type for event in events}
     assert any(
         event.event_type == "task.delegate"
-        and event.task_id == by_key["hr-check"].id
-        and event.actor_agent_id == "VE-0002"
+        and event.task_id == by_key["it-check"].id
+        and event.actor_agent_id == "VE-0003"
         for event in events
     )
     assert any(
@@ -639,21 +795,7 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
 
     smoke = _load_script("run_agentteams_real_smoke.py")
     graph = service.build_graph(db_session, run.id)
-    timing = {
-        by_key["hr-check"].id: ("2026-09-05T00:00:00", "2026-09-05T00:01:00"),
-        by_key["it-check"].id: ("2026-09-05T00:00:30", "2026-09-05T00:01:30"),
-    }
-    detail = {
-        **graph,
-        "nodes": [
-            {
-                **node,
-                **({"started_at": timing[node["id"]][0], "finished_at": timing[node["id"]][1]}
-                   if node["id"] in timing else {}),
-            }
-            for node in graph["nodes"]
-        ],
-    }
+    detail = graph
     evidence = smoke.build_evidence(
         run.id,
         {"ready_for_demo": True, "mode": "agentteams_strict", "transport": "matrix", "workers": [{"status": "ready"}] * 4},
@@ -661,8 +803,10 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
         [
             {
                 "event_type": event.event_type,
+                "event_seq": event.event_seq,
                 "task_id": event.task_id,
                 "actor_agent_id": event.actor_agent_id,
+                "target_agent_id": event.target_agent_id,
                 "detail": dict(event.detail or {}),
             }
             for event in events
@@ -672,7 +816,7 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     )
     assert evidence["ok"] is True, evidence
     assert evidence["rounds"] == [1]
-    worker_delegate = next(event for event in events if event.event_type == "task.delegate" and event.task_id == by_key["hr-check"].id)
+    worker_delegate = next(event for event in events if event.event_type == "task.delegate" and event.task_id == by_key["it-check"].id)
     assert "round" not in worker_delegate.detail
 
     # Replay does not reapply already-recorded Matrix protocol effects.
