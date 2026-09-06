@@ -107,6 +107,24 @@ def test_manager_plan_is_validated_and_retried_once(fake_llm, registry, manager_
     assert "bad" not in retry["content"]
 
 
+def test_manager_prompt_requires_selected_skill_ids_to_match_loaded_context(
+    fake_llm, registry, manager_context,
+):
+    """Removing the Manager Skill-ID echo contract must fail this outbound-prompt test."""
+    fake_llm.outputs = [VALID_MANAGER_PLAN]
+
+    AgentDecisionEngine(fake_llm, registry).plan(manager_context)
+
+    instruction = fake_llm.calls[0][0]["content"]
+    payload = json.loads(fake_llm.calls[0][1]["content"])
+    assert (
+        "Return selected_skill_ids with exactly the selected scenario Skill IDs supplied below."
+        in instruction
+    )
+    assert "Do not add, drop, or replace IDs; their order is not significant." in instruction
+    assert payload["required_selected_skill_ids"] == ["agentteams-onboarding-readiness"]
+
+
 def test_manager_duplicate_delegate_key_is_corrected_without_replaying_model_output(
     fake_llm, registry, manager_context,
 ):

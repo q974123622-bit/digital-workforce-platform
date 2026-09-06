@@ -226,11 +226,13 @@ class AgentDecisionEngine:
             "client_task_key must be unique; depends_on may reference only keys in that same batch "
             "and must be acyclic. Each assignee and required capability must exactly match the "
             "current team catalog. New client_task_key values must not reuse an existing child task key; "
-            "do not assert unobserved facts.",
+            "do not assert unobserved facts. Return selected_skill_ids with exactly the selected scenario "
+            "Skill IDs supplied below. Do not add, drop, or replace IDs; their order is not significant.",
             {
                 "user_goal": context.user_goal,
                 "manager_runtime_skill": _skill_payload(manager_skill),
                 "selected_scenario_skills": [_skill_payload(skill) for skill in selected_skills],
+                "required_selected_skill_ids": context.selected_skill_ids,
                 "current_team_capability_catalog": context.team_capability_catalog,
                 "completed_direct_child_results": context.child_results,
                 "existing_child_task_keys": context.existing_child_task_keys,
