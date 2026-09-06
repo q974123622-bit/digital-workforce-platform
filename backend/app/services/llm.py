@@ -118,6 +118,16 @@ def _response_tool_calls(message: dict) -> list[ToolCall]:
     return tool_calls
 
 
+def _http_failure_code(status_code: int) -> str:
+    if status_code == 429:
+        return "rate_limited"
+    if 400 <= status_code < 500:
+        return "client_error"
+    if 500 <= status_code < 600:
+        return "server_error"
+    return "http_error"
+
+
 class DeepSeekProvider(LLMProvider):
     """DeepSeek（OpenAI 兼容协议）实现；Key 仅从环境变量读取。"""
 
@@ -145,7 +155,9 @@ class DeepSeekProvider(LLMProvider):
             raise LLMUnavailableError("DeepSeek 网络请求失败", code="network_error") from exc
         if resp.status_code != 200:
             # 错误详情不落日志、不包含 Key
-            raise LLMUnavailableError("DeepSeek HTTP 请求失败", code="http_error")
+            raise LLMUnavailableError(
+                "DeepSeek HTTP 请求失败", code=_http_failure_code(resp.status_code),
+            )
         try:
             return resp.json()
         except (json.JSONDecodeError, ValueError) as exc:

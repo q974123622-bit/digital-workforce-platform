@@ -43,13 +43,29 @@ def test_deepseek_network_failure_has_safe_machine_code(monkeypatch):
     assert "secret provider detail" not in str(caught.value)
 
 
-def test_deepseek_http_failure_has_safe_machine_code(monkeypatch):
-    monkeypatch.setattr(llm.httpx, "post", lambda *_args, **_kwargs: StubResponse(status_code=429))
+@pytest.mark.parametrize(
+    "status_code,expected_code",
+    [
+        pytest.param(429, "rate_limited", id="rate-limited"),
+        pytest.param(400, "client_error", id="bad-request"),
+        pytest.param(401, "client_error", id="unauthorized"),
+        pytest.param(500, "server_error", id="internal-server-error"),
+        pytest.param(503, "server_error", id="service-unavailable"),
+        pytest.param(302, "http_error", id="other-non-success"),
+    ],
+)
+def test_deepseek_http_failure_has_safe_machine_code(monkeypatch, status_code, expected_code):
+    response = StubResponse(status_code=status_code)
+    response.text = "token=response-body-secret"
+    response.headers = {"authorization": "Bearer header-secret"}
+    monkeypatch.setattr(llm.httpx, "post", lambda *_args, **_kwargs: response)
 
     with pytest.raises(LLMUnavailableError) as caught:
         provider().structured_output(DEMO_MESSAGES, {"type": "object"})
 
-    assert caught.value.code == "http_error"
+    assert caught.value.code == expected_code
+    assert "response-body-secret" not in str(caught.value)
+    assert "header-secret" not in str(caught.value)
 
 
 def test_deepseek_invalid_response_json_has_safe_machine_code(monkeypatch):

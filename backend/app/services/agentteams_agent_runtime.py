@@ -48,6 +48,7 @@ _SAFE_ERROR_CODES = {
     "skill_selection_failed", "planning_failed", "decision_failed", "summary_failed",
     "completion_without_tool_evidence", "invalid_model_decision", "invalid_team_catalog",
     "invalid_parent_chain", "llm_unavailable", "network_error", "http_error",
+    "rate_limited", "client_error", "server_error",
     "invalid_response_json", "invalid_structured_json", "runtime_error",
 }
 _MAX_TRACKED = 256
