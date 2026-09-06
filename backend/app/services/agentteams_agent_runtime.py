@@ -483,10 +483,15 @@ class AgentRuntime:
                 },
                 max_bytes=trial_budget,
                 preserve_task_id=source.get("task_id") if isinstance(source, Mapping) else None,
+                preserve_tracking=True,
             )
             recovery = self._pending_recovery_state(pending, self._state)
             if (
-                self._validated_pending_messages(pending) is None
+                any(
+                    pending["trial_state"].get(key) != trial.get(key)
+                    for key in ("processed_event_ids", "processed_idempotency_keys")
+                )
+                or self._validated_pending_messages(pending) is None
                 or self._serialized_size(recovery) > _MAX_STATE_BYTES
             ):
                 self._security(self._state, "outbound_rejected")
@@ -932,6 +937,7 @@ class AgentRuntime:
         *,
         max_bytes: int = _MAX_STATE_BYTES,
         preserve_task_id: str | None = None,
+        preserve_tracking: bool = False,
     ) -> dict[str, Any]:
         """Return a redacted, finite JSON document before any filesystem write."""
         bounded_input = dict(value)
@@ -947,15 +953,24 @@ class AgentRuntime:
         safe = self._safe_value(bounded_input)
         if not isinstance(safe, dict):
             return {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}}
+        if preserve_tracking:
+            # These values suppress reprocessing while the persisted cursor is
+            # intentionally old.  Pending recovery must retain every one, or
+            # reject the outbound batch rather than silently repeating work.
+            for key in ("processed_event_ids", "processed_idempotency_keys"):
+                raw = bounded_input.get(key)
+                if isinstance(raw, list):
+                    safe[key] = [self._safe_value(item) for item in raw[:_MAX_TRACKED]]
         def size() -> int:
             return self._serialized_size(safe)
         tasks = safe.get("tasks")
         while size() > max_bytes and isinstance(tasks, dict) and any(key != preserve_task_id for key in tasks):
             tasks.pop(next(key for key in tasks if key != preserve_task_id))
-        for key in ("processed_event_ids", "processed_idempotency_keys"):
-            values = safe.get(key)
-            while size() > max_bytes and isinstance(values, list) and values:
-                del values[: max(1, len(values) // 2)]
+        if not preserve_tracking:
+            for key in ("processed_event_ids", "processed_idempotency_keys"):
+                values = safe.get(key)
+                while size() > max_bytes and isinstance(values, list) and values:
+                    del values[: max(1, len(values) // 2)]
         if size() > max_bytes:
             safe["security"] = {"state_truncated": 1}
         return safe

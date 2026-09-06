@@ -797,6 +797,40 @@ def test_near_limit_state_preserves_restartable_pending_worker_assignment(tmp_pa
     assert state_path.stat().st_size <= 16_384
 
 
+def test_pending_fails_closed_instead_of_pruning_tracking_to_fit(tmp_path):
+    seeded, _, _, _ = runtime(tmp_path, role="hr")
+    event_ids = [f"$historic-event-{index:02d}-" + ("e" * 480) for index in range(15)]
+    idempotency_keys = [f"historic-key-{index:02d}-" + ("i" * 480) for index in range(15)]
+    seeded._state["processed_event_ids"] = event_ids
+    seeded._state["processed_idempotency_keys"] = idempotency_keys
+    seeded._save_state()
+    state_path = tmp_path / "state" / "VE-0002.json"
+    assert 14_000 < state_path.stat().st_size <= 16_384
+
+    gateway = FakeGateway()
+    engine = FakeEngine()
+    subject = AgentRuntime(seeded.config, gateway, engine, pause=lambda _: None)
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [WorkerDecision(
+        action="tool", tool_name="query_onboarding_employee",
+        tool_arguments={"employee_ref": "新员工A"},
+    )]
+    assignment = message(
+        type="task.assign", sender="VE-0001", receiver="VE-0002", task_id="current",
+        parent_task_id="root-1", key="current-assignment", payload=assign_payload(),
+    )
+    gateway.events = [event(assignment, event_id="$current", sender=MXIDS["VE-0001"])]
+
+    assert subject.run_once() == 0
+    assert gateway.send_attempts == 0
+    assert subject._state["security"]["outbound_rejected"] == 1
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["pending_outbox"] is None
+    assert persisted["processed_event_ids"] == event_ids
+    assert persisted["processed_idempotency_keys"] == idempotency_keys
+    assert state_path.stat().st_size <= 16_384
+
+
 def test_worker_rejects_stale_delegate_candidate_after_platform_catalog_refresh(tmp_path):
     """A later platform summary revokes the old assignment snapshot before delegation."""
     subject, gateway, engine, _ = runtime(tmp_path, role="hr")
@@ -869,6 +903,8 @@ def test_runtime_config_rejects_agent_id_that_can_escape_the_state_directory(tmp
 def test_pending_replay_resumes_same_batch_without_skipping_later_events(tmp_path):
     """A failed B response may replay, but C must still be read from the old cursor once."""
     subject, gateway, engine, _ = runtime(tmp_path)
+    subject._state["processed_event_ids"] = [f"$historic-{index}" for index in range(20)]
+    subject._state["processed_idempotency_keys"] = [f"historic-{index}" for index in range(20)]
     engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])] * 3
     engine.plans = [plan("summarize")] * 3
     batch = [
@@ -881,6 +917,9 @@ def test_pending_replay_resumes_same_batch_without_skipping_later_events(tmp_pat
     assert subject.run_once() == 1
     assert subject._state["cursor"] is None
     assert subject._state["pending_outbox"]["source"]["idempotency_key"] == "B"
+    pending_trial = subject._state["pending_outbox"]["trial_state"]
+    assert "$A" in pending_trial["processed_event_ids"]
+    assert "A" in pending_trial["processed_idempotency_keys"]
 
     restarted_gateway = FakeGateway()
     restarted_gateway.events = batch
