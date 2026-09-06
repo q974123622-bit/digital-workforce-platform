@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from . import config
 from .agentteams_protocol import AgentProtocolMessage
+from .agentteams_runtime_config import load_strict_runtime_config
 from .gateway import invoke_plugin
 from .knowledge_registry import plugin_id_for_level, resolve as resolve_knowledge_base
 
@@ -1285,6 +1286,8 @@ class AgentTeamsCollaborationService:
 
     def _team_capability_catalog(self, db: Session, team_id: str) -> list[dict[str, Any]]:
         """Expose only active, runtime-bound current-team members and granted tools."""
+        if config.agentteams_mode() == "agentteams_strict":
+            return self._strict_team_capability_catalog(db, team_id)
         team = db.get(models.Team, team_id)
         if team is None:
             raise CollaborationConflict("unknown_team")
@@ -1311,6 +1314,61 @@ class AgentTeamsCollaborationService:
                 "runtime_bound": True,
                 "capabilities": capability_ids,
                 "tool_summaries": capability_ids,
+            })
+        return catalog
+
+    def _strict_team_capability_catalog(self, db: Session, team_id: str) -> list[dict[str, Any]]:
+        """Build a public capability view from the validated strict runtime only."""
+        try:
+            runtime = load_strict_runtime_config()
+        except ValueError as exc:
+            raise CollaborationConflict("invalid_runtime_config") from exc
+        if runtime.team_id != team_id:
+            raise CollaborationConflict("runtime_team_mismatch")
+
+        team = db.get(models.Team, team_id)
+        if team is None:
+            raise CollaborationConflict("unknown_team")
+        member_ids = {team.leader_employee_id}
+        member_ids.update(db.scalars(
+            select(models.TeamMember.employee_id).where(models.TeamMember.team_id == team_id)
+        ))
+
+        catalog: list[dict[str, Any]] = []
+        for identity in sorted(runtime.agents.values(), key=lambda item: item.agent_id or ""):
+            agent_id = identity.agent_id
+            if not agent_id:
+                raise CollaborationConflict("invalid_runtime_config")
+            raw_entry = runtime.team_catalog.get(agent_id, {})
+            if not isinstance(raw_entry, Mapping):
+                raise CollaborationConflict("invalid_runtime_config")
+            raw_capabilities = raw_entry.get("capabilities", [])
+            if (
+                not isinstance(raw_capabilities, list)
+                or len(raw_capabilities) > 32
+                or any(not isinstance(value, str) or not value.strip() or len(value.strip()) > 128 for value in raw_capabilities)
+            ):
+                raise CollaborationConflict("invalid_runtime_config")
+            capabilities = sorted({value.strip() for value in raw_capabilities})
+            if len(capabilities) != len(raw_capabilities):
+                raise CollaborationConflict("invalid_runtime_config")
+
+            employee = db.get(models.DigitalEmployee, agent_id)
+            if (
+                employee is None
+                or employee.status != "active"
+                or employee.runtime_type != "agentteams"
+                or agent_id not in member_ids
+                or matrix_user_id_for_runtime(employee.runtime_ref) != identity.mxid
+            ):
+                continue
+            catalog.append({
+                "agent_id": agent_id,
+                "name": employee.name,
+                "department": employee.department,
+                "runtime_bound": True,
+                "capabilities": capabilities,
+                "tool_summaries": capabilities,
             })
         return catalog
 

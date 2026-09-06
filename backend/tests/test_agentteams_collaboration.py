@@ -549,6 +549,91 @@ def test_team_capability_catalog_only_lists_active_runtime_bound_team_members(db
     assert all(item["runtime_bound"] is True for item in catalog)
 
 
+def _strict_runtime_document():
+    """A credential-shaped test document; tests assert none of it becomes catalog data."""
+    agents = {}
+    for role, agent_id in {
+        "manager": "VE-0001", "hr": "VE-0002", "it": "VE-0003", "audit": "VE-0005",
+    }.items():
+        agents[role] = {
+            "agent_id": agent_id,
+            "mxid": f"@strict-{role}:local",
+            "token": f"private-{role}-token",
+            "allowed_skill_ids": [f"{role}.skill"],
+            "safe_tool_catalog": [],
+        }
+    return {
+        "matrix_url": "http://matrix.local",
+        "room_id": "!strict-room:local",
+        "team_id": "TEAM-ONBOARD",
+        "platform": {"mxid": "@platform:local", "token": "private-platform-token"},
+        "agents": agents,
+        "team_catalog": {
+            "VE-0002": {"capabilities": ["hr.onboarding.read"]},
+            "VE-0003": {"capabilities": ["it.readiness.read"]},
+            "VE-0005": {"capabilities": ["audit.evidence.read"]},
+        },
+    }
+
+
+def test_strict_team_catalog_uses_validated_runtime_not_legacy_grants(db_session, monkeypatch, tmp_path):
+    """Strict plans must use only the configured Matrix team, never a stale grant row."""
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService
+
+    runtime_path = tmp_path / "strict-runtime.json"
+    runtime_path.write_text(json.dumps(_strict_runtime_document()), encoding="utf-8")
+    monkeypatch.setattr(config, "agentteams_mode", lambda: "agentteams_strict")
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(runtime_path))
+
+    team = db_session.get(models.Team, "TEAM-ONBOARD")
+    team.leader_employee_id = "VE-0001"
+    member_ids = {member.employee_id for member in db_session.query(models.TeamMember).filter_by(team_id=team.id)}
+    for employee_id in ("VE-0001", "VE-0002", "VE-0003", "VE-0005", "RPA-0001"):
+        if employee_id not in member_ids:
+            db_session.add(models.TeamMember(team_id=team.id, employee_id=employee_id, role="worker"))
+
+    runtime_agents = _strict_runtime_document()["agents"]
+    for role, identity in runtime_agents.items():
+        employee = db_session.get(models.DigitalEmployee, identity["agent_id"])
+        employee.status = "active"
+        employee.runtime_type = "agentteams"
+        employee.runtime_ref = identity["mxid"]
+        db_session.add(models.EmployeePluginGrant(
+            employee_id=employee.employee_no,
+            plugin_id=f"obsolete.{role}.grant",
+            decision_mode="allow",
+        ))
+    extra = db_session.get(models.DigitalEmployee, "RPA-0001")
+    extra.status = "active"
+    extra.runtime_type = "agentteams"
+    extra.runtime_ref = "@extra-rpa:local"
+    db_session.add(models.EmployeePluginGrant(
+        employee_id=extra.employee_no, plugin_id="obsolete.rpa.grant", decision_mode="allow",
+    ))
+    db_session.flush()
+
+    catalog = AgentTeamsCollaborationService()._team_capability_catalog(db_session, team.id)
+
+    assert {item["agent_id"]: item["capabilities"] for item in catalog} == {
+        "VE-0001": [],
+        "VE-0002": ["hr.onboarding.read"],
+        "VE-0003": ["it.readiness.read"],
+        "VE-0005": ["audit.evidence.read"],
+    }
+    assert "RPA-0001" not in {item["agent_id"] for item in catalog}
+    assert "private-" not in json.dumps(catalog)
+
+
+def test_strict_team_catalog_fails_closed_when_runtime_is_invalid(db_session, monkeypatch, tmp_path):
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict
+
+    monkeypatch.setattr(config, "agentteams_mode", lambda: "agentteams_strict")
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(tmp_path / "missing-runtime.json"))
+
+    with pytest.raises(CollaborationConflict, match="invalid_runtime_config"):
+        AgentTeamsCollaborationService()._team_capability_catalog(db_session, "TEAM-ONBOARD")
+
+
 def test_delegate_rejects_parent_chain_assignee_without_partial_tree(db_session):
     """Removing ancestor validation would allow a worker to delegate work back to its manager."""
     from app.services.agentteams_collaboration import CollaborationConflict
