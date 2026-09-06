@@ -24,6 +24,7 @@ from . import config
 from .agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict
 from .agentteams_gateway import AgentTeamsGateway, MatrixEvent
 from .agentteams_protocol import PREFIX, AgentProtocolMessage, parse_protocol_lines, render_protocol_line
+from .agentteams_runtime_config import load_strict_runtime_config
 
 
 _CURSOR_SCOPE_PREFIX = "agentteams:matrix-sync:"
@@ -40,14 +41,27 @@ class AgentTeamsCollaborationRunner:
         service: AgentTeamsCollaborationService | None = None,
         room_id: str | None = None,
     ):
-        self.gateway = gateway or AgentTeamsGateway()
+        strict_runtime = None
+        if gateway is None:
+            # Strict delivery must use the same validated identity contract as
+            # strict health; legacy AGENTTEAMS_* values are not a fallback.
+            strict_runtime = load_strict_runtime_config()
+            gateway = AgentTeamsGateway(
+                base_url=strict_runtime.matrix_url,
+                matrix_token=strict_runtime.platform.token,
+            )
+        self.gateway = gateway
         # Strict is self-contained; an explicit local layer may override this instance.
         self.transport_mode = "agentteams_strict"
         self.service = service or AgentTeamsCollaborationService(
             max_depth=config.agentteams_max_depth(),
             max_children=config.agentteams_max_children(),
         )
-        self.room_id = room_id or config.get(config.AGENTTEAMS_ROOM_ID) or ""
+        self.room_id = room_id or (
+            strict_runtime.room_id
+            if strict_runtime is not None
+            else config.get(config.AGENTTEAMS_ROOM_ID)
+        ) or ""
         self._cursor_scope = self._matrix_account_scope()
         self._closed = False
 

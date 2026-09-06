@@ -47,6 +47,51 @@ class BatchWithoutCursor:
         self.events = events
 
 
+def test_strict_runner_factory_uses_validated_runtime_identity_and_room(monkeypatch, tmp_path):
+    """Strict delivery must use the same identity contract as strict health."""
+    from app.services import agentteams_runner as runner_module
+
+    runtime_path = tmp_path / "runtime.json"
+    runtime_path.write_text(json.dumps({
+        "matrix_url": "http://runtime.matrix.test",
+        "room_id": "!runtime-room:test",
+        "team_id": "TEAM-ONBOARD",
+        "platform": {"mxid": "@platform:test", "token": "runtime-platform-token"},
+        "agents": {
+            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token", "allowed_skill_ids": ["manager-skill"], "safe_tool_catalog": []},
+            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token", "allowed_skill_ids": ["hr-skill"], "safe_tool_catalog": []},
+            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token", "allowed_skill_ids": ["it-skill"], "safe_tool_catalog": []},
+            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token", "allowed_skill_ids": ["audit-skill"], "safe_tool_catalog": []},
+        },
+        "team_catalog": {},
+    }), encoding="utf-8")
+    calls = []
+
+    class StrictGateway(FakeGateway):
+        def __init__(self, *, base_url, matrix_token):
+            super().__init__()
+            calls.append((base_url, matrix_token))
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(runtime_path))
+    monkeypatch.setenv("AGENTTEAMS_MATRIX_URL", "http://stale.example")
+    monkeypatch.setenv("AGENTTEAMS_MATRIX_TOKEN", "stale-token")
+    monkeypatch.setenv("AGENTTEAMS_ROOM_ID", "!stale-room:test")
+    monkeypatch.setattr(runner_module, "AgentTeamsGateway", StrictGateway)
+
+    runner = runner_module.AgentTeamsCollaborationRunner()
+
+    assert calls == [("http://runtime.matrix.test", "runtime-platform-token")]
+    assert runner.room_id == "!runtime-room:test"
+
+
+def test_strict_runner_factory_fails_closed_for_invalid_runtime(monkeypatch, tmp_path):
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(tmp_path / "missing.json"))
+
+    with pytest.raises(ValueError, match="invalid_runtime_config"):
+        AgentTeamsCollaborationRunner()
+
 def _enable_test_leader(db_session):
     leader = db_session.get(models.DigitalEmployee, "DT-E10281")
     leader.runtime_ref = "@dwp-twin-e10281:local"
