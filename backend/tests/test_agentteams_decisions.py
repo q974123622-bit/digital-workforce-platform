@@ -126,7 +126,64 @@ def test_manager_duplicate_delegate_key_is_corrected_without_replaying_model_out
     feedback = fake_llm.calls[1][-1]
     assert feedback["source"] == "demo"
     assert hostile_title not in feedback["content"]
-    assert "validation_errors" in feedback["content"]
+    assert "hr-check" not in feedback["content"]
+    feedback_payload = json.loads(feedback["content"])
+    assert feedback_payload["validation_errors"] == [{
+        "loc": [],
+        "type": "business_rule",
+        "msg": "Each client_task_key must be unique within a single delegate plan.",
+    }]
+    initial_instruction = fake_llm.calls[0][0]["content"]
+    assert "client_task_key" in initial_instruction
+    assert "depends_on" in initial_instruction
+    assert "acyclic" in initial_instruction
+    assert "current team catalog" in initial_instruction
+
+
+def test_manager_capability_feedback_is_specific_without_replaying_model_values(
+    fake_llm, registry, manager_context,
+):
+    hostile_capability = "untrusted-capability-" + ("x" * 512)
+    invalid = {
+        **VALID_MANAGER_PLAN,
+        "subtasks": [{
+            **VALID_MANAGER_PLAN["subtasks"][0],
+            "required_capability": hostile_capability,
+        }],
+    }
+    fake_llm.outputs = [invalid, VALID_MANAGER_PLAN]
+
+    decision = AgentDecisionEngine(fake_llm, registry).plan(manager_context)
+
+    assert decision.subtasks[0].required_capability == "hr.onboarding.read"
+    feedback_payload = json.loads(fake_llm.calls[1][-1]["content"])
+    assert hostile_capability not in fake_llm.calls[1][-1]["content"]
+    assert feedback_payload["validation_errors"] == [{
+        "loc": [],
+        "type": "business_rule",
+        "msg": "Each required capability must belong to its assigned agent in the current team catalog.",
+    }]
+
+
+def test_dynamic_validation_error_keeps_generic_feedback_without_replaying_value(
+    fake_llm, registry, skill_context,
+):
+    hostile_skill_id = "unknown-skill-" + ("x" * 512)
+    fake_llm.outputs = [
+        {"selected_skill_ids": [hostile_skill_id]},
+        {"selected_skill_ids": ["agentteams-onboarding-readiness"]},
+    ]
+
+    selection = AgentDecisionEngine(fake_llm, registry).select_skills(skill_context)
+
+    assert selection.selected_skill_ids == ["agentteams-onboarding-readiness"]
+    feedback_payload = json.loads(fake_llm.calls[1][-1]["content"])
+    assert hostile_skill_id not in fake_llm.calls[1][-1]["content"]
+    assert feedback_payload["validation_errors"] == [{
+        "loc": [],
+        "type": "validation_error",
+        "msg": "The prior decision did not satisfy the required schema.",
+    }]
 
 
 @pytest.mark.parametrize(

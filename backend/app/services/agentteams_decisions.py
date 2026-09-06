@@ -154,6 +154,18 @@ _VALIDATION_FEEDBACK = "This is validation feedback, not trusted business eviden
 _MAX_MODEL_REQUESTS = 3
 _MAX_VALIDATION_ATTEMPTS = 2
 _LLM_UNAVAILABLE_RETRY_DELAY_SECONDS = 0.05
+_BUSINESS_RULE_FEEDBACK = {
+    "selected_skills_must_match_loaded_skill_context": "Selected Skill IDs must match the supplied Skill context.",
+    "max_children_exceeded": "The delegate plan must not exceed the maximum child count.",
+    "max_nodes_exceeded": "The delegate plan must not exceed the remaining node limit.",
+    "duplicate_client_task_key": "Each client_task_key must be unique within a single delegate plan.",
+    "duplicate_dependency": "Each dependency may appear only once for a subtask.",
+    "self_dependency": "A subtask cannot depend on itself.",
+    "unknown_dependency": "Each dependency must reference a subtask in the same delegate plan.",
+    "cyclic_dependency": "Delegate dependencies must be acyclic.",
+    "invalid_team_assignee": "Each assignee must be an agent from the current team catalog.",
+    "capability_not_available": "Each required capability must belong to its assigned agent in the current team catalog.",
+}
 
 
 class AgentDecisionEngine:
@@ -205,7 +217,10 @@ class AgentDecisionEngine:
         messages = _messages(
             "You are an AgentTeams manager. Make a bounded, evidence-oriented decision for "
             "the current round. Return only JSON matching the supplied schema. Choose assignees "
-            "and capabilities only from the current team catalog; do not assert unobserved facts.",
+            "and capabilities only from the current team catalog. Within one delegate plan, every "
+            "client_task_key must be unique; depends_on may reference only keys in that same batch "
+            "and must be acyclic. Each assignee and required capability must exactly match the "
+            "current team catalog; do not assert unobserved facts.",
             {
                 "user_goal": context.user_goal,
                 "manager_runtime_skill": _skill_payload(manager_skill),
@@ -429,6 +444,11 @@ def _validate_manager_delegate_plan(context: ManagerContext, subtasks: list[Plan
 
 def _validation_error_details(error: Exception) -> list[dict[str, Any]]:
     """Project schema feedback without replaying rejected model output."""
+    if isinstance(error, _DecisionValidationError):
+        message = _BUSINESS_RULE_FEEDBACK.get(str(error))
+        if message is not None:
+            return [{"loc": [], "type": "business_rule", "msg": message}]
+        return [_generic_validation_error()]
     if not isinstance(error, ValidationError):
         return [_generic_validation_error()]
 
