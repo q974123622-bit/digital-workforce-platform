@@ -97,3 +97,55 @@ def test_deepseek_chat_invalid_response_shape_has_safe_machine_code(monkeypatch)
 
     assert caught.value.code == "invalid_response_json"
     assert "private provider shape" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "raw_message",
+    [
+        pytest.param({}, id="missing"),
+        pytest.param({"content": None}, id="null"),
+        pytest.param({"content": ""}, id="empty"),
+    ],
+)
+def test_deepseek_structured_output_rejects_missing_content(monkeypatch, raw_message):
+    monkeypatch.setattr(
+        llm.httpx,
+        "post",
+        lambda *_args, **_kwargs: StubResponse(data={"choices": [{"message": raw_message}]}),
+    )
+
+    with pytest.raises(LLMUnavailableError) as caught:
+        provider().structured_output(DEMO_MESSAGES, {"type": "object"})
+
+    assert caught.value.code == "invalid_structured_json"
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        pytest.param({"private": "not-a-list"}, id="tool-calls-not-list"),
+        pytest.param([None], id="item-not-object"),
+        pytest.param([{}], id="function-missing"),
+        pytest.param([{"function": None}], id="function-not-object"),
+        pytest.param([{"function": {"arguments": "{}"}}], id="name-missing"),
+        pytest.param([{"function": {"name": "", "arguments": "{}"}}], id="name-empty"),
+        pytest.param([{"function": {"name": "safe"}}], id="arguments-missing"),
+        pytest.param([{"function": {"name": "safe", "arguments": ""}}], id="arguments-empty"),
+        pytest.param([{"function": {"name": "safe", "arguments": {}}}], id="arguments-not-string"),
+        pytest.param([{"function": {"name": "safe", "arguments": "not-json token=private"}}], id="arguments-invalid-json"),
+        pytest.param([{"function": {"name": "safe", "arguments": "[]"}}], id="arguments-not-object-json"),
+    ],
+)
+def test_deepseek_chat_rejects_malformed_tool_calls_with_safe_code(monkeypatch, tool_calls):
+    raw_provider_data = {"choices": [{"message": {"content": "", "tool_calls": tool_calls}}]}
+    monkeypatch.setattr(
+        llm.httpx,
+        "post",
+        lambda *_args, **_kwargs: StubResponse(data=raw_provider_data),
+    )
+
+    with pytest.raises(LLMUnavailableError) as caught:
+        provider().chat(DEMO_MESSAGES)
+
+    assert caught.value.code == "invalid_response_json"
+    assert "token=private" not in str(caught.value)

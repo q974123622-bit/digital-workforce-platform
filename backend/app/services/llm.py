@@ -78,6 +78,41 @@ def _response_message(data: dict) -> dict:
     return message
 
 
+def _response_tool_calls(message: dict) -> list[ToolCall]:
+    raw_tool_calls = message.get("tool_calls")
+    if raw_tool_calls is None:
+        return []
+    if not isinstance(raw_tool_calls, list):
+        raise LLMUnavailableError(
+            "DeepSeek 工具调用结构无效", code="invalid_response_json",
+        )
+    tool_calls: list[ToolCall] = []
+    for item in raw_tool_calls:
+        if not isinstance(item, dict) or not isinstance(item.get("function"), dict):
+            raise LLMUnavailableError(
+                "DeepSeek 工具调用结构无效", code="invalid_response_json",
+            )
+        function = item["function"]
+        name = function.get("name")
+        raw_arguments = function.get("arguments")
+        if not isinstance(name, str) or not name or not isinstance(raw_arguments, str) or not raw_arguments:
+            raise LLMUnavailableError(
+                "DeepSeek 工具调用结构无效", code="invalid_response_json",
+            )
+        try:
+            arguments = json.loads(raw_arguments)
+        except json.JSONDecodeError as exc:
+            raise LLMUnavailableError(
+                "DeepSeek 工具调用结构无效", code="invalid_response_json",
+            ) from exc
+        if not isinstance(arguments, dict):
+            raise LLMUnavailableError(
+                "DeepSeek 工具调用结构无效", code="invalid_response_json",
+            )
+        tool_calls.append(ToolCall(id=item.get("id", ""), name=name, arguments=arguments))
+    return tool_calls
+
+
 class DeepSeekProvider(LLMProvider):
     """DeepSeek（OpenAI 兼容协议）实现；Key 仅从环境变量读取。"""
 
@@ -125,15 +160,7 @@ class DeepSeekProvider(LLMProvider):
         data = self._post(payload)
         msg = _response_message(data)
         content = msg.get("content") or ""
-        tool_calls: list[ToolCall] = []
-        for tc in msg.get("tool_calls") or []:
-            raw = tc["function"].get("arguments") or "{}"
-            try:
-                arguments = json.loads(raw)
-            except json.JSONDecodeError:
-                arguments = {}
-            tool_calls.append(ToolCall(id=tc.get("id", ""), name=tc["function"]["name"], arguments=arguments))
-        return LLMResponse(content=content, tool_calls=tool_calls)
+        return LLMResponse(content=content, tool_calls=_response_tool_calls(msg))
 
     def tool_call(self, messages: list[dict], tools: list[dict]) -> LLMResponse:
         resp = self.chat(messages, tools=tools)
@@ -150,7 +177,11 @@ class DeepSeekProvider(LLMProvider):
             "temperature": 0.1,
         }
         data = self._post(payload)
-        content = _response_message(data).get("content") or "{}"
+        content = _response_message(data).get("content")
+        if not isinstance(content, str) or not content:
+            raise LLMUnavailableError(
+                "模型未返回结构化输出", code="invalid_structured_json",
+            )
         try:
             return json.loads(content)
         except (json.JSONDecodeError, TypeError) as exc:
