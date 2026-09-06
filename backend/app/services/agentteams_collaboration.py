@@ -474,7 +474,10 @@ class AgentTeamsCollaborationService:
                 actor_agent_id=message.sender,
                 target_agent_id=parent.assignee_agent_id,
                 summary="subtasks delegated",
-                detail={"client_task_keys": keys},
+                detail={
+                    "client_task_keys": keys,
+                    **({"round": coordination["round"]} if coordination is not None else {}),
+                },
             ),
             self._append_event(
                 db,

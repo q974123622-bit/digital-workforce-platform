@@ -636,6 +636,45 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     messages = db_session.query(models.AgentMessage).filter_by(root_task_id=run.id).all()
     assert all(not str(message.matrix_event_id or "").startswith("local-") for message in messages)
     assert any(str(message.matrix_event_id or "").startswith("$") for message in messages)
+
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    graph = service.build_graph(db_session, run.id)
+    timing = {
+        by_key["hr-check"].id: ("2026-09-05T00:00:00", "2026-09-05T00:01:00"),
+        by_key["it-check"].id: ("2026-09-05T00:00:30", "2026-09-05T00:01:30"),
+    }
+    detail = {
+        **graph,
+        "nodes": [
+            {
+                **node,
+                **({"started_at": timing[node["id"]][0], "finished_at": timing[node["id"]][1]}
+                   if node["id"] in timing else {}),
+            }
+            for node in graph["nodes"]
+        ],
+    }
+    evidence = smoke.build_evidence(
+        run.id,
+        {"ready_for_demo": True, "mode": "agentteams_strict", "transport": "matrix", "workers": [{"status": "ready"}] * 4},
+        detail,
+        [
+            {
+                "event_type": event.event_type,
+                "task_id": event.task_id,
+                "actor_agent_id": event.actor_agent_id,
+                "detail": dict(event.detail or {}),
+            }
+            for event in events
+        ],
+        [{"matrix_event_id": message.matrix_event_id} for message in messages],
+        service.build_result(db_session, run.id),
+    )
+    assert evidence["ok"] is True, evidence
+    assert evidence["rounds"] == [1]
+    worker_delegate = next(event for event in events if event.event_type == "task.delegate" and event.task_id == by_key["hr-check"].id)
+    assert "round" not in worker_delegate.detail
+
     # Replay does not reapply already-recorded Matrix protocol effects.
     completed_count = len([event for event in events if event.event_type == "task.completed"])
     runner.tick_once(db_session); db_session.commit()
