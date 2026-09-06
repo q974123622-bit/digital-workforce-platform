@@ -395,6 +395,33 @@ def test_worker_rejects_incompatible_action_fields_once_then_parses_valid_action
     assert "validation_errors" in fake_llm.calls[1][-1]["content"]
 
 
+def test_worker_prompt_explicitly_requires_action_payload_field_exclusivity(
+    fake_llm, registry,
+):
+    """Removing the per-action omission contract must fail this outbound-prompt test."""
+    fake_llm.outputs = [{
+        "action": "tool",
+        "tool_name": "query_onboarding_employee",
+        "tool_arguments": {},
+    }]
+
+    AgentDecisionEngine(fake_llm, registry).decide_work(
+        _worker_context_for_collaboration_validation()
+    )
+
+    instruction = fake_llm.calls[0][0]["content"]
+    assert "tool: action, tool_name, and optional tool_arguments" in instruction
+    assert (
+        "for tool, omit recipient_agent_id, message, subtask, result, and failure_reason"
+        in instruction
+    )
+    assert "ask: action, recipient_agent_id, and message" in instruction
+    assert "delegate: action and subtask" in instruction
+    assert "complete: action and result" in instruction
+    assert "fail: action and failure_reason" in instruction
+    assert "all other action-specific fields must be omitted" in instruction
+
+
 def test_worker_prompt_receives_current_agent_and_current_team_capabilities(
     fake_llm, registry,
 ):

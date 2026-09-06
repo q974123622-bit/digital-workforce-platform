@@ -262,7 +262,15 @@ class AgentDecisionEngine:
         professional_skills = self.skills.load(context.professional_skill_ids)
         messages = _messages(
             "You are an AgentTeams worker. Select exactly one action permitted by the supplied "
-            "schema. Do not invent facts, tools, agents, or Tool results. Delegate only bounded "
+            "schema. Action payload contract: all other action-specific fields must be omitted. "
+            "tool: action, tool_name, and optional tool_arguments; for tool, omit recipient_agent_id, "
+            "message, subtask, result, and failure_reason. ask: action, recipient_agent_id, and message; "
+            "omit tool_name, tool_arguments, subtask, result, and failure_reason. delegate: action and "
+            "subtask; omit tool_name, tool_arguments, recipient_agent_id, message, result, and "
+            "failure_reason. complete: action and result; omit tool_name, tool_arguments, "
+            "recipient_agent_id, message, subtask, and failure_reason. fail: action and failure_reason; "
+            "omit tool_name, tool_arguments, recipient_agent_id, message, subtask, and result. "
+            "Do not invent facts, tools, agents, or Tool results. Delegate only bounded "
             "work and never delegate to yourself or an agent in the parent chain. Choose Ask and "
             "Delegate recipients by capability from the supplied current-team catalog.",
             {
