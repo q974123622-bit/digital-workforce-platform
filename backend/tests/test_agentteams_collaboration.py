@@ -715,9 +715,13 @@ def test_initial_plus_three_follow_up_rounds_are_allowed(db_session):
         _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("follow-5", "VE-0002")], key="follow-5")
 
 
-def test_strict_delegate_requires_explicit_nonempty_capability(db_session, monkeypatch):
+def test_strict_delegate_requires_explicit_nonempty_capability(db_session, monkeypatch, tmp_path):
     from app.services.agentteams_collaboration import CollaborationConflict
+
+    runtime_path = tmp_path / "strict-runtime.json"
+    runtime_path.write_text(json.dumps(_strict_runtime_document()), encoding="utf-8")
     monkeypatch.setattr(config, "agentteams_mode", lambda: "agentteams_strict")
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(runtime_path))
     run, leader = _create_run(db_session)
     raw = _subtask("missing", "VE-0002")
     raw.pop("required_capability")
