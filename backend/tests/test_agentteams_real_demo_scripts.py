@@ -123,6 +123,189 @@ def test_strict_start_environment_enables_the_collaboration_loop():
     assert completed.stdout.strip() == "agentteams_strict|1"
 
 
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_strict_start_loads_role_keys_from_a_synthetic_env_file_with_process_override(tmp_path):
+    env_file = tmp_path / "role-keys.env"
+    env_file.write_text(
+        "DEEPSEEK_API_KEY_MANAGER=file-manager\n"
+        "DEEPSEEK_API_KEY_HR=file-hr\n"
+        "DEEPSEEK_API_KEY_IT=file-it\n"
+        "DEEPSEEK_API_KEY_AUDIT=file-audit\n"
+        "DEEPSEEK_API_KEY=legacy-file-key\n",
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        f"$keys = Get-AgentRoleApiKeyValues -EnvFile '{env_file.as_posix()}' -ProcessEnvironment @{{ DEEPSEEK_API_KEY_HR = 'process-hr' }}; "
+        "if ((@(Get-MissingAgentRoleApiKeys $keys).Count -ne 0) -or $keys.manager -ne 'file-manager' -or $keys.hr -ne 'process-hr' -or $keys.it -ne 'file-it' -or $keys.audit -ne 'file-audit') { throw 'role key loading failed' }; "
+        "[Console]::WriteLine('role-key-load-ok')"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "role-key-load-ok"
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_strict_start_reports_only_missing_role_names_for_role_key_preflight():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        "$missing = @(Get-MissingAgentRoleApiKeys @{ "
+        "manager = 'manager-only'; "
+        "hr = ''; "
+        "it = 'it-only' "
+        "}); "
+        "[Console]::WriteLine($missing -join ',')"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "hr,audit"
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_process_helper_blocks_dotenv_backfill_and_injects_only_one_child_key(tmp_path):
+    capture = tmp_path / "capture_environment.py"
+    output = tmp_path / "environment.json"
+    env_file = tmp_path / "role-keys.env"
+    env_file.write_text(
+        "DEEPSEEK_API_KEY=legacy-file-key\n"
+        "DEEPSEEK_API_KEY_MANAGER=file-manager\n"
+        "DEEPSEEK_API_KEY_HR=file-hr\n"
+        "DEEPSEEK_API_KEY_IT=file-it\n"
+        "DEEPSEEK_API_KEY_AUDIT=file-audit\n",
+        encoding="utf-8",
+    )
+    capture.write_text(
+        "import json, os, pathlib, sys\n"
+        "from dotenv import load_dotenv\n"
+        "names = ('DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY_MANAGER', 'DEEPSEEK_API_KEY_HR', 'DEEPSEEK_API_KEY_IT', 'DEEPSEEK_API_KEY_AUDIT')\n"
+        "load_dotenv(sys.argv[1])\n"
+        "pathlib.Path(sys.argv[2]).write_text(json.dumps({name: os.environ[name] for name in names if name in os.environ}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$env:DEEPSEEK_API_KEY = 'legacy-parent'; "
+        "$env:DEEPSEEK_API_KEY_MANAGER = 'manager-parent'; "
+        "$env:DEEPSEEK_API_KEY_HR = 'hr-parent'; "
+        "$env:DEEPSEEK_API_KEY_IT = 'it-parent'; "
+        "$env:DEEPSEEK_API_KEY_AUDIT = 'audit-parent'; "
+        f". '{PROCESS_HELPERS.as_posix()}'; "
+        f"$started = Start-AgentTeamsOwnedProcess -ExecutablePath '{sys.executable}' -WorkingDirectory '{tmp_path.as_posix()}' -Arguments @('{capture.as_posix()}', '{env_file.as_posix()}', '{output.as_posix()}') -Environment @{{ DEEPSEEK_API_KEY_HR = 'hr-child' }}; "
+        "$started.Process.WaitForExit(); "
+        "if ($started.Process.ExitCode -ne 0) { throw 'capture failed' }"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "DEEPSEEK_API_KEY": "",
+        "DEEPSEEK_API_KEY_MANAGER": "",
+        "DEEPSEEK_API_KEY_HR": "hr-child",
+        "DEEPSEEK_API_KEY_IT": "",
+        "DEEPSEEK_API_KEY_AUDIT": "",
+    }
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_process_helper_blocks_dotenv_backfill_for_backend_and_frontend_children(tmp_path):
+    capture = tmp_path / "capture_environment.py"
+    output = tmp_path / "environment.json"
+    env_file = tmp_path / "role-keys.env"
+    env_file.write_text(
+        "DEEPSEEK_API_KEY=legacy-file-key\n"
+        "DEEPSEEK_API_KEY_MANAGER=file-manager\n"
+        "DEEPSEEK_API_KEY_HR=file-hr\n"
+        "DEEPSEEK_API_KEY_IT=file-it\n"
+        "DEEPSEEK_API_KEY_AUDIT=file-audit\n",
+        encoding="utf-8",
+    )
+    capture.write_text(
+        "import json, os, pathlib, sys\n"
+        "from dotenv import load_dotenv\n"
+        "names = ('DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY_MANAGER', 'DEEPSEEK_API_KEY_HR', 'DEEPSEEK_API_KEY_IT', 'DEEPSEEK_API_KEY_AUDIT')\n"
+        "load_dotenv(sys.argv[1])\n"
+        "pathlib.Path(sys.argv[2]).write_text(json.dumps({name: os.environ[name] for name in names if name in os.environ}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$env:DEEPSEEK_API_KEY_MANAGER = 'manager-parent'; "
+        "$env:DEEPSEEK_API_KEY_HR = 'hr-parent'; "
+        f". '{PROCESS_HELPERS.as_posix()}'; "
+        f"$started = Start-AgentTeamsOwnedProcess -ExecutablePath '{sys.executable}' -WorkingDirectory '{tmp_path.as_posix()}' -Arguments @('{capture.as_posix()}', '{env_file.as_posix()}', '{output.as_posix()}'); "
+        "$started.Process.WaitForExit(); "
+        "if ($started.Process.ExitCode -ne 0) { throw 'capture failed' }"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "DEEPSEEK_API_KEY": "",
+        "DEEPSEEK_API_KEY_MANAGER": "",
+        "DEEPSEEK_API_KEY_HR": "",
+        "DEEPSEEK_API_KEY_IT": "",
+        "DEEPSEEK_API_KEY_AUDIT": "",
+    }
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_process_record_whitelists_fields_and_never_serializes_an_accidental_key(tmp_path):
+    runtime = tmp_path / "runtime"
+    pids = runtime / "pids.json"
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        f"$runtimeDirectory = '{runtime.as_posix()}'; $pidsPath = '{pids.as_posix()}'; "
+        "$record = @{ name = 'hr'; process_id = [int]123; executable_path = 'python'; working_directory = 'workspace'; argv = @('--role', 'hr'); workspace = 'workspace'; started_at = '2026-09-06T00:00:00+00:00'; api_key = 'synthetic-key-must-not-persist' }; "
+        "Write-ProcessRecord @($record) 'running'; "
+        "[Console]::WriteLine([IO.File]::ReadAllText($pidsPath))"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "synthetic-key-must-not-persist" not in completed.stdout
+    assert '"api_key"' not in completed.stdout
+
+
 def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(tmp_path, capsys):
     bootstrap = _bootstrap_module()
     credentials = {

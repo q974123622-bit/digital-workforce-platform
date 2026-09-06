@@ -40,11 +40,45 @@ function Set-AgentTeamsProcessArguments {
     return $false
 }
 
+function Set-AgentTeamsProcessRoleKeyEnvironment {
+    <# Keep parent role credentials out of every child except its intended Agent. #>
+    param([object]$Info, [hashtable]$Environment)
+
+    $roleKeyNames = @(
+        'DEEPSEEK_API_KEY',
+        'DEEPSEEK_API_KEY_MANAGER',
+        'DEEPSEEK_API_KEY_HR',
+        'DEEPSEEK_API_KEY_IT',
+        'DEEPSEEK_API_KEY_AUDIT'
+    )
+    $processEnvironment = $Info.Environment
+    if ($null -eq $processEnvironment) { $processEnvironment = $Info.EnvironmentVariables }
+    if ($null -eq $processEnvironment) { throw 'agent_process_environment_unavailable' }
+    foreach ($name in $roleKeyNames) {
+        # Empty, rather than absent, prevents python-dotenv override=False from
+        # reloading a sibling role's local value into this child process.
+        $processEnvironment[$name] = ''
+    }
+    if ($null -eq $Environment) { return }
+    $nonEmptyRoleKeys = 0
+    foreach ($entry in $Environment.GetEnumerator()) {
+        if ($entry.Key -notin $roleKeyNames[1..4] -or -not ($entry.Value -is [string])) {
+            throw 'invalid_agent_role_key_environment'
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$entry.Value)) { $nonEmptyRoleKeys++ }
+    }
+    if ($nonEmptyRoleKeys -gt 1) { throw 'invalid_agent_role_key_environment' }
+    foreach ($entry in $Environment.GetEnumerator()) {
+        $processEnvironment[[string]$entry.Key] = [string]$entry.Value
+    }
+}
+
 function Start-AgentTeamsOwnedProcess {
     param(
         [string]$ExecutablePath,
         [string]$WorkingDirectory,
-        [object[]]$Arguments
+        [object[]]$Arguments,
+        [hashtable]$Environment = $null
     )
     $info = [System.Diagnostics.ProcessStartInfo]::new()
     $info.FileName = (Resolve-Path -LiteralPath $ExecutablePath).Path
@@ -52,6 +86,7 @@ function Start-AgentTeamsOwnedProcess {
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $usedArgumentList = Set-AgentTeamsProcessArguments -Info $info -Arguments $Arguments
+    Set-AgentTeamsProcessRoleKeyEnvironment -Info $info -Environment $Environment
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $info
     if (-not $process.Start()) { throw 'owned_process_start_failed' }

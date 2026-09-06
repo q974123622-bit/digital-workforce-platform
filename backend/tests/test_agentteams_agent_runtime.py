@@ -382,7 +382,7 @@ def test_cli_loaded_tool_catalog_controls_runtime_tool_requests(tmp_path):
         agents[role] = {"agent_id": agent_id, "mxid": mxid, "token": role + "-token", "allowed_skill_ids": [skill], "safe_tool_catalog": ([{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "hr-employee-mcp", "action": "read", "required_capability": "hr.onboarding.read"}] if role == "hr" else [])}
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps({"matrix_url": "https://matrix.test", "room_id": "!team:local", "team_id": "TEAM-X", "platform": {"mxid": MXIDS["platform"], "token": "platform-token"}, "agents": agents, "team_catalog": TEAM}), encoding="utf-8")
-    config, _ = load_runtime_config("hr", path, env={"DEEPSEEK_API_KEY": "x", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
+    config, _ = load_runtime_config("hr", path, env={"DEEPSEEK_API_KEY_HR": "x", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
     gateway, engine = FakeGateway(), FakeEngine(); engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
     engine.work = [WorkerDecision(action="tool", tool_name="agentteams.hr.lookup_onboarding", tool_arguments={})]
     gateway.events = [event(message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload()), sender=MXIDS["VE-0001"])]
@@ -491,14 +491,17 @@ def test_worker_evidence_keeps_a_bounded_safe_tail(tmp_path):
 
 
 def test_cli_config_is_fail_closed_without_real_network(tmp_path):
-    from scripts.run_agentteams_agent import load_runtime_config
+    from scripts.run_agentteams_agent import load_runtime_config, resolve_role_api_key
 
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps({"matrix_url": "http://x", "room_id": "!room", "agents": {"manager": {"agent_id": "VE-0001", "mxid": "@manager:x", "token": "token"}}}), encoding="utf-8")
     with pytest.raises(ValueError, match="deepseek_key_missing"):
         load_runtime_config("manager", path, env={})
     with pytest.raises(ValueError, match="invalid_runtime_config"):
-        load_runtime_config("hr", path, env={"DEEPSEEK_API_KEY": "x"})
+        load_runtime_config("hr", path, env={"DEEPSEEK_API_KEY_HR": "x"})
+    with pytest.raises(ValueError, match="deepseek_key_missing"):
+        resolve_role_api_key("hr", {"DEEPSEEK_API_KEY": "legacy-shared"})
+    assert resolve_role_api_key("audit", {"DEEPSEEK_API_KEY_AUDIT": "audit-only"}) == "audit-only"
 
 
 def test_cli_accepts_a_role_specific_token_environment_reference(tmp_path):
@@ -515,7 +518,7 @@ def test_cli_accepts_a_role_specific_token_environment_reference(tmp_path):
         },
     }), encoding="utf-8")
 
-    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY": "key", "MANAGER_MATRIX_TOKEN": "manager-only", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
+    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY_MANAGER": "key", "MANAGER_MATRIX_TOKEN": "manager-only", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
 
     assert config.matrix_token == "manager-only"
     assert config.matrix_mxid == "@manager:matrix"
@@ -543,7 +546,7 @@ def test_cli_accepts_non_demo_team_identity_for_a_manager(tmp_path):
     path = tmp_path / "custom-runtime.json"
     path.write_text(json.dumps({"matrix_url": "http://matrix", "room_id": "!room", "team_id": "TEAM-CUSTOM", "platform": {"mxid": "@platform:matrix", "token": "platform-only"}, "team_catalog": {}, "agents": agents}), encoding="utf-8")
 
-    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY": "key", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
+    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY_MANAGER": "key", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
 
     assert config.agent_id == "COORD-99"
 

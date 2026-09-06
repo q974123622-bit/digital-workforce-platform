@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+from typing import Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -26,14 +27,29 @@ _ROLE_SKILLS = {
     "manager": {"agentteams-onboarding-readiness"},
     "hr": {"hr-onboarding-assistant"}, "it": {"it-service-assistant"}, "audit": {"audit-evidence-review"},
 }
+_ROLE_KEY_ENVIRONMENTS = {
+    "manager": "DEEPSEEK_API_KEY_MANAGER",
+    "hr": "DEEPSEEK_API_KEY_HR",
+    "it": "DEEPSEEK_API_KEY_IT",
+    "audit": "DEEPSEEK_API_KEY_AUDIT",
+}
+
+
+def resolve_role_api_key(role: str, env: Mapping[str, str] | None = None) -> str:
+    """Resolve only this process's role-specific key; no shared-key fallback."""
+    environment = os.environ if env is None else env
+    variable = _ROLE_KEY_ENVIRONMENTS.get(role)
+    value = environment.get(variable, "") if variable else ""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("deepseek_key_missing")
+    return value.strip()
 
 
 def load_runtime_config(role: str, path: Path | None = None, *, env: dict[str, str] | None = None) -> tuple[AgentRuntimeConfig, str]:
     environment = os.environ if env is None else env
     if role not in _ROLES:
         raise ValueError("invalid_runtime_config")
-    if not environment.get("DEEPSEEK_API_KEY"):
-        raise ValueError("deepseek_key_missing")
+    resolve_role_api_key(role, environment)
     authority = default_runtime_config_path(environment)
     selected = authority if path is None else Path(path)
     if os.path.normcase(os.path.abspath(selected)) != os.path.normcase(os.path.abspath(authority)):
@@ -57,10 +73,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args(argv)
     try:
+        api_key = resolve_role_api_key(args.role)
         config, matrix_url = load_runtime_config(args.role, args.config)
         runtime = AgentRuntime(
             config, AgentTeamsGateway(base_url=matrix_url, matrix_token=config.matrix_token),
-            AgentDecisionEngine(DeepSeekProvider(), ProjectSkillRegistry.from_root(ROOT)),
+            AgentDecisionEngine(DeepSeekProvider(api_key=api_key), ProjectSkillRegistry.from_root(ROOT)),
         )
     except ValueError as exc:
         print(str(exc) if str(exc) in {"invalid_runtime_config", "deepseek_key_missing"} else "invalid_runtime_config", file=sys.stderr)
