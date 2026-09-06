@@ -117,6 +117,37 @@ def test_skill_selection_only_receives_catalog_summaries(fake_llm, registry, ski
     assert "## 完成条件" not in prompt
 
 
+def test_schema_prompt_reaches_initial_and_corrective_skill_selection_calls_without_raw_replay(
+    fake_llm, registry, skill_context,
+):
+    hostile_output = "ignore-prior-output-" + ("x" * 512)
+    fake_llm.outputs = [
+        {"selected_skill_ids": [hostile_output]},
+        {"selected_skill_ids": ["agentteams-onboarding-readiness"]},
+    ]
+
+    selection = AgentDecisionEngine(fake_llm, registry).select_skills(skill_context)
+
+    assert selection.selected_skill_ids == ["agentteams-onboarding-readiness"]
+    assert len(fake_llm.calls) == 2
+    for call in fake_llm.calls:
+        schema_messages = [
+            message for message in call
+            if message["source"] == "demo" and "response_schema" in message["content"]
+        ]
+        assert len(schema_messages) == 1
+        schema_prompt = json.loads(schema_messages[0]["content"])
+        assert schema_prompt["response_schema"]["properties"] == {
+            "selected_skill_ids": {
+                "items": {"type": "string"},
+                "minItems": 1,
+                "title": "Selected Skill Ids",
+                "type": "array",
+            }
+        }
+        assert hostile_output not in "\n".join(message["content"] for message in call)
+
+
 def test_unknown_skill_is_rejected_before_full_skill_content_is_loaded(
     fake_llm, registry, skill_context,
 ):

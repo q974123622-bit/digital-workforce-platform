@@ -276,8 +276,17 @@ class AgentDecisionEngine:
         error_code: str,
     ) -> _DecisionType:
         schema = schema_model.model_json_schema()
+        schema_message = {
+            "role": "system",
+            "source": "demo",
+            "content": json.dumps(
+                {"response_schema": schema},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        }
         for attempt in range(2):
-            attempt_messages = list(messages)
+            attempt_messages = [*messages, schema_message]
             if attempt:
                 attempt_messages.append(
                     {
