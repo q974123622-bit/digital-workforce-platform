@@ -143,6 +143,55 @@ def test_registry_requires_each_frontmatter_field(tmp_path):
         ProjectSkillRegistry.from_root(tmp_path)
 
 
+def test_it_skills_define_one_audit_delegate_for_missing_mfa_evidence(repo_root):
+    """IT must delegate a proven MFA evidence gap once, then use the child result terminally."""
+    registry = ProjectSkillRegistry.from_root(repo_root)
+    collaboration, it_service = registry.load([
+        "employee-collaboration",
+        "it-service-assistant",
+    ])
+
+    assert "自己的 Tool 证据" in collaboration.content
+    assert "特定证据缺口" in collaboration.content
+    assert "独立复核能力" in collaboration.content
+    assert "不得重复委派" in collaboration.content
+    assert "Complete 或 Fail" in collaboration.content
+    assert "MFA确认缺失" in it_service.content
+    assert "audit.evidence.read" in it_service.content
+    assert "Delegate" in it_service.content
+    assert "仅复核该证据缺口" in it_service.content
+    assert "不得重复委派" in it_service.content
+    assert "Complete 或 Fail" in it_service.content
+    assert "VE-" not in collaboration.content
+    assert "VE-" not in it_service.content
+
+
+def test_onboarding_skills_keep_first_round_parallel_and_audit_evidence_independent(
+    repo_root,
+):
+    """First-round HR/IT work must stay parallel; audit verifies evidence with its own Tool."""
+    registry = ProjectSkillRegistry.from_root(repo_root)
+    readiness, hr, audit = registry.load([
+        "agentteams-onboarding-readiness",
+        "hr-onboarding-assistant",
+        "audit-evidence-review",
+    ])
+
+    assert "Manager" in readiness.content
+    assert "首轮" in readiness.content
+    assert "同一批次" in readiness.content
+    assert "HR" in readiness.content and "IT" in readiness.content
+    assert "无依赖" in readiness.content
+    assert "首轮不得派发 Audit" in readiness.content
+    assert "不得将 HR→Audit 作为默认演示路径" in hr.content
+    assert "获授权的 Audit Tool" in audit.content
+    assert "MFA 证据" in audit.content
+    assert "不能只采信 IT 的文字" in audit.content
+    assert "VE-" not in readiness.content
+    assert "VE-" not in hr.content
+    assert "VE-" not in audit.content
+
+
 @pytest.mark.parametrize(
     ("skill_id", "required_terms", "forbidden_terms"),
     [

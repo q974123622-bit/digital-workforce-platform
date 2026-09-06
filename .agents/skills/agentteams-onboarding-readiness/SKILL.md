@@ -8,7 +8,7 @@ whenToUse: Assess whether onboarding has the evidence needed for a completion de
 
 Organize 证据类别 into personnel record, account and access setup, device or service readiness, and policy acknowledgement.
 
-For a general onboarding-readiness goal, 首轮 uses two primary evidence streams: HR obtains personnel and acknowledgement evidence, while IT obtains account, access, device, and service evidence. These streams may run independently.
+For a general onboarding-readiness goal, Manager 首轮必须在同一批次派发 HR 与 IT 两个主要证据流：HR 取得人员和确认记录证据，IT 取得账户、访问、设备和服务证据。两项任务无依赖，不得互相等待；首轮不得派发 Audit，审计只在一手证据出现明确复核缺口后作为二次复核。
 
 独立审计属于二次复核，不是默认的根任务并列工作流。只有持有一手证据的 Worker 通过实际核查发现来源、完整性或留痕需要独立复核时，才从当前团队能力目录选择合适的协作者并派发受限子任务。
 
