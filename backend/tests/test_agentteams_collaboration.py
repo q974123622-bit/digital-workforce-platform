@@ -1006,6 +1006,76 @@ def test_task_summary_completes_root_and_task_run(db_session):
     assert db_session.get(models.TaskRun, run.id).summary == "全部完成"
 
 
+def test_follow_up_summary_requests_are_round_scoped_and_retry_idempotent(db_session):
+    """A Manager can request a fresh summary after a follow-up delegation."""
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService, apply_message
+
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("initial", "VE-0002")])
+    initial = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id, client_task_key="initial"
+    ).one()
+    _start_node(db_session, run, initial)
+    _apply_node_message(db_session, run, initial, type="task.result", key="initial-result", payload={"result": "done"})
+
+    root = db_session.get(models.AgentTaskNode, run.id)
+    assert root.status == "summarizing"
+    assert db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id,
+        message_type="task.summary",
+        direction="outbound",
+    ).one().idempotency_key == f"{run.id}:task.summary.request:round-1"
+
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [_subtask("follow-up", "VE-0003")],
+        key="follow-up-delegate",
+    )
+    follow_up = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id, client_task_key="follow-up"
+    ).one()
+    _start_node(db_session, run, follow_up)
+    _apply_node_message(db_session, run, follow_up, type="task.result", key="follow-up-result", payload={"result": "done"})
+
+    summary_requests = db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id,
+        message_type="task.summary",
+        direction="outbound",
+    ).order_by(models.AgentMessage.created_at, models.AgentMessage.id).all()
+    assert [item.idempotency_key for item in summary_requests] == [
+        f"{run.id}:task.summary.request:round-1",
+        f"{run.id}:task.summary.request:round-2",
+    ]
+    assert AgentTeamsCollaborationService()._maybe_request_parent_summary(
+        db_session, follow_up, "VE-0003"
+    ) == []
+    assert db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id,
+        message_type="task.summary",
+        direction="outbound",
+    ).count() == 2
+
+    apply_message(
+        db_session,
+        matrix_sender=_matrix_sender(leader.runtime_ref),
+        message=_protocol(
+            root_id=run.id,
+            task_id=run.id,
+            sender="DT-E10281",
+            receiver="platform",
+            type="task.summary",
+            key=f"{run.id}:final-summary",
+            payload={"summary": "全部完成"},
+        ),
+    )
+
+    assert root.status == "completed"
+    assert db_session.get(models.TaskRun, run.id).status == "completed"
+
+
 def test_plain_agent_message_does_not_change_status(db_session):
     from app.services.agentteams_collaboration import apply_message
 
@@ -1060,7 +1130,7 @@ def test_inbound_idempotency_key_cannot_block_summary_outbox(db_session):
     _apply_node_message(db_session, run, policy, type="task.result", key="result", payload={"result": "done"})
 
     summary_outbox = db_session.query(models.AgentMessage).filter_by(
-        idempotency_key=f"{run.id}:task.summary.request", direction="outbound",
+        idempotency_key=f"{run.id}:task.summary.request:round-1", direction="outbound",
     ).one()
     assert summary_outbox.message_type == "task.summary"
 

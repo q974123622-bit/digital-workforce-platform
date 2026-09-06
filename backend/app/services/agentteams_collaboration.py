@@ -1119,7 +1119,7 @@ class AgentTeamsCollaborationService:
                     "depth": max(0, self.max_depth - parent.depth),
                 },
             },
-            idempotency_key=f"{parent.id}:task.summary.request",
+            idempotency_key=f"{parent.id}:task.summary.request:round-{coordination['round']}",
         )
         return [
             self._append_event(
