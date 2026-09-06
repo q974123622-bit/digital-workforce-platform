@@ -179,6 +179,26 @@ def test_runtime_surfaces_persistent_llm_unavailability_as_fixed_failure(tmp_pat
     assert raw_provider_error not in gateway.sent[-1][2]
 
 
+@pytest.mark.parametrize(
+    "provider_code",
+    ["network_error", "http_error", "invalid_response_json", "invalid_structured_json"],
+)
+def test_runtime_surfaces_safe_provider_failure_code(tmp_path, provider_code):
+    subject, gateway, engine, _ = runtime(tmp_path)
+
+    def unavailable(_context):
+        raise LLMUnavailableError("provider detail must remain private", code=provider_code)
+
+    engine.select_skills = unavailable
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
+
+    assert subject.run_once() == 1
+
+    failure = sent_protocols(gateway)[-1]
+    assert failure.payload == {"error_code": provider_code}
+    assert "provider detail must remain private" not in gateway.sent[-1][2]
+
+
 def test_runtime_keeps_programming_errors_as_fixed_runtime_failure(tmp_path):
     subject, gateway, engine, _ = runtime(tmp_path)
     raw_programming_error = "api_key=secret unexpected programming failure"

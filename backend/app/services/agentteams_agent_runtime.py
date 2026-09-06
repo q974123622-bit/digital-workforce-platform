@@ -47,7 +47,8 @@ _ROLE_PROFESSIONAL_SKILLS = {
 _SAFE_ERROR_CODES = {
     "skill_selection_failed", "planning_failed", "decision_failed", "summary_failed",
     "completion_without_tool_evidence", "invalid_model_decision", "invalid_team_catalog",
-    "invalid_parent_chain", "llm_unavailable", "runtime_error",
+    "invalid_parent_chain", "llm_unavailable", "network_error", "http_error",
+    "invalid_response_json", "invalid_structured_json", "runtime_error",
 }
 _MAX_TRACKED = 256
 _MAX_TASK_CONTEXTS = 32
@@ -258,8 +259,8 @@ class AgentRuntime:
             self._active_pending["source"] = self._pending_source(event, message)
         try:
             responses = self._handle_message(message, event, state)
-        except LLMUnavailableError:
-            responses = [self._failure(message, "llm_unavailable")]
+        except LLMUnavailableError as exc:
+            responses = [self._failure(message, self._safe_code(exc.code))]
         except AgentDecisionError as exc:
             responses = [self._failure(message, self._safe_code(exc.code))]
         except Exception:

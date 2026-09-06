@@ -23,6 +23,10 @@ DEFAULT_MODEL = "v4-flash"  # 演示环境指定模型；可用环境变量覆�
 class LLMUnavailableError(Exception):
     """LLM 不可用（Key 缺失 / 网络失败 / SAFEMODE 拒发）。"""
 
+    def __init__(self, message: str, *, code: str = "llm_unavailable") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass(frozen=True)
 class ToolCall:
@@ -60,6 +64,20 @@ def _assert_safemode(messages: list[dict]) -> None:
             raise LLMUnavailableError("SAFEMODE 拒绝发送：存在非 demo 来源的 prompt 段")
 
 
+def _response_message(data: dict) -> dict:
+    try:
+        message = data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMUnavailableError(
+            "DeepSeek 响应结构无效", code="invalid_response_json",
+        ) from exc
+    if not isinstance(message, dict):
+        raise LLMUnavailableError(
+            "DeepSeek 响应结构无效", code="invalid_response_json",
+        )
+    return message
+
+
 class DeepSeekProvider(LLMProvider):
     """DeepSeek（OpenAI 兼容协议）实现；Key 仅从环境变量读取。"""
 
@@ -84,11 +102,16 @@ class DeepSeekProvider(LLMProvider):
                 timeout=60.0,
             )
         except httpx.HTTPError as exc:
-            raise LLMUnavailableError(f"DeepSeek 请求失败：{exc.__class__.__name__}") from exc
+            raise LLMUnavailableError("DeepSeek 网络请求失败", code="network_error") from exc
         if resp.status_code != 200:
             # 错误详情不落日志、不包含 Key
-            raise LLMUnavailableError(f"DeepSeek 返回错误：HTTP {resp.status_code}")
-        return resp.json()
+            raise LLMUnavailableError("DeepSeek HTTP 请求失败", code="http_error")
+        try:
+            return resp.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise LLMUnavailableError(
+                "DeepSeek 响应不是有效 JSON", code="invalid_response_json",
+            ) from exc
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> LLMResponse:
         _assert_safemode(messages)
@@ -100,7 +123,7 @@ class DeepSeekProvider(LLMProvider):
         if tools:
             payload["tools"] = tools
         data = self._post(payload)
-        msg = data["choices"][0]["message"]
+        msg = _response_message(data)
         content = msg.get("content") or ""
         tool_calls: list[ToolCall] = []
         for tc in msg.get("tool_calls") or []:
@@ -127,8 +150,10 @@ class DeepSeekProvider(LLMProvider):
             "temperature": 0.1,
         }
         data = self._post(payload)
-        content = data["choices"][0]["message"].get("content") or "{}"
+        content = _response_message(data).get("content") or "{}"
         try:
             return json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise LLMUnavailableError("模型返回非 JSON 结构化输出") from exc
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise LLMUnavailableError(
+                "模型返回非 JSON 结构化输出", code="invalid_structured_json",
+            ) from exc
