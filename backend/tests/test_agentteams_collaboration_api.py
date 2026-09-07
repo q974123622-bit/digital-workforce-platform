@@ -203,8 +203,10 @@ def test_task_detail_graph_events_messages_and_result_only_use_the_root_id(clien
     assert detail.status_code == 200
     assert detail.json()["id"] == run.id
     assert [node["root_task_id"] for node in detail.json()["nodes"]] == [run.id]
+    assert [node["client_task_key"] for node in detail.json()["nodes"]] == ["root"]
     assert graph.status_code == 200
     assert graph.json()["nodes"][0]["root_task_id"] == run.id
+    assert graph.json()["nodes"][0]["client_task_key"] == "root"
     assert events.status_code == 200
     assert events.json()[0]["root_task_id"] == run.id
     assert messages.status_code == 200

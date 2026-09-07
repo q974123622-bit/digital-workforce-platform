@@ -167,10 +167,10 @@ def _valid_real_smoke_evidence_inputs():
         "workers": [{"status": "ready"}] * 4,
     }
     detail = {"nodes": [
-        {"id": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0},
-        {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
-        {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
-        {"id": "audit", "parent_task_id": "it", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
+        {"id": "root", "client_task_key": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0},
+        {"id": "hr", "client_task_key": "hr-check", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
+        {"id": "it", "client_task_key": "it-check", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
+        {"id": "audit", "client_task_key": "audit-check", "parent_task_id": "it", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
     ], "dependency_edges": []}
     events = [
         {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {"round": 1, "client_task_keys": ["hr-check", "it-check"], "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
@@ -211,7 +211,7 @@ def test_real_smoke_accepts_it_worker_delegated_audit_and_parallel_root_release(
     assert "parallel_root_worker_release" not in evidence["missing_criteria"]
 
 
-@pytest.mark.parametrize("case", ["duplicate-delegate", "wrong-keys", "optional-worker", "dependency-edge"])
+@pytest.mark.parametrize("case", ["duplicate-delegate", "wrong-keys", "node-key-mismatch", "optional-worker", "dependency-edge"])
 def test_real_smoke_rejects_false_positive_first_round_plans(case):
     smoke = _load_script("run_agentteams_real_smoke.py")
     health, detail, events, messages, result = deepcopy(_valid_real_smoke_evidence_inputs())
@@ -219,6 +219,8 @@ def test_real_smoke_rejects_false_positive_first_round_plans(case):
         events.append({**events[0], "event_seq": 12})
     elif case == "wrong-keys":
         events[0]["detail"]["client_task_keys"] = ["hr-check", "other"]
+    elif case == "node-key-mismatch":
+        detail["nodes"][2]["client_task_key"] = "different-it-key"
     elif case == "optional-worker":
         detail["nodes"][1]["required"] = False
     else:

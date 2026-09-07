@@ -123,8 +123,11 @@ def _has_exact_first_round_plan(
     ):
         return False
     direct_ids = {node.get("id") for node in direct}
+    direct_client_task_keys = [node.get("client_task_key") for node in direct]
     if (
         any(not isinstance(node_id, str) or not node_id for node_id in direct_ids)
+        or any(not isinstance(key, str) or not key for key in direct_client_task_keys)
+        or len(set(direct_client_task_keys)) != len(direct_client_task_keys)
         or not isinstance(dependency_edges, list)
         or any(not isinstance(edge, dict) for edge in dependency_edges)
         or any(edge.get("task_id") in direct_ids for edge in dependency_edges)
@@ -147,6 +150,7 @@ def _has_exact_first_round_plan(
         or len(client_task_keys) != 2
         or any(not isinstance(key, str) or not key for key in client_task_keys)
         or len(set(client_task_keys)) != 2
+        or set(client_task_keys) != set(direct_client_task_keys)
     ):
         return False
     delegate_messages = [

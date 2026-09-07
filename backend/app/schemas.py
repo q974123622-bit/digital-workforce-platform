@@ -635,6 +635,7 @@ class AgentTaskNodeOut(BaseModel):
     id: str
     root_task_id: str
     parent_task_id: str | None
+    client_task_key: str
     title: str
     coordinator_agent_id: str
     assignee_agent_id: str
