@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib.util
 import json
 from pathlib import Path
@@ -160,20 +161,19 @@ def test_real_smoke_evidence_rejects_non_strict_or_incomplete_persistence_withou
     assert "token" not in str(evidence).lower()
 
 
-def test_real_smoke_accepts_it_worker_delegated_audit_and_parallel_root_release():
-    smoke = _load_script("run_agentteams_real_smoke.py")
+def _valid_real_smoke_evidence_inputs():
     health = {
         "ready_for_demo": True, "mode": "agentteams_strict", "transport": "matrix",
         "workers": [{"status": "ready"}] * 4,
     }
     detail = {"nodes": [
         {"id": "root", "parent_task_id": None, "assignee_agent_id": "VE-0001", "coordinator_agent_id": "VE-0001", "depth": 0},
-        {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1},
-        {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1},
-        {"id": "audit", "parent_task_id": "it", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0003", "depth": 2},
-    ]}
+        {"id": "hr", "parent_task_id": "root", "assignee_agent_id": "VE-0002", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
+        {"id": "it", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
+        {"id": "audit", "parent_task_id": "it", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
+    ], "dependency_edges": []}
     events = [
-        {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {"round": 1, "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
+        {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {"round": 1, "client_task_keys": ["hr-check", "it-check"], "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
         {"event_seq": 2, "event_type": "task.assigned", "task_id": "hr", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0002", "detail": {"parent_task_id": "root"}},
         {"event_seq": 3, "event_type": "task.assigned", "task_id": "it", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0003", "detail": {"parent_task_id": "root"}},
         {"event_seq": 4, "event_type": "tool.result", "task_id": "hr", "actor_agent_id": "VE-0002", "target_agent_id": "VE-0002", "detail": {"decision": "allow", "audit_ids": [11]}},
@@ -185,16 +185,66 @@ def test_real_smoke_accepts_it_worker_delegated_audit_and_parallel_root_release(
         {"event_seq": 10, "event_type": "task.completed", "task_id": "it", "actor_agent_id": "VE-0003", "target_agent_id": "VE-0003", "detail": {}},
         {"event_seq": 11, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {}},
     ]
+    messages = [
+        {"matrix_event_id": "$event-1", "message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"subtasks": [
+            {"client_task_key": "hr-check", "assignee_agent_id": "VE-0002", "required_capability": "hr.onboarding.read", "depends_on": [], "required": True},
+            {"client_task_key": "it-check", "assignee_agent_id": "VE-0003", "required_capability": "it.readiness.read", "depends_on": [], "required": True},
+        ]}},
+        {"matrix_event_id": "$event-2", "message_type": "tool.request", "task_id": "it", "sender_agent_id": "VE-0003", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"tool_name": "agentteams.it.lookup_readiness", "plugin_id": "agentteams-it-readiness", "action": "execute", "required_capability": "it.readiness.read"}},
+        {"matrix_event_id": "$event-3", "message_type": "tool.result", "task_id": "it", "sender_agent_id": "platform", "receiver_agent_id": "VE-0003", "direction": "outbound", "payload": {"ok": True, "decision": "allow", "audit_ids": [12], "data": {"pending_items": [{"evidence_id": "IT-A-003", "status": "missing"}]}}},
+        {"matrix_event_id": "$event-4", "message_type": "tool.request", "task_id": "audit", "sender_agent_id": "VE-0005", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"tool_name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "audit.evidence.read"}},
+        {"matrix_event_id": "$event-5", "message_type": "tool.result", "task_id": "audit", "sender_agent_id": "platform", "receiver_agent_id": "VE-0005", "direction": "outbound", "payload": {"ok": True, "decision": "allow", "audit_ids": [13]}},
+    ]
+    return health, detail, events, messages, {"status": "completed", "summary": "done"}
+
+
+def test_real_smoke_accepts_it_worker_delegated_audit_and_parallel_root_release():
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    health, detail, events, messages, result = _valid_real_smoke_evidence_inputs()
 
     evidence = smoke.build_evidence(
-        "AT-it-audit", health, detail, events,
-        [{"matrix_event_id": f"$event-{index}"} for index in range(1, 5)],
-        {"status": "completed", "summary": "done"},
+        "AT-it-audit", health, detail, events, messages, result,
     )
 
-    assert evidence["ok"] is True, evidence
+    assert evidence["ok"] is True, evidence["missing_criteria"]
     assert "onboarding_collaboration_topology" not in evidence["missing_criteria"]
     assert "parallel_root_worker_release" not in evidence["missing_criteria"]
+
+
+@pytest.mark.parametrize("case", ["duplicate-delegate", "wrong-keys", "optional-worker", "dependency-edge"])
+def test_real_smoke_rejects_false_positive_first_round_plans(case):
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    health, detail, events, messages, result = deepcopy(_valid_real_smoke_evidence_inputs())
+    if case == "duplicate-delegate":
+        events.append({**events[0], "event_seq": 12})
+    elif case == "wrong-keys":
+        events[0]["detail"]["client_task_keys"] = ["hr-check", "other"]
+    elif case == "optional-worker":
+        detail["nodes"][1]["required"] = False
+    else:
+        detail["dependency_edges"] = [{"task_id": "it", "depends_on_task_id": "hr"}]
+
+    evidence = smoke.build_evidence("AT-invalid-plan", health, detail, events, messages, result)
+
+    assert evidence["ok"] is False
+    assert "first_round_parallel_plan" in evidence["missing_criteria"]
+
+
+@pytest.mark.parametrize("case", ["wrong-it-tool", "it-gap-absent", "wrong-audit-tool"])
+def test_real_smoke_rejects_false_positive_tool_evidence(case):
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    health, detail, events, messages, result = deepcopy(_valid_real_smoke_evidence_inputs())
+    if case == "wrong-it-tool":
+        messages[1]["payload"]["plugin_id"] = "agentteams-onboarding-employee"
+    elif case == "it-gap-absent":
+        messages[2]["payload"]["data"]["pending_items"][0]["status"] = "ready"
+    else:
+        messages[3]["payload"]["tool_name"] = "agentteams.it.lookup_readiness"
+
+    evidence = smoke.build_evidence("AT-invalid-tools", health, detail, events, messages, result)
+
+    assert evidence["ok"] is False
+    assert "it_audit_tool_evidence" in evidence["missing_criteria"]
 
 
 def test_real_smoke_rejects_root_workers_released_after_one_already_completed():
@@ -440,7 +490,6 @@ def test_real_smoke_evidence_redacts_bearer_basic_and_json_credentials():
     )
 
     rendered = json.dumps(evidence)
-    assert evidence["ok"] is True
     assert all(secret not in rendered for secret in secrets)
 
 
@@ -664,8 +713,8 @@ def _decision_outputs():
     manager = [
         {"selected_skill_ids": ["agentteams-onboarding-readiness"]},
         {"selected_skill_ids": ["agentteams-onboarding-readiness"], "action": "delegate", "subtasks": [
-            {"client_task_key": "hr-check", "title": "HR材料核查", "goal": "核查新员工A的材料。", "required_capability": "agentteams-onboarding-employee", "assignee_agent_id": "VE-0002", "depends_on": [], "required": True, "reason": "需要HR原始材料。"},
-            {"client_task_key": "it-check", "title": "IT就绪核查", "goal": "核查新员工A的账号和设备。", "required_capability": "agentteams-it-readiness", "assignee_agent_id": "VE-0003", "depends_on": [], "required": True, "reason": "需要IT原始状态。"},
+            {"client_task_key": "hr-check", "title": "HR材料核查", "goal": "核查新员工A的材料。", "required_capability": "hr.onboarding.read", "assignee_agent_id": "VE-0002", "depends_on": [], "required": True, "reason": "需要HR原始材料。"},
+            {"client_task_key": "it-check", "title": "IT就绪核查", "goal": "核查新员工A的账号和设备。", "required_capability": "it.readiness.read", "assignee_agent_id": "VE-0003", "depends_on": [], "required": True, "reason": "需要IT原始状态。"},
         ]},
         {"selected_skill_ids": ["agentteams-onboarding-readiness"], "action": "summarize", "summary": {"summary": "可按期入职，但应跟进审计证据缺口。", "completed_items": ["HR、IT、审计均已核查"], "risks": ["审计材料需归档"], "unknowns": [], "next_actions": ["HR补齐归档记录"]}},
     ]
@@ -677,7 +726,7 @@ def _decision_outputs():
     it = [
         {"selected_skill_ids": ["it-service-assistant"]},
         {"action": "tool", "tool_name": "agentteams.it.lookup_readiness", "tool_arguments": {"employee_ref": "新员工A"}},
-        {"action": "delegate", "subtask": {"client_task_key": "audit-check", "title": "审计证据核查", "goal": "核查IT就绪缺口的审计依据。", "required_capability": "agentteams-onboarding-evidence", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "IT发现MFA缺口，需要独立审计复核。"}},
+        {"action": "delegate", "subtask": {"client_task_key": "audit-check", "title": "审计证据核查", "goal": "核查IT就绪缺口的审计依据。", "required_capability": "audit.evidence.read", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "IT发现MFA缺口，需要独立审计复核。"}},
         {"action": "complete", "result": "IT缺口与审计复核已完成。"},
     ]
     audit = [
@@ -688,10 +737,38 @@ def _decision_outputs():
     return manager, hr, it, audit
 
 
+def _strict_test_runtime_config(mxids):
+    schema = {
+        "type": "object", "required": ["employee_ref"],
+        "properties": {"employee_ref": {"type": "string", "const": "新员工A", "maxLength": 16}},
+        "additionalProperties": False,
+    }
+    return {
+        "matrix_url": "http://matrix.test", "room_id": "!task9:matrix.test", "team_id": "TEAM-ONBOARD",
+        "platform": {"mxid": mxids["platform"], "token": "test-platform"},
+        "agents": {
+            "manager": {"agent_id": "VE-0001", "mxid": mxids["VE-0001"], "token": "test-manager", "allowed_skill_ids": ["agentteams-onboarding-readiness"], "safe_tool_catalog": []},
+            "hr": {"agent_id": "VE-0002", "mxid": mxids["VE-0002"], "token": "test-hr", "allowed_skill_ids": ["hr-onboarding-assistant"], "safe_tool_catalog": [{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "agentteams-onboarding-employee", "action": "execute", "required_capability": "hr.onboarding.read", "input_schema": schema}]},
+            "it": {"agent_id": "VE-0003", "mxid": mxids["VE-0003"], "token": "test-it", "allowed_skill_ids": ["it-service-assistant"], "safe_tool_catalog": [{"name": "agentteams.it.lookup_readiness", "plugin_id": "agentteams-it-readiness", "action": "execute", "required_capability": "it.readiness.read", "input_schema": schema}]},
+            "audit": {"agent_id": "VE-0005", "mxid": mxids["VE-0005"], "token": "test-audit", "allowed_skill_ids": ["audit-evidence-review"], "safe_tool_catalog": [{"name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "audit.evidence.read", "input_schema": schema}]},
+        },
+        "team_catalog": {
+            "VE-0001": {"capabilities": []},
+            "VE-0002": {"capabilities": ["hr.onboarding.read"]},
+            "VE-0003": {"capabilities": ["it.readiness.read"]},
+            "VE-0005": {"capabilities": ["audit.evidence.read"]},
+        },
+    }
+
+
 def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(db_session, monkeypatch, tmp_path):
     """A complete adaptive run must not rely on the local-demo fixed transport."""
     monkeypatch.setenv("DWP_AGENTTEAMS_MATRIX_DOMAIN", "matrix.test")
     mxids = {"platform": "@platform:matrix.test", "VE-0001": "@manager:matrix.test", "VE-0002": "@hr:matrix.test", "VE-0003": "@it:matrix.test", "VE-0005": "@audit:matrix.test"}
+    strict_config_path = tmp_path / "strict-runtime.json"
+    strict_config_path.write_text(json.dumps(_strict_test_runtime_config(mxids)), encoding="utf-8")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(strict_config_path))
     for agent_id, mxid in mxids.items():
         if agent_id == "platform":
             continue
@@ -705,9 +782,9 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
         item["agent_id"]: set(item["capabilities"])
         for item in service._team_capability_catalog(db_session, "TEAM-ONBOARD")
     }
-    assert {"agentteams-onboarding-employee"}.issubset(capability_catalog["VE-0002"])
-    assert {"agentteams-it-readiness"}.issubset(capability_catalog["VE-0003"])
-    assert {"agentteams-onboarding-evidence"}.issubset(capability_catalog["VE-0005"])
+    assert {"hr.onboarding.read"}.issubset(capability_catalog["VE-0002"])
+    assert {"it.readiness.read"}.issubset(capability_catalog["VE-0003"])
+    assert {"audit.evidence.read"}.issubset(capability_catalog["VE-0005"])
     run = service.create_task(db_session, team_id="TEAM-ONBOARD", leader_agent_id="VE-0001", title="新员工A按期入职评估", instruction="评估新员工A是否可以按期入职。", material={})
     run.owner_human_no = "E10281"
     db_session.commit()
@@ -717,9 +794,9 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     manager_out, hr_out, it_out, audit_out = _decision_outputs()
     configs = [
         ("VE-0001", "manager", {"agentteams-manager-coordination", "agentteams-onboarding-readiness"}, [], manager_out),
-        ("VE-0002", "hr", {"employee-collaboration", "hr-onboarding-assistant"}, [{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "agentteams-onboarding-employee", "action": "execute", "required_capability": "agentteams-onboarding-employee"}], hr_out),
-        ("VE-0003", "it", {"employee-collaboration", "it-service-assistant"}, [{"name": "agentteams.it.lookup_readiness", "plugin_id": "agentteams-it-readiness", "action": "execute", "required_capability": "agentteams-it-readiness"}], it_out),
-        ("VE-0005", "audit", {"employee-collaboration", "audit-evidence-review"}, [{"name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "agentteams-onboarding-evidence"}], audit_out),
+        ("VE-0002", "hr", {"employee-collaboration", "hr-onboarding-assistant"}, [{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "agentteams-onboarding-employee", "action": "execute", "required_capability": "hr.onboarding.read"}], hr_out),
+        ("VE-0003", "it", {"employee-collaboration", "it-service-assistant"}, [{"name": "agentteams.it.lookup_readiness", "plugin_id": "agentteams-it-readiness", "action": "execute", "required_capability": "it.readiness.read"}], it_out),
+        ("VE-0005", "audit", {"employee-collaboration", "audit-evidence-review"}, [{"name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "audit.evidence.read"}], audit_out),
     ]
     runtimes = []
     trusted = dict(mxids)
@@ -811,10 +888,21 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
             }
             for event in events
         ],
-        [{"matrix_event_id": message.matrix_event_id} for message in messages],
+            [
+                {
+                    "matrix_event_id": message.matrix_event_id,
+                    "message_type": message.message_type,
+                    "task_id": message.task_id,
+                    "sender_agent_id": message.sender_agent_id,
+                    "receiver_agent_id": message.receiver_agent_id,
+                    "direction": message.direction,
+                    "payload": dict(message.payload or {}),
+                }
+                for message in messages
+            ],
         service.build_result(db_session, run.id),
     )
-    assert evidence["ok"] is True, evidence
+    assert evidence["ok"] is True, evidence["missing_criteria"]
     assert evidence["rounds"] == [1]
     worker_delegate = next(event for event in events if event.event_type == "task.delegate" and event.task_id == by_key["it-check"].id)
     assert "round" not in worker_delegate.detail
