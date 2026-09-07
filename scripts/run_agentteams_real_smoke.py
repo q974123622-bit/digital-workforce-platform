@@ -89,8 +89,8 @@ def _has_fixed_gap_readiness_decision(
     result_decisions = [
         payload.get("readiness_decision")
         for node in _items(result.get("node_results"))
-        if node.get("task_id") == root_id
-        for payload in [node.get("result")]
+        if node.get("id") == root_id and node.get("depth") == 0
+        for payload in [node.get("output_payload")]
         if isinstance(payload, dict)
     ]
     return (

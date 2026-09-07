@@ -198,7 +198,7 @@ def _valid_real_smoke_evidence_inputs():
     result = {
         "status": "completed",
         "summary": "done",
-        "node_results": [{"task_id": "root", "result": {"readiness_decision": "incomplete"}}],
+        "node_results": [{"id": "root", "depth": 0, "output_payload": {"readiness_decision": "incomplete"}}],
     }
     return health, detail, events, messages, result
 
@@ -215,7 +215,7 @@ def test_real_smoke_accepts_it_worker_delegated_audit_and_parallel_root_release(
     smoke = _load_script("run_agentteams_real_smoke.py")
     health, detail, events, messages, result = _valid_real_smoke_evidence_inputs()
     events[-1]["detail"]["readiness_decision"] = readiness_decision
-    result["node_results"][0]["result"]["readiness_decision"] = readiness_decision
+    result["node_results"][0]["output_payload"]["readiness_decision"] = readiness_decision
 
     evidence = smoke.build_evidence(
         "AT-it-audit", health, detail, events, messages, result,
@@ -233,7 +233,7 @@ def test_real_smoke_rejects_ready_decision_for_fixed_missing_evidence(source):
     if source == "summary-event":
         events[-1]["detail"]["readiness_decision"] = "ready"
     else:
-        result["node_results"][0]["result"]["readiness_decision"] = "ready"
+        result["node_results"][0]["output_payload"]["readiness_decision"] = "ready"
 
     evidence = smoke.build_evidence("AT-ready-misclassification", health, detail, events, messages, result)
 
