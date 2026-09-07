@@ -9,6 +9,7 @@
 """
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -59,7 +60,8 @@ class AgentTeamsGateway:
         self.timeout = timeout
         # 优先使用已配置的 Matrix token（Manager/机器人身份，已在团队房间内）
         self._token = matrix_token or config.get(config.AGENTTEAMS_MATRIX_TOKEN) or None
-        self._client = httpx.Client(timeout=timeout)
+        loopback = urlsplit(self.base_url).hostname in {"127.0.0.1", "localhost", "::1"}
+        self._client = httpx.Client(timeout=timeout, trust_env=not loopback)
 
     # ---------- 登录 ----------
 

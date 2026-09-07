@@ -27,6 +27,20 @@ class _Client:
         pass
 
 
+def test_loopback_matrix_gateway_ignores_process_proxy_environment(monkeypatch):
+    captured = {}
+
+    class Client:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("app.services.agentteams_gateway.httpx.Client", Client)
+
+    AgentTeamsGateway(base_url="http://127.0.0.1:8008", matrix_token="secret")
+
+    assert captured["trust_env"] is False
+
+
 def test_gateway_reads_only_whoami_and_joined_member_mxids():
     gateway = AgentTeamsGateway(base_url="http://matrix", matrix_token="secret")
     gateway._client = _Client([

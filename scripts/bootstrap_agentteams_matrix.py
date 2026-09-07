@@ -17,6 +17,7 @@ import secrets
 import sys
 import tempfile
 from typing import Any, Callable, Mapping
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -208,7 +209,8 @@ class SynapseAdminClient:
         self.registration_secret = registration_secret
         self.known_accounts = {name: dict(value) for name, value in (known_accounts or {}).items()}
         self.known_room_id = known_room_id
-        self.client = httpx.Client(timeout=10.0)
+        loopback = urlsplit(self.base_url).hostname in {"127.0.0.1", "localhost", "::1"}
+        self.client = httpx.Client(timeout=10.0, trust_env=not loopback)
 
     def close(self) -> None:
         self.client.close()

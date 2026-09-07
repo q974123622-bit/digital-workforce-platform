@@ -94,7 +94,6 @@ def test_start_cleanup_preserves_the_original_startup_error_when_scoped_compose_
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "agentteams_strict|1|1"
     docker_call = next(line for line in completed.stdout.splitlines() if line.startswith("docker="))
     assert docker_call.startswith("docker=compose ")
     assert "-p dwp-agentteams" in docker_call
@@ -122,6 +121,7 @@ def test_strict_start_environment_enables_the_collaboration_loop():
     )
 
     assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "agentteams_strict|1|1"
 
 
 def test_strict_start_waits_for_shared_secret_registration_endpoint():
@@ -130,6 +130,21 @@ def test_strict_start_waits_for_shared_secret_registration_endpoint():
 
     assert "http://127.0.0.1:8008/_matrix/client/versions" in script
     assert "http://127.0.0.1:8008/_synapse/admin/v1/register" in script
+
+
+def test_bootstrap_loopback_client_ignores_process_proxy_environment(monkeypatch):
+    module = _bootstrap_module()
+    captured = {}
+
+    class Client:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(module.httpx, "Client", Client)
+
+    module.SynapseAdminClient("http://127.0.0.1:8008", "synthetic-secret")
+
+    assert captured["trust_env"] is False
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
