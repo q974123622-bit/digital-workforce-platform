@@ -30,6 +30,7 @@ ACTOR_NO = os.environ.get("DWP_SMOKE_ACTOR_NO", "E10281")
 FIXED_GOAL = "评估新员工A是否可以按期入职。"
 TERMINAL = {"completed", "failed", "timed_out", "cancelled"}
 DEMO_DATA_BOUNDARY = "业务事实来自项目内演示数据；Matrix、DeepSeek、平台状态与审计需由本次严格验收确认。"
+FIXED_GAP_READINESS_DECISIONS = {"not_ready", "incomplete"}
 
 
 def _items(value: Any) -> list[dict[str, Any]]:
@@ -66,6 +67,38 @@ def _message_content(message: dict[str, Any]) -> dict[str, Any] | None:
     if payload.get("type") == message.get("message_type") and isinstance(nested, dict):
         return nested
     return payload
+
+
+def _has_fixed_gap_readiness_decision(
+    nodes: list[dict[str, Any]], events: list[dict[str, Any]], result: dict[str, Any]
+) -> bool:
+    """Require matching structured decisions for this fixed missing-evidence case."""
+    roots = [node for node in nodes if node.get("depth") == 0 and node.get("parent_task_id") is None]
+    if len(roots) != 1 or not isinstance(roots[0].get("id"), str) or not roots[0]["id"]:
+        return False
+    root_id = roots[0]["id"]
+    event_decisions = [
+        detail.get("readiness_decision")
+        for event in events
+        if event.get("event_type") == "task.summary"
+        and event.get("task_id") == root_id
+        and event.get("actor_agent_id") == "VE-0001"
+        for detail in [event.get("detail")]
+        if isinstance(detail, dict)
+    ]
+    result_decisions = [
+        payload.get("readiness_decision")
+        for node in _items(result.get("node_results"))
+        if node.get("task_id") == root_id
+        for payload in [node.get("result")]
+        if isinstance(payload, dict)
+    ]
+    return (
+        len(event_decisions) == 1
+        and len(result_decisions) == 1
+        and event_decisions[0] in FIXED_GAP_READINESS_DECISIONS
+        and result_decisions[0] == event_decisions[0]
+    )
 
 
 def _has_parallel_root_worker_release(
@@ -418,6 +451,8 @@ def build_evidence(
         missing.append("completed_result")
     if not str(result.get("summary") or "").strip():
         missing.append("final_summary")
+    if not _has_fixed_gap_readiness_decision(nodes, events, result):
+        missing.append("fixed_gap_readiness_decision")
     if not {"VE-0001", "VE-0002", "VE-0003", "VE-0005"}.issubset(set(participants)):
         missing.append("manager_hr_it_audit_participants")
     if not any(depth >= 2 for depth in depths):
