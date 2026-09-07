@@ -61,6 +61,10 @@ _MAX_PENDING_ENVELOPE_BYTES = 8_192
 _PENDING_VERSION = 1
 _SENSITIVE_TEXT = re.compile(r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+|\b(?:https?|wss?|file|ftp)://\S+|\b(?:api[_-]?key|password|token|authorization|credential)\s*[:=]\s*\S+|\b[a-z_][a-z0-9_]*\s*=\s*\S+|traceback\s*\(|\bfile\s+['\"]?[a-z]:[/\\])", re.I)
 _OUTBOUND_TYPES = {"agent.message", "task.accepted", "task.progress", "task.delegate", "task.summary", "task.failed", "tool.request", "task.result"}
+_SECURITY_COUNTER_NAMES = {
+    "outbound_rejected", "parse_error", "pending_corrupt", "pending_empty_event_id",
+    "pending_send_exception", "spoofed_sender", "state_truncated",
+}
 
 
 def heartbeat_signature(agent_id: str, mxid: str, heartbeat_at: str, token: str) -> str:
@@ -204,7 +208,9 @@ class AgentRuntime:
             self._security(self._state, "pending_corrupt")
             self._save_state()
             return 0
-        if not self._send_direct(messages):
+        send_failure = self._send_direct(messages)
+        if send_failure is not None:
+            self._record_pending_send_failure(send_failure)
             return 0
         trial = deepcopy(dict(pending["trial_state"]))
         source = pending["source"]
@@ -500,7 +506,12 @@ class AgentRuntime:
                 return False
             self._state["pending_outbox"] = pending
             self._save_state()
-        return self._send_direct(canonical)
+        send_failure = self._send_direct(canonical)
+        if send_failure is not None:
+            if self._state.get("pending_outbox") is not None:
+                self._record_pending_send_failure(send_failure)
+            return False
+        return True
 
     def _persist_protocol_progress(self, state: Mapping[str, Any]) -> None:
         """Commit an acknowledged protocol line without completing its event."""
@@ -509,15 +520,19 @@ class AgentRuntime:
         self._state = durable
         self._save_state()
 
-    def _send_direct(self, messages: list[AgentProtocolMessage]) -> bool:
+    def _send_direct(self, messages: list[AgentProtocolMessage]) -> str | None:
         try:
             for message in messages:
                 event_id = self.gateway.send_protocol_message(self.config.room_id, message.type, render_protocol_line(message))
                 if not event_id:
-                    return False
+                    return "pending_empty_event_id"
         except Exception:
-            return False
-        return True
+            return "pending_send_exception"
+        return None
+
+    def _record_pending_send_failure(self, name: str) -> None:
+        self._security(self._state, name)
+        self._save_state()
 
     @staticmethod
     def _pending_source(event: MatrixEvent, message: AgentProtocolMessage) -> dict[str, Any]:
@@ -850,8 +865,23 @@ class AgentRuntime:
         state["processed_idempotency_keys"] = self._trim([*state["processed_idempotency_keys"], key])
 
     def _security(self, state, name) -> None:
+        if name not in _SECURITY_COUNTER_NAMES:
+            return
         security = state.setdefault("security", {})
         security[name] = min(9999, int(security.get(name, 0)) + 1)
+
+    @staticmethod
+    def _bounded_security_counts(value: Any) -> dict[str, int]:
+        if not isinstance(value, Mapping):
+            return {}
+        return {
+            name: min(9999, count)
+            for name, count in value.items()
+            if name in _SECURITY_COUNTER_NAMES
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count > 0
+        }
 
     @staticmethod
     def _trim(values: list[Any]) -> list[Any]:
@@ -924,7 +954,7 @@ class AgentRuntime:
             "processed_event_ids": [],
             "processed_idempotency_keys": [],
             "tasks": {},
-            "security": {},
+            "security": state.get("security", {}),
             "pending_outbox": pending,
             "agent_id": state.get("agent_id"),
             "mxid": state.get("mxid"),
@@ -954,6 +984,7 @@ class AgentRuntime:
         safe = self._safe_value(bounded_input)
         if not isinstance(safe, dict):
             return {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}}
+        safe["security"] = self._bounded_security_counts(bounded_input.get("security"))
         if preserve_tracking:
             # These values suppress reprocessing while the persisted cursor is
             # intentionally old.  Pending recovery must retain every one, or

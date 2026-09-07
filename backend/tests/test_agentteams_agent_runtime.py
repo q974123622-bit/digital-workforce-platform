@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from app.services.agentteams_skills import ProjectSkillRegistry
 from app.services.agentteams_gateway import MatrixEvent, MatrixSyncBatch
 from app.services.agentteams_protocol import AgentProtocolMessage, parse_protocol_lines, render_protocol_line
 from app.services.agentteams_agent_runtime import AgentRuntime, AgentRuntimeConfig
+import app.services.agentteams_agent_runtime as runtime_module
 from app.services.llm import LLMProvider, LLMUnavailableError
 
 
@@ -741,6 +744,70 @@ def test_partial_manager_send_retries_same_protocol_ids_without_cursor_advance(t
     assert subject._state["cursor"] == "cursor-1"
     assert "key-1" in subject._state["processed_idempotency_keys"]
     assert len(engine.selections) == 1 and len(engine.plans) == 1
+
+
+def test_pending_exception_retries_preserve_canonical_pending_without_replanning(
+    tmp_path, monkeypatch,
+):
+    """Repeated legal pending-send exceptions remain observable without changing the envelope."""
+    class Clock:
+        tick = 0
+
+        @classmethod
+        def now(cls, _timezone):
+            cls.tick += 1
+            return datetime(2026, 9, 7, tzinfo=timezone.utc) + timedelta(seconds=cls.tick)
+
+    subject, gateway, engine, _ = runtime(tmp_path)
+    monkeypatch.setattr(runtime_module, "datetime", Clock)
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    engine.plans = [plan()]
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
+
+    def raise_send_exception(*_args):
+        gateway.send_attempts += 1
+        raise RuntimeError("transport https://invalid.example/path token=placeholder")
+
+    gateway.send_protocol_message = raise_send_exception
+
+    assert subject.run_once() == 0
+    canonical_pending = deepcopy(subject._state["pending_outbox"])
+    assert subject._state["cursor"] is None
+    assert subject.run_once() == 0
+    assert subject.run_once() == 0
+
+    assert gateway.send_attempts == 3
+    assert subject._state["pending_outbox"] == canonical_pending
+    assert subject._state["cursor"] is None
+    assert subject._state["heartbeat_at"] == "2026-09-07T00:00:03+00:00"
+    assert subject._state["security"] == {"pending_send_exception": 3}
+    assert engine.selections == [] and engine.plans == []
+    persisted = (tmp_path / "state" / "VE-0001.json").read_text(encoding="utf-8")
+    assert "invalid.example" not in persisted
+    assert "placeholder" not in persisted
+
+
+def test_pending_empty_event_id_is_counted_without_recording_send_details(tmp_path):
+    """A transport that returns no event ID is distinct from a raised send exception."""
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    engine.plans = [plan()]
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
+
+    def return_empty_event_id(*_args):
+        gateway.send_attempts += 1
+        return ""
+
+    gateway.send_protocol_message = return_empty_event_id
+
+    assert subject.run_once() == 0
+    assert subject.run_once() == 0
+
+    assert gateway.send_attempts == 2
+    assert subject._state["security"] == {"pending_empty_event_id": 2}
+    persisted = (tmp_path / "state" / "VE-0001.json").read_text(encoding="utf-8")
+    assert "exception" not in persisted.replace("pending_empty_event_id", "")
+    assert "invalid.example" not in persisted
 
 
 def test_near_limit_state_preserves_restartable_pending_worker_assignment(tmp_path):
