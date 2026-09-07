@@ -203,11 +203,28 @@ def _valid_real_smoke_evidence_inputs():
     return health, detail, events, messages, result
 
 
-def test_real_smoke_bypasses_process_proxy_for_loopback_backend():
-    smoke_path = ROOT / "scripts" / "run_agentteams_real_smoke.py"
-    source = smoke_path.read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    ("base_url", "trust_env"),
+    [("http://127.0.0.1:8000/api/v1", False), ("https://dwp.example/api/v1", True)],
+)
+def test_real_smoke_only_bypasses_process_proxy_for_loopback_backend(
+    monkeypatch, capsys, base_url, trust_env,
+):
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    captured = {}
 
-    assert "httpx.Client(timeout=20.0, trust_env=False)" in source
+    class Client:
+        def __init__(self, **kwargs): captured.update(kwargs)
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+
+    smoke.BASE_URL = base_url
+    monkeypatch.setattr(smoke.httpx, "Client", Client)
+    monkeypatch.setattr(smoke, "_get", lambda *_args, **_kwargs: {})
+
+    assert smoke.main([]) == 2
+    capsys.readouterr()
+    assert captured["trust_env"] is trust_env
 
 
 @pytest.mark.parametrize("readiness_decision", ["not_ready", "incomplete"])

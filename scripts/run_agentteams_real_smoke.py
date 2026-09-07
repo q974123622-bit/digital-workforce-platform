@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -509,7 +510,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.goal != FIXED_GOAL or not 1 <= args.timeout_seconds <= 600:
         print(json.dumps(_safe_empty("invalid_real_smoke_arguments"), ensure_ascii=False))
         return 2
-    with httpx.Client(timeout=20.0, trust_env=False) as client:
+    loopback = urlsplit(BASE_URL).hostname in {"127.0.0.1", "localhost", "::1"}
+    with httpx.Client(timeout=20.0, trust_env=not loopback) as client:
         try:
             health = _get(client, "/agentteams-collaboration/health")
             if not isinstance(health, dict) or not (health.get("ready_for_demo") is True and health.get("mode") == "agentteams_strict" and health.get("transport") == "matrix"):
