@@ -163,7 +163,7 @@ def test_manager_selects_skill_then_delegates_without_invalid_root_ack(tmp_path)
     assert sent[0].payload == {"kind": "skill.selected", "selected_skill_ids": ["agentteams-onboarding-readiness"]}
     assert {item["assignee_agent_id"] for item in sent[1].payload["subtasks"]} == {"VE-0002", "VE-0003"}
     assert all("required_capability" in item for item in sent[1].payload["subtasks"])
-    assert pauses == [3.0, 3.0]
+    assert pauses == [0.0, 0.0]
 
 
 def test_runtime_surfaces_persistent_llm_unavailability_as_fixed_failure(tmp_path):
@@ -977,7 +977,7 @@ def test_worker_rejects_stale_delegate_candidate_after_platform_catalog_refresh(
     }
 
 
-def test_run_forever_waits_after_empty_poll_and_default_pause_is_three_seconds(tmp_path):
+def test_run_forever_waits_after_empty_poll_and_default_visible_pause_is_disabled(tmp_path):
     subject, gateway, _, _ = runtime(tmp_path)
     observed_waits = []
 
@@ -993,7 +993,7 @@ def test_run_forever_waits_after_empty_poll_and_default_pause_is_three_seconds(t
 
     subject.run_forever(StopAfterOnePoll())
     assert observed_waits == [1.0]
-    assert subject.config.pause_seconds == 3.0
+    assert subject.config.pause_seconds == 0.0
 
 
 def test_empty_poll_persists_a_safe_utc_heartbeat(tmp_path):

@@ -97,7 +97,7 @@ class AgentRuntimeConfig:
     scenario_skill_ids: set[str] = field(default_factory=lambda: {"agentteams-onboarding-readiness"})
     professional_skill_ids: set[str] | None = None
     state_dir: Path = field(default_factory=lambda: Path(".agentteams-runtime") / "state")
-    pause_seconds: float = 3.0
+    pause_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if self.role not in _ROLES or not is_safe_agent_id(self.agent_id) or not self.matrix_mxid.startswith("@") or not self.matrix_token or not self.room_id:
