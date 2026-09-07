@@ -185,7 +185,17 @@ function Assert-NoExistingDemoProcesses {
     if (-not (Test-Path -LiteralPath $pidsPath)) { return }; try { $saved=Get-Content -LiteralPath $pidsPath -Raw|ConvertFrom-Json } catch { throw 'Invalid existing AgentTeams PID record; refusing duplicate start.' }
     if ($saved.status -eq 'running') { foreach ($record in @($saved.processes)) { if ($NoFrontend -and $record.name -eq 'frontend') { continue }; if (Test-OwnedRecordedProcess $record) { throw "An AgentTeams real-demo process is already running for this worktree (PID $($record.process_id))." } } }
 }
-function Wait-SynapseReady { for ($attempt=0;$attempt -lt 30;$attempt++) { try { if ((Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8008/_matrix/client/versions' -TimeoutSec 2).StatusCode -eq 200) { return $true } } catch {}; Start-Sleep -Seconds 1 }; return $false }
+function Wait-SynapseReady {
+    for ($attempt=0;$attempt -lt 30;$attempt++) {
+        try {
+            $versions = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8008/_matrix/client/versions' -TimeoutSec 2
+            $registration = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8008/_synapse/admin/v1/register' -TimeoutSec 2
+            if ($versions.StatusCode -eq 200 -and $registration.StatusCode -eq 200) { return $true }
+        } catch {}
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 $roleApiKeys = Get-AgentRoleApiKeyValues
