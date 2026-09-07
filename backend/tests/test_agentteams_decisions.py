@@ -125,6 +125,30 @@ def test_manager_prompt_requires_selected_skill_ids_to_match_loaded_context(
     assert payload["required_selected_skill_ids"] == ["agentteams-onboarding-readiness"]
 
 
+def test_manager_plan_summary_prompt_requires_non_ready_for_confirmed_missing_evidence(
+    fake_llm, registry, manager_context,
+):
+    """The live Manager planning call must not label confirmed missing evidence as ready."""
+    fake_llm.outputs = [{
+        "selected_skill_ids": ["agentteams-onboarding-readiness"],
+        "action": "summarize",
+        "summary": {
+            "summary": "MFA confirmation is missing.",
+            "readiness_decision": "not_ready",
+        },
+    }]
+
+    decision = AgentDecisionEngine(fake_llm, registry).plan(manager_context)
+
+    assert decision.summary is not None
+    assert decision.summary.readiness_decision == "not_ready"
+    instruction = fake_llm.calls[0][0]["content"]
+    assert (
+        "a summarize action must use readiness_decision not_ready or incomplete"
+        in instruction
+    )
+
+
 def test_manager_duplicate_delegate_key_is_corrected_without_replaying_model_output(
     fake_llm, registry, manager_context,
 ):
@@ -217,6 +241,59 @@ def test_manager_all_optional_delegate_plan_fails_with_bounded_correction(
         AgentDecisionEngine(fake_llm, registry).plan(manager_context)
 
     assert len(fake_llm.calls) == 2
+
+
+def test_manager_summary_requires_readiness_decision_and_retries_missing_field(
+    fake_llm, registry, manager_context,
+):
+    """A free-text summary without readiness_decision must not reach the runtime."""
+    fake_llm.outputs = [
+        {
+            "summary": "MFA confirmation is missing.",
+            "completed_items": [],
+            "risks": ["MFA evidence missing"],
+            "unknowns": [],
+            "next_actions": ["Obtain MFA confirmation"],
+        },
+        {
+            "summary": "MFA confirmation is missing.",
+            "readiness_decision": "not_ready",
+            "completed_items": [],
+            "risks": ["MFA evidence missing"],
+            "unknowns": [],
+            "next_actions": ["Obtain MFA confirmation"],
+        },
+    ]
+
+    summary = AgentDecisionEngine(fake_llm, registry).summarize(manager_context)
+
+    assert summary.readiness_decision == "not_ready"
+    assert len(fake_llm.calls) == 2
+    instruction = fake_llm.calls[0][0]["content"]
+    assert "readiness_decision" in instruction
+    assert "not_ready or incomplete" in instruction
+
+
+def test_manager_summary_rejects_invalid_readiness_decision_and_retries(
+    fake_llm, registry, manager_context,
+):
+    """Only the declared Literal values may cross the structured summary boundary."""
+    fake_llm.outputs = [
+        {
+            "summary": "Readiness is unclear.",
+            "readiness_decision": "needs_more_work",
+        },
+        {
+            "summary": "A source remains unavailable.",
+            "readiness_decision": "incomplete",
+        },
+    ]
+
+    summary = AgentDecisionEngine(fake_llm, registry).summarize(manager_context)
+
+    assert summary.readiness_decision == "incomplete"
+    assert len(fake_llm.calls) == 2
+    assert "validation_errors" in fake_llm.calls[1][-1]["content"]
 
 
 def test_dynamic_validation_error_keeps_generic_feedback_without_replaying_value(

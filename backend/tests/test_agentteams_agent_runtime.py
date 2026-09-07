@@ -124,7 +124,7 @@ def plan(action="delegate"):
             ],
         )
     if action == "summarize":
-        return ManagerDecision(selected_skill_ids=["agentteams-onboarding-readiness"], action="summarize", summary=FinalSummary(summary="可按期入职", completed_items=["资料"], risks=[], unknowns=[], next_actions=[]))
+        return ManagerDecision(selected_skill_ids=["agentteams-onboarding-readiness"], action="summarize", summary=FinalSummary(summary="可按期入职", readiness_decision="ready", completed_items=["资料"], risks=[], unknowns=[], next_actions=[]))
     return ManagerDecision(selected_skill_ids=["agentteams-onboarding-readiness"], action="fail", failure_reason="证据不足")
 
 
@@ -263,6 +263,7 @@ def test_manager_summary_can_follow_up_or_finish(tmp_path):
     sent = sent_protocols(gateway)
     assert [item.type for item in sent] == ["agent.message", "task.delegate", "task.summary"]
     assert sent[-1].payload["summary"] == "可按期入职"
+    assert sent[-1].payload["readiness_decision"] == "ready"
     assert engine.plan_contexts[-1].child_results == [{"result": "ok"}]
     assert engine.plan_contexts[-1].existing_child_task_keys == ["hr-check", "it-check"]
 

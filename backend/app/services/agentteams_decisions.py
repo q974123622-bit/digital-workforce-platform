@@ -49,6 +49,7 @@ class PlannedSubtask(_StrictModel):
 
 class FinalSummary(_StrictModel):
     summary: str = Field(min_length=1)
+    readiness_decision: Literal["ready", "not_ready", "incomplete"]
     completed_items: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     unknowns: list[str] = Field(default_factory=list)
@@ -227,7 +228,9 @@ class AgentDecisionEngine:
             "and must be acyclic. Each assignee and required capability must exactly match the "
             "current team catalog. New client_task_key values must not reuse an existing child task key; "
             "do not assert unobserved facts. Return selected_skill_ids with exactly the selected scenario "
-            "Skill IDs supplied below. Do not add, drop, or replace IDs; their order is not significant.",
+            "Skill IDs supplied below. Do not add, drop, or replace IDs; their order is not significant. "
+            "When required evidence is confirmed missing, a summarize action must use readiness_decision "
+            "not_ready or incomplete.",
             {
                 "user_goal": context.user_goal,
                 "manager_runtime_skill": _skill_payload(manager_skill),
@@ -304,7 +307,9 @@ class AgentDecisionEngine:
         selected_skills = self.skills.load(context.selected_skill_ids)
         messages = _messages(
             "You are an AgentTeams manager. Produce a final evidence-based summary only from the "
-            "supplied direct-child results. Preserve unknowns and return only JSON matching the schema.",
+            "supplied direct-child results. Preserve unknowns and return only JSON matching the schema. "
+            "Return readiness_decision as ready, not_ready, or incomplete. When required evidence is "
+            "confirmed missing, readiness_decision must be not_ready or incomplete.",
             {
                 "user_goal": context.user_goal,
                 "manager_runtime_skill": _skill_payload(manager_skill),

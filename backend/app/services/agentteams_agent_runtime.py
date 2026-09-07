@@ -341,6 +341,7 @@ class AgentRuntime:
             summary = decision.summary
             return [self._reply(message, "task.summary", "platform", {
                 "summary": self._text(summary.summary),
+                "readiness_decision": summary.readiness_decision,
                 "completed_items": self._bounded_text_list(summary.completed_items),
                 "risks": self._bounded_text_list(summary.risks),
                 "unknowns": self._bounded_text_list(summary.unknowns),
