@@ -221,6 +221,8 @@ Manager 同批派发 HR 与 IT
 - 返回最终 `task.summary`，完成根任务；或
 - 发送新一轮 `task.delegate`，使根任务重新进入 `waiting_children`。
 
+直接 Worker 已整合的嵌套审计结论属于已调查证据。若结论是“证据确认缺失”，Manager 应据此汇总为 `not ready` 或 `incomplete` 并列出后续动作，不能为了把缺失状态变成 `ready` 重复派发同一调查。只有既有 Worker 结果与嵌套复核都未覆盖的新独立事实问题，才进入下一轮。
+
 ## 8. Tool 与 Mock 数据
 
 业务 Tool 由项目自行实现，不连接内部系统：
