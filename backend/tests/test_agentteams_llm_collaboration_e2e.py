@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from app import models
+from app import models, schemas
 from app.services.agentteams_agent_runtime import AgentRuntime, AgentRuntimeConfig
 from app.services.agentteams_collaboration import AgentTeamsCollaborationService
 from app.services.agentteams_decisions import AgentDecisionEngine, AgentDecisionError
@@ -934,8 +934,16 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
                 }
                 for message in messages
             ],
-        service.build_result(db_session, run.id),
-    )
+            {
+                "task_id": run.id,
+                "status": by_key["root"].status,
+                "summary": run.summary,
+                "node_results": [
+                    schemas.AgentTaskNodeOut.model_validate(node).model_dump(mode="json")
+                    for node in nodes
+                ],
+            },
+        )
     assert evidence["ok"] is True, evidence["missing_criteria"]
     assert evidence["rounds"] == [1]
     worker_delegate = next(event for event in events if event.event_type == "task.delegate" and event.task_id == by_key["it-check"].id)
