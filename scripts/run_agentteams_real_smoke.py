@@ -509,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.goal != FIXED_GOAL or not 1 <= args.timeout_seconds <= 600:
         print(json.dumps(_safe_empty("invalid_real_smoke_arguments"), ensure_ascii=False))
         return 2
-    with httpx.Client(timeout=20.0) as client:
+    with httpx.Client(timeout=20.0, trust_env=False) as client:
         try:
             health = _get(client, "/agentteams-collaboration/health")
             if not isinstance(health, dict) or not (health.get("ready_for_demo") is True and health.get("mode") == "agentteams_strict" and health.get("transport") == "matrix"):

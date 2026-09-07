@@ -203,6 +203,13 @@ def _valid_real_smoke_evidence_inputs():
     return health, detail, events, messages, result
 
 
+def test_real_smoke_bypasses_process_proxy_for_loopback_backend():
+    smoke_path = ROOT / "scripts" / "run_agentteams_real_smoke.py"
+    source = smoke_path.read_text(encoding="utf-8")
+
+    assert "httpx.Client(timeout=20.0, trust_env=False)" in source
+
+
 @pytest.mark.parametrize("readiness_decision", ["not_ready", "incomplete"])
 def test_real_smoke_accepts_it_worker_delegated_audit_and_parallel_root_release(readiness_decision):
     smoke = _load_script("run_agentteams_real_smoke.py")
