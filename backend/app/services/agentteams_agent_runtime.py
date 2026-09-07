@@ -220,6 +220,9 @@ class AgentRuntime:
         # by idempotency while it handles its siblings and later events.
         trial["cursor"] = self._state.get("cursor")
         trial["pending_outbox"] = None
+        # The persisted trial predates replay failures.  Current bounded
+        # counters are the authoritative telemetry once the replay succeeds.
+        trial["security"] = self._bounded_security_counts(self._state.get("security"))
         self._state = trial
         self._save_state()
         return 1
@@ -815,6 +818,13 @@ class AgentRuntime:
         pending = self._state.get("pending_outbox")
         if pending is not None and self._validated_pending_messages(pending) is not None:
             recovery = self._pending_recovery_state(pending, safe)
+            if self._serialized_size(recovery) > _MAX_STATE_BYTES:
+                # Security counters are optional observability.  A valid
+                # canonical replay envelope is not: discard telemetry before
+                # considering the existing corrupt-pending fallback.
+                recovery_without_telemetry = dict(safe)
+                recovery_without_telemetry["security"] = {}
+                recovery = self._pending_recovery_state(pending, recovery_without_telemetry)
             if self._serialized_size(recovery) <= _MAX_STATE_BYTES:
                 safe = recovery
             else:

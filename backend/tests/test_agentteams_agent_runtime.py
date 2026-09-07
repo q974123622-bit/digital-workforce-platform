@@ -810,6 +810,54 @@ def test_pending_empty_event_id_is_counted_without_recording_send_details(tmp_pa
     assert "invalid.example" not in persisted
 
 
+def test_pending_send_telemetry_never_evicts_a_near_limit_canonical_pending(tmp_path):
+    """A counter may be dropped, but a valid replay envelope must remain durable."""
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    engine.plans = [plan()]
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
+    gateway.fail_sends = True
+
+    assert subject.run_once() == 0
+    pending = subject._state["pending_outbox"]
+    assert pending is not None
+    subject._state["security"] = {}
+    pending["trial_state"]["tasks"] = {"padding": ""}
+    base_size = subject._serialized_size(subject._pending_recovery_state(pending, subject._state))
+    pending["trial_state"]["tasks"]["padding"] = "x" * (16_383 - base_size)
+    assert subject._serialized_size(subject._pending_recovery_state(pending, subject._state)) == 16_383
+    canonical_pending = deepcopy(pending)
+
+    assert subject.run_once() == 0
+
+    assert subject._state["pending_outbox"] == canonical_pending
+    persisted = json.loads((tmp_path / "state" / "VE-0001.json").read_text(encoding="utf-8"))
+    assert persisted["pending_outbox"] == canonical_pending
+    assert subject._state["cursor"] is None
+    assert engine.selections == [] and engine.plans == []
+
+
+def test_pending_send_counters_survive_successful_replay_and_restart(tmp_path):
+    """Pending send telemetry remains durable after an old replay trial becomes current."""
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    engine.plans = [plan()]
+    gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload()))]
+    gateway.fail_sends = True
+
+    assert subject.run_once() == 0
+    assert subject.run_once() == 0
+    assert subject.run_once() == 0
+    assert subject._state["security"] == {"pending_send_exception": 3}
+
+    gateway.fail_sends = False
+    assert subject.run_once() == 1
+    assert subject._state["security"] == {"pending_send_exception": 3}
+
+    restarted = AgentRuntime(subject.config, FakeGateway(), FakeEngine(), pause=lambda _: None)
+    assert restarted._state["security"] == {"pending_send_exception": 3}
+
+
 def test_near_limit_state_preserves_restartable_pending_worker_assignment(tmp_path):
     seeded, _, _, _ = runtime(tmp_path, role="hr")
     seeded._state["tasks"] = {
