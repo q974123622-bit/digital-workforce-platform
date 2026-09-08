@@ -173,7 +173,8 @@ def ensure_mvp_seed(db) -> None:
 
     grant_specs = {
         "AI-GENERAL": [
-            "KB-IT-SERVICE", "KB-REG-INTERNAL", "KB-REG-EXTERNAL",
+            # 内规（742）与外规（748）已从内部引擎下线，不再授予，避免检索报错。
+            "KB-IT-SERVICE",
         ],
         "AI-INVESTMENT": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
         # 张三的分身不直接持有知识库；遇到知识问题必须委派给岗位数字员工。

@@ -170,11 +170,12 @@ def test_new_securities_kb_l2_intern_deny(client):
     assert resp.json()["error"]["detail"]["policy_id"] == "POLICY-002"
 
 
-def test_new_internal_reg_kb_l2_formal_allow(client):
+def test_internal_reg_kb_removed_from_general(client):
+    # 内规（742）已从内部引擎下线，AI-GENERAL 不再持有 KB-REG-INTERNAL 授权。
     resp = _search(client, "AI-GENERAL", "KB-REG-INTERNAL", "反洗钱", "T-P17-REG-001")
-    assert resp.status_code == 200
-    assert resp.json()["decision"] == "allow"
-    assert len(resp.json()["data"]["hits"]) >= 1
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "POLICY_DENIED"
+    assert resp.json()["error"]["detail"]["policy_id"] == "AGENT-KB-GRANT"
 
 
 def test_new_external_reg_kb_l1_requires_grant(client):
@@ -188,8 +189,6 @@ def test_multiformat_directory_search_returns_nonempty_hits(client):
     cases = [
         ("AI-GENERAL", "KB-IT-SERVICE", "企业邮箱"),
         ("AI-INVESTMENT", "KB-SECURITIES", "股票期权"),
-        ("AI-GENERAL", "KB-REG-INTERNAL", "适当性"),
-        ("AI-GENERAL", "KB-REG-EXTERNAL", "尽职调查"),
     ]
     for i, (emp, kb_id, query) in enumerate(cases):
         resp = _search(client, emp, kb_id, query, f"T-P17-MF-{i}")

@@ -18,7 +18,7 @@ def test_agent_directory_has_bounded_twin_and_role_colleagues(client):
     assert rows["DT-E10281"]["identity_kind"] == "human_twin"
     assert rows["DT-E10281"]["delegation_policy"] == "bounded_single"
     assert set(rows["AI-GENERAL"]["knowledge_base_ids"]) == {
-        "KB-IT-SERVICE", "KB-REG-INTERNAL", "KB-REG-EXTERNAL",
+        "KB-IT-SERVICE",
     }
     assert set(rows["AI-INVESTMENT"]["knowledge_base_ids"]) == {
         "KB-SECURITIES", "KB-INVESTMENT-BANKING"
