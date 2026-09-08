@@ -8,7 +8,9 @@ secret_file="secrets/llm_api_key"
 signing_secret_file="secrets/harness_signing_secret"
 employee_password_file="secrets/employee_initial_password"
 admin_password_file="secrets/admin_initial_password"
-required_images=("dwp-backend:0.2.0-offline" "dwp-frontend:0.2.0-offline" "dwp-dsh:rc6")
+image_tag="${DWP_IMAGE_TAG:-0.3.0-offline}"
+dsh_image="${DWP_DSH_IMAGE:-dwp-dsh:rc6}"
+required_images=("dwp-backend:${image_tag}" "dwp-frontend:${image_tag}" "$dsh_image")
 
 fail() {
   echo "ERROR: $*" >&2
@@ -38,15 +40,71 @@ for employee_id in AI-GENERAL AI-INVESTMENT DT-E10281 DT-E20999; do
 done
 chmod 700 secrets data backups harness
 
+saved_port=""
+if [ -f .env ]; then
+  saved_port="$(awk -F= '$1 == "DWP_HTTP_PORT" {print $2; exit}' .env 2>/dev/null || true)"
+fi
+port="${DWP_HTTP_PORT:-${saved_port:-18080}}"
+case "$port" in
+  ''|*[!0-9]*) fail "DWP_HTTP_PORT 必须是数字" ;;
+esac
+[ "$port" -ge 1 ] && [ "$port" -le 65535 ] || fail "DWP_HTTP_PORT 必须在 1-65535 之间"
+
+# Re-running start.sh is allowed when this deployment already owns the port.
+if command -v ss >/dev/null 2>&1 && ss -ltnH "sport = :$port" 2>/dev/null | grep -q .; then
+  frontend_running="$(docker compose ps --status running --services 2>/dev/null | grep -c '^frontend$' || true)"
+  [ "$frontend_running" -gt 0 ] || fail "端口 $port 已被其他服务占用；请执行 export DWP_HTTP_PORT=其他空闲端口"
+fi
+
 docker_gid="$(stat -c '%g' /var/run/docker.sock)"
-printf 'DWP_UID=%s\nDWP_GID=%s\nDWP_DOCKER_GID=%s\nDWP_HTTP_PORT=%s\n' \
-  "$(id -u)" "$(id -g)" "$docker_gid" "${DWP_HTTP_PORT:-8080}" > .env
+printf 'DWP_UID=%s\nDWP_GID=%s\nDWP_DOCKER_GID=%s\nDWP_HTTP_PORT=%s\nDWP_IMAGE_TAG=%s\nDWP_DSH_IMAGE=%s\n' \
+  "$(id -u)" "$(id -g)" "$docker_gid" "$port" "$image_tag" "$dsh_image" > .env
 
 if [ ! -f config.env ]; then
   cp config.env.example config.env
-  chmod 600 config.env
   echo "已生成 config.env；当前使用 Mock 知识库。"
 fi
+chmod 600 config.env
+
+config_value() {
+  awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' config.env
+}
+
+set_config_value() {
+  local key="$1" value="$2" temp_file
+  temp_file="$(mktemp ./config.env.XXXXXX)"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { replaced = 0 }
+    index($0, key "=") == 1 { print key "=" value; replaced = 1; next }
+    { print }
+    END { if (!replaced) print key "=" value }
+  ' config.env > "$temp_file"
+  chmod 600 "$temp_file"
+  mv -f "$temp_file" config.env
+}
+
+model_base_url="$(config_value DEEPSEEK_BASE_URL)"
+if [ -z "$model_base_url" ] || echo "$model_base_url" | grep -q 'example.internal'; then
+  read -rp "请输入内部模型网关 Base URL（例如 http://主机:端口/v1）: " model_base_url
+  case "$model_base_url" in
+    http://*|https://*) ;;
+    *) fail "模型 Base URL 必须以 http:// 或 https:// 开头" ;;
+  esac
+  set_config_value DEEPSEEK_BASE_URL "$model_base_url"
+fi
+
+model_name="$(config_value DEEPSEEK_MODEL)"
+if [ -z "$model_name" ] || [ "$model_name" = "replace-with-enabled-model-name" ]; then
+  read -rp "请输入模型网关开放的模型名: " model_name
+  [ -n "$model_name" ] || fail "模型名不能为空"
+  set_config_value DEEPSEEK_MODEL "$model_name"
+fi
+
+model_path="$(config_value DEEPSEEK_CHAT_COMPLETIONS_PATH)"
+if [ -z "$model_path" ]; then
+  set_config_value DEEPSEEK_CHAT_COMPLETIONS_PATH "/chat/completions"
+fi
+unset model_base_url model_name model_path
 
 if [ ! -s "$secret_file" ]; then
   read -rsp "请输入模型 API Key（输入不回显）: " llm_key
@@ -123,7 +181,6 @@ for container in dwp-harness-ai-general dwp-harness-ai-investment dwp-harness-dt
     || fail "$container 的 Harness/Profile 自检失败"
 done
 
-port="${DWP_HTTP_PORT:-8080}"
 host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
 echo "启动完成：前端、后端和 4 个 Harness 实例均已运行"

@@ -379,6 +379,7 @@ export interface ChatReply {
     plugin_id: string;
     name: string;
     decision: string;
+    source: string | null;
     policy_id: string | null;
     reason: string | null;
   }[];
@@ -386,6 +387,7 @@ export interface ChatReply {
     plugin_id: string;
     name: string;
     decision: string;
+    source: string | null;
     policy_id: string | null;
     reason: string | null;
   } | null;

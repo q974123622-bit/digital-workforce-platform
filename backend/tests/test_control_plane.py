@@ -86,7 +86,7 @@ def test_policy_005_sensitive_operation_approval(client):
 
 
 def test_policy_default_l1_read_allow(client):
-    resp = _evaluate(client, "DT-E20999", "knowledge", "knowledge-l1", "L1", "read")
+    resp = _evaluate(client, "AI-GENERAL", "knowledge", "knowledge-l1", "L1", "read")
     assert resp.status_code == 200
     assert resp.json()["decision"] == "allow"
 

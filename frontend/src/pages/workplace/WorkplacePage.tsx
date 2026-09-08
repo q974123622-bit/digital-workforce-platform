@@ -93,6 +93,14 @@ const TOOL_TYPE_LABEL: Record<string, string> = {
   http: 'HTTP',
 };
 
+const SOURCE_LABEL: Record<string, string> = {
+  internal: '真实知识库',
+  demo: '演示知识库',
+  mock: '演示知识库',
+  rag: '本地 RAG',
+  volcengine_mcp: 'Volcengine MCP',
+};
+
 interface TaskCardProps {
   task: TaskRun;
   workerName: (employeeNo: string) => string;
@@ -1314,11 +1322,15 @@ export default function WorkplacePage() {
                         </div>
                         {msg.tool_cards.length > 0 && (
                           <div className="tool-cards">
-                            {(msg.tool_cards as Array<{ name: string; decision: string; policy_id?: string | null }>).map(
+                            {(msg.tool_cards as Array<{ name: string; decision: string; source?: string | null; policy_id?: string | null }>).map(
                               (card, index) => (
                                 <div className={`tool-card ${card.decision}`} key={`${msg.id}-${index}`}>
                                   <div className="tool-card-head">{card.name}</div>
-                                  <div className="tool-card-sub">决策：{card.decision}</div>
+                                  <div className="tool-card-sub">
+                                    {card.source && <span>来源：{SOURCE_LABEL[card.source] ?? card.source}</span>}
+                                    {card.source && <span> · </span>}
+                                    <span>决策：{card.decision}</span>
+                                  </div>
                                 </div>
                               ),
                             )}

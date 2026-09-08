@@ -22,7 +22,7 @@ def test_workspace_intern_twin_kb_denied(client):
     kbs = {kb["knowledge_base_id"]: kb for kb in ws["knowledge_bases"]}
     assert kbs["KB-INTERNAL"]["accessible"] is False
     assert kbs["KB-INTERNAL"]["decision"] == "deny"
-    assert kbs["KB-PUBLIC"]["accessible"] is True
+    assert kbs["KB-PUBLIC"]["accessible"] is False
 
 
 def test_workspace_virtual_onboarding_only(client):

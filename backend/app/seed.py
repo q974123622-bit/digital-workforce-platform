@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from . import models
 from .database import DATABASE_URL, Base, SessionLocal, engine, ensure_schema_compatibility
+from .services import config
 from .services.auth import hash_password
 
 SEED_PATH = Path(__file__).resolve().parents[2] / "mock-data" / "seed.json"
@@ -172,13 +173,12 @@ def ensure_mvp_seed(db) -> None:
 
     grant_specs = {
         "AI-GENERAL": [
-            "KB-PUBLIC", "KB-ONBOARD", "KB-INTERNAL", "KB-FINTECH",
             "KB-IT-SERVICE", "KB-REG-INTERNAL", "KB-REG-EXTERNAL",
         ],
         "AI-INVESTMENT": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
         # 张三的分身不直接持有知识库；遇到知识问题必须委派给岗位数字员工。
         "DT-E10281": [],
-        "DT-E20999": ["KB-PUBLIC", "KB-ONBOARD", "KB-REG-EXTERNAL"],
+        "DT-E20999": [],
         # Historical inactive demo identities remain callable by compatibility tests,
         # but are not shown in the active directory or provisioned as MVP containers.
         "VE-0001": ["KB-PUBLIC", "KB-ONBOARD"],
@@ -194,16 +194,23 @@ def ensure_mvp_seed(db) -> None:
                 models.AgentKnowledgeGrant.knowledge_base_id == kb_id,
             )) is None:
                 db.add(models.AgentKnowledgeGrant(employee_id=employee_id, knowledge_base_id=kb_id))
-        # 插件级知识许可也按具体库的数据等级重新生成，避免旧授权残留造成 UI 误导。
-        db.query(models.EmployeePluginGrant).filter(
-            models.EmployeePluginGrant.employee_id == employee_id,
-            models.EmployeePluginGrant.plugin_id.in_(["knowledge-l1", "knowledge-l2", "knowledge-l3"]),
-        ).delete(synchronize_session=False)
         levels = {
             db.get(models.KnowledgeBase, kb_id).data_level
             for kb_id in kb_ids
             if db.get(models.KnowledgeBase, kb_id) is not None
         }
+        expected_plugin_ids = {
+            f"knowledge-{data_level.lower()}" for data_level in levels
+        }
+        db.query(models.AgentPluginBinding).filter(
+            models.AgentPluginBinding.target_agent_id == employee_id,
+            models.AgentPluginBinding.plugin_id.in_(["knowledge-l1", "knowledge-l2", "knowledge-l3"]),
+            models.AgentPluginBinding.plugin_id.not_in(expected_plugin_ids) if expected_plugin_ids else True,
+        ).delete(synchronize_session=False)
+        db.query(models.EmployeePluginGrant).filter(
+            models.EmployeePluginGrant.employee_id == employee_id,
+            models.EmployeePluginGrant.plugin_id.in_(["knowledge-l1", "knowledge-l2", "knowledge-l3"]),
+        ).delete(synchronize_session=False)
         for data_level in sorted(levels):
             db.add(models.EmployeePluginGrant(
                 employee_id=employee_id, plugin_id=f"knowledge-{data_level.lower()}", action="read",
@@ -314,6 +321,22 @@ def ensure_mvp_seed(db) -> None:
                 provider="mock", corp_id="demo-corp", external_user_id=human.employee_no,
                 human_employee_no=human.employee_no,
             ))
+    # 企业微信接入：按 DWP_WECOM_USER_BINDINGS（机器人 staff ID -> 员工工号）幂等初始化绑定。
+    # bot_id 与绑定映射统一从 config 读取，与 wecom_bot / wecom_adapter 保持一致。
+    wecom_bot_id = config.wecom_bot_id()
+    if wecom_bot_id:
+        for wecom_user_id, employee_no in config.wecom_user_bindings().items():
+            if db.get(models.HumanEmployee, employee_no) is None:
+                continue
+            if db.scalar(select(models.DirectoryBinding).where(
+                models.DirectoryBinding.provider == "wecom",
+                models.DirectoryBinding.corp_id == wecom_bot_id,
+                models.DirectoryBinding.external_user_id == wecom_user_id,
+            )) is None:
+                db.add(models.DirectoryBinding(
+                    provider="wecom", corp_id=wecom_bot_id,
+                    external_user_id=wecom_user_id, human_employee_no=employee_no,
+                ))
     db.commit()
 
 

@@ -1,5 +1,6 @@
 """内部接口（服务间，不暴露前端）：Policy / Gateway / Harness tools。"""
 
+import asyncio
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -12,6 +13,7 @@ from ..database import get_db
 from ..services.gateway import invoke_plugin, search_knowledge, write_audit
 from ..services.harness_token import HarnessClaims, verify_token
 from ..services.identity import resolve_identity
+from ..services.knowledge_registry import accessible_knowledge_bases
 from ..services.policy import DECISION_ALLOW, DECISION_DENY, ResourceRef, evaluate
 from ..services.runtime_adapter import DockerHarnessRuntimeAdapter, RuntimeResult
 from ..services.sandbox_manager import SandboxManager
@@ -242,18 +244,31 @@ async def agent_tools_mcp(
     elif method == "notifications/initialized":
         return {"jsonrpc": "2.0", "result": {}}
     elif method == "tools/list":
-        tools = ([{
-            "name": "search_knowledge",
-            "description": "在当前数字员工已授权的一个知识库中检索，每次只能检索一库。",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "knowledge_base_id": {"type": "string"},
-                    "query": {"type": "string"},
+        tools = []
+        if _has_knowledge_tool(db, claims):
+            subject = resolve_identity(db, claims.employee_id)
+            allowed = (
+                accessible_knowledge_bases(db, subject, claims.requester_human_no)
+                if subject is not None else []
+            )
+            kb_schema = {"type": "string"}
+            kb_desc = "在当前数字员工已授权的一个知识库中检索，每次只能检索一库。"
+            if allowed:
+                kb_schema["enum"] = [kb["id"] for kb in allowed]
+                kb_desc += " knowledge_base_id 必须从以下已授权知识库中选择："
+                kb_desc += "、".join(f"{kb['id']}（{kb['name']}）" for kb in allowed)
+            tools.append({
+                "name": "search_knowledge",
+                "description": kb_desc,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "knowledge_base_id": kb_schema,
+                        "query": {"type": "string"},
+                    },
+                    "required": ["knowledge_base_id", "query"],
                 },
-                "required": ["knowledge_base_id", "query"],
-            },
-        }] if _has_knowledge_tool(db, claims) else [])
+            })
         if _can_delegate(db, claims):
             tools.append({
                 "name": "ask_digital_employee",
@@ -269,7 +284,7 @@ async def agent_tools_mcp(
             })
         tools.append({
             "name": "save_memory",
-            "description": "仅在用户明确要求‘请记住’或‘以后都这样处理’时保存长期记忆。",
+            "description": "仅在用户明确要求'请记住'或'以后都这样处理'时保存长期记忆。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -287,7 +302,12 @@ async def agent_tools_mcp(
             if params.get("name") == "search_knowledge":
                 data = _agent_search(db, claims, AgentKnowledgeToolIn.model_validate(arguments))
             elif params.get("name") == "ask_digital_employee":
-                data = _agent_delegate(db, claims, AgentDelegateToolIn.model_validate(arguments))
+                # 委派会同步拉起目标数字员工的 Harness 容器执行（最长约 2 分钟）。
+                # 这里必须放到线程池，否则会阻塞 uvicorn 事件循环，导致被委派方
+                # 的 MCP 回调（tools/list、search_knowledge）无法被处理而超时失败。
+                data = await asyncio.to_thread(
+                    _agent_delegate, db, claims, AgentDelegateToolIn.model_validate(arguments)
+                )
             elif params.get("name") == "save_memory":
                 data = _save_memory(db, claims, SaveMemoryToolIn.model_validate(arguments))
             else:

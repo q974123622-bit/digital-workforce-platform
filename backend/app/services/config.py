@@ -18,6 +18,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 INTERNAL_KB_ENDPOINT = "DWP_INTERNAL_KB_ENDPOINT"
 INTERNAL_KB_CREDENTIAL_REF = "DWP_INTERNAL_KB_CREDENTIAL_REF"
 INTERNAL_KB_BASE_URL = "DWP_INTERNAL_KB_BASE_URL"
+INTERNAL_KB_RETRIEVAL_PATH = "DWP_INTERNAL_KB_RETRIEVAL_PATH"
 INTERNAL_KB_X_ORG = "DWP_INTERNAL_KB_X_ORG"
 INTERNAL_KB_X_TENANT = "DWP_INTERNAL_KB_X_TENANT"
 INTERNAL_KB_X_USER = "DWP_INTERNAL_KB_X_USER"
@@ -37,6 +38,28 @@ EMBED_BASE_URL = "DWP_EMBED_BASE_URL"
 EMBED_API_KEY = "DWP_EMBED_API_KEY"
 EMBED_MODEL = "DWP_EMBED_MODEL"
 EMBED_DIMENSIONS = "DWP_EMBED_DIMENSIONS"
+
+# Harness 单轮执行超时（秒）。委派链路会拉长岗位数字员工的执行时间（多轮知识检索），
+# 120 秒在真实模型下不够，默认放宽到 300/360 秒，并允许通过环境变量覆盖。
+HARNESS_TIMEOUT_ROLE = "DWP_HARNESS_TIMEOUT_ROLE"
+HARNESS_TIMEOUT_TWIN = "DWP_HARNESS_TIMEOUT_TWIN"
+
+
+def harness_timeout_role() -> int:
+    """岗位数字员工（role_employee）的 Harness 执行超时，默认 300 秒。"""
+    try:
+        return max(60, int(os.environ.get(HARNESS_TIMEOUT_ROLE) or "300"))
+    except (TypeError, ValueError):
+        return 300
+
+
+def harness_timeout_twin() -> int:
+    """数字分身（human_twin）的 Harness 执行超时，默认 360 秒（需含委派等待）。"""
+    try:
+        return max(60, int(os.environ.get(HARNESS_TIMEOUT_TWIN) or "360"))
+    except (TypeError, ValueError):
+        return 360
+
 
 # AgentTeams 接入（Matrix 通道）
 AGENTTEAMS_MATRIX_URL = "AGENTTEAMS_MATRIX_URL"
@@ -125,6 +148,13 @@ def internal_kb_base_url() -> str | None:
     return os.environ.get(INTERNAL_KB_BASE_URL) or os.environ.get(INTERNAL_KB_ENDPOINT)
 
 
+def internal_kb_retrieval_path() -> str:
+    raw = (os.environ.get(INTERNAL_KB_RETRIEVAL_PATH) or "/marketing_agent/api/v2/rag/chunk/retrieval").strip()
+    if not raw.startswith("/") or "://" in raw:
+        return "/marketing_agent/api/v2/rag/chunk/retrieval"
+    return raw
+
+
 def internal_kb_id_map() -> dict[str, int]:
     raw = os.environ.get(INTERNAL_KB_ID_MAP) or "{}"
     try:
@@ -164,3 +194,64 @@ def embedding_dimensions() -> int:
         return int(os.environ.get(EMBED_DIMENSIONS) or "1024")
     except (TypeError, ValueError):
         return 1024
+
+
+# 企业微信（智能机器人长连接）接入配置。
+# 长连接模式下由 backend 作为 WebSocket 客户端主动连接企微网关，
+# 无公网回调地址、无 Token/AESKey 加解密。bot_secret 属敏感凭据，
+# 优先从环境变量读取，其次从 secrets 文件读取（不落日志）。
+WECOM_BOT_ENABLED = "DWP_WECOM_BOT_ENABLED"
+WECOM_BOT_ID = "DWP_WECOM_BOT_ID"
+WECOM_BOT_SECRET = "DWP_WECOM_BOT_SECRET"
+WECOM_BOT_SECRET_FILE = "DWP_WECOM_BOT_SECRET_FILE"
+WECOM_WS_URL = "DWP_WECOM_WS_URL"
+WECOM_DRY_RUN = "DWP_WECOM_DRY_RUN"
+WECOM_USER_BINDINGS = "DWP_WECOM_USER_BINDINGS"
+
+
+def wecom_bot_enabled() -> bool:
+    """企微机器人长连接总开关；默认关闭，避免未配置时误连。"""
+    return os.environ.get(WECOM_BOT_ENABLED, "0") == "1"
+
+
+def wecom_bot_id() -> str:
+    return (os.environ.get(WECOM_BOT_ID) or "").strip()
+
+
+def wecom_bot_secret() -> str:
+    """bot_secret：环境变量优先，否则读 secrets 文件（不落日志）。"""
+    value = (os.environ.get(WECOM_BOT_SECRET) or "").strip()
+    if value:
+        return value
+    path = Path(os.environ.get(WECOM_BOT_SECRET_FILE, "/run/secrets/wecom_bot_secret"))
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def wecom_ws_url() -> str:
+    """企微长连接网关地址，默认官方 wss 网关。"""
+    return (os.environ.get(WECOM_WS_URL) or "wss://openws.work.weixin.qq.com").strip()
+
+
+def wecom_dry_run() -> bool:
+    """dry-run 开关：默认开启（"1"），只打印将要发送的内容，不真发消息。"""
+    return os.environ.get(WECOM_DRY_RUN, "1") != "0"
+
+
+def wecom_user_bindings() -> dict[str, str]:
+    """企微机器人体系 staff ID -> 员工工号 映射（JSON）。"""
+    raw = os.environ.get(WECOM_USER_BINDINGS) or "{}"
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(key): str(value) for key, value in parsed.items()}
+
+
+def wecom_bot_configured() -> bool:
+    """长连接所需的全部配置是否齐备。"""
+    return bool(wecom_bot_id() and wecom_bot_secret())

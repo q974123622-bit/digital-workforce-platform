@@ -1,0 +1,10 @@
+ARG DWP_IMAGE_TAG=0.3.0-offline
+FROM dwp-frontend-builder:${DWP_IMAGE_TAG} AS build
+
+WORKDIR /workspace
+COPY frontend ./frontend
+COPY shared-schema ./shared-schema
+RUN pnpm --filter @dwp/frontend build
+
+FROM dwp-frontend:${DWP_IMAGE_TAG}
+COPY --from=build /workspace/frontend/dist /usr/share/nginx/html

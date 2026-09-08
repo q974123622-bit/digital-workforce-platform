@@ -1,4 +1,21 @@
 # Knowledge-only Agent profile. Platform tools are supplied over authenticated MCP.
+#
+# Model routing: the platform's model gateway exposes a qwen model through the
+# OpenAI-compatible DeepSeek route. The DSH base bundle hard-codes
+# `deepseek-v4-flash` as the default, so override it from the environment and pin
+# the only reasoning effort the gateway accepts (its legal set is
+# xhigh/medium/low; DSH only emits off/low/high/max, so `low` is the intersection).
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official
+    model: !!js process.env.DEEPSEEK_MODEL
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    reasoningEffort: low
+    models:
+      - id: !!js process.env.DEEPSEEK_MODEL
 - id: tool-bash
   disabled: true
 - id: tool-pwsh

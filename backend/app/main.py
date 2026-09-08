@@ -24,7 +24,12 @@ async def lifespan(_: FastAPI):
             runtime_manager.ensure_all_active(db)
         finally:
             db.close()
-    yield
+
+    # 企微机器人长连接：可插拔，未启用时自动空操作（见 wecom_bot.managed_lifespan）。
+    from .services import wecom_bot
+
+    async with wecom_bot.managed_lifespan():
+        yield
 
 
 app = FastAPI(title="数字员工平台 Demo API", version="0.1.0", lifespan=lifespan)

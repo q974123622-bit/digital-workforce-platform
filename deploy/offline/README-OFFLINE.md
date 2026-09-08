@@ -1,6 +1,6 @@
 # AI 员工平台：堡垒机离线一键部署包
 
-这个目录可整体复制到另一台堡垒机运行。服务器不需要安装 Python、Node.js、pnpm、Nginx 或 npm 依赖；它们均已封装进 Docker 镜像。
+这个目录可整体复制到另一台堡垒机运行。服务器不需要安装 Python、Node.js、pnpm、Nginx 或 npm 依赖；它们均已封装进 Docker 镜像。发布包同时保留经过清理的 `source/` 源码和离线重建工具，便于在测试环境修改知识库、MCP、mem0、模型适配和前端代码。
 
 ## 运行前提
 
@@ -9,7 +9,7 @@
 - 当前用户能够执行 `docker info`
 - Docker 数据目录至少 6 GiB 可用空间
 - 堡垒机能够访问配置的模型网关
-- 默认 Web 端口为 `8080`
+- 针对当前目标堡垒机默认 Web 端口为 `18080`，可通过 `DWP_HTTP_PORT` 修改
 
 > 本包需要挂载 `/var/run/docker.sock`，因为后端必须管理四个独立 Harness 实例。请只部署在受控内网服务器，勿向互联网暴露。
 
@@ -31,19 +31,19 @@
 上传 ZIP 后执行：
 
 ```bash
-unzip dwp-ai-employee-platform-offline-0.2.0-linux-amd64.zip -d dwp-ai-employee-platform
+unzip dwp-ai-employee-platform-offline-0.3.0-linux-amd64.zip -d dwp-ai-employee-platform
 cd dwp-ai-employee-platform
 sha256sum -c images/SHA256SUMS
 chmod +x start.sh stop.sh status.sh backup.sh verify.sh
 ./start.sh
 ```
 
-首次启动会要求输入模型 API Key、员工初始密码和管理员初始密码，并自动生成 Harness HMAC 签名密钥。这些值只写入本机 `secrets/`，权限为 `600`，不会显示在 Compose 配置或镜像里。张三、陈晓萌和管理员首次登录后都必须修改初始密码。
+首次启动会要求输入模型网关 Base URL、模型名、模型 API Key、员工初始密码和管理员初始密码，并自动生成 Harness HMAC 签名密钥。Base URL 和模型名写入权限为 `600` 的本机 `config.env`；Secret 只写入本机 `secrets/`，不会进入镜像。张三、陈晓萌和管理员首次登录后都必须修改初始密码。
 
 启动完成后访问：
 
 ```text
-http://堡垒机IP:8080
+http://堡垒机IP:18080
 ```
 
 更换端口：
@@ -58,14 +58,42 @@ export DWP_HTTP_PORT=18080
 首次启动会从 `config.env.example` 生成 `config.env`。默认配置：
 
 ```dotenv
-DEEPSEEK_BASE_URL=http://api.llmxt.cisctest:8002/v1
-DEEPSEEK_MODEL=ascend-deepseek-v4-flash
+DEEPSEEK_BASE_URL=http://实际模型网关主机:实际端口/v1
+DEEPSEEK_MODEL=实际启用的模型名
+DEEPSEEK_CHAT_COMPLETIONS_PATH=/chat/completions
 DWP_KB_MODE=mock
 ```
 
 Coding Plan Key 只需替换 `secrets/llm_api_key`，并在 `config.env` 修改 Base URL 和模型名；Harness、Agent 和知识工具协议无需改变。
 
 接内部知识引擎时，把 `DWP_KB_MODE` 改为 `internal`，再通过安全渠道填写 `config.env` 中的内部配置。不要把配置后的文件重新打包或上传 Git。
+
+模型网关的协议、主机、端口、路径前缀、Chat Completions 相对路径和模型名均可在目标机修改。当前模型接口要求 OpenAI Chat Completions 兼容协议；协议本身不兼容时再修改 `source/backend/app/services/llm.py`，无需改变业务接口。
+
+## 包结构与现场修改
+
+```text
+├── images/                  # 可直接导入的运行镜像和前端 Builder 镜像
+├── source/                  # 清理后的完整应用源码，不含 .git、Secret 和运行数据
+├── config.env.example       # 模型、知识库、mem0、MCP 非敏感配置模板
+├── secrets/                 # 首次启动时在目标机生成或填写
+├── data/                    # 运行数据库和插件制品
+├── harness/                 # 四个独立 Harness 工作区
+├── rebuild.sh               # 后端、前端和 Harness Profile 离线重建
+├── REBUILD-ON-BASTION.md    # 现场修改和回滚说明
+├── DEPLOYMENT-AND-TEST.md    # 目标堡垒机部署与测试步骤
+└── SOURCE-REVISION.txt      # 源码基线提交和打包信息
+```
+
+只修改地址、端口、模型名和 Adapter 配置时无需重建镜像。修改源码后的操作见 `REBUILD-ON-BASTION.md`：
+
+```bash
+./rebuild.sh backend
+./rebuild.sh frontend
+./rebuild.sh harness-profile
+```
+
+详细扩展边界见 `source/docs/EXTENSION_CONFIGURATION_GUIDE.md`。MCP 上传包模板位于 `source/extensions/mcp-example/`。
 
 ## 自检与运维
 

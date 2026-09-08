@@ -37,6 +37,14 @@ const DECISION_TAG: Record<string, { color: string; text: string }> = {
   approval: { color: 'warning', text: '需审批' },
 };
 
+const SOURCE_LABEL: Record<string, string> = {
+  internal: '真实知识库',
+  demo: '演示知识库',
+  mock: '演示知识库',
+  rag: '本地 RAG',
+  volcengine_mcp: 'Volcengine MCP',
+};
+
 interface Msg {
   role: 'user' | 'assistant';
   content: string;
@@ -196,7 +204,7 @@ export default function ChatPage() {
             <div className="chat-empty">
               <div className="chat-empty-emoji">{meta.emoji}</div>
               <Paragraph>你好，我是{emp.name}。你可以问我入职、制度、IT 或业务问题。</Paragraph>
-              <Text type="secondary">所有回答均为虚构演示数据 · 检索经 Policy → Gateway → RAG</Text>
+              <Text type="secondary">知识来源以检索卡片为准 · 检索经 Policy → Gateway → 知识引擎</Text>
             </div>
           )}
           {messages.map((m, i) => (
@@ -216,7 +224,13 @@ export default function ChatPage() {
                           <span>{c.name}</span>
                           <Tag color={DECISION_TAG[c.decision]?.color ?? 'default'}>{DECISION_TAG[c.decision]?.text ?? c.decision}</Tag>
                         </div>
-                        {c.policy_id && <div className="tool-card-sub">策略 {c.policy_id}</div>}
+                        {(c.source || c.policy_id) && (
+                          <div className="tool-card-sub">
+                            {c.source && <span>来源：{SOURCE_LABEL[c.source] ?? c.source}</span>}
+                            {c.source && c.policy_id && <span> · </span>}
+                            {c.policy_id && <span>策略 {c.policy_id}</span>}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

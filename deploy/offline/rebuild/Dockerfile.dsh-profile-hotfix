@@ -1,0 +1,5 @@
+FROM dwp-dsh:rc6
+
+# The upstream DSH runtime remains immutable; only the platform-owned profile
+# and tool registration layer are replaced.
+COPY docker/dsh-profile /opt/dwp/profile

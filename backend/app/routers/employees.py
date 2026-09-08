@@ -329,6 +329,7 @@ def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(g
             "plugin_id": c.plugin_id,
             "name": c.name,
             "decision": c.decision,
+            "source": c.source,
             "policy_id": c.policy_id,
             "reason": c.reason,
         }
@@ -340,6 +341,7 @@ def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(g
             "plugin_id": result.policy_denied.plugin_id,
             "name": result.policy_denied.name,
             "decision": "deny",
+            "source": result.policy_denied.source,
             "policy_id": result.policy_denied.policy_id,
             "reason": result.policy_denied.reason,
         }

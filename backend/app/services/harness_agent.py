@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from . import config, execution_events, runtime_manager
-from .chat import ChatResult, ToolCard
+from .chat import ChatResult, ToolCard, knowledge_display_name
 from .harness_token import issue_token
 from .identity import resolve_identity
 from .knowledge_registry import accessible_knowledge_bases
@@ -35,6 +35,7 @@ def _prompt(
     plugins: list[dict], memories: list[dict],
 ) -> str:
     can_delegate = profile.identity_kind == "human_twin" and depth == 0
+    authorized = [{"id": kb["id"], "name": kb["name"]} for kb in knowledge]
     envelope = {
         "identity": {
             "employee_id": employee.employee_no,
@@ -44,7 +45,7 @@ def _prompt(
             "responsibilities": profile.responsibilities,
         },
         "requester_human_no": requester,
-        "authorized_knowledge_bases": knowledge,
+        "authorized_knowledge_bases": authorized,
         "recent_conversation": five_complete_rounds(history),
         "relevant_long_term_memories": memories,
         "enabled_plugins": plugins,
@@ -61,6 +62,8 @@ def _prompt(
         "你是企业内部的真实数字同事，请在本轮内自主完成任务。先理解问题，再决定是否调用知识工具；"
         "证据不足时可顺序检索其他已授权知识库，但最多五次。只能使用工具目录中出现的工具，"
         "不得猜测知识库内容。数字分身可向一名岗位数字员工委派一次；岗位数字员工不得委派。"
+        "调用知识检索工具时，knowledge_base_id 参数必须原样复制 authorized_knowledge_bases 中某一项的 id 值，"
+        "禁止自行编造、猜测，或用知识库名称代替 id。"
         "工具失败、无权限或证据不足时必须明确说明。最终直接给用户一份简洁、可核验的中文答复，"
         "不要输出内部思考过程、令牌或配置。\n\nTASK_ENVELOPE:\n"
         + json.dumps(envelope, ensure_ascii=False)
@@ -110,7 +113,11 @@ def run_agent(
         ttl_seconds=300,
     )
     base_url = config.get("DWP_PLATFORM_TOOL_BASE_URL", "http://host.docker.internal:8000") or ""
-    timeout = 120 if profile.identity_kind == "role_employee" else 240
+    timeout = (
+        config.harness_timeout_role()
+        if profile.identity_kind == "role_employee"
+        else config.harness_timeout_twin()
+    )
     employee_lock = _lock(employee_id)
     if not employee_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail={"message": "数字员工正忙，请稍后重试", "retryable": True})
@@ -145,16 +152,27 @@ def run_agent(
         .where(models.AuditEvent.trace_id == task_trace, models.AuditEvent.employee_id == employee_id)
         .order_by(models.AuditEvent.id)
     ).all()
-    cards = [
-        ToolCard(
-            plugin_id=row.plugin_id or "knowledge",
-            name=row.knowledge_base_id or row.plugin_id or "工具",
-            decision=row.decision,
-            reason=row.reason,
+    cards = []
+    for row in audits:
+        if row.action != "read":
+            continue
+        source = None
+        if row.result_summary:
+            try:
+                summary = json.loads(row.result_summary)
+                source = str(summary.get("source")) if isinstance(summary, dict) and summary.get("source") else None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                source = None
+        name = row.knowledge_base_id or row.plugin_id or "工具"
+        cards.append(
+            ToolCard(
+                plugin_id=row.plugin_id or "knowledge",
+                name=knowledge_display_name(db, row.knowledge_base_id) if row.knowledge_base_id else name,
+                decision=row.decision,
+                source=source,
+                reason=row.reason,
+            )
         )
-        for row in audits
-        if row.action == "read"
-    ]
     return ChatResult(
         session_id=f"H-{task_trace}", trace_id=task_trace,
         message=result.result, tool_cards=cards,

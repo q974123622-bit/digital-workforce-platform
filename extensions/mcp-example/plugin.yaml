@@ -1,0 +1,33 @@
+name: external-data-tool-example
+version: 1.0.0
+plugin_type: mcp
+deployment_mode: external
+category: other
+description: 不含真实地址和凭据的 External MCP 接口模板
+endpoint_ref: DWP_MCP_EXAMPLE_ENDPOINT
+credential_ref: DWP_MCP_EXAMPLE_CREDENTIAL
+tools:
+  - name: query_example_data
+    description: 查询经过授权的示例数据
+    input_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+    output_schema:
+      type: object
+      required:
+        - source
+        - items
+      properties:
+        source:
+          type: string
+        items:
+          type: array
+          items:
+            type: object

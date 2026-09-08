@@ -247,6 +247,7 @@ def member_replies(
                     "plugin_id": card.plugin_id,
                     "name": card.name,
                     "decision": card.decision,
+                    "source": card.source,
                     "policy_id": card.policy_id,
                     "reason": card.reason,
                 }
