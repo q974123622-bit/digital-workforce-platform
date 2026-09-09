@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # 复用 employees.chat 的 harness 白名单：这些身份在 harness 执行模式下走容器内
 # 知识代理循环，其余走内置 ChatOrchestrator。
-_HARNESS_EMPLOYEE_IDS = {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "DT-E10281", "DT-E20999"}
+_HARNESS_EMPLOYEE_IDS = {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "DT-E10281", "DT-E20999"}
 
 
 def resolve_target(

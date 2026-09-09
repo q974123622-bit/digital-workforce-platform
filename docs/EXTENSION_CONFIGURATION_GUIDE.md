@@ -111,6 +111,35 @@ Harness
 
 测试环境接入新的 MCP 时，需要补充对应 Adapter/Runtime 实现和 MockTransport 测试；不能允许 Harness 直接访问 MCP 服务。`tools/list` 仅返回当前 Agent 已发布、已授权且已启用的工具。
 
+### 4.1 盈米 External MCP（基金数据）接入示例
+
+平台已内置标准 Streamable HTTP MCP Client（`services/external_mcp_client.py`）与盈米适配器
+（`services/external_mcp_adapter.py`），可连接盈米 AI 开放平台（`YM-Stargate`）获取基金数据工具。
+
+配置（`config.env` / `secrets`）：
+
+```dotenv
+DWP_QIEMAN_MCP_URL=https://stargate.yingmi.com/mcp/v2
+# DWP_QIEMAN_MCP_API_KEY=   # 可选，优先级高于 secrets 文件
+DWP_QIEMAN_MCP_TIMEOUT=20
+```
+
+`api_key` 属敏感凭据，写入 `secrets/qieman_api_key`（Compose 挂载为 `/run/secrets/qieman_api_key`），
+不写入 `config.env`、不提交进 ZIP。
+
+运行机制：
+
+- 工具动态发现（`tools/list`，进程级缓存 5 分钟），不静态声明 Schema，适配盈米 `listChanged=true`；
+- 对外工具名统一加 `qieman__` 前缀，避免未来多 MCP 源同名冲突；
+- `agent_tools_mcp` 的 `tools/list` 仅对已授权员工（`EmployeePluginGrant` + `AgentPluginBinding`）追加盈米工具；
+- seed 时仅当配置了 `DWP_QIEMAN_MCP_URL` 才注册 `qieman-fund-mcp` 插件，并授权 AI-INVESTMENT / AI-RESEARCH / AI-FUND。
+
+连通性验证：
+
+```bash
+docker compose exec backend python -c "from app.services.external_mcp_adapter import QiemanMcpAdapter; print('tools:', len(QiemanMcpAdapter().list_tools(force=True)))"
+```
+
 ## 5. 内部 mem0
 
 首次运行：

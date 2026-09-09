@@ -321,3 +321,41 @@ def wecom_bots() -> list[WeComBotSpec]:
 def wecom_bot_configured() -> bool:
     """长连接所需的全部配置是否齐备（任一机器人凭据齐全即 True）。"""
     return bool(wecom_bots())
+
+
+# 盈米 AI 开放平台 External MCP 接入配置。
+# api_key 属敏感凭据，优先从环境变量读取，其次从 secrets 文件读取（不落日志）。
+QIEMAN_MCP_URL = "DWP_QIEMAN_MCP_URL"
+QIEMAN_MCP_API_KEY = "DWP_QIEMAN_MCP_API_KEY"
+QIEMAN_MCP_API_KEY_FILE = "DWP_QIEMAN_MCP_API_KEY_FILE"
+QIEMAN_MCP_TIMEOUT = "DWP_QIEMAN_MCP_TIMEOUT"
+
+
+def qieman_mcp_url() -> str:
+    """盈米 MCP Streamable HTTP 端点地址（如 https://stargate.yingmi.com/mcp/v2）。"""
+    return (os.environ.get(QIEMAN_MCP_URL) or "").strip()
+
+
+def qieman_mcp_api_key() -> str:
+    """盈米 MCP api_key：环境变量优先，否则读 secrets 文件（不落日志）。"""
+    value = (os.environ.get(QIEMAN_MCP_API_KEY) or "").strip()
+    if value:
+        return value
+    path = Path(os.environ.get(QIEMAN_MCP_API_KEY_FILE, "/run/secrets/qieman_api_key"))
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def qieman_mcp_timeout() -> float:
+    """盈米 MCP 单次请求超时（秒），默认 20 秒。"""
+    try:
+        return max(5.0, float(os.environ.get(QIEMAN_MCP_TIMEOUT) or "20"))
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def qieman_mcp_configured() -> bool:
+    """盈米 MCP 接入是否配置齐备（URL 与 api_key 均非空）。"""
+    return bool(qieman_mcp_url() and qieman_mcp_api_key())

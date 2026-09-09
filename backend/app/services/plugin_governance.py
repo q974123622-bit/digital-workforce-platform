@@ -184,8 +184,9 @@ def effective_plugins(db: Session, agent_id: str, requester_human_no: str) -> li
             continue
         item = {"plugin_id": plugin.id, "version": version.version, "plugin_type": plugin.plugin_type, "name": plugin.name}
         if plugin.plugin_type == "skill":
-            item["instruction_summary"] = str(version.manifest.get("instruction_summary") or plugin.description)[:500]
-            item["instruction"] = str(version.manifest.get("instruction") or version.manifest.get("instruction_summary") or plugin.description)[:6000]
+            # Skill 已改为显式加载（load_skill 工具），此处只提供路由清单所需的最小字段，
+            # 不再隐式注入完整 instruction 内容。
+            item["description"] = plugin.description
         else:
             item.update({"category": plugin.mcp_category, "tools": version.manifest.get("tools", [])})
         result.append(item)

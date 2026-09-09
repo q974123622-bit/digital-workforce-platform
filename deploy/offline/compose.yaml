@@ -41,6 +41,26 @@ services:
       - ./harness/AI-INVESTMENT/dsh-home:/dsh-home
       - ./harness/AI-INVESTMENT/workspace:/workspace
 
+  harness-ai-research:
+    <<: *harness-common
+    container_name: dwp-harness-ai-research
+    labels:
+      dwp.managed: "true"
+      dwp.employee_id: AI-RESEARCH
+    volumes:
+      - ./harness/AI-RESEARCH/dsh-home:/dsh-home
+      - ./harness/AI-RESEARCH/workspace:/workspace
+
+  harness-ai-fund:
+    <<: *harness-common
+    container_name: dwp-harness-ai-fund
+    labels:
+      dwp.managed: "true"
+      dwp.employee_id: AI-FUND
+    volumes:
+      - ./harness/AI-FUND/dsh-home:/dsh-home
+      - ./harness/AI-FUND/workspace:/workspace
+
   harness-dt-e10281:
     <<: *harness-common
     container_name: dwp-harness-dt-e10281
@@ -84,6 +104,7 @@ services:
       - harness_signing_secret
       - employee_initial_password
       - admin_initial_password
+      - qieman_api_key
     volumes:
       - ./data:/data
       - ./backups:/backups
@@ -93,6 +114,10 @@ services:
       harness-ai-general:
         condition: service_started
       harness-ai-investment:
+        condition: service_started
+      harness-ai-research:
+        condition: service_started
+      harness-ai-fund:
         condition: service_started
       harness-dt-e10281:
         condition: service_started
@@ -126,6 +151,8 @@ secrets:
     file: ./secrets/employee_initial_password
   admin_initial_password:
     file: ./secrets/admin_initial_password
+  qieman_api_key:
+    file: ./secrets/qieman_api_key
 
 networks:
   dwp:

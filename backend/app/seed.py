@@ -9,6 +9,7 @@ from . import models
 from .database import DATABASE_URL, Base, SessionLocal, engine, ensure_schema_compatibility
 from .services import config
 from .services.auth import hash_password
+from .services.external_mcp_adapter import QIEMAN_PLUGIN_ID
 
 SEED_PATH = Path(__file__).resolve().parents[2] / "mock-data" / "seed.json"
 
@@ -126,6 +127,13 @@ def ensure_mvp_seed(db) -> None:
             "domains": ["研究分析", "证券研究", "投行研究", "行业资料"],
             "responsibilities": ["检索与分析研究资料", "梳理证券与投行研究观点", "输出有出处的分析结论"],
         },
+        "AI-FUND": {
+            "name": "基金分析AI员工",
+            "department": "基金研究",
+            "persona": "你是基金分析AI员工，是公司中的基金数据专业同事。你负责基金产品数据查询与专业分析，可调用盈米基金数据工具获取基金代码、业绩、归因、配置等数据。结论必须由工具返回的真实数据支撑，区分数据事实与分析判断，注明数据来源，不提供未经核实或推测的信息。",
+            "domains": ["基金分析", "基金数据", "资产配置"],
+            "responsibilities": ["查询基金产品数据", "分析基金业绩与归因", "输出有出处的基金分析结论"],
+        },
     }
     # 当前知识问答 MVP 只保留三名岗位型数字员工；真人分身继续保留。
     # 历史演示员工改为 inactive，以保留审计/历史关联但不再出现在通讯录中。
@@ -185,6 +193,7 @@ def ensure_mvp_seed(db) -> None:
         ],
         "AI-INVESTMENT": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
         "AI-RESEARCH": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
+        "AI-FUND": ["KB-SECURITIES"],
         # 张三的分身不直接持有知识库；遇到知识问题必须委派给岗位数字员工。
         "DT-E10281": [],
         "DT-E20999": [],
@@ -225,6 +234,48 @@ def ensure_mvp_seed(db) -> None:
                 employee_id=employee_id, plugin_id=f"knowledge-{data_level.lower()}", action="read",
                 decision_mode="allow", grant_source="seed",
             ))
+
+    # 盈米 External MCP 插件：配置了 DWP_QIEMAN_MCP_URL 才注册并授权。
+    # 工具由 ExternalMcpClient 动态发现（listChanged=true），Manifest 不静态声明 Schema。
+    if config.qieman_mcp_configured():
+        if db.get(models.Plugin, QIEMAN_PLUGIN_ID) is None:
+            db.add(models.Plugin(
+                id=QIEMAN_PLUGIN_ID, name="盈米基金数据 MCP", type="mcp",
+                plugin_type="mcp", endpoint_ref="external://qieman", data_level="L2",
+                status="active", description="盈米 AI 开放平台基金数据工具（External MCP）",
+                runtime_meta={"mcp_url_ref": config.QIEMAN_MCP_URL},
+                scope="shared", mcp_category="cloud_information", current_version="1.0.0",
+            ))
+            db.add(models.PluginVersion(
+                plugin_id=QIEMAN_PLUGIN_ID, version="1.0.0",
+                deployment_mode="external", artifact_path="", sha256="seed",
+                manifest={"tools": [], "external_mcp": True},
+                data_level="L2", review_status="approved", publish_status="published",
+                submitted_by="seed", reviewed_by="seed",
+                reviewed_at=__import__("datetime").datetime.now(),
+                published_at=__import__("datetime").datetime.now(),
+            ))
+        db.flush()
+        for employee_id in ("AI-INVESTMENT", "AI-RESEARCH", "AI-FUND"):
+            if db.get(models.DigitalEmployee, employee_id) is None:
+                continue
+            if db.scalar(select(models.EmployeePluginGrant).where(
+                models.EmployeePluginGrant.employee_id == employee_id,
+                models.EmployeePluginGrant.plugin_id == QIEMAN_PLUGIN_ID,
+            )) is None:
+                db.add(models.EmployeePluginGrant(
+                    employee_id=employee_id, plugin_id=QIEMAN_PLUGIN_ID, action="execute",
+                    decision_mode="allow", grant_source="seed",
+                ))
+            if db.scalar(select(models.AgentPluginBinding).where(
+                models.AgentPluginBinding.target_agent_id == employee_id,
+                models.AgentPluginBinding.plugin_id == QIEMAN_PLUGIN_ID,
+            )) is None:
+                db.add(models.AgentPluginBinding(
+                    plugin_id=QIEMAN_PLUGIN_ID, target_agent_id=employee_id,
+                    authorized_by="seed", employee_enabled=True, admin_enabled=True,
+                    decision_mode="allow",
+                ))
 
     # 历史 Skill/知识能力统一迁移为已发布 Plugin 1.0.0；保留原 ID 和审计关联。
     for plugin in db.query(models.Plugin).all():
