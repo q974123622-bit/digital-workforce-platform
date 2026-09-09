@@ -1,19 +1,43 @@
 import os
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dwp.db")
 
+# SQLite 并发写锁治理：
+# - busy_timeout：撞锁时等待重试（而非立刻抛 "database is locked"）；
+# - WAL + synchronous=NORMAL：读写不互斥，显著降低并发写冲突概率。
+SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "5000"))
+SQLITE_IS_MEMORY = DATABASE_URL == "sqlite://"
+
 _engine_kwargs: dict = {}
 if DATABASE_URL.startswith("sqlite"):
-    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+    _engine_kwargs["connect_args"] = {
+        "check_same_thread": False,
+        # sqlite3.connect 的 timeout 即 busy_timeout，单位秒；撞锁时会等待而非立刻报错。
+        "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+    }
     # 内存库：后台任务与请求/测试共享同一连接（否则各线程各自独立空库）
-    if DATABASE_URL == "sqlite://":
+    if SQLITE_IS_MEMORY:
         _engine_kwargs["poolclass"] = StaticPool
 
 engine = create_engine(DATABASE_URL, **_engine_kwargs)
+
+
+if DATABASE_URL.startswith("sqlite") and not SQLITE_IS_MEMORY:
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        finally:
+            cursor.close()
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 
 

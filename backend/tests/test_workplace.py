@@ -129,7 +129,7 @@ def test_workplace_aggregate(client):
     body = home.json()
     assert body["actor"]["employee_no"] == "E10281"
     assert body["twin"]["employee_no"] == "DT-E10281"
-    assert {e["employee_no"] for e in body["available_employees"]} == {"AI-GENERAL", "AI-INVESTMENT"}
+    assert {e["employee_no"] for e in body["available_employees"]} == {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH"}
     assert any(s["name"] == "报销制度速答" for s in body["skills"])
     assert len(body["recent_conversations"]) >= 1
 

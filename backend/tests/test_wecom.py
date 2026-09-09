@@ -1,6 +1,7 @@
 """企业微信智能机器人长连接逻辑测试。
 
-覆盖：staff ID -> 分身路由、消息处理返回回答文本、以及 WebSocket 客户端的
+覆盖：staff ID -> 分身路由、fixed/twin 双维路由、消息处理返回回答文本、
+DWP_WECOM_BOTS 配置解析（含 legacy 回退），以及 WebSocket 客户端的
 订阅/回复/心跳/消息分发的 JSON 协议结构（明文，无加解密）。
 """
 
@@ -10,6 +11,7 @@ import json
 import pytest
 
 from app import models
+from app.services import config
 from app.services.wecom_bot import WeComBotClient
 
 
@@ -40,6 +42,13 @@ def _client() -> WeComBotClient:
     return WeComBotClient(bot_id="bot-id", secret="secret", ws_url="wss://example.invalid")
 
 
+def _spec(employee_no: str = "AI-INVESTMENT", alias: str = "investment", mode: str = "fixed") -> config.WeComBotSpec:
+    return config.WeComBotSpec(
+        bot_id="bot-id", secret="secret", name="投资分析AI员工",
+        alias=alias, mode=mode, employee_no=employee_no if mode == "fixed" else None,
+    )
+
+
 def _msg_data(content: str = "你好") -> dict:
     return {
         "cmd": "aibot_msg_callback",
@@ -52,7 +61,47 @@ def _msg_data(content: str = "你好") -> dict:
     }
 
 
-# ---- 路由与消息处理 ----
+# ---- DWP_WECOM_BOTS 配置解析 ----
+
+
+def test_wecom_bots_parses_multi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DWP_WECOM_BOTS", json.dumps([
+        {"bot_id": "b-general", "secret": "s1", "name": "AI员工平台", "alias": "general",
+         "mode": "fixed", "employee_no": "AI-GENERAL"},
+        {"bot_id": "b-twin", "secret": "s2", "name": "数字分身", "alias": "twin", "mode": "twin"},
+    ]))
+    bots = config.wecom_bots()
+    assert len(bots) == 2
+    assert bots[0].mode == "fixed" and bots[0].employee_no == "AI-GENERAL"
+    assert bots[0].alias == "general"
+    assert bots[1].mode == "twin" and bots[1].employee_no is None
+
+
+def test_wecom_bots_legacy_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DWP_WECOM_BOTS", raising=False)
+    monkeypatch.setenv("DWP_WECOM_BOT_ID", "legacy-bot")
+    monkeypatch.setenv("DWP_WECOM_BOT_SECRET", "legacy-secret")
+    bots = config.wecom_bots()
+    assert len(bots) == 1
+    assert bots[0].bot_id == "legacy-bot"
+    assert bots[0].mode == "twin"
+    assert config.wecom_bot_configured() is True
+
+
+def test_wecom_bots_skips_missing_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DWP_WECOM_BOTS", json.dumps([
+        {"bot_id": "b-general", "secret": "", "name": "AI员工平台", "alias": "general",
+         "mode": "fixed", "employee_no": "AI-GENERAL"},
+        {"bot_id": "b-invest", "secret": "real", "name": "投资分析AI员工", "alias": "investment",
+         "mode": "fixed", "employee_no": "AI-INVESTMENT"},
+    ]))
+    monkeypatch.delenv("DWP_WECOM_BOT_ID", raising=False)
+    monkeypatch.delenv("DWP_WECOM_BOT_SECRET", raising=False)
+    bots = config.wecom_bots()
+    assert [b.alias for b in bots] == ["investment"]
+
+
+# ---- 双维路由与消息处理 ----
 
 
 def test_route_to_twin(db_session) -> None:
@@ -64,19 +113,53 @@ def test_route_to_twin(db_session) -> None:
     assert twin.employee_no == "DT-E10281"
 
 
-def test_handle_bot_message_returns_answer(db_session, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_target_fixed(db_session) -> None:
+    from app.services.wecom_adapter import resolve_target
+
+    _seed_wecom_binding(db_session)
+    human, employee = resolve_target(db_session, _spec(employee_no="AI-INVESTMENT"), "staff-001")
+    assert human.employee_no == "E10281"
+    assert employee.employee_no == "AI-INVESTMENT"
+    assert employee.type == "virtual"
+
+
+def test_resolve_target_fixed_unbound(db_session) -> None:
+    from fastapi import HTTPException
+
+    from app.services.wecom_adapter import resolve_target
+
+    with pytest.raises(HTTPException) as exc:
+        resolve_target(db_session, _spec(), "unknown-staff")
+    assert exc.value.status_code == 404
+
+
+def test_resolve_target_twin_uses_owner(db_session) -> None:
+    from app.services.wecom_adapter import resolve_target
+
+    _seed_wecom_binding(db_session)
+    # 数字分身 bot（mode=twin）应路由到发起人自己的分身。
+    human, employee = resolve_target(db_session, _spec(mode="twin"), "staff-001")
+    assert human.employee_no == "E10281"
+    assert employee.employee_no == "DT-E10281"
+
+
+def test_handle_bot_message_fixed(db_session, monkeypatch: pytest.MonkeyPatch) -> None:
     from types import SimpleNamespace
 
     from app.services.wecom_adapter import handle_bot_message
 
     _seed_wecom_binding(db_session)
+    seen: dict = {}
     monkeypatch.setattr(
         "app.services.wecom_adapter._answer",
-        lambda db, employee_id, requester_human_no, content, trace_id=None: SimpleNamespace(
-            message="这是分身的回答", tool_cards=[],
-        ),
+        lambda db, employee_id, requester_human_no, content, trace_id=None: seen.update(
+            employee_id=employee_id, requester=requester_human_no
+        ) or SimpleNamespace(message="投资分析结果", tool_cards=[]),
     )
-    assert handle_bot_message("staff-001", "你好") == "这是分身的回答"
+    answer = handle_bot_message("staff-001", "这只股票怎么样", _spec())
+    assert answer == "投资分析结果"
+    assert seen["employee_id"] == "AI-INVESTMENT"
+    assert seen["requester"] == "E10281"
 
 
 def test_handle_bot_message_unbound(db_session) -> None:
@@ -84,6 +167,26 @@ def test_handle_bot_message_unbound(db_session) -> None:
 
     result = handle_bot_message("unknown-staff", "你好")
     assert result.startswith("抱歉，暂时无法处理")
+
+
+def test_start_execution_conversation_includes_alias(db_session, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from app.services.wecom_adapter import start_execution
+
+    _seed_wecom_binding(db_session)
+    monkeypatch.setattr(
+        "app.services.wecom_adapter._answer",
+        lambda db, employee_id, requester_human_no, content, trace_id=None: SimpleNamespace(
+            message="ok", tool_cards=[],
+        ),
+    )
+    ctx = start_execution("staff-001", "你好", _spec(alias="investment"))
+    assert ctx.employee_id == "AI-INVESTMENT"
+    row = db_session.get(models.AgentExecution, ctx.execution_id)
+    assert row.conversation_id.startswith("WECOM-investment-E10281-")
 
 
 def test_run_execution_emits_events(db_session, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -171,16 +274,19 @@ def test_heartbeat_sends_ping(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ws.sent[0]["cmd"] == "ping"
 
 
-def test_on_message_dry_run_no_send(db_session, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_on_message_dry_run_passes_spec(db_session, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.services.wecom_bot.config.wecom_dry_run", lambda: True)
     calls: list = []
     monkeypatch.setattr(
         "app.services.wecom_bot.handle_bot_message",
-        lambda from_user, content: calls.append((from_user, content)) or "回答",
+        lambda from_user, content, bot=None: calls.append((from_user, content, bot)) or "回答",
     )
     ws = _FakeWS()
-    asyncio.run(_client()._on_message(ws, _msg_data()))
-    assert calls == [("staff-001", "你好")]
+    client = WeComBotClient(spec=_spec(employee_no="AI-INVESTMENT"), ws_url="wss://example.invalid")
+    asyncio.run(client._on_message(ws, _msg_data()))
+    assert len(calls) == 1
+    assert calls[0][0] == "staff-001"
+    assert calls[0][2] is not None and calls[0][2].alias == "investment"
     assert ws.sent == []  # dry-run 下不真发
 
 
@@ -190,7 +296,7 @@ def test_on_message_streams_execution(db_session, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("app.services.wecom_bot.config.wecom_dry_run", lambda: False)
     monkeypatch.setattr(
         "app.services.wecom_bot.start_execution",
-        lambda from_user, content: BotExecutionContext(
+        lambda from_user, content, bot=None: BotExecutionContext(
             execution_id="EX-TEST", trace_id="T-TEST", employee_id="DT-E10281",
             requester_human_no="E10281", employee_name="架构部张三",
         ),
@@ -216,7 +322,7 @@ def test_on_message_ignores_empty_content(db_session, monkeypatch: pytest.Monkey
     monkeypatch.setattr("app.services.wecom_bot.config.wecom_dry_run", lambda: False)
     monkeypatch.setattr(
         "app.services.wecom_bot.handle_bot_message",
-        lambda from_user, content: pytest.fail("不应处理空消息"),
+        lambda from_user, content, bot=None: pytest.fail("不应处理空消息"),
     )
     ws = _FakeWS()
     asyncio.run(_client()._on_message(ws, _msg_data(content="   ")))

@@ -119,8 +119,15 @@ def ensure_mvp_seed(db) -> None:
             "domains": ["证券业务", "投行咨询", "投资分析"],
             "responsibilities": ["分析证券业务", "检索投行咨询资料", "形成有出处的投资分析"],
         },
+        "AI-RESEARCH": {
+            "name": "研究分析AI员工",
+            "department": "研究分析",
+            "persona": "你是研究分析AI员工，是公司中的专业研究同事。你负责证券、投行与行业研究资料的整理分析。必须先理解同事真正要研究的问题，再检索获授权的研报与行业资料；结论区分资料事实与个人分析判断，注明资料出处，不提供未经核实或推测的信息。",
+            "domains": ["研究分析", "证券研究", "投行研究", "行业资料"],
+            "responsibilities": ["检索与分析研究资料", "梳理证券与投行研究观点", "输出有出处的分析结论"],
+        },
     }
-    # 当前知识问答 MVP 只保留两名岗位型数字员工；真人分身继续保留。
+    # 当前知识问答 MVP 只保留三名岗位型数字员工；真人分身继续保留。
     # 历史演示员工改为 inactive，以保留审计/历史关联但不再出现在通讯录中。
     active_role_employee_ids = set(employee_specs)
     for existing in db.query(models.DigitalEmployee).all():
@@ -177,6 +184,7 @@ def ensure_mvp_seed(db) -> None:
             "KB-IT-SERVICE",
         ],
         "AI-INVESTMENT": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
+        "AI-RESEARCH": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
         # 张三的分身不直接持有知识库；遇到知识问题必须委派给岗位数字员工。
         "DT-E10281": [],
         "DT-E20999": [],
@@ -322,22 +330,28 @@ def ensure_mvp_seed(db) -> None:
                 provider="mock", corp_id="demo-corp", external_user_id=human.employee_no,
                 human_employee_no=human.employee_no,
             ))
-    # 企业微信接入：按 DWP_WECOM_USER_BINDINGS（机器人 staff ID -> 员工工号）幂等初始化绑定。
-    # bot_id 与绑定映射统一从 config 读取，与 wecom_bot / wecom_adapter 保持一致。
-    wecom_bot_id = config.wecom_bot_id()
-    if wecom_bot_id:
+    # 企业微信接入：按 DWP_WECOM_USER_BINDINGS（staff ID -> 员工工号）幂等初始化绑定。
+    # bindings 是「企微账号 -> 平台真人」的全局映射，与具体机器人无关（多 bot 共用一份）。
+    # 有任一机器人配置即同步；corp_id 仅存首个 bot_id 作标识，不做去重条件。
+    wecom_bots = config.wecom_bots()
+    if wecom_bots:
+        wecom_corp_id = wecom_bots[0].bot_id
         for wecom_user_id, employee_no in config.wecom_user_bindings().items():
             if db.get(models.HumanEmployee, employee_no) is None:
                 continue
-            if db.scalar(select(models.DirectoryBinding).where(
+            existing = db.scalar(select(models.DirectoryBinding).where(
                 models.DirectoryBinding.provider == "wecom",
-                models.DirectoryBinding.corp_id == wecom_bot_id,
                 models.DirectoryBinding.external_user_id == wecom_user_id,
-            )) is None:
+            ))
+            if existing is None:
                 db.add(models.DirectoryBinding(
-                    provider="wecom", corp_id=wecom_bot_id,
+                    provider="wecom", corp_id=wecom_corp_id,
                     external_user_id=wecom_user_id, human_employee_no=employee_no,
                 ))
+            elif existing.human_employee_no != employee_no:
+                # 重新绑定：更新真人映射并保持 active，避免陈旧指向。
+                existing.human_employee_no = employee_no
+                existing.status = "active"
     db.commit()
 
 

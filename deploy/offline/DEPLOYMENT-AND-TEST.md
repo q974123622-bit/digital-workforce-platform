@@ -81,8 +81,8 @@ export DWP_HTTP_PORT=18080
 3. 安全读取模型 Key、员工初始密码和管理员初始密码；
 4. 自动生成 Harness HMAC 签名密钥；
 5. 导入前端、后端、前端离线 Builder 和 DSH Harness 镜像；
-6. 启动平台服务和四个独立 Harness 实例；
-7. 等待后端健康并检查四个 Harness Profile。
+6. 启动平台服务和五个独立 Harness 实例；
+7. 等待后端健康并检查五个 Harness Profile。
 
 成功后访问：
 
@@ -123,9 +123,10 @@ DWP_MCP_RUNTIME_MODE=mock
 - 前端和后端状态正常；
 - `dwp-harness-ai-general` 正常；
 - `dwp-harness-ai-investment` 正常；
+- `dwp-harness-ai-research` 正常；
 - `dwp-harness-dt-e10281` 正常；
 - `dwp-harness-dt-e20999` 正常；
-- 四个 Harness 都加载 `dwp-knowledge-agent-v2` Profile。
+- 五个 Harness 都加载 `dwp-knowledge-agent-v2` Profile。
 
 页面测试：
 
@@ -134,10 +135,11 @@ DWP_MCP_RUNTIME_MODE=mock
 3. 确认执行过程以 SSE 显示，回答逐字输出；
 4. 刷新页面，确认每次对话的执行轨迹仍然存在；
 5. 向“投资分析AI员工”询问证券或投行业务问题；
-6. 确认两个岗位数字员工的知识库授权没有重叠；
-7. 打开张三数字分身，确认其没有直接知识库，并可按 Agent 判断进行一次受控委派；
-8. 使用陈晓萌账号确认无法读取张三的插件、对话和长期记忆；
-9. 使用 admin 登录管理后台，检查插件审核、发布和授权流程。
+6. 向“研究分析AI员工”询问研报或行业资料分析问题；
+7. 确认岗位数字员工的知识库授权没有重叠；
+8. 打开张三数字分身，确认其没有直接知识库，并可按 Agent 判断进行一次受控委派；
+9. 使用陈晓萌账号确认无法读取张三的插件、对话和长期记忆；
+10. 使用 admin 登录管理后台，检查插件审核、发布和授权流程。
 
 ## 7. 接入内部知识引擎
 

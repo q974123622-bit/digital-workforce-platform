@@ -8,6 +8,10 @@
   透传原消息的 ``headers.req_id``；
 - 收到 ``disconnected_event`` 或连接异常时自动指数退避重连。
 
+多机器人：每个机器人是独立的 ``WeComBotClient``，各持一条 WebSocket 长连接，
+订阅时携带各自 bot_id/secret。消息回调把该机器人的 ``WeComBotSpec`` 传给
+``wecom_adapter`` 做双维路由（fixed 岗位员工 / twin 按发起人转接）。
+
 凭据不写日志；dry-run 默认开启，只打印将要发送的内容，不真发。
 """
 
@@ -134,11 +138,28 @@ def _req_id() -> str:
 
 
 class WeComBotClient:
-    """常驻长连接客户端；由 FastAPI lifespan 作为后台任务启动/停止。"""
+    """常驻长连接客户端；由 FastAPI lifespan 作为后台任务启动/停止。
 
-    def __init__(self, bot_id: str, secret: str, ws_url: str) -> None:
-        self.bot_id = bot_id
-        self.secret = secret
+    多 bot 部署时通过 ``spec`` 声明机器人的承载方式；无 spec 时由调用方显式
+    传 ``bot_id/secret`` 退化为单 bot（mode="twin"），保持既有测试与存量用法兼容。
+    """
+
+    def __init__(
+        self,
+        bot_id: str = "",
+        secret: str = "",
+        ws_url: str = "",
+        spec: config.WeComBotSpec | None = None,
+    ) -> None:
+        if spec is not None:
+            self.spec = spec
+        else:
+            self.spec = config.WeComBotSpec(
+                bot_id=bot_id, secret=secret,
+                name=bot_id or "wecom-bot", alias="twin", mode="twin",
+            )
+        self.bot_id = self.spec.bot_id
+        self.secret = self.spec.secret
         self.ws_url = ws_url
         self._stop = asyncio.Event()
 
@@ -190,11 +211,11 @@ class WeComBotClient:
             raw = await asyncio.wait_for(ws.recv(), timeout=15)
             data = json.loads(raw)
             if data.get("errcode") == 0:
-                logger.info("wecom-bot: 订阅成功 req_id=%s", req_id)
+                logger.info("wecom-bot[%s]: 订阅成功 req_id=%s", self.spec.alias, req_id)
             else:
                 logger.error(
-                    "wecom-bot: 订阅失败 req_id=%s errcode=%s errmsg=%s",
-                    req_id, data.get("errcode"), data.get("errmsg"),
+                    "wecom-bot[%s]: 订阅失败 req_id=%s errcode=%s errmsg=%s",
+                    self.spec.alias, req_id, data.get("errcode"), data.get("errmsg"),
                 )
         except Exception as exc:  # noqa: BLE001 - 订阅异常统一记录，由外层重连兜底
             logger.error("wecom-bot: 等待订阅响应异常：%s", exc)
@@ -235,13 +256,13 @@ class WeComBotClient:
 
         # DRY-RUN：不建立执行流，仅打印最终回答用于联调观察。
         if config.wecom_dry_run():
-            answer = await asyncio.to_thread(handle_bot_message, from_user, content)
-            logger.info("wecom-bot[DRY-RUN] 将回复 %s：%s", from_user, answer)
+            answer = await asyncio.to_thread(handle_bot_message, from_user, content, self.spec)
+            logger.info("wecom-bot[%s][DRY-RUN] 将回复 %s：%s", self.spec.alias, from_user, answer)
             return
 
         # 实时流式：先建立执行记录，再后台跑 agent，同时把执行事件流式刷新到企微。
         try:
-            ctx = await asyncio.to_thread(start_execution, from_user, content)
+            ctx = await asyncio.to_thread(start_execution, from_user, content, self.spec)
         except HTTPException as exc:
             await self._respond(ws, req_id, f"抱歉，暂时无法处理：{exc.detail}")
             return
@@ -295,6 +316,7 @@ class WeComBotClient:
             try:
                 answer = agent_task.result()
             except Exception:  # noqa: BLE001 - 兜底，保证最终帧仍能 finish
+                logger.exception("wecom-bot: 获取 agent 结果异常 execution_id=%s", ctx.execution_id)
                 answer = "抱歉，处理过程中出现问题，请稍后再试。"
 
             # 收尾前再消费一次剩余事件（complete/error 等）。
@@ -334,37 +356,39 @@ class WeComBotClient:
             logger.warning("wecom-bot: 收到 disconnected_event，准备重连")
 
 
-def create_client() -> WeComBotClient | None:
-    """按配置构建长连接客户端；未启用或配置不全时返回 None（可插拔）。"""
+def create_clients() -> list[WeComBotClient]:
+    """按配置构建全部长连接客户端；未启用或配置不全时返回空列表（可插拔）。"""
     if not config.wecom_bot_enabled():
-        return None
-    if not config.wecom_bot_configured():
+        return []
+    specs = config.wecom_bots()
+    if not specs:
         logger.warning("wecom-bot: 已启用但 bot_id/secret 未配置，跳过启动")
-        return None
-    return WeComBotClient(
-        bot_id=config.wecom_bot_id(),
-        secret=config.wecom_bot_secret(),
-        ws_url=config.wecom_ws_url(),
-    )
+        return []
+    ws_url = config.wecom_ws_url()
+    clients = [WeComBotClient(spec=spec, ws_url=ws_url) for spec in specs]
+    logger.info("wecom-bot: 将启动 %d 条机器人长连接：%s",
+                len(clients), ",".join(spec.alias for spec in specs))
+    return clients
 
 
 @asynccontextmanager
 async def managed_lifespan():
-    """可插拔的企微长连接生命周期：未启用时是空操作。
+    """可插拔的企微长连接生命周期：为每个机器人各起一条常驻连接，未启用时是空操作。
 
     在 FastAPI lifespan 中一行接入：
 
         async with wecom_bot.managed_lifespan():
             yield
 
-    开关与配置集中在 config.py（DWP_WECOM_BOT_ENABLED 等），本函数不感知业务。
+    开关与配置集中在 config.py（DWP_WECOM_BOT_ENABLED / DWP_WECOM_BOTS 等），
+    本函数不感知业务。不同机器人的连接互不影响，各自独立重连。
     """
-    client = create_client()
-    task = asyncio.create_task(client.run_forever()) if client is not None else None
+    clients = create_clients()
+    tasks = [asyncio.create_task(client.run_forever()) for client in clients]
     try:
         yield
     finally:
-        if task is not None:
+        for client, task in zip(clients, tasks):
             client.stop()
             task.cancel()
             try:

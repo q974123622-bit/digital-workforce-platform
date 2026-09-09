@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from uuid import uuid4
 
@@ -13,6 +15,17 @@ from .. import models
 ACTIVE_STATUSES = ("queued", "running", "streaming", "waiting_approval")
 TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 ANSWER_CHUNK_SIZE = 32
+
+# 同一执行记录的并发写保护：主流程线程与容器内 MCP 回调（知识检索/委派）可能
+# 同时向同一条 AgentExecution 写事件，若不串行化会引发 event_seq 竞态与 SQLite
+# 写锁冲突。用可重入锁按 execution_id 串行化，不同执行记录之间互不阻塞。
+_EXECUTION_LOCKS: dict[str, threading.RLock] = {}
+_EXECUTION_LOCKS_GUARD = threading.Lock()
+
+
+def _execution_lock(execution_id: str) -> threading.RLock:
+    with _EXECUTION_LOCKS_GUARD:
+        return _EXECUTION_LOCKS.setdefault(execution_id, threading.RLock())
 
 
 def create_execution(
@@ -70,37 +83,38 @@ def emit(
     hit_count: int | None = None,
     payload: dict | None = None,
 ) -> models.AgentExecutionEvent:
-    execution = db.get(models.AgentExecution, execution_id)
-    if execution is None or execution.status == "cancelled":
-        raise RuntimeError("执行记录不存在或已取消")
-    next_seq = (db.scalar(
-        select(func.max(models.AgentExecutionEvent.event_seq)).where(
-            models.AgentExecutionEvent.execution_id == execution_id
+    with _execution_lock(execution_id):
+        execution = db.get(models.AgentExecution, execution_id)
+        if execution is None or execution.status == "cancelled":
+            raise RuntimeError("执行记录不存在或已取消")
+        next_seq = (db.scalar(
+            select(func.max(models.AgentExecutionEvent.event_seq)).where(
+                models.AgentExecutionEvent.execution_id == execution_id
+            )
+        ) or 0) + 1
+        row = models.AgentExecutionEvent(
+            execution_id=execution_id,
+            event_seq=next_seq,
+            event_type=event_type,
+            actor_employee_id=actor_employee_id,
+            stage=stage,
+            status=status,
+            title=title[:160],
+            detail=detail[:300],
+            knowledge_base_id=knowledge_base_id,
+            target_agent_id=target_agent_id,
+            hit_count=hit_count,
+            payload=payload or {},
         )
-    ) or 0) + 1
-    row = models.AgentExecutionEvent(
-        execution_id=execution_id,
-        event_seq=next_seq,
-        event_type=event_type,
-        actor_employee_id=actor_employee_id,
-        stage=stage,
-        status=status,
-        title=title[:160],
-        detail=detail[:300],
-        knowledge_base_id=knowledge_base_id,
-        target_agent_id=target_agent_id,
-        hit_count=hit_count,
-        payload=payload or {},
-    )
-    execution.stage = stage
-    execution.status = status if status in (*ACTIVE_STATUSES, *TERMINAL_STATUSES) else execution.status
-    execution.updated_at = datetime.now()
-    if execution.status in TERMINAL_STATUSES:
-        execution.completed_at = datetime.now()
-    db.add_all([execution, row])
-    db.commit()
-    db.refresh(row)
-    return row
+        execution.stage = stage
+        execution.status = status if status in (*ACTIVE_STATUSES, *TERMINAL_STATUSES) else execution.status
+        execution.updated_at = datetime.now()
+        if execution.status in TERMINAL_STATUSES:
+            execution.completed_at = datetime.now()
+        db.add_all([execution, row])
+        db.commit()
+        db.refresh(row)
+        return row
 
 
 def emit_answer_chunks(
@@ -124,6 +138,24 @@ def emit_answer_chunks(
         )
 
 
+def _json_safe_tool_cards(tool_cards: list) -> list[dict]:
+    """把 ToolCard 等 dataclass 对象转成可 JSON 序列化的 dict。
+
+    ``complete()`` 的 tool_cards 来自 Harness 执行结果，是 ``ToolCard`` 对象列表；
+    若直接写入 payload（JSON 列），会在 commit 时抛
+    ``TypeError: Object of type ToolCard is not JSON serializable``。
+    """
+    out: list[dict] = []
+    for card in tool_cards:
+        if is_dataclass(card) and not isinstance(card, type):
+            out.append(asdict(card))
+        elif isinstance(card, dict):
+            out.append(card)
+        else:
+            out.append({"raw": str(card)})
+    return out
+
+
 def complete(
     db: Session, execution_id: str, *, actor_employee_id: str,
     message_id: int | None, trace_id: str, tool_cards: list,
@@ -131,31 +163,43 @@ def complete(
     emit(
         db, execution_id, event_type="answer_done", stage="completed", status="completed",
         actor_employee_id=actor_employee_id, title="执行完成", payload={
-            "message_id": message_id, "trace_id": trace_id, "tool_cards": tool_cards,
+            "message_id": message_id, "trace_id": trace_id,
+            "tool_cards": _json_safe_tool_cards(tool_cards),
         },
     )
 
 
 def fail(db: Session, execution_id: str, exc: Exception) -> None:
-    execution = db.get(models.AgentExecution, execution_id)
-    if execution is None or execution.status == "cancelled":
-        return
-    name = exc.__class__.__name__
-    detail = getattr(exc, "detail", "")
-    detail_text = str(detail).lower()
-    timed_out = name == "TimeoutExpired" or "timeout" in detail_text or "超时" in detail_text
-    code = "HARNESS_TIMEOUT" if timed_out else "AGENT_EXECUTION_FAILED"
-    message = "数字员工响应超时，可重新尝试" if code == "HARNESS_TIMEOUT" else "数字员工执行失败，可稍后重试"
-    execution.error_code = code
-    execution.error_message = message
-    execution.retryable = True
-    db.add(execution)
-    db.commit()
-    emit(
-        db, execution_id, event_type="error", stage="failed", status="failed",
-        actor_employee_id=execution.primary_employee_id, title="执行失败", detail=message,
-        payload={"code": code, "message": message, "retryable": True},
-    )
+    with _execution_lock(execution_id):
+        # 异常发生时当前事务可能已处于失败状态（如 SQLite 撞锁后 commit 抛错），
+        # 先回滚清理，否则后续补救写入会因 session 坏状态而再次失败、被静默吞掉。
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001 - 回滚失败不应阻断补救写入
+            pass
+        execution = db.get(models.AgentExecution, execution_id)
+        if execution is None or execution.status == "cancelled":
+            return
+        name = exc.__class__.__name__
+        detail = getattr(exc, "detail", "")
+        detail_text = str(detail).lower()
+        timed_out = name == "TimeoutExpired" or "timeout" in detail_text or "超时" in detail_text
+        code = "HARNESS_TIMEOUT" if timed_out else "AGENT_EXECUTION_FAILED"
+        message = "数字员工响应超时，可重新尝试" if code == "HARNESS_TIMEOUT" else "数字员工执行失败，可稍后重试"
+        execution.error_code = code
+        execution.error_message = message
+        execution.retryable = True
+        db.add(execution)
+        db.commit()
+        # 把真实异常类型与信息一并落库，避免"抱歉"掩盖故障根因（如 database is locked）。
+        emit(
+            db, execution_id, event_type="error", stage="failed", status="failed",
+            actor_employee_id=execution.primary_employee_id, title="执行失败", detail=message,
+            payload={
+                "code": code, "message": message, "retryable": True,
+                "exc_type": name, "exc_detail": str(exc)[:300],
+            },
+        )
 
 
 def cancel_for_conversation(db: Session, conversation_id: str) -> None:

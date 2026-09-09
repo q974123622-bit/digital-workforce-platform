@@ -7,6 +7,7 @@
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -207,6 +208,27 @@ WECOM_BOT_SECRET_FILE = "DWP_WECOM_BOT_SECRET_FILE"
 WECOM_WS_URL = "DWP_WECOM_WS_URL"
 WECOM_DRY_RUN = "DWP_WECOM_DRY_RUN"
 WECOM_USER_BINDINGS = "DWP_WECOM_USER_BINDINGS"
+WECOM_BOTS = "DWP_WECOM_BOTS"
+
+
+@dataclass(frozen=True)
+class WeComBotSpec:
+    """单个企微智能机器人的承载声明。
+
+    mode:
+      - ``"fixed"``：机器人固定承载某个岗位员工（``employee_no`` 必填）；
+      - ``"twin"``：机器人按发起人企微 userid 转接到其本人数字分身。
+
+    alias 用于执行会话键与日志标识（ASCII 短名，如 general/investment/research/twin）；
+    secret 为敏感凭据，不得写入日志或文档。
+    """
+
+    bot_id: str
+    secret: str
+    name: str
+    alias: str
+    mode: str = "twin"
+    employee_no: str | None = None
 
 
 def wecom_bot_enabled() -> bool:
@@ -241,7 +263,7 @@ def wecom_dry_run() -> bool:
 
 
 def wecom_user_bindings() -> dict[str, str]:
-    """企微机器人体系 staff ID -> 员工工号 映射（JSON）。"""
+    """企微机器人体系 staff ID -> 员工工号 全局映射（JSON）。"""
     raw = os.environ.get(WECOM_USER_BINDINGS) or "{}"
     try:
         parsed = json.loads(raw)
@@ -252,6 +274,50 @@ def wecom_user_bindings() -> dict[str, str]:
     return {str(key): str(value) for key, value in parsed.items()}
 
 
+def wecom_bots() -> list[WeComBotSpec]:
+    """解析 ``DWP_WECOM_BOTS``（JSON 数组）得到机器人规格列表。
+
+    向后兼容：未配置 ``DWP_WECOM_BOTS`` 时回退到旧单 bot 变量
+    （``DWP_WECOM_BOT_ID`` + ``DWP_WECOM_BOT_SECRET``），其语义等价于一个
+    ``mode="twin"`` 的机器人，保证存量部署与既有测试不破。
+    """
+    raw = (os.environ.get(WECOM_BOTS) or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, list):
+            bots: list[WeComBotSpec] = []
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                bot_id = str(item.get("bot_id") or "").strip()
+                secret = str(item.get("secret") or "").strip()
+                if not bot_id or not secret:
+                    continue
+                mode = str(item.get("mode") or "twin").strip().lower()
+                if mode not in ("fixed", "twin"):
+                    mode = "twin"
+                bots.append(
+                    WeComBotSpec(
+                        bot_id=bot_id,
+                        secret=secret,
+                        name=str(item.get("name") or bot_id),
+                        alias=str(item.get("alias") or bot_id),
+                        mode=mode,
+                        employee_no=(str(item.get("employee_no") or "").strip()) or None,
+                    )
+                )
+            if bots:
+                return bots
+    bot_id = wecom_bot_id()
+    secret = wecom_bot_secret()
+    if bot_id and secret:
+        return [WeComBotSpec(bot_id=bot_id, secret=secret, name="数字分身", alias="twin", mode="twin")]
+    return []
+
+
 def wecom_bot_configured() -> bool:
-    """长连接所需的全部配置是否齐备。"""
-    return bool(wecom_bot_id() and wecom_bot_secret())
+    """长连接所需的全部配置是否齐备（任一机器人凭据齐全即 True）。"""
+    return bool(wecom_bots())
