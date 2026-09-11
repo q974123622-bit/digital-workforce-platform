@@ -28,7 +28,7 @@ export interface TypeMeta {
 
 /** 数字员工类型 */
 export const TYPE_META: Record<string, TypeMeta> = {
-  twin: { label: '数字分身', color: 'blue', icon: <RobotOutlined />, hex: '#2f54eb', bg: '#eef4ff' },
+  twin: { label: '数字分身', color: 'blue', icon: <RobotOutlined />, hex: '#165dff', bg: '#e8f3ff' },
   virtual: { label: '虚拟员工', color: 'green', icon: <UserOutlined />, hex: '#52c41a', bg: '#f6ffed' },
   rpa: { label: 'RPA', color: 'orange', icon: <ThunderboltOutlined />, hex: '#fa8c16', bg: '#fff7e6' },
 };
@@ -41,7 +41,7 @@ export const EMPLOYMENT_META: Record<string, { label: string; color: string; ico
 /** 插件类型 */
 export const PLUGIN_TYPE_META: Record<string, TypeMeta> = {
   instruction: { label: 'Instruction Skill', color: 'default', icon: <BookOutlined />, hex: '#5c6b83', bg: '#f5f5f5' },
-  knowledge: { label: '知识库', color: 'geekblue', icon: <BookOutlined />, hex: '#2f54eb', bg: '#f0f5ff' },
+  knowledge: { label: '知识库', color: 'geekblue', icon: <BookOutlined />, hex: '#165dff', bg: '#e8f3ff' },
   mcp: { label: 'MCP', color: 'purple', icon: <ApiOutlined />, hex: '#722ed1', bg: '#f9f0ff' },
   workflow: { label: 'Workflow', color: 'cyan', icon: <ApartmentOutlined />, hex: '#13c2c2', bg: '#e6fffb' },
   rpa: { label: 'RPA', color: 'orange', icon: <DeploymentUnitOutlined />, hex: '#fa8c16', bg: '#fff7e6' },

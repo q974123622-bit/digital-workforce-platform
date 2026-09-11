@@ -46,6 +46,10 @@ _CONVERSATION_LOCKS: dict[str, threading.Lock] = {}
 _CONVERSATION_LOCKS_GUARD = threading.Lock()
 
 
+class ExecutionCancelled(RuntimeError):
+    """The run no longer belongs to the conversation's visible generation."""
+
+
 def _conversation_lock(conversation_id: str) -> threading.Lock:
     """同一进程内按会话串行编排，确保消息顺序和任务去重。"""
     with _CONVERSATION_LOCKS_GUARD:
@@ -92,6 +96,7 @@ def _append(
     content: str,
     seq: int,
     tool_cards: list | None = None,
+    generation: int = 0,
 ) -> models.ConversationMessage:
     msg = models.ConversationMessage(
         conversation_id=conversation_id,
@@ -101,6 +106,7 @@ def _append(
         content=content,
         tool_cards=tool_cards or [],
         seq=seq,
+        generation=generation,
     )
     db.add(msg)
     db.commit()
@@ -108,23 +114,27 @@ def _append(
     return msg
 
 
-def _next_seq(db: Session, conversation_id: str) -> int:
+def _next_seq(db: Session, conversation_id: str, generation: int = 0) -> int:
     current = db.scalar(
         select(func.max(models.ConversationMessage.seq)).where(
-            models.ConversationMessage.conversation_id == conversation_id
+            models.ConversationMessage.conversation_id == conversation_id,
+            models.ConversationMessage.generation == generation,
         )
     )
     return (current or 0) + 1
 
 
-def _history_messages(db: Session, conversation_id: str) -> list[dict]:
+def _history_messages(db: Session, conversation_id: str, generation: int = 0) -> list[dict]:
     """把会话消息转成模型上下文（source=demo）。
 
     一律不加「【名字】」前缀：UI 已按参与者展示姓名，前缀只会诱导模型模仿该格式。
     """
     rows = db.scalars(
         select(models.ConversationMessage)
-        .where(models.ConversationMessage.conversation_id == conversation_id)
+        .where(
+            models.ConversationMessage.conversation_id == conversation_id,
+            models.ConversationMessage.generation == generation,
+        )
         .order_by(models.ConversationMessage.seq)
     ).all()
     out: list[dict] = []
@@ -152,8 +162,21 @@ def append_user_message(
         participant_name=actor.name,
         role="user",
         content=content,
-        seq=_next_seq(db, conversation.id),
+        seq=_next_seq(db, conversation.id, conversation.generation),
+        generation=conversation.generation,
     )
+
+
+def _assert_execution_writable(
+    db: Session, conversation: models.Conversation, execution_id: str | None, generation: int,
+) -> None:
+    db.refresh(conversation)
+    if conversation.generation != generation:
+        raise ExecutionCancelled("会话已清空")
+    if execution_id:
+        execution = db.get(models.AgentExecution, execution_id)
+        if execution is None or execution.status == "cancelled" or execution.conversation_generation != generation:
+            raise ExecutionCancelled("执行已取消")
 
 
 def member_replies(
@@ -165,6 +188,7 @@ def member_replies(
     provider: LLMProvider | None = None,
     only: str | None = None,
     execution_id: str | None = None,
+    generation: int | None = None,
 ) -> list[models.ConversationMessage]:
     """让成员按顺序回应（假定用户消息已落库）；only 指定时仅该成员回复。
 
@@ -190,7 +214,8 @@ def member_replies(
     if not targets:
         raise HTTPException(status_code=400, detail="指定的回复成员不在会话中")
 
-    history = _history_messages(db, conversation.id)
+    run_generation = conversation.generation if generation is None else generation
+    history = _history_messages(db, conversation.id, run_generation)
     is_group = conversation.kind == "group"
     appended: list[models.ConversationMessage] = []
     failed = 0
@@ -252,6 +277,7 @@ def member_replies(
                 }
                 for card in result.tool_cards
             ]
+            _assert_execution_writable(db, conversation, execution_id, run_generation)
             appended.append(
                 _append(
                     db,
@@ -260,12 +286,14 @@ def member_replies(
                     participant_name=name,
                     role="assistant",
                     content=result.message,
-                    seq=_next_seq(db, conversation.id),
+                    seq=_next_seq(db, conversation.id, run_generation),
                     tool_cards=cards,
+                    generation=run_generation,
                 )
             )
         except LLMUnavailableError:
             failed += 1
+            _assert_execution_writable(db, conversation, execution_id, run_generation)
             appended.append(
                 _append(
                     db,
@@ -274,10 +302,11 @@ def member_replies(
                     participant_name=name,
                     role="assistant",
                     content=f"（{name} 暂时无法响应，已跳过）",
-                    seq=_next_seq(db, conversation.id),
+                    seq=_next_seq(db, conversation.id, run_generation),
+                    generation=run_generation,
                 )
             )
-        history = _history_messages(db, conversation.id)
+        history = _history_messages(db, conversation.id, run_generation)
 
     if failed == len(targets):
         raise HTTPException(status_code=503, detail="LLM_UNAVAILABLE：成员暂时无法响应")
@@ -421,6 +450,7 @@ def process_conversation(
     classifier: Callable | None = None,
     trigger_seq: int | None = None,
     execution_id: str | None = None,
+    generation: int | None = None,
 ) -> None:
     """执行"用户消息已落库"之后的完整编排：分类 → 任务/闲聊 → 写回结果。"""
     trigger_seq = trigger_seq if trigger_seq is not None else _latest_user_seq(db, conversation.id)
@@ -428,7 +458,7 @@ def process_conversation(
     if conversation.kind != "group":
         member_replies(
             db, conversation=conversation, actor_no=actor_no, content=content,
-            provider=provider, execution_id=execution_id,
+            provider=provider, execution_id=execution_id, generation=generation,
         )
     else:
         decide = classifier if classifier is not None else classify_task_request
@@ -447,26 +477,10 @@ def process_conversation(
                         participant_name=leader.name,
                         role="assistant",
                         content=f"这条和刚才重复啦，任务 {existing.id} 状态：{label}，看上方卡片即可。",
-                        seq=_next_seq(db, conversation.id),
+                        seq=_next_seq(db, conversation.id, conversation.generation),
+                        generation=conversation.generation,
                     )
             else:
-                # AgentTeams 优先（auto），失败自动降级内置编排
-                if config.team_backend_mode() != "builtin":
-                    at_task = _try_agentteams_task(
-                        db,
-                        conversation=conversation,
-                        leader=leader,
-                        actor_no=actor_no,
-                        request=content,
-                        trigger_seq=trigger_seq,
-                        orchestrator=orchestrator or _default_team_orchestrator(provider),
-                    )
-                    if at_task is not None:
-                        conversation.updated_at = datetime.now()
-                        db.add(conversation)
-                        db.commit()
-                        db.refresh(conversation)
-                        return conversation
                 orch = orchestrator or _default_team_orchestrator(provider)
                 orch.create_conversation_task(
                     db,
@@ -488,6 +502,7 @@ def process_conversation(
                 provider=provider,
                 only=target,
                 execution_id=execution_id,
+                generation=generation,
             )
 
 
@@ -505,17 +520,21 @@ def process_conversation_async(
         db = SessionLocal()
         try:
             conv = db.get(models.Conversation, conversation_id)
+            execution = db.get(models.AgentExecution, execution_id) if execution_id else None
+            run_generation = execution.conversation_generation if execution is not None else (
+                conv.generation if conv is not None else 0
+            )
             trigger = db.scalar(
                 select(models.ConversationMessage).where(
                     models.ConversationMessage.conversation_id == conversation_id,
                     models.ConversationMessage.seq == trigger_seq,
                     models.ConversationMessage.role == "user",
+                    models.ConversationMessage.generation == run_generation,
                 )
             )
             # 会话已被清空或触发消息已不存在：后台任务立即取消，不得复活数据。
             if conv is None or trigger is None or trigger.content != content:
                 return
-            execution = db.get(models.AgentExecution, execution_id) if execution_id else None
             if execution is not None:
                 if execution.status == "cancelled":
                     return
@@ -531,7 +550,9 @@ def process_conversation_async(
                 content,
                 trigger_seq=trigger_seq,
                 execution_id=execution_id,
+                generation=run_generation,
             )
+            _assert_execution_writable(db, conv, execution_id, run_generation)
             conv.updated_at = datetime.now()
             db.add(conv)
             db.commit()
@@ -541,6 +562,7 @@ def process_conversation_async(
                     models.ConversationMessage.conversation_id == conversation_id,
                     models.ConversationMessage.role == "assistant",
                     models.ConversationMessage.seq > trigger_seq,
+                    models.ConversationMessage.generation == run_generation,
                 ).order_by(models.ConversationMessage.seq)
             ).all()
             if answers_for_memory:
@@ -557,6 +579,7 @@ def process_conversation_async(
                         models.ConversationMessage.conversation_id == conversation_id,
                         models.ConversationMessage.role == "assistant",
                         models.ConversationMessage.seq > trigger_seq,
+                        models.ConversationMessage.generation == run_generation,
                     ).order_by(models.ConversationMessage.seq)
                 ).all()
                 for answer in answers:
@@ -573,6 +596,9 @@ def process_conversation_async(
                     trace_id=execution.trace_id,
                     tool_cards=((last.tool_cards or []) if last else []),
                 )
+        except ExecutionCancelled:
+            db.rollback()
+            return
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             if execution_id:

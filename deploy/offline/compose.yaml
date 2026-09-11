@@ -1,7 +1,7 @@
 name: dwp-ai-employee-platform
 
 x-harness-common: &harness-common
-  image: dwp-dsh:rc6
+  image: ${DWP_DSH_IMAGE:-dwp-dsh:rc6}
   pull_policy: never
   restart: unless-stopped
   entrypoint: ["sh", "-c"]
@@ -62,7 +62,7 @@ services:
       - ./harness/DT-E20999/workspace:/workspace
 
   backend:
-    image: dwp-backend:0.2.0-offline
+    image: dwp-backend:${DWP_IMAGE_TAG:-0.3.0-offline}
     pull_policy: never
     restart: unless-stopped
     user: "${DWP_UID:-1000}:${DWP_GID:-1000}"
@@ -75,12 +75,10 @@ services:
       DWP_HARNESS_ENABLED: "1"
       DWP_AGENT_EXECUTION_MODE: harness
       DWP_PLATFORM_TOOL_BASE_URL: http://backend:8000
-      DWP_HARNESS_IMAGE: dwp-dsh:rc6
+      DWP_HARNESS_IMAGE: ${DWP_DSH_IMAGE:-dwp-dsh:rc6}
       DWP_TEAM_BACKEND: builtin
       DWP_REQUIRE_AUTH: "1"
       DWP_ARTIFACT_ROOT: /data/artifacts
-      DWP_MCP_RUNTIME_MODE: mock
-      DWP_MEMORY_MODE: ${DWP_MEMORY_MODE:-mock}
     secrets:
       - llm_api_key
       - harness_signing_secret
@@ -105,14 +103,14 @@ services:
       - no-new-privileges:true
 
   frontend:
-    image: dwp-frontend:0.2.0-offline
+    image: dwp-frontend:${DWP_IMAGE_TAG:-0.3.0-offline}
     pull_policy: never
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      - "${DWP_HTTP_PORT:-8080}:8080"
+      - "${DWP_HTTP_PORT:-18080}:8080"
     networks:
       - dwp
     security_opt:

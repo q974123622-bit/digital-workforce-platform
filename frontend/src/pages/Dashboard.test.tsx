@@ -1,121 +1,59 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter } from 'react-router-dom';
 import Dashboard from './Dashboard';
-import type { AuditEvent, Employee, Plugin, Team } from '@dwp/shared-schema';
+import type { AgentProfile, AuditEvent, KnowledgeBase } from '@dwp/shared-schema';
+import type { PluginSubmission } from '../api/client';
 
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
-const employees: Employee[] = [
+const submissions: PluginSubmission[] = [
+  { id: 1, name: '报销制度速答', plugin_type: 'skill', data_level: 'L1', deployment_mode: 'instruction', review_status: 'pending', publish_status: 'unpublished', submitted_by: 'E10281', review_note: '', created_at: '2026-08-19T08:00:00' },
+];
+
+const agents: AgentProfile[] = [
   {
-    id: '1',
-    employee_no: 'DT-E10281',
-    name: '张三的数字分身',
-    type: 'twin',
-    employment_type: 'formal',
-    source_human_no: 'E10281',
-    owner_human_no: 'E10281',
-    department: '架构部',
-    role_prompt: '',
-    status: 'active',
-    runtime_type: 'demo',
-    runtime_ref: null,
-    location: 'remote',
-    internet: 'deny',
-    max_data_level: 'L2',
-    allowed_domains: [],
-    grants: [],
+    employee_id: 'VE-0001', display_name: '新员工入职助手', identity_kind: 'role_employee', owner_human_no: 'E10021',
+    department: '人力资源部', responsibilities: [], knowledge_domains: [], accepts_tasks: [],
+    delegation_policy: 'bounded_single', fallback_employee_id: null, persona_status: 'active', persona_version: 1,
+    runtime_engine: 'harness', runtime_state: 'ready', container_name: 'harness-ve-0001', knowledge_base_ids: [],
   },
   {
-    id: '2',
-    employee_no: 'VE-0001',
-    name: '新员工入职助手',
-    type: 'virtual',
-    employment_type: 'formal',
-    source_human_no: null,
-    owner_human_no: 'E10021',
-    department: '人力资源部',
-    role_prompt: '',
-    status: 'active',
-    runtime_type: 'harness',
-    runtime_ref: null,
-    location: 'remote',
-    internet: 'deny',
-    max_data_level: 'L2',
-    allowed_domains: [],
-    grants: [],
-  },
-  {
-    id: '3',
-    employee_no: 'RPA-0001',
-    name: '报表机器人',
-    type: 'rpa',
-    employment_type: 'formal',
-    source_human_no: null,
-    owner_human_no: 'E20999',
-    department: '财务部',
-    role_prompt: '',
-    status: 'active',
-    runtime_type: 'demo',
-    runtime_ref: null,
-    location: 'remote',
-    internet: 'allow',
-    max_data_level: 'L3',
-    allowed_domains: [],
-    grants: [],
+    employee_id: 'VE-0002', display_name: 'IT 助理', identity_kind: 'role_employee', owner_human_no: 'E10021',
+    department: 'IT 部', responsibilities: [], knowledge_domains: [], accepts_tasks: [],
+    delegation_policy: 'none', fallback_employee_id: null, persona_status: 'active', persona_version: 1,
+    runtime_engine: 'harness', runtime_state: 'crashed', container_name: 'harness-ve-0002', knowledge_base_ids: [],
   },
 ];
 
-const plugins: Plugin[] = [
-  {
-    id: 'knowledge-l1',
-    name: '公开知识库',
-    type: 'knowledge',
-    endpoint_ref: 'mock://kb/l1',
-    data_level: 'L1',
-    status: 'active',
-    description: '公开知识检索',
-    runtime_meta: {},
-  },
-];
-
-const teams: Team[] = [
-  { id: 'TEAM-ONBOARD', name: '新员工入职团队', leader_employee_id: 'VE-0001', description: '入职准备' },
+const knowledgeBases: KnowledgeBase[] = [
+  { id: 'KB-1', name: '公开制度知识库', level: 'L1', domain: '制度', description: '', status: 'active', doc_path: null },
+  { id: 'KB-2', name: '内部流程知识库', level: 'L2', domain: '流程', description: '', status: 'disconnected', doc_path: null },
 ];
 
 const audit: AuditEvent[] = [
   {
-    id: 1,
-    trace_id: 'T-DEMO-001',
-    ts: new Date().toISOString(),
-    actor: 'DT-E10281',
-    employee_id: 'DT-E10281',
-    team_id: null,
-    plugin_id: 'knowledge-l2',
-    action: 'read',
-    decision: 'allow',
-    reason: 'POLICY-001 已授权',
-    result_summary: null,
+    id: 1, trace_id: 'T-DEMO-001', ts: new Date().toISOString(), actor: 'DT-E10281', employee_id: 'DT-E10281',
+    team_id: null, plugin_id: 'knowledge-l2', action: 'read', decision: 'allow', reason: 'POLICY-001 已授权', result_summary: null,
   },
 ];
 
 const mockApi = () =>
   vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes('/api/v1/employees')) return Promise.resolve(json(employees));
-    if (url.includes('/api/v1/plugins')) return Promise.resolve(json(plugins));
-    if (url.includes('/api/v1/teams')) return Promise.resolve(json(teams));
-    if (url.includes('/api/v1/audit')) return Promise.resolve(json(audit));
+    if (url.includes('/admin/plugin-submissions')) return Promise.resolve(json(submissions));
+    if (url.includes('/agents')) return Promise.resolve(json(agents));
+    if (url.includes('/knowledge-bases')) return Promise.resolve(json(knowledgeBases));
+    if (url.includes('/admin/memory/health')) return Promise.resolve(json({ mode: 'mock', status: 'healthy', memories: 10, pending_jobs: 2, failed_jobs: 1 }));
+    if (url.includes('/audit')) return Promise.resolve(json(audit));
     return Promise.resolve(json({ status: 'ok' }));
   });
 
 const renderDashboard = () =>
   render(
     <MemoryRouter initialEntries={['/']}>
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-      </Routes>
+      <Dashboard />
     </MemoryRouter>,
   );
 
@@ -128,16 +66,25 @@ describe('Dashboard', () => {
     vi.unstubAllGlobals();
   });
 
-  it('渲染统计卡片、能力入口与最近审计动态', async () => {
+  it('渲染四类待办与最近审计动态', async () => {
     renderDashboard();
 
-    expect(await screen.findByText('数字员工总数')).toBeInTheDocument();
-    expect(screen.getAllByText('数字分身').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('虚拟员工').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('RPA').length).toBeGreaterThan(0);
-    expect(screen.getByText('数字员工')).toBeInTheDocument();
+    expect(await screen.findByText('待审核插件')).toBeInTheDocument();
+    expect(screen.getByText('不可用数字员工')).toBeInTheDocument();
+    expect(screen.getByText('知识连接异常')).toBeInTheDocument();
+    expect(screen.getByText('记忆同步积压')).toBeInTheDocument();
     expect(await screen.findByText('最近审计动态')).toBeInTheDocument();
     expect(screen.getByText(/已授权/)).toBeInTheDocument();
+  });
+
+  it('待办数字正确反映异常与积压', async () => {
+    renderDashboard();
+
+    // 待审核插件 1、不可用员工 1（crashed）、知识异常 1（disconnected）、记忆积压 3（2+1）
+    expect(await screen.findByText('待审核插件')).toBeInTheDocument();
+    const statisticValues = screen.getAllByText('1');
+    expect(statisticValues.length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('3')).toBeInTheDocument();
   });
 
   it('加载失败时展示错误态并支持重试', async () => {
@@ -155,6 +102,6 @@ describe('Dashboard', () => {
 
     fail = false;
     fireEvent.click(screen.getByRole('button', { name: /重新加载/ }));
-    expect(await screen.findByText('数字员工总数')).toBeInTheDocument();
+    expect(await screen.findByText('待审核插件')).toBeInTheDocument();
   });
 });

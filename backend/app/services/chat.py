@@ -59,11 +59,17 @@ TOOLS = [
 ]
 
 
+def knowledge_display_name(db: Session, knowledge_base_id: str) -> str:
+    knowledge_base = db.get(models.KnowledgeBase, knowledge_base_id)
+    return knowledge_base.name if knowledge_base is not None and knowledge_base.name else knowledge_base_id
+
+
 @dataclass
 class ToolCard:
     plugin_id: str
     name: str
     decision: str
+    source: str | None = None
     policy_id: str | None = None
     reason: str | None = None
 

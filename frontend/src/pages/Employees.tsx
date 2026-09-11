@@ -3,13 +3,12 @@ import { Avatar, Button, Input, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { Employee } from '@dwp/shared-schema';
-import { CommentOutlined } from '@ant-design/icons';
 import { api } from '../api/client';
 import { EmploymentTag, LevelTag, StatusBadge, TypeTag, TYPE_META } from '../components/tags';
 import { ErrorState } from '../components/PageState';
 import { useAsyncData } from '../hooks/useAsyncData';
 
-const AVATAR_COLORS = ['#2f54eb', '#722ed1', '#13c2c2', '#fa8c16', '#52c41a'];
+const AVATAR_COLORS = ['var(--dwp-brand)', 'var(--dwp-success)', 'var(--dwp-warning)', 'var(--dwp-accent)', 'var(--dwp-text-secondary)'];
 
 const avatarColor = (value: string) => {
   const sum = [...value].reduce((acc, char) => acc + char.charCodeAt(0), 0);
@@ -65,25 +64,15 @@ export default function Employees() {
       { title: '身份', dataIndex: 'employment_type', render: (value: string) => <EmploymentTag value={value} /> },
       { title: '部门', dataIndex: 'department' },
       { title: 'Owner', dataIndex: 'owner_human_no', render: (value: string) => <span className="mono">{value}</span> },
-      {
-        title: 'Runtime',
-        dataIndex: 'runtime_type',
-        render: (value: string, record: Employee) => (record.runtime_ref ? `${value} / ${record.runtime_ref}` : value),
-      },
       { title: '数据等级', dataIndex: 'max_data_level', render: (value: string) => <LevelTag value={value} /> },
-      {
-        title: 'Sandbox',
-        key: 'sandbox',
-        render: (_: unknown, record: Employee) => `${record.location} / Internet ${record.internet}`,
-      },
       { title: '状态', dataIndex: 'status', render: (value: string) => <StatusBadge value={value} /> },
       {
         title: '操作',
         key: 'actions',
         render: (_: unknown, record: Employee) => (
-          <Link to={`/employees/${record.employee_no}/chat`}>
-            <Button type="link" size="small" icon={<CommentOutlined />}>
-              对话
+          <Link to={`/employees/${record.employee_no}`}>
+            <Button type="link" size="small">
+              查看详情
             </Button>
           </Link>
         ),

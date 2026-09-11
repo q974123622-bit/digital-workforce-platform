@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, LargeBinary, String
+from sqlalchemy import JSON, DateTime, Index, LargeBinary, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -294,6 +294,7 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String, default="")
     owner_human_no: Mapped[str] = mapped_column(String, index=True)
     participants: Mapped[list] = mapped_column(JSON, default=list)
+    generation: Mapped[int] = mapped_column(default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -310,6 +311,7 @@ class ConversationMessage(Base):
     content: Mapped[str] = mapped_column(String, default="")
     tool_cards: Mapped[list] = mapped_column(JSON, default=list)
     seq: Mapped[int] = mapped_column(default=0)
+    generation: Mapped[int] = mapped_column(default=0, index=True)
 
 
 class ConversationMemoryState(Base):
@@ -346,9 +348,12 @@ class MemorySyncJob(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     memory_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     operation: Mapped[str] = mapped_column(String, default="upsert")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String, default="pending")
     attempts: Mapped[int] = mapped_column(default=0)
     error_summary: Mapped[str] = mapped_column(String, default="")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
@@ -357,12 +362,22 @@ class AgentExecution(Base):
     """Durable, user-visible execution state; never stores hidden model reasoning."""
 
     __tablename__ = "agent_execution"
+    __table_args__ = (
+        Index(
+            "uq_agent_execution_active_conversation",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("status IN ('queued','running','streaming','waiting_approval')"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     conversation_id: Mapped[str] = mapped_column(String, index=True)
     trigger_message_seq: Mapped[int] = mapped_column(index=True)
     trace_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     primary_employee_id: Mapped[str] = mapped_column(String, default="")
+    conversation_generation: Mapped[int] = mapped_column(default=0)
+    retry_of_execution_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String, default="queued")
     stage: Mapped[str] = mapped_column(String, default="queued")
     error_code: Mapped[str] = mapped_column(String, default="")
@@ -377,6 +392,14 @@ class AgentExecutionEvent(Base):
     """Sanitized progress event and replayable answer chunk for SSE clients."""
 
     __tablename__ = "agent_execution_event"
+    __table_args__ = (
+        Index(
+            "uq_agent_execution_event_sequence",
+            "execution_id",
+            "event_seq",
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     execution_id: Mapped[str] = mapped_column(String, index=True)

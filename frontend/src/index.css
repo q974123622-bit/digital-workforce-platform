@@ -1,3 +1,5 @@
+@import './styles/tokens.css';
+
 html,
 body,
 #root {
@@ -6,9 +8,22 @@ body,
 
 body {
   margin: 0;
-  background: #f5f7fa;
+  background: var(--dwp-page-bg);
+  color: var(--dwp-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
 }
 
 /* 页面切换过渡 */
@@ -38,8 +53,8 @@ body {
 .skip-link:focus {
   left: 12px;
   top: 12px;
-  background: #fff;
-  color: #2f54eb;
+  background: var(--dwp-surface);
+  color: var(--dwp-brand);
   padding: 8px 16px;
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(16, 24, 40, 0.15);
@@ -48,7 +63,7 @@ body {
 /* 可点击区域的键盘焦点提示 */
 .clickable-card:focus-visible,
 [role='button'][tabindex]:focus-visible {
-  outline: 2px solid #2f54eb;
+  outline: 2px solid var(--dwp-brand);
   outline-offset: 2px;
 }
 
@@ -93,8 +108,14 @@ body {
 }
 
 .clickable-card:hover {
-  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.1);
+  box-shadow: 0 8px 24px rgba(22, 93, 255, 0.1);
   transform: translateY(-2px);
+}
+
+.clickable-card:active {
+  box-shadow: 0 2px 6px rgba(22, 93, 255, 0.08);
+  transform: translateY(0) scale(0.99);
+  transition-duration: 0.08s;
 }
 
 /* 不可点击卡片：仅 hover 轻抬升 */
@@ -106,13 +127,13 @@ body {
 }
 
 .hover-card:hover {
-  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.1);
+  box-shadow: 0 8px 24px rgba(22, 93, 255, 0.1);
   transform: translateY(-2px);
 }
 
 /* 表格行 hover 用品牌浅色 */
 .ant-table-tbody > tr:hover > td {
-  background: #f0f5ff !important;
+  background: #e8f3ff !important;
 }
 
 /* 等宽文本：工号 / trace / endpoint */
@@ -127,6 +148,15 @@ body {
 
 .clickable-card:hover .anticon-arrow-right {
   transform: translateX(3px);
+}
+
+/* 全局按钮按压反馈：点击瞬间轻微下沉，模拟实体按压 */
+.ant-btn {
+  transition: all 0.2s ease;
+}
+.ant-btn:not(.ant-btn-link):not(.ant-btn-text):active {
+  transform: translateY(1px) scale(0.98);
+  transition-duration: 0.08s;
 }
 
 /* 数字统计使用等宽数字，对齐更专业 */
@@ -219,9 +249,9 @@ body {
   color: #44536b;
   font-size: 13px;
   line-height: 1.7;
-  border-left: 3px solid #2f54eb;
+  border-left: 3px solid #165dff;
   padding-left: 10px;
-  background: linear-gradient(90deg, #f0f5ff 0%, transparent 100%);
+  background: linear-gradient(90deg, #e8f3ff 0%, transparent 100%);
 }
 
 .ws-list {
@@ -364,7 +394,7 @@ body {
 }
 
 .msg.user .bubble {
-  background: linear-gradient(135deg, #2f54eb 0%, #1d39c4 100%);
+  background: linear-gradient(135deg, #165dff 0%, #0b3db8 100%);
   color: #fff;
   border: none;
 }
@@ -475,7 +505,7 @@ body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #2f54eb;
+  background: #165dff;
   animation: typing-bounce 1.2s infinite ease-in-out;
 }
 
@@ -543,7 +573,7 @@ body {
   margin-bottom: 14px;
   padding: 14px 16px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #f0f5ff 0%, #ffffff 100%);
+  background: linear-gradient(135deg, #e8f3ff 0%, #ffffff 100%);
   border: 1px solid #e6efff;
 }
 
@@ -572,7 +602,7 @@ body {
 }
 
 .subtask.running {
-  border-left-color: #2f54eb;
+  border-left-color: #165dff;
 }
 
 .subtask.denied,
@@ -691,12 +721,12 @@ body {
 }
 
 .wp-row.active {
-  background: #eef4ff;
+  background: #e8f3ff;
 }
 
 .wp-row.pinned {
-  background: linear-gradient(90deg, #f0f5ff 0%, #ffffff 100%);
-  border-left: 3px solid #2f54eb;
+  background: linear-gradient(90deg, #e8f3ff 0%, #ffffff 100%);
+  border-left: 3px solid #165dff;
 }
 
 .wp-row-main {
@@ -785,7 +815,7 @@ body {
 }
 
 .wp-contact-avatar-button:focus-visible {
-  outline: 2px solid #2f54eb;
+  outline: 2px solid #165dff;
   outline-offset: 2px;
 }
 
@@ -806,7 +836,7 @@ body {
 }
 
 .wp-contact-name-link:hover {
-  color: #2f54eb;
+  color: #165dff;
 }
 
 .wp-contact-actions {
@@ -825,13 +855,13 @@ body {
 }
 
 .wp-contact-actions .wp-chat-action {
-  color: #2f54eb;
-  background: #eef4ff;
+  color: #165dff;
+  background: #e8f3ff;
 }
 
 .wp-contact-actions .wp-chat-action:hover {
   color: #fff !important;
-  background: #2f54eb !important;
+  background: #165dff !important;
 }
 
 .wp-modal-contacts {
@@ -1019,7 +1049,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
-  background: linear-gradient(135deg, #f0f5ff 0%, #ffffff 100%);
+  background: linear-gradient(135deg, #e8f3ff 0%, #ffffff 100%);
   border-bottom: 1px solid #eef1f6;
 }
 
@@ -1064,7 +1094,7 @@ body {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #2f54eb;
+  background: #165dff;
   color: #fff;
   font-size: 11px;
   display: inline-flex;
@@ -1096,7 +1126,7 @@ body {
   gap: 10px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: linear-gradient(135deg, #f0f5ff 0%, #ffffff 100%);
+  background: linear-gradient(135deg, #e8f3ff 0%, #ffffff 100%);
   border: 1px solid #d6e4ff;
   margin-bottom: 6px;
 }
@@ -1117,9 +1147,9 @@ body {
   color: #44536b;
   font-size: 13px;
   line-height: 1.7;
-  border-left: 3px solid #2f54eb;
+  border-left: 3px solid #165dff;
   padding-left: 10px;
-  background: linear-gradient(90deg, #f0f5ff 0%, transparent 100%);
+  background: linear-gradient(90deg, #e8f3ff 0%, transparent 100%);
 }
 
 .wp-drawer-section {
@@ -1174,7 +1204,7 @@ body {
 .employee-profile-avatar {
   flex-shrink: 0;
   color: #fff;
-  background: #3158e8;
+  background: #165dff;
   font-size: 29px;
   font-weight: 500;
 }
@@ -1216,16 +1246,21 @@ body {
   padding: 7px 14px;
   border-radius: 7px;
   color: #fff;
-  background: #3158e8;
+  background: #165dff;
   font-size: 13px;
   line-height: 20px;
-  transition: background 0.2s ease, box-shadow 0.2s ease;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .employee-workspace-link:hover {
   color: #fff;
-  background: #2448cf;
-  box-shadow: 0 4px 12px rgba(49, 88, 232, 0.22);
+  background: #0b3db8;
+  box-shadow: 0 4px 12px rgba(22, 93, 255, 0.24);
+}
+
+.employee-workspace-link:active {
+  transform: translateY(1px) scale(0.98);
+  transition-duration: 0.08s;
 }
 
 .employee-metrics {
@@ -1434,6 +1469,7 @@ body {
 .execution-step:not(:last-child)::after { position: absolute; top: 23px; bottom: 1px; left: 9px; width: 1px; background: #dfe6ef; content: ''; }
 .execution-dot { position: relative; z-index: 1; display: grid; width: 19px; height: 19px; place-items: center; border-radius: 50%; background: #edf4ff; color: #2468d8; font-size: 11px; }
 .execution-step-title { margin-bottom: 2px; font-size: 13px; font-weight: 600; }
+.execution-step-time { margin-left: 8px; color: #98a2b3; font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .execution-step-detail { margin-bottom: 5px; color: #667085; font-size: 12px; }
 .execution-answer { margin: 0 16px 16px 42px; padding: 12px 14px; border-radius: 7px; background: #f6f8fb; }
 .execution-answer-name { margin-bottom: 6px; color: #667085; font-size: 11px; }
@@ -1454,3 +1490,182 @@ body {
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ============================================================
+ * 0.4.0 UI refresh · 产品级统一外观
+ * 用低噪声层级、清晰边界和稳定留白替代早期 Demo 的渐变与悬浮堆叠。
+ * ============================================================ */
+.page-shell {
+  min-height: 100%;
+  padding: 24px;
+}
+
+.page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.page-heading-stats {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--dwp-border);
+  border-radius: 999px;
+  background: var(--dwp-surface);
+  color: var(--dwp-text-secondary);
+  font-size: 12px;
+}
+
+.page-heading-stats span {
+  padding: 7px 13px;
+}
+
+.page-heading-stats span + span {
+  border-left: 1px solid var(--dwp-border-light);
+}
+
+.page-heading-stats b {
+  margin-right: 3px;
+  color: var(--dwp-text);
+  font-size: 14px;
+}
+
+.portal-rail {
+  box-shadow: 1px 0 0 rgba(16, 24, 40, 0.015);
+}
+
+.admin-sider {
+  position: sticky !important;
+  top: 0;
+  height: 100vh;
+  box-shadow: 1px 0 0 rgba(16, 24, 40, 0.02);
+}
+
+.admin-content > div > .ant-typography:first-child,
+.admin-content .page-title {
+  letter-spacing: -0.02em;
+}
+
+.ant-card {
+  border-color: var(--dwp-border);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.025);
+}
+
+.ant-card .ant-card-head {
+  min-height: 50px;
+  border-bottom-color: var(--dwp-border-light);
+}
+
+.ant-table-wrapper .ant-table {
+  border-radius: var(--dwp-radius-container);
+}
+
+.ant-table-tbody > tr > td,
+.ant-table-thead > tr > th {
+  border-bottom-color: var(--dwp-border-light) !important;
+}
+
+.clickable-card:hover,
+.hover-card:hover,
+.plugin-card:hover,
+.directory-card:hover {
+  transform: none;
+  box-shadow: 0 7px 22px rgba(16, 24, 40, 0.07);
+}
+
+.conversation-row {
+  position: relative;
+}
+
+.conversation-row.active::before {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: -8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--dwp-brand);
+  content: '';
+}
+
+.chat-workspace {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(234, 243, 255, 0.7), transparent 34%),
+    var(--dwp-page-bg);
+}
+
+.message-canvas {
+  scrollbar-gutter: stable;
+}
+
+.message-bubble p:first-child {
+  margin-top: 0;
+}
+
+.message-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.composer-box .ant-input {
+  background: transparent;
+  box-shadow: none !important;
+}
+
+.selector-card,
+.content-card,
+.profile-hero {
+  box-shadow: 0 8px 30px rgba(16, 24, 40, 0.045);
+}
+
+.plugin-card,
+.directory-card,
+.memory-row {
+  transition: border-color var(--dwp-motion-base) ease, background var(--dwp-motion-base) ease, box-shadow var(--dwp-motion-base) ease;
+}
+
+.memory-row {
+  padding-block: 16px !important;
+}
+
+.login-shell {
+  background:
+    radial-gradient(circle at 80% 10%, var(--dwp-brand-glow), transparent 30%),
+    var(--dwp-page-bg);
+}
+
+.login-product-panel {
+  width: min(56vw, 680px);
+  min-height: 650px;
+  align-items: center;
+  padding: 72px;
+  border-radius: 24px 0 0 24px;
+  background:
+    radial-gradient(circle at 86% 18%, rgba(125, 211, 252, 0.22), transparent 28%),
+    linear-gradient(145deg, #12325d 0%, #0b4d94 58%, #0969da 100%);
+  box-shadow: 0 28px 80px rgba(10, 46, 90, 0.18);
+}
+
+.login-form-panel {
+  min-height: 650px;
+  padding: 44px;
+  border-radius: 0 24px 24px 0;
+  background: var(--dwp-panel-translucent);
+  box-shadow: 18px 28px 80px rgba(16, 24, 40, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+@media (max-width: 1023px) {
+  .page-shell { padding: 18px; }
+  .page-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .login-form-panel { min-height: calc(100vh - 64px); padding: 0; background: transparent; box-shadow: none; }
+}
+
+@media (max-width: 767px) {
+  .page-shell { padding: 14px; }
+  .page-heading-stats { width: 100%; border-radius: 10px; }
+  .page-heading-stats span { flex: 1; padding-inline: 8px; text-align: center; }
+  .message-row { margin-bottom: 16px; }
+  .message-bubble { font-size: 14px; }
+  .ant-drawer-content-wrapper { max-width: 92vw; }
+}

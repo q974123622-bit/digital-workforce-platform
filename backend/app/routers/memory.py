@@ -57,9 +57,13 @@ def delete_memory(agent_id: str, memory_id: str, account=Depends(current_account
 
 @my_router.delete("/{agent_id}/memories", status_code=204)
 def clear_memories(agent_id: str, account=Depends(current_account), db=Depends(get_db)):
-    _own_agent(account, agent_id); db.query(models.MemoryRecord).filter(
+    _own_agent(account, agent_id)
+    rows = db.scalars(select(models.MemoryRecord).where(
         models.MemoryRecord.requester_human_no == account.human_employee_no,
-        models.MemoryRecord.agent_id == agent_id).delete(); db.commit()
+        models.MemoryRecord.agent_id == agent_id)).all()
+    adapter = get_memory_adapter()
+    for row in rows:
+        adapter.delete(db, row)
 
 
 @my_router.post("/{agent_id}/memories/{memory_id}/retain")
@@ -91,6 +95,6 @@ def jobs(_: models.Account = Depends(admin_required), db: Session = Depends(get_
 def retry(job_id: str, _: models.Account = Depends(admin_required), db: Session = Depends(get_db)):
     row = db.get(models.MemorySyncJob, job_id)
     if not row: raise HTTPException(status_code=404, detail="同步任务不存在")
-    if row.attempts >= 5: raise HTTPException(status_code=409, detail="已达到最大重试次数")
-    row.status = "pending"; row.attempts += 1; row.updated_at = datetime.now(); db.commit()
+    row.status = "pending"; row.attempts = 0; row.next_attempt_at = datetime.now()
+    row.locked_at = None; row.error_summary = ""; row.updated_at = datetime.now(); db.commit()
     return {"id": row.id, "status": row.status, "attempts": row.attempts}

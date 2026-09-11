@@ -16,6 +16,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { CURRENT_USERS, useCurrentUser } from '../context/CurrentUserContext';
 import { BRAND_PRIMARY } from '../theme';
+import BrandMark from './ui/BrandMark';
 
 const { Sider, Header, Content, Footer } = Layout;
 
@@ -109,17 +110,7 @@ export default function AppLayout() {
             overflow: 'hidden',
           }}
         >
-          <img
-            src="/brand-logo.jpg"
-            alt="数字员工平台"
-            style={{
-              height: 34,
-              width: 'auto',
-              maxWidth: collapsed ? 48 : 120,
-              flexShrink: 0,
-              objectFit: 'contain',
-            }}
-          />
+          <BrandMark size={34} inverse />
           {!collapsed && (
             <div style={{ minWidth: 0 }}>
               <div style={{ color: '#fff', fontSize: 16, fontWeight: 600, lineHeight: '20px', whiteSpace: 'nowrap' }}>

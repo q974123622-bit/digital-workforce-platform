@@ -348,40 +348,6 @@ describe('WorkplacePage', () => {
     expect(screen.getByText('你好呀，需要我帮忙吗？')).toBeInTheDocument();
   });
 
-  it('通讯录分组与搜索，点击数字员工头像发起会话且不跳转白屏', async () => {
-    const fetchMock = stubFetch({
-      '/api/v1/workplace?actor_no=E10281': home,
-      '/api/v1/conversations?actor_no=E10281': [],
-      '/api/v1/conversations': conv1,
-      '/api/v1/conversations/CONV-1': conv1,
-    });
-    renderPage();
-
-    fireEvent.click(await screen.findByRole('button', { name: '通讯录' }));
-    expect(screen.getByText('我的分身')).toBeInTheDocument();
-    expect(screen.getByText('数字员工')).toBeInTheDocument();
-    expect(screen.getByText('自动化小助手')).toBeInTheDocument();
-
-    fireEvent.change(screen.getByPlaceholderText('搜索联系人'), { target: { value: '报表' } });
-    expect(screen.getByText('报表机器人')).toBeInTheDocument();
-    expect(screen.queryByText('新员工入职助手')).not.toBeInTheDocument();
-
-    fireEvent.change(screen.getByPlaceholderText('搜索联系人'), { target: { value: '入职' } });
-    fireEvent.click(screen.getByRole('button', { name: '与新员工入职助手聊天' }));
-
-    await waitFor(() => {
-      const call = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/api/v1/conversations') && init?.method === 'POST');
-      expect(call).toBeTruthy();
-      const body = (call as [RequestInfo | URL, RequestInit | undefined] | undefined)?.[1]?.body;
-      expect(JSON.parse(String(body))).toEqual({
-        actor_no: 'E10281',
-        kind: 'direct',
-        participant_employee_nos: ['VE-0001'],
-      });
-    });
-    expect(await screen.findByText('你好呀，需要我帮忙吗？')).toBeInTheDocument();
-  });
-
   it('发送消息：微信式气泡渲染 + 调用消息接口', async () => {
     class MockEventSource {
       static CONNECTING = 0;
@@ -486,16 +452,27 @@ describe('WorkplacePage', () => {
     });
     renderPage();
     fireEvent.click(await screen.findByText('新员工入职助手'));
-    expect(await screen.findByText(/已完成 2 个步骤/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /已完成 2 个步骤/ }));
+    expect(await screen.findByText(/已查阅 1 个知识库/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /已查阅 1 个知识库/ }));
     expect(screen.getByText('知识库检索完成')).toBeInTheDocument();
     expect(screen.getByText('找到 2 条资料')).toBeInTheDocument();
   });
 
-  it('能力档案：查看真实能力并管理个人工作方法', async () => {
+  it('能力档案：通过资料抽屉查看能力并管理个人工作方法', async () => {
+    const twinSummary: ConversationSummary = {
+      id: 'CONV-TWIN', kind: 'direct', title: '', owner_human_no: 'E10281',
+      participants: [{ employee_no: 'DT-E10281', name: '张三的数字分身', role: 'member', employee_type: 'twin' }],
+      last_message: '开始和我的分身聊聊吧', updated_at: '2026-08-19T09:05:00',
+    };
+    const twinConv: Conversation = {
+      id: 'CONV-TWIN', kind: 'direct', title: '', owner_human_no: 'E10281',
+      participants: [{ employee_no: 'DT-E10281', name: '张三的数字分身', role: 'member', employee_type: 'twin' }],
+      messages: [], tasks: [], updated_at: '2026-08-19T09:05:00',
+    };
     const fetchMock = stubFetch({
       '/api/v1/workplace?actor_no=E10281': home,
-      '/api/v1/conversations?actor_no=E10281': [],
+      '/api/v1/conversations?actor_no=E10281': [twinSummary],
+      '/api/v1/conversations/CONV-TWIN': twinConv,
       '/api/v1/agents/DT-E10281/effective-capabilities': {
         employee_id: 'DT-E10281', display_name: '张三的数字分身', identity_kind: 'human_twin',
         runtime_engine: 'harness', runtime_state: 'ready', container_name: 'dwp-harness-dt-e10281',
@@ -520,8 +497,8 @@ describe('WorkplacePage', () => {
     });
     renderPage();
 
-    fireEvent.click(await screen.findByRole('button', { name: '通讯录' }));
-    fireEvent.click(screen.getByRole('button', { name: '能力 张三的数字分身' }));
+    fireEvent.click(await screen.findByRole('button', { name: /张三的数字分身/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '资料' }));
     expect(await screen.findByText('报销制度速答')).toBeInTheDocument();
     expect(await screen.findByText('公共知识')).toBeInTheDocument();
     expect(screen.getByText('向数字员工求助')).toBeInTheDocument();
@@ -554,7 +531,7 @@ describe('WorkplacePage', () => {
     });
   });
 
-  it('知识问答 MVP 不暴露群聊 Agent Teams 入口', async () => {
+  it('退役旧入口：不再暴露使用指南按钮', async () => {
     stubFetch({
       '/api/v1/workplace?actor_no=E10281': home,
       '/api/v1/conversations?actor_no=E10281': [groupSummary],
@@ -562,7 +539,6 @@ describe('WorkplacePage', () => {
     renderPage();
 
     expect(await screen.findByText('张三的数字分身')).toBeInTheDocument();
-    expect(screen.queryByText('新员工入职协作（3）')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '使用指南' })).not.toBeInTheDocument();
   });
 

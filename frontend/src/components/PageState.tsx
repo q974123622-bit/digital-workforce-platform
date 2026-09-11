@@ -2,12 +2,12 @@ import { ReloadOutlined } from '@ant-design/icons';
 import { Button, Card, Empty, Result, Skeleton } from 'antd';
 
 export function LoadingState({ rows = 6 }: { rows?: number }) {
-  return <Skeleton active paragraph={{ rows }} />;
+  return <div className="state-shell"><Skeleton active paragraph={{ rows }} /></div>;
 }
 
 export function EmptyState({ description = '暂无数据' }: { description?: string }) {
   return (
-    <Card>
+    <Card className="state-shell">
       <Empty description={description} />
     </Card>
   );
@@ -21,7 +21,7 @@ export function ErrorState({
   description?: string;
 }) {
   return (
-    <Card>
+    <Card className="state-shell">
       <Result
         status="error"
         title="数据加载失败"

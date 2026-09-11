@@ -67,7 +67,7 @@ describe('App', () => {
     );
     expect(screen.getByText('数字员工平台')).toBeInTheDocument();
     expect(screen.getAllByText('我的职场').length).toBeGreaterThan(0);
-    expect(await screen.findByText('早上好，张三')).toBeInTheDocument();
+    expect(await screen.findByText('你好，张三')).toBeInTheDocument();
   });
 
   it('管理后台数据总览可访问', async () => {
@@ -79,6 +79,6 @@ describe('App', () => {
       </MemoryRouter>,
     );
     expect(screen.getAllByText('数据总览').length).toBeGreaterThan(0);
-    expect(await screen.findByText('数字员工总数')).toBeInTheDocument();
+    expect(await screen.findByText('运行概览')).toBeInTheDocument();
   });
 });

@@ -28,6 +28,8 @@ import type {
 } from '@dwp/shared-schema';
 
 const BASE = '/api/v1';
+export const AUTH_EXPIRED_EVENT = 'dwp:auth-expired';
+let authExpiredNotified = false;
 
 type RequestOptions = RequestInit & { absolute?: boolean };
 
@@ -54,6 +56,12 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   }
   clearTimeout(timer);
   if (!res.ok) {
+    if (res.status === 401 && !path.startsWith('/auth/login')) {
+      if (!authExpiredNotified && typeof window !== 'undefined') {
+        authExpiredNotified = true;
+        window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+      }
+    }
     let message = `${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
@@ -77,19 +85,23 @@ function qs(params?: Record<string, string | undefined>): string {
 export const api = {
   health: () => request<{ status: string }>('/health', { absolute: true }),
   login: (username: string, password: string) =>
-    request<LoginReply>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+    request<LoginReply>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+      .then((reply) => { authExpiredNotified = false; return reply; }),
   me: () => request<Account>('/auth/me'),
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
   changePassword: (currentPassword: string, newPassword: string) =>
     request<void>('/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),
   getMyPlugins: () => request<{ effective: UnifiedPlugin[]; available: UnifiedPlugin[] }>('/my/plugins'),
+  getMyPluginDetail: (pluginId: string) => request<PluginSafeDetail>(`/my/plugins/${encodeURIComponent(pluginId)}`),
   getMyPluginSubmissions: () => request<PluginSubmission[]>('/my/plugins/submissions'),
   submitPlugin: (form: FormData) => request<PluginSubmission>('/my/plugins/submissions', { method: 'POST', body: form }),
   enableMyPlugin: (pluginId: string, enabled: boolean) => request<{ ok: boolean }>(`/my/plugins/${encodeURIComponent(pluginId)}/${enabled ? 'enable' : 'disable'}`, { method: 'POST', body: '{}' }),
   listMyMemories: (agentId: string) => request<MemoryItem[]>(`/my/agents/${encodeURIComponent(agentId)}/memories`),
+  updateMyMemory: (agentId: string, memoryId: string, content: string) => request<MemoryItem>(`/my/agents/${encodeURIComponent(agentId)}/memories/${encodeURIComponent(memoryId)}`, { method: 'PUT', body: JSON.stringify({ content }) }),
   deleteMyMemory: (agentId: string, memoryId: string) => request<void>(`/my/agents/${encodeURIComponent(agentId)}/memories/${encodeURIComponent(memoryId)}`, { method: 'DELETE' }),
   retainMyMemory: (agentId: string, memoryId: string) => request<MemoryItem>(`/my/agents/${encodeURIComponent(agentId)}/memories/${encodeURIComponent(memoryId)}/retain`, { method: 'POST' }),
   listAdminPlugins: () => request<UnifiedPlugin[]>('/admin/plugins'),
+  getAdminPluginDetail: (pluginId: string) => request<PluginSafeDetail>(`/admin/plugins/${encodeURIComponent(pluginId)}`),
   listPluginSubmissions: () => request<PluginSubmission[]>('/admin/plugin-submissions'),
   reviewPlugin: (id: number, approve: boolean, note = '') => request<PluginSubmission>(`/admin/plugin-submissions/${id}/${approve ? 'approve' : 'reject'}`, { method: 'POST', body: JSON.stringify({ note }) }),
   publishPlugin: (pluginId: string, version: string) => request<PluginSubmission>(`/admin/plugins/${encodeURIComponent(pluginId)}/versions/${encodeURIComponent(version)}/publish`, { method: 'POST' }),
@@ -186,6 +198,10 @@ export const api = {
     request<AgentExecutionDetail | null>(`/conversations/${encodeURIComponent(conversationId)}/runs/latest`),
   getConversationRunHistory: (conversationId: string) =>
     request<AgentExecutionDetail[]>(`/conversations/${encodeURIComponent(conversationId)}/runs/history`),
+  getOlderConversationRunHistory: (conversationId: string, beforeExecutionId: string) =>
+    request<AgentExecutionDetail[]>(`/conversations/${encodeURIComponent(conversationId)}/runs/history?limit=20&before_execution_id=${encodeURIComponent(beforeExecutionId)}`),
+  retryConversationRun: (conversationId: string, executionId: string) =>
+    request<ConversationRunReply>(`/conversations/${encodeURIComponent(conversationId)}/runs/${encodeURIComponent(executionId)}/retry`, { method: 'POST' }),
   conversationRunEventUrl: (conversationId: string, executionId: string, afterEventId?: string) =>
     `${BASE}/conversations/${encodeURIComponent(conversationId)}/runs/${encodeURIComponent(executionId)}/events${
       afterEventId ? `?after_event_id=${encodeURIComponent(afterEventId)}` : ''
@@ -204,6 +220,52 @@ export const api = {
 };
 
 export interface UnifiedPlugin { id?: string | number; plugin_id?: string; name: string; plugin_type: 'skill' | 'mcp'; scope?: string; mcp_category?: string; current_version?: string; version?: string; status?: string; tools?: unknown[] }
+export interface PluginSafeDetail {
+  plugin_id: string;
+  name: string;
+  description: string;
+  plugin_type: 'skill' | 'mcp';
+  scope: 'personal' | 'shared';
+  mcp_category: string | null;
+  current_version: string | null;
+  version: {
+    version: string;
+    data_level: 'L1' | 'L2' | 'L3';
+    deployment_mode: 'instruction' | 'external' | 'hosted';
+    review_status: string;
+    publish_status: string;
+    published_at: string | null;
+  } | null;
+  tools: Array<{ name: string; description: string }>;
+  instruction_summary: string | null;
+  authorization: {
+    admin_enabled: boolean;
+    employee_enabled: boolean;
+    decision_mode: string;
+    effective: boolean;
+  };
+  runtime: { state: string; health: string; updated_at: string | null } | null;
+  versions?: Array<{
+    version: string;
+    data_level: string;
+    deployment_mode: string;
+    review_status: string;
+    publish_status: string;
+    submitted_by: string;
+    reviewed_by: string | null;
+    reviewed_at: string | null;
+    published_at: string | null;
+    created_at: string;
+  }>;
+  bindings?: Array<{
+    id: number;
+    target_agent_id: string;
+    admin_enabled: boolean;
+    employee_enabled: boolean;
+    decision_mode: string;
+    priority: number;
+  }>;
+}
 export interface PluginSubmission extends UnifiedPlugin { id: number; data_level: string; deployment_mode: string; review_status: string; publish_status: string; submitted_by: string; review_note: string; created_at: string }
 export interface MemoryItem { id: string; agent_id: string; memory_type: string; content: string; source: string; retained: boolean; expires_at?: string; sync_status: string; created_at: string }
 export interface PluginBinding { id: number; plugin_id: string; target_agent_id: string; pinned_version?: string; admin_enabled: boolean; employee_enabled: boolean; decision_mode: string; priority: number }

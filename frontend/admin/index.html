@@ -3,8 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#ffffff" />
-    <title>数字员工工作台 · 管理后台</title>
+    <meta name="theme-color" content="#174f7c" />
+    <meta name="description" content="CISC 数字员工工作台管理后台" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>CISC 数字员工 · 平台管理</title>
+    <script>
+      (function () {
+        var allowed = ['warm-paper', 'clear-blue', 'sage-mist', 'midnight'];
+        var selected = 'warm-paper';
+        try { var saved = localStorage.getItem('dwp-ui-theme-v1'); if (allowed.indexOf(saved) >= 0) selected = saved; } catch (_) {}
+        document.documentElement.setAttribute('data-theme', selected);
+        document.documentElement.style.colorScheme = selected === 'midnight' ? 'dark' : 'light';
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

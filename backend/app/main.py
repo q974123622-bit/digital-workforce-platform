@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -8,7 +9,7 @@ from fastapi.responses import JSONResponse
 from .database import Base, engine, ensure_schema_compatibility
 from .routers import access, agents, audit, auth, chat, directory, employees, internal, knowledge, memory, plugin_governance, plugins, policies, teams, workplace
 from .seed import seed_if_empty
-from .services import config, runtime_manager
+from .services import config, execution_events, runtime_manager
 
 
 @asynccontextmanager
@@ -16,15 +17,31 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_schema_compatibility()
     seed_if_empty()
-    if config.get("DWP_HARNESS_ENABLED") == "1":
-        from .database import SessionLocal
+    from .database import SessionLocal
 
+    recovery_db = SessionLocal()
+    try:
+        execution_events.fail_orphaned_executions(recovery_db)
+    finally:
+        recovery_db.close()
+    if config.get("DWP_HARNESS_ENABLED") == "1":
         db = SessionLocal()
         try:
             runtime_manager.ensure_all_active(db)
         finally:
             db.close()
-    yield
+    memory_stop = asyncio.Event()
+    memory_task = None
+    if (config.get("DWP_MEMORY_MODE", "mock") or "mock").lower() == "internal":
+        from .services import memory_worker
+
+        memory_task = asyncio.create_task(memory_worker.run(memory_stop))
+    try:
+        yield
+    finally:
+        if memory_task is not None:
+            memory_stop.set()
+            await memory_task
 
 
 app = FastAPI(title="数字员工平台 Demo API", version="0.1.0", lifespan=lifespan)

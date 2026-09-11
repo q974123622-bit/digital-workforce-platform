@@ -15,6 +15,7 @@ import httpx
 DEEPSEEK_API_KEY = "DEEPSEEK_API_KEY"
 DEEPSEEK_BASE_URL = "DEEPSEEK_BASE_URL"
 DEEPSEEK_MODEL = "DEEPSEEK_MODEL"
+DEEPSEEK_CHAT_COMPLETIONS_PATH = "DEEPSEEK_CHAT_COMPLETIONS_PATH"
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "v4-flash"  # 演示环境指定模型；可用环境变量覆盖为 deepseek-chat 等
@@ -72,13 +73,15 @@ class DeepSeekProvider(LLMProvider):
         self.api_key = api_key or os.environ.get(DEEPSEEK_API_KEY)
         self.base_url = (base_url or os.environ.get(DEEPSEEK_BASE_URL) or DEFAULT_BASE_URL).rstrip("/")
         self.model = model or os.environ.get(DEEPSEEK_MODEL) or DEFAULT_MODEL
+        raw_path = (os.environ.get(DEEPSEEK_CHAT_COMPLETIONS_PATH) or "/chat/completions").strip()
+        self.chat_completions_path = raw_path if raw_path.startswith("/") and "://" not in raw_path else "/chat/completions"
 
     def _post(self, payload: dict) -> dict:
         if not self.api_key:
             raise LLMUnavailableError("DEEPSEEK_API_KEY 未配置（环境变量）")
         try:
             resp = httpx.post(
-                f"{self.base_url}/chat/completions",
+                f"{self.base_url}{self.chat_completions_path}",
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
                 json=payload,
                 timeout=60.0,

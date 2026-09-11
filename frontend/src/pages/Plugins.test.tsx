@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import Plugins from './Plugins';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -7,7 +7,11 @@ afterEach(() => vi.unstubAllGlobals());
 it('能力中心只把授权、Policy 与 Harness 都就绪的能力标为可用', async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    const body = url.endsWith('/api/v1/agents') ? [{
+    const body = url.endsWith('/api/v1/admin/plugins') || url.endsWith('/api/v1/admin/plugin-submissions') || url.endsWith('/api/v1/admin/agent-plugin-bindings')
+      ? []
+      : url.endsWith('/api/v1/admin/memory/health')
+        ? { mode: 'mock', status: 'healthy', memories: 0, pending_jobs: 0, failed_jobs: 0 }
+        : url.endsWith('/api/v1/agents') ? [{
       employee_id: 'AI-GENERAL', display_name: 'AI员工平台', identity_kind: 'role_employee',
       owner_human_no: 'E10281', department: '综合服务', responsibilities: [], knowledge_domains: [],
       accepts_tasks: ['knowledge_question'], delegation_policy: 'none', fallback_employee_id: null,
@@ -26,6 +30,7 @@ it('能力中心只把授权、Policy 与 Harness 都就绪的能力标为可用
   }));
 
   render(<Plugins />);
+  fireEvent.click(await screen.findByText('运行能力核验'));
   expect(await screen.findByText('IT 服务知识库')).toBeInTheDocument();
   expect(screen.getByText('现在可用')).toBeInTheDocument();
   expect(screen.getByText('证券业务知识库')).toBeInTheDocument();

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import models
@@ -15,9 +16,30 @@ TERMINAL_STATUSES = ("completed", "failed", "cancelled")
 ANSWER_CHUNK_SIZE = 32
 
 
+def prune_history(db: Session, conversation_id: str, retain: int = 100) -> int:
+    old_ids = list(db.scalars(
+        select(models.AgentExecution.id).where(
+            models.AgentExecution.conversation_id == conversation_id,
+            models.AgentExecution.status.in_(TERMINAL_STATUSES),
+        ).order_by(models.AgentExecution.started_at.desc()).offset(retain)
+    ).all())
+    if not old_ids:
+        return 0
+    db.query(models.AgentExecutionEvent).filter(
+        models.AgentExecutionEvent.execution_id.in_(old_ids)
+    ).delete(synchronize_session=False)
+    db.query(models.AgentExecution).filter(
+        models.AgentExecution.id.in_(old_ids)
+    ).delete(synchronize_session=False)
+    db.commit()
+    return len(old_ids)
+
+
 def create_execution(
-    db: Session, *, conversation_id: str, trigger_message_seq: int, primary_employee_id: str
+    db: Session, *, conversation_id: str, trigger_message_seq: int, primary_employee_id: str,
+    conversation_generation: int = 0, retry_of_execution_id: str | None = None,
 ) -> models.AgentExecution:
+    prune_history(db, conversation_id)
     execution_id = f"EX-{uuid4().hex[:16].upper()}"
     row = models.AgentExecution(
         id=execution_id,
@@ -25,11 +47,17 @@ def create_execution(
         trigger_message_seq=trigger_message_seq,
         trace_id=f"T-EX-{uuid4().hex[:16].upper()}",
         primary_employee_id=primary_employee_id,
+        conversation_generation=conversation_generation,
+        retry_of_execution_id=retry_of_execution_id,
         status="queued",
         stage="queued",
     )
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise RuntimeError("ACTIVE_EXECUTION_CONFLICT")
     db.refresh(row)
     emit(
         db, row.id, event_type="progress", stage="queued", status="queued",
@@ -51,6 +79,29 @@ def active_execution(db: Session, conversation_id: str) -> models.AgentExecution
     )
 
 
+def fail_orphaned_executions(db: Session, *, stale_after_seconds: int | None = None) -> int:
+    """Fail work that cannot have a live in-process worker after restart or timeout."""
+    query = select(models.AgentExecution).where(models.AgentExecution.status.in_(ACTIVE_STATUSES))
+    if stale_after_seconds is not None:
+        query = query.where(
+            models.AgentExecution.updated_at < datetime.now() - timedelta(seconds=stale_after_seconds)
+        )
+    rows = db.scalars(query).all()
+    for row in rows:
+        row.error_code = "AGENT_PROCESS_RESTARTED" if stale_after_seconds is None else "AGENT_EXECUTION_STALE"
+        row.error_message = "服务已重启，本次执行未完成，可重新尝试" if stale_after_seconds is None else "本次执行已超时，可重新尝试"
+        row.retryable = True
+        db.add(row)
+        db.commit()
+        emit(
+            db, row.id, event_type="error", stage="failed", status="failed",
+            actor_employee_id=row.primary_employee_id, title="执行未完成",
+            detail=row.error_message,
+            payload={"code": row.error_code, "message": row.error_message, "retryable": True},
+        )
+    return len(rows)
+
+
 def execution_for_trace(db: Session, trace_id: str) -> models.AgentExecution | None:
     return db.scalar(select(models.AgentExecution).where(models.AgentExecution.trace_id == trace_id))
 
@@ -70,37 +121,34 @@ def emit(
     hit_count: int | None = None,
     payload: dict | None = None,
 ) -> models.AgentExecutionEvent:
-    execution = db.get(models.AgentExecution, execution_id)
-    if execution is None or execution.status == "cancelled":
-        raise RuntimeError("执行记录不存在或已取消")
-    next_seq = (db.scalar(
-        select(func.max(models.AgentExecutionEvent.event_seq)).where(
-            models.AgentExecutionEvent.execution_id == execution_id
+    for _attempt in range(3):
+        execution = db.get(models.AgentExecution, execution_id)
+        if execution is None or execution.status == "cancelled":
+            raise RuntimeError("执行记录不存在或已取消")
+        next_seq = (db.scalar(
+            select(func.max(models.AgentExecutionEvent.event_seq)).where(
+                models.AgentExecutionEvent.execution_id == execution_id
+            )
+        ) or 0) + 1
+        row = models.AgentExecutionEvent(
+            execution_id=execution_id, event_seq=next_seq, event_type=event_type,
+            actor_employee_id=actor_employee_id, stage=stage, status=status,
+            title=title[:160], detail=detail[:300], knowledge_base_id=knowledge_base_id,
+            target_agent_id=target_agent_id, hit_count=hit_count, payload=payload or {},
         )
-    ) or 0) + 1
-    row = models.AgentExecutionEvent(
-        execution_id=execution_id,
-        event_seq=next_seq,
-        event_type=event_type,
-        actor_employee_id=actor_employee_id,
-        stage=stage,
-        status=status,
-        title=title[:160],
-        detail=detail[:300],
-        knowledge_base_id=knowledge_base_id,
-        target_agent_id=target_agent_id,
-        hit_count=hit_count,
-        payload=payload or {},
-    )
-    execution.stage = stage
-    execution.status = status if status in (*ACTIVE_STATUSES, *TERMINAL_STATUSES) else execution.status
-    execution.updated_at = datetime.now()
-    if execution.status in TERMINAL_STATUSES:
-        execution.completed_at = datetime.now()
-    db.add_all([execution, row])
-    db.commit()
-    db.refresh(row)
-    return row
+        execution.stage = stage
+        execution.status = status if status in (*ACTIVE_STATUSES, *TERMINAL_STATUSES) else execution.status
+        execution.updated_at = datetime.now()
+        if execution.status in TERMINAL_STATUSES:
+            execution.completed_at = datetime.now()
+        db.add_all([execution, row])
+        try:
+            db.commit()
+            db.refresh(row)
+            return row
+        except IntegrityError:
+            db.rollback()
+    raise RuntimeError("执行事件序号冲突")
 
 
 def emit_answer_chunks(

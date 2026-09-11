@@ -51,6 +51,53 @@ def ensure_schema_compatibility() -> None:
                 text("ALTER TABLE employee_plugin_grant ADD COLUMN grant_source VARCHAR NOT NULL DEFAULT ''")
             )
 
+    additions = {
+        "conversation": {"generation": "INTEGER NOT NULL DEFAULT 0"},
+        "conversation_message": {"generation": "INTEGER NOT NULL DEFAULT 0"},
+        "agent_execution": {
+            "conversation_generation": "INTEGER NOT NULL DEFAULT 0",
+            "retry_of_execution_id": "VARCHAR",
+        },
+        "memory_sync_job": {
+            "payload": "JSON NOT NULL DEFAULT '{}'",
+            "next_attempt_at": "DATETIME",
+            "locked_at": "DATETIME",
+        },
+    }
+    with engine.begin() as connection:
+        for table_name, columns in additions.items():
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            for name, ddl in columns.items():
+                if name not in existing:
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {name} {ddl}"))
+        # Older builds could leave more than one active row after a process crash.
+        # Reconcile those rows before installing the database-level guard.
+        connection.execute(text(
+            "UPDATE agent_execution SET status='failed', stage='failed', "
+            "error_code='AGENT_PROCESS_RESTARTED', "
+            "error_message='服务已重启，本次执行未完成，可重新尝试', retryable=1 "
+            "WHERE id IN ("
+            "SELECT id FROM ("
+            "SELECT id, ROW_NUMBER() OVER (PARTITION BY conversation_id "
+            "ORDER BY started_at DESC, id DESC) AS row_no "
+            "FROM agent_execution "
+            "WHERE status IN ('queued','running','streaming','waiting_approval')"
+            ") WHERE row_no > 1)"
+        ))
+        connection.execute(text(
+            "DELETE FROM agent_execution_event WHERE id NOT IN ("
+            "SELECT MIN(id) FROM agent_execution_event GROUP BY execution_id, event_seq)"
+        ))
+        connection.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_execution_active_conversation "
+            "ON agent_execution(conversation_id) "
+            "WHERE status IN ('queued','running','streaming','waiting_approval')"
+        ))
+        connection.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_execution_event_sequence "
+            "ON agent_execution_event(execution_id, event_seq)"
+        ))
+
 
 def get_db():
     db = SessionLocal()

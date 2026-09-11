@@ -28,6 +28,21 @@ def test_internal_adapter_uses_filters_and_normalizes_hits():
     assert len(result["hits"][0]["snippet"]) == 500
 
 
+def test_internal_adapter_accepts_configurable_relative_retrieval_path():
+    captured = {}
+
+    def handler(request):
+        captured["path"] = request.url.path
+        return httpx.Response(200, json={"code": 0, "data": {"chunks": []}})
+
+    client = httpx.Client(base_url="https://internal.invalid", transport=httpx.MockTransport(handler))
+    InternalKnowledgeAdapter(
+        kb_id_map={"KB-X": 1}, client=client, retrieval_path="/custom/v1/retrieve",
+    ).search(employee_id="X", knowledge_base_id="KB-X", query="q", trace_id="T")
+    client.close()
+    assert captured["path"] == "/custom/v1/retrieve"
+
+
 def test_internal_adapter_requires_mapping():
     with pytest.raises(InternalKnowledgeError, match="未配置平台知识库映射"):
         InternalKnowledgeAdapter(kb_id_map={}).search(

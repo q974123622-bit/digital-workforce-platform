@@ -1,14 +1,20 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { lazy, Suspense } from 'react';
+import { Route, Routes } from 'react-router-dom';
 import AuthGate from './components/AuthGate';
 import AdminLayout from './components/AdminLayout';
-import Dashboard from './pages/Dashboard';
-import EmployeeDetail from './pages/EmployeeDetail';
-import Employees from './pages/Employees';
-import Plugins from './pages/Plugins';
-import Security from './pages/Security';
-import AgentOperations from './pages/AgentOperations';
 import { useAuth } from './context/AuthContext';
 import { CurrentUserProvider } from './context/CurrentUserContext';
+import NotFoundPage from './components/NotFoundPage';
+import { LoadingState } from './components/PageState';
+
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const EmployeeDetail = lazy(() => import('./pages/EmployeeDetail'));
+const Employees = lazy(() => import('./pages/Employees'));
+const Plugins = lazy(() => import('./pages/Plugins'));
+const Knowledge = lazy(() => import('./pages/Knowledge'));
+const Security = lazy(() => import('./pages/Security'));
+const Settings = lazy(() => import('./pages/Settings'));
+const AgentOperations = lazy(() => import('./pages/AgentOperations'));
 
 function AuthenticatedAdmin() {
   const { account } = useAuth();
@@ -22,17 +28,19 @@ function AuthenticatedAdmin() {
         department: account.department,
       }}
     >
-      <Routes>
+      <Suspense fallback={<LoadingState rows={8} />}><Routes>
         <Route element={<AdminLayout />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/employees" element={<Employees />} />
           <Route path="/agents" element={<AgentOperations />} />
           <Route path="/employees/:employeeNo" element={<EmployeeDetail />} />
           <Route path="/plugins" element={<Plugins />} />
+          <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/security" element={<Security />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<NotFoundPage admin />} />
         </Route>
-      </Routes>
+      </Routes></Suspense>
     </CurrentUserProvider>
   );
 }

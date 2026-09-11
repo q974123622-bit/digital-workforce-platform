@@ -309,6 +309,8 @@ export interface AgentExecution {
   trigger_message_seq: number;
   trace_id: string;
   primary_employee_id: string;
+  conversation_generation?: number;
+  retry_of_execution_id?: string | null;
   status: 'queued' | 'running' | 'streaming' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
   stage: string;
   error_code: string;
@@ -371,24 +373,31 @@ export interface Workflow {
   owner_employee: WorkflowEmployee | null;
 }
 
+export interface Citation {
+  citation_id: string;
+  document_title: string;
+  knowledge_base_name: string;
+  source: string;
+  version: string | null;
+  preview_available: boolean;
+}
+
+export interface ToolCard {
+  plugin_id: string;
+  name: string;
+  decision: string;
+  source: string | null;
+  policy_id: string | null;
+  reason: string | null;
+  citation: Citation | null;
+}
+
 export interface ChatReply {
   session_id: string;
   trace_id: string;
   message: string;
-  tool_cards: {
-    plugin_id: string;
-    name: string;
-    decision: string;
-    policy_id: string | null;
-    reason: string | null;
-  }[];
-  policy_denied: {
-    plugin_id: string;
-    name: string;
-    decision: string;
-    policy_id: string | null;
-    reason: string | null;
-  } | null;
+  tool_cards: ToolCard[];
+  policy_denied: ToolCard | null;
 }
 
 export interface Account {

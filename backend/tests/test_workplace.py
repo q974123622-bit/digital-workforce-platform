@@ -449,7 +449,7 @@ def test_group_message_classifier_failure_defaults_chat(client, db_session, monk
 def test_conversation_out_includes_seed_task(client):
     body = client.get("/api/v1/conversations/CONV-0002").json()
     assert len(body["tasks"]) >= 1
-    task = body["tasks"][0]
+    task = next(t for t in body["tasks"] if t["id"] == "T-20260819-DEMO1")
     assert task["status"] == "approval"
     assert len(task["subtasks"]) == 3
     assert task["subtasks"][2]["approval"]["policy_id"] == "POLICY-005"

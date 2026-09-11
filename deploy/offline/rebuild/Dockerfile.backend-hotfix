@@ -1,0 +1,7 @@
+ARG DWP_IMAGE_TAG=0.3.0-offline
+FROM dwp-backend:${DWP_IMAGE_TAG}
+
+# Reuse the packaged Python runtime and installed dependencies. This supports
+# offline changes to application code, adapters and mock data.
+COPY backend/app /app/backend/app
+COPY mock-data /app/mock-data

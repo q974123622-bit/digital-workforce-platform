@@ -31,7 +31,7 @@ export default function AgentOperations() {
   const columns: ColumnsType<AgentProfile> = [
     {
       title: '数字员工 / 分身', key: 'identity', width: 220,
-      render: (_, row) => <div><Text strong>{row.display_name}</Text><div className="text-xs text-[#86909c]">{row.employee_id} · {row.department}</div></div>,
+      render: (_, row) => <div><Text strong>{row.display_name}</Text><div className="text-xs text-ink-tertiary">{row.employee_id} · {row.department}</div></div>,
     },
     {
       title: '身份', dataIndex: 'identity_kind', width: 120,
@@ -43,11 +43,11 @@ export default function AgentOperations() {
     },
     {
       title: 'Harness', key: 'runtime', width: 180,
-      render: (_, row) => <div><Tag color={row.runtime_state === 'ready' ? 'green' : row.runtime_state === 'failed' ? 'red' : 'default'}>{row.runtime_state}</Tag><div className="mt-1 text-xs text-[#86909c]">{row.container_name}</div></div>,
+      render: (_, row) => <div><Tag color={row.runtime_state === 'ready' ? 'green' : row.runtime_state === 'failed' ? 'red' : 'default'}>{row.runtime_state}</Tag><div className="mt-1 text-xs text-ink-tertiary">{row.container_name}</div></div>,
     },
     {
       title: '人设', key: 'persona', width: 110,
-      render: (_, row) => <div>v{row.persona_version}<div className="text-xs text-[#86909c]">{row.persona_status}</div></div>,
+      render: (_, row) => <div>v{row.persona_version}<div className="text-xs text-ink-tertiary">{row.persona_status}</div></div>,
     },
     {
       title: '操作', key: 'action', width: 150,
@@ -61,10 +61,10 @@ export default function AgentOperations() {
   return (
     <div>
       <div className="mb-4 flex items-start justify-between">
-        <div><Title level={4} className="!mb-1">数字员工与运行环境</Title><Text type="secondary">数字分身和岗位型数字员工均使用独立 Harness 实例与持久工作区</Text></div>
+        <div><Title level={2} className="!mb-1 !text-[26px]">数字员工</Title><Text type="secondary">统一查看数字分身、岗位员工及其独立运行环境</Text></div>
         <Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>
       </div>
-      <Card className="border-[#e5e6eb]" styles={{ body: { padding: 0 } }}>
+      <Card className="border-line" styles={{ body: { padding: 0 } }}>
         {rows.length ? <Table rowKey="employee_id" columns={columns} dataSource={rows} pagination={false} scroll={{ x: 980 }} /> : <Empty className="py-12" />}
       </Card>
     </div>

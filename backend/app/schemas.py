@@ -518,6 +518,8 @@ class AgentExecutionOut(BaseModel):
     trigger_message_seq: int
     trace_id: str
     primary_employee_id: str
+    conversation_generation: int = 0
+    retry_of_execution_id: str | None = None
     status: str
     stage: str
     error_code: str = ""

@@ -9,9 +9,6 @@ import httpx
 from . import config
 from .knowledge_adapter import KnowledgeAdapter
 
-RETRIEVAL_PATH = "/marketing_agent/api/v2/rag/chunk/retrieval"
-
-
 class InternalKnowledgeError(RuntimeError):
     """Internal retrieval failed without exposing credentials or response bodies."""
 
@@ -26,6 +23,7 @@ class InternalKnowledgeAdapter(KnowledgeAdapter):
         x_user: str | None = None,
         authorization: str | None = None,
         kb_id_map: dict[str, int] | None = None,
+        retrieval_path: str | None = None,
         timeout_seconds: float = 15.0,
         client: httpx.Client | None = None,
     ):
@@ -35,6 +33,7 @@ class InternalKnowledgeAdapter(KnowledgeAdapter):
         self._x_user = x_user or config.get(config.INTERNAL_KB_X_USER) or ""
         self._authorization = authorization or config.get(config.INTERNAL_KB_AUTHORIZATION) or ""
         self._kb_id_map = kb_id_map if kb_id_map is not None else config.internal_kb_id_map()
+        self._retrieval_path = retrieval_path or config.internal_kb_retrieval_path()
         self._timeout_seconds = timeout_seconds
         self._client = client
 
@@ -57,14 +56,14 @@ class InternalKnowledgeAdapter(KnowledgeAdapter):
         }
         try:
             if self._client is not None:
-                response = self._client.post(RETRIEVAL_PATH, json=payload)
+                response = self._client.post(self._retrieval_path, json=payload)
             else:
                 with httpx.Client(
                     base_url=self._base_url,
                     headers=self._headers(),
                     timeout=self._timeout_seconds,
                 ) as client:
-                    response = client.post(RETRIEVAL_PATH, json=payload)
+                    response = client.post(self._retrieval_path, json=payload)
             response.raise_for_status()
         except httpx.TimeoutException:
             raise InternalKnowledgeError("内部知识引擎请求超时") from None

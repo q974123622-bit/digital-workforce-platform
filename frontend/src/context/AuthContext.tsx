@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Account } from '@dwp/shared-schema';
-import { api } from '../api/client';
+import { api, AUTH_EXPIRED_EVENT } from '../api/client';
 
 interface AuthContextValue {
   account: Account | null;
@@ -24,6 +24,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => active && setAccount(null))
       .finally(() => active && setChecking(false));
     return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const expire = () => setAccount(null);
+    window.addEventListener(AUTH_EXPIRED_EVENT, expire);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, expire);
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {

@@ -30,6 +30,112 @@ def _version_out(db: Session, row: models.PluginVersion) -> dict:
     }
 
 
+def _safe_tools(manifest: dict | None) -> list[dict[str, str]]:
+    """Return user-facing tool metadata without schemas, endpoints, or credentials."""
+    result: list[dict[str, str]] = []
+    for tool in (manifest or {}).get("tools", []):
+        if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+            continue
+        result.append({
+            "name": tool["name"][:120],
+            "description": str(tool.get("description") or "暂未提供工具说明")[:500],
+        })
+    return result
+
+
+def _safe_detail(
+    db: Session,
+    plugin: models.Plugin,
+    *,
+    target_agent_id: str | None,
+    include_governance: bool = False,
+) -> dict:
+    versions = db.scalars(select(models.PluginVersion).where(
+        models.PluginVersion.plugin_id == plugin.id,
+    ).order_by(models.PluginVersion.id.desc())).all()
+    current = next((row for row in versions if row.version == plugin.current_version), None)
+    # Owners need to inspect a submitted version before it becomes current; this
+    # still exposes only the deliberately reduced, credential-free DTO below.
+    display_version = current or (versions[0] if versions else None)
+    bindings = db.scalars(select(models.AgentPluginBinding).where(
+        models.AgentPluginBinding.plugin_id == plugin.id,
+    ).order_by(models.AgentPluginBinding.priority, models.AgentPluginBinding.id)).all()
+    binding = next((row for row in bindings if row.target_agent_id == target_agent_id), None)
+    runtime = None
+    if display_version:
+        runtime_row = db.scalar(select(models.McpRuntimeInstance).where(
+            models.McpRuntimeInstance.plugin_version_id == display_version.id,
+        ).order_by(models.McpRuntimeInstance.updated_at.desc()))
+        if runtime_row:
+            runtime = {
+                "state": runtime_row.state,
+                "health": runtime_row.health,
+                "updated_at": runtime_row.updated_at,
+            }
+    effective = bool(
+        binding
+        and binding.admin_enabled
+        and binding.employee_enabled
+        and binding.decision_mode == "allow"
+        and plugin.status == "active"
+        and current
+        and current.publish_status == "published"
+    )
+    detail = {
+        "plugin_id": plugin.id,
+        "name": plugin.name,
+        "description": plugin.description or "暂未提供插件说明",
+        "plugin_type": plugin.plugin_type,
+        "scope": plugin.scope,
+        "mcp_category": plugin.mcp_category,
+        "current_version": plugin.current_version,
+        "version": ({
+            "version": display_version.version,
+            "data_level": display_version.data_level,
+            "deployment_mode": display_version.deployment_mode,
+            "review_status": display_version.review_status,
+            "publish_status": display_version.publish_status,
+            "published_at": display_version.published_at,
+        } if display_version else None),
+        "tools": _safe_tools(display_version.manifest if display_version else None),
+        "instruction_summary": (
+            str((display_version.manifest or {}).get("instruction_summary") or plugin.description or "")[:500]
+            if plugin.plugin_type == "skill" and display_version else None
+        ),
+        "authorization": {
+            "admin_enabled": bool(binding and binding.admin_enabled),
+            "employee_enabled": bool(binding and binding.employee_enabled),
+            "decision_mode": binding.decision_mode if binding else "deny",
+            "effective": effective,
+        },
+        "runtime": runtime,
+    }
+    if include_governance:
+        detail.update({
+            "versions": [{
+                "version": row.version,
+                "data_level": row.data_level,
+                "deployment_mode": row.deployment_mode,
+                "review_status": row.review_status,
+                "publish_status": row.publish_status,
+                "submitted_by": row.submitted_by,
+                "reviewed_by": row.reviewed_by,
+                "reviewed_at": row.reviewed_at,
+                "published_at": row.published_at,
+                "created_at": row.created_at,
+            } for row in versions],
+            "bindings": [{
+                "id": row.id,
+                "target_agent_id": row.target_agent_id,
+                "admin_enabled": row.admin_enabled,
+                "employee_enabled": row.employee_enabled,
+                "decision_mode": row.decision_mode,
+                "priority": row.priority,
+            } for row in bindings],
+        })
+    return detail
+
+
 @my_router.get("")
 def my_plugins(account: models.Account = Depends(current_account), db: Session = Depends(get_db)):
     if "user" not in (account.roles or []):
@@ -77,6 +183,23 @@ def my_submissions(account: models.Account = Depends(current_account), db: Sessi
     ).order_by(models.PluginVersion.created_at.desc())).all()]
 
 
+@my_router.get("/{plugin_id}")
+def my_plugin_detail(
+    plugin_id: str,
+    account: models.Account = Depends(current_account),
+    db: Session = Depends(get_db),
+):
+    if "user" not in (account.roles or []):
+        raise HTTPException(status_code=403, detail="管理员账号不拥有个人插件目录")
+    plugin = db.get(models.Plugin, plugin_id)
+    if not plugin or not (
+        (plugin.scope == "shared" and plugin.status == "active")
+        or plugin.owner_human_no == account.human_employee_no
+    ):
+        raise HTTPException(status_code=404, detail="插件不存在或当前账号不可见")
+    return _safe_detail(db, plugin, target_agent_id=f"DT-{account.human_employee_no}")
+
+
 class EnableIn(BaseModel):
     agent_id: str | None = None
 
@@ -111,6 +234,18 @@ def admin_plugins(_: models.Account = Depends(admin_required), db: Session = Dep
     return [{"id": row.id, "name": row.name, "plugin_type": row.plugin_type, "scope": row.scope,
              "mcp_category": row.mcp_category, "current_version": row.current_version, "status": row.status}
             for row in db.scalars(select(models.Plugin).order_by(models.Plugin.name)).all()]
+
+
+@admin_router.get("/plugins/{plugin_id}")
+def admin_plugin_detail(
+    plugin_id: str,
+    _: models.Account = Depends(admin_required),
+    db: Session = Depends(get_db),
+):
+    plugin = db.get(models.Plugin, plugin_id)
+    if not plugin:
+        raise HTTPException(status_code=404, detail="插件不存在")
+    return _safe_detail(db, plugin, target_agent_id=None, include_governance=True)
 
 
 @admin_router.get("/plugin-submissions")

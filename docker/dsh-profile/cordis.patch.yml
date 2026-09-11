@@ -48,3 +48,7 @@
         toolCallTimeoutMs: 135000
         headers:
           Authorization: !!js '`Bearer ${process.env.DWP_AGENT_TOOL_TOKEN}`'
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: ascend-qwen3.6-27b

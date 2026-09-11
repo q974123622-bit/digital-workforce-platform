@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from . import config, execution_events, runtime_manager
-from .chat import ChatResult, ToolCard
+from .chat import ChatResult, ToolCard, knowledge_display_name
 from .harness_token import issue_token
 from .identity import resolve_identity
 from .knowledge_registry import accessible_knowledge_bases
@@ -145,16 +145,32 @@ def run_agent(
         .where(models.AuditEvent.trace_id == task_trace, models.AuditEvent.employee_id == employee_id)
         .order_by(models.AuditEvent.id)
     ).all()
-    cards = [
-        ToolCard(
-            plugin_id=row.plugin_id or "knowledge",
-            name=row.knowledge_base_id or row.plugin_id or "工具",
-            decision=row.decision,
-            reason=row.reason,
+    cards = []
+    seen_cards: set[tuple[str, str | None]] = set()
+    for row in audits:
+        if row.action != "read":
+            continue
+        source = None
+        if row.result_summary:
+            try:
+                summary = json.loads(row.result_summary)
+                source = str(summary.get("source")) if isinstance(summary, dict) and summary.get("source") else None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                source = None
+        kb_id = row.knowledge_base_id or row.plugin_id or "工具"
+        dedup_key = (kb_id, source)
+        if dedup_key in seen_cards:
+            continue
+        seen_cards.add(dedup_key)
+        cards.append(
+            ToolCard(
+                plugin_id=row.plugin_id or "knowledge",
+                name=knowledge_display_name(db, row.knowledge_base_id) if row.knowledge_base_id else kb_id,
+                decision=row.decision,
+                source=source,
+                reason=row.reason,
+            )
         )
-        for row in audits
-        if row.action == "read"
-    ]
     return ChatResult(
         session_id=f"H-{task_trace}", trace_id=task_trace,
         message=result.result, tool_cards=cards,

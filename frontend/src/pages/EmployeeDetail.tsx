@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import { Avatar, Card, Descriptions, Empty, Input, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { Employee, Grant, Workflow } from '@dwp/shared-schema';
-import { CommentOutlined } from '@ant-design/icons';
 import { api } from '../api/client';
 import { DecisionTag, EmploymentTag, LevelTag, PluginTypeTag, StatusBadge, TypeTag } from '../components/tags';
 import { ErrorState, LoadingState } from '../components/PageState';
@@ -126,10 +125,6 @@ export default function EmployeeDetail() {
                 <EmploymentTag value={emp.employment_type} />
                 <StatusBadge value={emp.status} />
               </Space>
-              <Link to={`/employees/${emp.employee_no}/chat`} className="employee-workspace-link">
-                <CommentOutlined />
-                <span>进入工作台</span>
-              </Link>
             </div>
           </div>
 

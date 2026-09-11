@@ -9,9 +9,9 @@ import json
 import time
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -83,10 +83,13 @@ def _participants_out(db: Session, participants: list) -> list[schemas.Conversat
     return out
 
 
-def _messages_out(db: Session, conversation_id: str) -> list[schemas.ConversationMessageOut]:
+def _messages_out(db: Session, conversation_id: str, generation: int) -> list[schemas.ConversationMessageOut]:
     rows = db.scalars(
         select(models.ConversationMessage)
-        .where(models.ConversationMessage.conversation_id == conversation_id)
+        .where(
+            models.ConversationMessage.conversation_id == conversation_id,
+            models.ConversationMessage.generation == generation,
+        )
         .order_by(models.ConversationMessage.seq)
     ).all()
     return [schemas.ConversationMessageOut.model_validate(row) for row in rows]
@@ -104,7 +107,7 @@ def _conversation_out(db: Session, conv: models.Conversation) -> schemas.Convers
         title=conv.title,
         owner_human_no=conv.owner_human_no,
         participants=_participants_out(db, conv.participants),
-        messages=_messages_out(db, conv.id),
+        messages=_messages_out(db, conv.id, conv.generation),
         tasks=[TeamTaskOrchestrator._to_out(run) for run in runs],
         updated_at=conv.updated_at,
     )
@@ -113,7 +116,10 @@ def _conversation_out(db: Session, conv: models.Conversation) -> schemas.Convers
 def _summary_out(db: Session, conv: models.Conversation) -> schemas.ConversationSummaryOut:
     last = db.scalar(
         select(models.ConversationMessage)
-        .where(models.ConversationMessage.conversation_id == conv.id)
+        .where(
+            models.ConversationMessage.conversation_id == conv.id,
+            models.ConversationMessage.generation == conv.generation,
+        )
         .order_by(models.ConversationMessage.seq.desc())
         .limit(1)
     )
@@ -455,11 +461,52 @@ def get_conversation(
     return _conversation_out(db, conv)
 
 
+def _begin_conversation_run(
+    db: Session, background_tasks: BackgroundTasks, conv: models.Conversation,
+    actor_no: str, content: str, *, retry_of_execution_id: str | None = None,
+) -> tuple[models.ConversationMessage, models.AgentExecution]:
+    execution_events.fail_orphaned_executions(db, stale_after_seconds=360)
+    active = execution_events.active_execution(db, conv.id)
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "当前会话已有任务正在执行", "retryable": True, "execution_id": active.id},
+        )
+    text = content.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="消息不能为空")
+    user_message = append_user_message(db, conversation=conv, actor_no=actor_no, content=text)
+    primary = (conv.participants or [{}])[0].get("employee_no", "")
+    try:
+        execution = execution_events.create_execution(
+            db, conversation_id=conv.id, trigger_message_seq=user_message.seq,
+            primary_employee_id=primary, conversation_generation=conv.generation,
+            retry_of_execution_id=retry_of_execution_id,
+        )
+    except RuntimeError as exc:
+        if str(exc) == "ACTIVE_EXECUTION_CONFLICT":
+            db.delete(user_message)
+            db.commit()
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "当前会话已有任务正在执行", "retryable": True},
+            ) from exc
+        raise
+    conv.updated_at = datetime.now()
+    db.add(conv)
+    db.commit()
+    background_tasks.add_task(
+        process_conversation_async, conv.id, actor_no, text, user_message.seq, execution.id,
+    )
+    return user_message, execution
+
+
 @conversations_router.post("/{conversation_id}/messages", response_model=schemas.ConversationOut)
 def send_message(
     conversation_id: str,
     payload: schemas.ConversationSendIn,
     background_tasks: BackgroundTasks,
+    response: Response,
     account: models.Account | None = Depends(optional_account),
     db: Session = Depends(get_db),
 ):
@@ -469,22 +516,9 @@ def send_message(
     enforce_actor(account, payload.actor_no)
     if conv.owner_human_no != payload.actor_no:
         raise HTTPException(status_code=403, detail="无权向该会话发送消息")
-    content = payload.content.strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="消息不能为空")
-    # 只落用户消息并立即返回；后台异步执行分类/派发/执行，避免请求阻塞导致前端卡死
-    user_message = append_user_message(db, conversation=conv, actor_no=payload.actor_no, content=content)
-    conv.updated_at = datetime.now()
-    db.add(conv)
-    db.commit()
-    db.refresh(conv)
-    background_tasks.add_task(
-        process_conversation_async,
-        conv.id,
-        payload.actor_no,
-        content,
-        user_message.seq,
-    )
+    _, execution = _begin_conversation_run(db, background_tasks, conv, payload.actor_no, payload.content)
+    response.headers["Deprecation"] = "true"
+    response.headers["X-DWP-Execution-ID"] = execution.id
     return _conversation_out(db, conv)
 
 
@@ -503,37 +537,46 @@ def start_conversation_run(
     enforce_actor(account, payload.actor_no)
     if conv.owner_human_no != payload.actor_no:
         raise HTTPException(status_code=403, detail="无权向该会话发送消息")
-    active = execution_events.active_execution(db, conversation_id)
-    if active is not None:
-        raise HTTPException(
-            status_code=409,
-            detail={"message": "当前会话已有任务正在执行", "retryable": True, "execution_id": active.id},
-        )
-    content = payload.content.strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="消息不能为空")
-    user_message = append_user_message(db, conversation=conv, actor_no=payload.actor_no, content=content)
-    primary = (conv.participants or [{}])[0].get("employee_no", "")
-    execution = execution_events.create_execution(
-        db,
-        conversation_id=conversation_id,
-        trigger_message_seq=user_message.seq,
-        primary_employee_id=primary,
-    )
-    conv.updated_at = datetime.now()
-    db.add(conv)
-    db.commit()
-    background_tasks.add_task(
-        process_conversation_async,
-        conv.id,
-        payload.actor_no,
-        content,
-        user_message.seq,
-        execution.id,
+    user_message, execution = _begin_conversation_run(
+        db, background_tasks, conv, payload.actor_no, payload.content,
     )
     return schemas.ConversationRunOut(
         execution_id=execution.id,
         trigger_message_seq=user_message.seq,
+        conversation=_conversation_out(db, conv),
+    )
+
+
+@conversations_router.post(
+    "/{conversation_id}/runs/{execution_id}/retry", response_model=schemas.ConversationRunOut,
+)
+def retry_conversation_run(
+    conversation_id: str,
+    execution_id: str,
+    background_tasks: BackgroundTasks,
+    account: models.Account | None = Depends(optional_account),
+    db: Session = Depends(get_db),
+):
+    conv = db.get(models.Conversation, conversation_id)
+    original = db.get(models.AgentExecution, execution_id)
+    if conv is None or original is None or original.conversation_id != conversation_id:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    if account is not None and conv.owner_human_no != account.human_employee_no:
+        raise HTTPException(status_code=403, detail="无权重试该执行")
+    trigger = db.scalar(select(models.ConversationMessage).where(
+        models.ConversationMessage.conversation_id == conversation_id,
+        models.ConversationMessage.seq == original.trigger_message_seq,
+        models.ConversationMessage.generation == original.conversation_generation,
+        models.ConversationMessage.role == "user",
+    ))
+    if trigger is None or original.conversation_generation != conv.generation:
+        raise HTTPException(status_code=409, detail="原始问题已被清空，无法重新执行")
+    user_message, execution = _begin_conversation_run(
+        db, background_tasks, conv, conv.owner_human_no, trigger.content,
+        retry_of_execution_id=original.id,
+    )
+    return schemas.ConversationRunOut(
+        execution_id=execution.id, trigger_message_seq=user_message.seq,
         conversation=_conversation_out(db, conv),
     )
 
@@ -582,6 +625,8 @@ def get_latest_conversation_run(
 @conversations_router.get("/{conversation_id}/runs/history", response_model=list[schemas.AgentExecutionDetailOut])
 def get_conversation_run_history(
     conversation_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    before_execution_id: str | None = Query(default=None),
     account: models.Account | None = Depends(optional_account),
     db: Session = Depends(get_db),
 ):
@@ -591,11 +636,21 @@ def get_conversation_run_history(
         raise HTTPException(status_code=404, detail="会话不存在")
     if account is not None and conv.owner_human_no != account.human_employee_no:
         raise HTTPException(status_code=403, detail="无权查看该会话")
-    executions = db.scalars(
-        select(models.AgentExecution).where(
-            models.AgentExecution.conversation_id == conversation_id,
-        ).order_by(models.AgentExecution.started_at)
-    ).all()
+    query = select(models.AgentExecution).where(models.AgentExecution.conversation_id == conversation_id)
+    if before_execution_id:
+        cursor = db.get(models.AgentExecution, before_execution_id)
+        if cursor is None or cursor.conversation_id != conversation_id:
+            raise HTTPException(status_code=400, detail="无效的执行历史游标")
+        query = query.where(or_(
+            models.AgentExecution.started_at < cursor.started_at,
+            and_(
+                models.AgentExecution.started_at == cursor.started_at,
+                models.AgentExecution.id < cursor.id,
+            ),
+        ))
+    executions = list(reversed(db.scalars(
+        query.order_by(models.AgentExecution.started_at.desc(), models.AgentExecution.id.desc()).limit(limit)
+    ).all()))
     if not executions:
         return []
     execution_ids = [execution.id for execution in executions]
@@ -768,6 +823,9 @@ def clear_conversation(
     if conv.owner_human_no != actor_no:
         raise HTTPException(status_code=403, detail="无权清空该会话")
     execution_events.cancel_for_conversation(db, conversation_id)
+    conv.generation += 1
+    conv.updated_at = datetime.now()
+    db.add(conv)
     db.query(models.ConversationMessage).filter(
         models.ConversationMessage.conversation_id == conversation_id
     ).delete()

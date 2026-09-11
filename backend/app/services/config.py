@@ -18,6 +18,7 @@ load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
 INTERNAL_KB_ENDPOINT = "DWP_INTERNAL_KB_ENDPOINT"
 INTERNAL_KB_CREDENTIAL_REF = "DWP_INTERNAL_KB_CREDENTIAL_REF"
 INTERNAL_KB_BASE_URL = "DWP_INTERNAL_KB_BASE_URL"
+INTERNAL_KB_RETRIEVAL_PATH = "DWP_INTERNAL_KB_RETRIEVAL_PATH"
 INTERNAL_KB_X_ORG = "DWP_INTERNAL_KB_X_ORG"
 INTERNAL_KB_X_TENANT = "DWP_INTERNAL_KB_X_TENANT"
 INTERNAL_KB_X_USER = "DWP_INTERNAL_KB_X_USER"
@@ -56,12 +57,14 @@ AGENTTEAMS_MINIO_ACCESS_KEY = "AGENTTEAMS_MINIO_ACCESS_KEY"
 AGENTTEAMS_MINIO_SECRET_KEY = "AGENTTEAMS_MINIO_SECRET_KEY"
 AGENTTEAMS_WORKER_MODEL = "AGENTTEAMS_WORKER_MODEL"
 AGENTTEAMS_WORKER_RUNTIME = "AGENTTEAMS_WORKER_RUNTIME"
-TEAM_BACKEND = "DWP_TEAM_BACKEND"  # auto | builtin（默认 auto）
+TEAM_BACKEND = "DWP_TEAM_BACKEND"
+LEGACY_TEAM_BACKEND = "DWP_TEAM_BACKEND_MODE"
 
 
 def team_backend_mode() -> str:
-    """团队协作后端：auto（AgentTeams 优先，失败降级内置）或 builtin。"""
-    return os.environ.get(TEAM_BACKEND, "auto")
+    """The MVP always uses the built-in bounded collaboration path."""
+    configured = os.environ.get(TEAM_BACKEND) or os.environ.get(LEGACY_TEAM_BACKEND) or "builtin"
+    return "builtin" if configured.strip().lower() != "builtin" else "builtin"
 
 
 def agentteams_manager_mxid() -> str:
@@ -123,6 +126,13 @@ def kb_mode() -> str:
 
 def internal_kb_base_url() -> str | None:
     return os.environ.get(INTERNAL_KB_BASE_URL) or os.environ.get(INTERNAL_KB_ENDPOINT)
+
+
+def internal_kb_retrieval_path() -> str:
+    raw = (os.environ.get(INTERNAL_KB_RETRIEVAL_PATH) or "/marketing_agent/api/v2/rag/chunk/retrieval").strip()
+    if not raw.startswith("/") or "://" in raw:
+        return "/marketing_agent/api/v2/rag/chunk/retrieval"
+    return raw
 
 
 def internal_kb_id_map() -> dict[str, int]:

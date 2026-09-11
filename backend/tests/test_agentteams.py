@@ -234,7 +234,7 @@ def test_parse_completion_excludes_own_task_message():
 # ---------- 群聊任务路径 ----------
 
 
-def test_group_chat_agentteams_path(db_session, monkeypatch):
+def test_group_chat_ignores_legacy_agentteams_auto_mode(db_session, monkeypatch):
     conv = _seed_group(db_session)
     fake = FakeGatewayOK()
     monkeypatch.setattr("app.services.group_chat.AgentTeamsGateway", lambda: fake)
@@ -253,23 +253,17 @@ def test_group_chat_agentteams_path(db_session, monkeypatch):
     )
 
     run = db_session.query(models.TaskRun).filter(models.TaskRun.conversation_id == conv.id).one()
-    assert run.source == "agentteams"
+    assert run.source == "builtin"
     assert run.status == "completed"
     assert "Harness" in run.summary
     assert harness.calls and harness.calls[0]["employee_id"] == "VE-0001"
     assert run.subtasks[0]["runtime_mode"] == "harness"
     assert run.subtasks[0]["tool_name"] == "入职流程 Workflow"
     assert "流程：入职流程 Workflow" in run.subtasks[0]["result"]
-    assert "AgentTeams 汇总" in harness.calls[0]["context"].collaboration_summary
-    # 汇报回传到对话
-    msgs = db_session.query(models.ConversationMessage).filter(models.ConversationMessage.conversation_id == conv.id).all()
-    assert any("TASK_COMPLETED" in m.content for m in msgs)
-    # 审计记录 send + receive
+    # MVP 已彻底关闭 AgentTeams 运行路径：旧 auto 配置也不得发送房间消息。
+    assert fake.sent == []
     events = db_session.query(models.AuditEvent).filter(models.AuditEvent.plugin_id.like("agentteams:%")).all()
-    assert {e.action for e in events} >= {"send", "receive"}
-    # 结构化任务消息：携带 task_id / 请求者
-    assert fake.sent and "id=T-" in fake.sent[0]
-    assert "请求者=张三(E10281)" in fake.sent[0]
+    assert events == []
 
 
 def test_group_chat_fallback_builtin(db_session, monkeypatch):

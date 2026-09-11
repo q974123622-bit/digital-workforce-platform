@@ -8,9 +8,9 @@ import { EmptyState, ErrorState, LoadingState } from '../components/PageState';
 import { useAsyncData } from '../hooks/useAsyncData';
 
 const EFFECT_HEX: Record<string, string> = {
-  allow: '#52c41a',
-  deny: '#ff4d4f',
-  approval: '#faad14',
+  allow: 'var(--dwp-success)',
+  deny: 'var(--dwp-danger)',
+  approval: 'var(--dwp-warning)',
 };
 
 function PoliciesPanel() {
@@ -28,7 +28,7 @@ function PoliciesPanel() {
             <Col xs={24} lg={12} xl={8} key={policy.id}>
               <Card
                 className="hover-card"
-                style={{ borderLeft: `4px solid ${EFFECT_HEX[policy.effect] ?? '#8c8c8c'}` }}
+                style={{ borderLeft: `4px solid ${EFFECT_HEX[policy.effect] ?? 'var(--dwp-text-tertiary)'}` }}
                 styles={{ body: { padding: '16px 20px' } }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -63,14 +63,14 @@ function AuditPanel() {
   const list = events ?? [];
   const summary = useMemo(
     () => [
-      { key: 'total', label: '审计事件', value: list.length, color: '#1f2733' },
-      { key: 'allow', label: '允许', value: list.filter((event) => event.decision === 'allow').length, color: '#52c41a' },
-      { key: 'deny', label: '拒绝', value: list.filter((event) => event.decision === 'deny').length, color: '#ff4d4f' },
+      { key: 'total', label: '审计事件', value: list.length, color: 'var(--dwp-text)' },
+      { key: 'allow', label: '允许', value: list.filter((event) => event.decision === 'allow').length, color: 'var(--dwp-success)' },
+      { key: 'deny', label: '拒绝', value: list.filter((event) => event.decision === 'deny').length, color: 'var(--dwp-danger)' },
       {
         key: 'approval',
         label: '待审批',
         value: list.filter((event) => event.decision === 'approval').length,
-        color: '#faad14',
+        color: 'var(--dwp-warning)',
       },
     ],
     [list],
@@ -210,7 +210,7 @@ function AccessRequestsPanel() {
 export default function Security() {
   return (
     <div>
-      <Typography.Title level={3}>安全中心</Typography.Title>
+      <div className="mb-4"><Typography.Title level={2} className="!mb-1 !text-[26px]">权限与审计</Typography.Title><Typography.Text type="secondary">检查策略决策、访问申请和平台操作轨迹</Typography.Text></div>
       <Tabs
         items={[
           { key: 'policies', label: '权限策略', children: <PoliciesPanel /> },

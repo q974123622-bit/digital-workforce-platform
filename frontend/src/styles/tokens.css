@@ -1,0 +1,95 @@
+/* 数字员工工作台：跨 Tailwind、CSS 与 Ant Design 的语义主题变量。 */
+:root {
+  --dwp-radius-control: 8px;
+  --dwp-radius-container: 12px;
+  --dwp-radius-bubble: 14px;
+  --dwp-motion-fast: 120ms;
+  --dwp-motion-base: 160ms;
+  --dwp-motion-slow: 180ms;
+  --dwp-accent: #c93143;
+  --dwp-accent-soft: #fff0f1;
+}
+
+:root,
+:root[data-theme='warm-paper'] {
+  --dwp-page-bg: #f7f6f1;
+  --dwp-surface: #fcfbf8;
+  --dwp-surface-subtle: #f0eee8;
+  --dwp-surface-elevated: #ffffff;
+  --dwp-surface-hover: #f4f2ed;
+  --dwp-brand: #174f7c;
+  --dwp-brand-hover: #123f65;
+  --dwp-brand-soft: #eaf0f3;
+  --dwp-text: #2d2b27;
+  --dwp-text-secondary: #6f6b63;
+  --dwp-text-tertiary: #969087;
+  --dwp-text-on-brand: #ffffff;
+  --dwp-border: #dedbd3;
+  --dwp-border-light: #ebe8e1;
+  --dwp-success: #067647;
+  --dwp-success-soft: #f2f9f6;
+  --dwp-warning: #b54708;
+  --dwp-warning-soft: #fdf4ec;
+  --dwp-danger: #b42318;
+  --dwp-danger-soft: #fdf1f0;
+  --dwp-input-bg: rgba(252, 251, 248, .92);
+  --dwp-panel-translucent: rgba(252, 251, 248, .86);
+  --dwp-canvas-translucent: rgba(247, 246, 241, .74);
+  --dwp-user-bubble: #e8eff2;
+  --dwp-user-bubble-text: #29414e;
+  --dwp-user-bubble-border: #d5e0e5;
+  --dwp-focus: rgba(23, 79, 124, .72);
+  --dwp-selection: #dce8ed;
+  --dwp-scrollbar: #c2beb5;
+  --dwp-scrollbar-hover: #aaa49a;
+  --dwp-shadow-low: 0 1px 2px rgba(69, 61, 48, .035), 0 10px 30px rgba(69, 61, 48, .045);
+  --dwp-shadow-mid: 0 24px 70px rgba(69, 61, 48, .14);
+  --dwp-brand-glow: rgba(23, 79, 124, .035);
+  --dwp-accent-glow: rgba(201, 49, 67, .025);
+}
+
+:root[data-theme='clear-blue'] {
+  --dwp-page-bg: #f4f7fb; --dwp-surface: #ffffff; --dwp-surface-subtle: #edf3f8;
+  --dwp-surface-elevated: #ffffff; --dwp-surface-hover: #eef4f8;
+  --dwp-brand: #155a8a; --dwp-brand-hover: #10486f; --dwp-brand-soft: #e7f0f7;
+  --dwp-text: #1f2933; --dwp-text-secondary: #637083; --dwp-text-tertiary: #8a96a5; --dwp-text-on-brand: #ffffff;
+  --dwp-border: #d8e1e8; --dwp-border-light: #e7edf2;
+  --dwp-success: #087a55; --dwp-success-soft: #edf8f3; --dwp-warning: #a95110; --dwp-warning-soft: #fff5eb;
+  --dwp-danger: #b42318; --dwp-danger-soft: #fdf1f0;
+  --dwp-input-bg: rgba(255, 255, 255, .94); --dwp-panel-translucent: rgba(255, 255, 255, .88); --dwp-canvas-translucent: rgba(244, 247, 251, .8);
+  --dwp-user-bubble: #e5eff6; --dwp-user-bubble-text: #233f52; --dwp-user-bubble-border: #cfdee9;
+  --dwp-focus: rgba(21, 90, 138, .7); --dwp-selection: #d7e8f4; --dwp-scrollbar: #b9c7d2; --dwp-scrollbar-hover: #97a9b8;
+  --dwp-shadow-low: 0 1px 2px rgba(30, 58, 82, .03), 0 10px 30px rgba(30, 58, 82, .055);
+  --dwp-shadow-mid: 0 24px 70px rgba(30, 58, 82, .15); --dwp-brand-glow: rgba(21, 90, 138, .055); --dwp-accent-glow: rgba(201, 49, 67, .018);
+}
+
+:root[data-theme='sage-mist'] {
+  --dwp-page-bg: #f3f6f2; --dwp-surface: #fafcf9; --dwp-surface-subtle: #e8efea;
+  --dwp-surface-elevated: #ffffff; --dwp-surface-hover: #edf3ef;
+  --dwp-brand: #2f665d; --dwp-brand-hover: #245149; --dwp-brand-soft: #ddebe6;
+  --dwp-text: #24312d; --dwp-text-secondary: #63716c; --dwp-text-tertiary: #8a9691; --dwp-text-on-brand: #ffffff;
+  --dwp-border: #d6e0da; --dwp-border-light: #e5ece7;
+  --dwp-success: #147653; --dwp-success-soft: #ecf7f1; --dwp-warning: #a95816; --dwp-warning-soft: #fff5e9;
+  --dwp-danger: #b4382e; --dwp-danger-soft: #fdf1ef;
+  --dwp-input-bg: rgba(250, 252, 249, .94); --dwp-panel-translucent: rgba(250, 252, 249, .88); --dwp-canvas-translucent: rgba(243, 246, 242, .8);
+  --dwp-user-bubble: #e0ece7; --dwp-user-bubble-text: #29463f; --dwp-user-bubble-border: #cbded6;
+  --dwp-focus: rgba(47, 102, 93, .7); --dwp-selection: #d5e7df; --dwp-scrollbar: #b9c7bf; --dwp-scrollbar-hover: #98aa9f;
+  --dwp-shadow-low: 0 1px 2px rgba(35, 69, 58, .03), 0 10px 30px rgba(35, 69, 58, .05);
+  --dwp-shadow-mid: 0 24px 70px rgba(35, 69, 58, .14); --dwp-brand-glow: rgba(47, 102, 93, .055); --dwp-accent-glow: rgba(201, 49, 67, .018);
+}
+
+:root[data-theme='midnight'] {
+  --dwp-page-bg: #171b20; --dwp-surface: #1e242a; --dwp-surface-subtle: #262d34;
+  --dwp-surface-elevated: #2b333b; --dwp-surface-hover: #2b333b;
+  --dwp-brand: #83b8dd; --dwp-brand-hover: #a3cae5; --dwp-brand-soft: #253b4a;
+  --dwp-accent: #e26b75; --dwp-accent-soft: #412d33;
+  --dwp-text: #f1f0eb; --dwp-text-secondary: #b5bac0; --dwp-text-tertiary: #858c93; --dwp-text-on-brand: #10212d;
+  --dwp-border: #394149; --dwp-border-light: #303840;
+  --dwp-success: #55b88a; --dwp-success-soft: #203a31; --dwp-warning: #e0a05b; --dwp-warning-soft: #3d3225;
+  --dwp-danger: #e27676; --dwp-danger-soft: #41292c;
+  --dwp-input-bg: rgba(30, 36, 42, .96); --dwp-panel-translucent: rgba(30, 36, 42, .9); --dwp-canvas-translucent: rgba(23, 27, 32, .86);
+  --dwp-user-bubble: #294353; --dwp-user-bubble-text: #eef5f8; --dwp-user-bubble-border: #3e5a6b;
+  --dwp-focus: rgba(131, 184, 221, .78); --dwp-selection: #345365; --dwp-scrollbar: #4b555e; --dwp-scrollbar-hover: #65717b;
+  --dwp-shadow-low: 0 1px 2px rgba(0, 0, 0, .18), 0 12px 32px rgba(0, 0, 0, .2);
+  --dwp-shadow-mid: 0 24px 70px rgba(0, 0, 0, .36); --dwp-brand-glow: rgba(131, 184, 221, .06); --dwp-accent-glow: rgba(226, 107, 117, .035);
+}
