@@ -25,8 +25,9 @@ def test_seed_counts(client):
     assert len(client.get("/api/v1/policies").json()) == 9
     assert len(client.get("/api/v1/knowledge-bases").json()) == 9
     teams = client.get("/api/v1/teams").json()
-    assert len(teams) == 1
-    assert {member["employee_id"] for member in teams[0]["members"]} == {
+    teams_by_id = {team["id"]: team for team in teams}
+    assert set(teams_by_id) == {"TEAM-ONBOARD", "TEAM-DB-BENCH"}
+    assert {member["employee_id"] for member in teams_by_id["TEAM-ONBOARD"]["members"]} == {
         "VE-0001", "VE-0002", "VE-0003", "VE-0005", "RPA-0001"
     }
 
@@ -61,7 +62,11 @@ def test_employee_crud(client):
         employee["employee_no"]
         for employee in client.get("/api/v1/employees", params={"type": "virtual"}).json()
     }
-    expected_no = f"VE-{max(int(value.split('-')[1]) for value in seeded_virtual_ids) + 1:04d}"
+    numeric_virtual_ids = {
+        value for value in seeded_virtual_ids
+        if value.startswith("VE-") and value[3:].isdigit()
+    }
+    expected_no = f"VE-{max(int(value.split('-')[1]) for value in numeric_virtual_ids) + 1:04d}"
     resp = client.post(
         "/api/v1/employees",
         json={

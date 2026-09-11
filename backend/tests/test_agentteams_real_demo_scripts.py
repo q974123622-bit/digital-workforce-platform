@@ -128,8 +128,9 @@ def test_strict_start_waits_for_shared_secret_registration_endpoint():
     """Client versions can be ready briefly before Synapse admin registration."""
     script = START.read_text(encoding="utf-8")
 
-    assert "http://127.0.0.1:8008/_matrix/client/versions" in script
-    assert "http://127.0.0.1:8008/_synapse/admin/v1/register" in script
+    assert "http://127.0.0.1:8008" in script
+    assert "/_matrix/client/versions" in script
+    assert "/_synapse/admin/v1/register" in script
 
 
 def test_bootstrap_loopback_client_ignores_process_proxy_environment(monkeypatch):
@@ -305,6 +306,28 @@ def test_process_helper_blocks_dotenv_backfill_for_backend_and_frontend_children
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_backend_environment_uses_only_the_manager_api_key():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        "$keys = @{ manager='manager-key'; hr='hr-key'; it='it-key'; audit='audit-key' }; "
+        "$actual = Get-BackendApiKeyEnvironment $keys; "
+        "$actual | ConvertTo-Json -Compress"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout.strip()) == {"DEEPSEEK_API_KEY_MANAGER": "manager-key"}
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
 def test_process_record_whitelists_fields_and_never_serializes_an_accidental_key(tmp_path):
     runtime = tmp_path / "runtime"
     pids = runtime / "pids.json"
@@ -345,7 +368,10 @@ def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(t
     assert set(credentials) == {"platform", "manager", "hr", "it", "audit"}
     assert runtime["team_id"] == "TEAM-ONBOARD"
     assert set(runtime["agents"]) == {"manager", "hr", "it", "audit"}
-    assert runtime["agents"]["manager"]["allowed_skill_ids"] == ["agentteams-onboarding-readiness"]
+    assert runtime["agents"]["manager"]["allowed_skill_ids"] == [
+        "agentteams-onboarding-readiness",
+        "agentteams-role-change-readiness",
+    ]
     assert runtime["agents"]["manager"]["safe_tool_catalog"] == []
     assert all(runtime["agents"][role]["safe_tool_catalog"] for role in ("hr", "it", "audit"))
     expected_schema = {
@@ -360,6 +386,16 @@ def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(t
         role: runtime["agents"][role]["safe_tool_catalog"][0]["input_schema"]
         for role in ("hr", "it", "audit")
     } == {role: expected_schema for role in ("hr", "it", "audit")}
+    assert {
+        tool["plugin_id"]
+        for role in ("hr", "it", "audit")
+        for tool in runtime["agents"][role]["safe_tool_catalog"]
+    } >= {
+        "agentteams-role-change-hr",
+        "agentteams-role-change-it-plan",
+        "agentteams-role-change-it-activate",
+        "agentteams-role-change-audit",
+    }
     assert set(runtime["team_catalog"]) == {"VE-0002", "VE-0003", "VE-0005"}
 
     from app.services.agentteams_runtime_config import load_strict_runtime_config

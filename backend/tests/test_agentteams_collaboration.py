@@ -15,6 +15,16 @@ def _enable_test_leader(db_session):
     db_session.add(models.TeamMember(
         team_id="TEAM-ONBOARD", employee_id=leader.employee_no, role="member",
     ))
+    if not db_session.query(models.TeamPluginGrant).filter_by(
+        team_id="TEAM-ONBOARD", plugin_id="weekly-report", action="execute"
+    ).first():
+        db_session.add(models.TeamPluginGrant(
+            team_id="TEAM-ONBOARD",
+            plugin_id="weekly-report",
+            action="execute",
+            decision_mode="allow",
+            grant_source="test",
+        ))
     db_session.flush()
     return leader
 
@@ -438,6 +448,7 @@ def test_dependent_child_stays_blocked_until_predecessor_completes(db_session):
         task_id=it_check.id, message_type="task.assign", direction="outbound"
     ).one()
     assert it_check.status == "assigned"
+    assert assignment.payload["required_capability"] == it_check.capability
     assert assignment.payload["dependency_results"] == [
         {"client_task_key": "hr-check", "status": "completed", "result": {"result": "HR evidence"}}
     ]

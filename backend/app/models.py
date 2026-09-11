@@ -59,6 +59,20 @@ class EmployeePluginGrant(Base):
     grant_source: Mapped[str] = mapped_column(String, default="")  # seed | whitelist | manual
 
 
+class TeamPluginGrant(Base):
+    __tablename__ = "team_plugin_grant"
+    __table_args__ = (
+        UniqueConstraint("team_id", "plugin_id", "action", name="uq_team_plugin_grant"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    team_id: Mapped[str] = mapped_column(String, index=True)
+    plugin_id: Mapped[str] = mapped_column(String, index=True)
+    action: Mapped[str] = mapped_column(String, default="read")
+    decision_mode: Mapped[str] = mapped_column(String, default="allow")  # allow | deny | approval
+    grant_source: Mapped[str] = mapped_column(String, default="")  # seed | manual
+
+
 class Policy(Base):
     __tablename__ = "policy"
 
@@ -282,6 +296,49 @@ class AgentTeamsEventSeen(Base):
     event_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     conversation_id: Mapped[str] = mapped_column(String, index=True, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class BenchmarkExperiment(Base):
+    __tablename__ = "benchmark_experiment"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_human_no: Mapped[str] = mapped_column(String, index=True)
+    benchmark_id: Mapped[str] = mapped_column(String, default="multiagentbench-database-local-v1")
+    status: Mapped[str] = mapped_column(String, default="pending", index=True)
+    scenario_ids: Mapped[list] = mapped_column(JSON, default=list)
+    repeats: Mapped[int] = mapped_column(default=1)
+    fairness_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    fairness_fingerprint: Mapped[str] = mapped_column(String, default="")
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class BenchmarkRun(Base):
+    __tablename__ = "benchmark_run"
+    __table_args__ = (
+        UniqueConstraint(
+            "experiment_id", "scenario_id", "repeat_index", "mode",
+            name="uq_benchmark_run_case",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    experiment_id: Mapped[str] = mapped_column(String, index=True)
+    ordinal: Mapped[int] = mapped_column(index=True)
+    scenario_id: Mapped[str] = mapped_column(String)
+    repeat_index: Mapped[int] = mapped_column()
+    mode: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="pending", index=True)
+    task_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    fairness_fingerprint: Mapped[str] = mapped_column(String, default="")
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    diagnosis: Mapped[dict] = mapped_column(JSON, default=dict)
+    failure_code: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AgentTaskNode(Base):

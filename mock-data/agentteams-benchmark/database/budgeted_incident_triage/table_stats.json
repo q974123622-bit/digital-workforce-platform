@@ -1,0 +1,1 @@
+[{"table":"customers","table_size_mb":12800,"dead_tuple_ratio":0.347,"sequential_scans":19880,"index_scans":9910,"cache_hit_ratio":0.94}]

@@ -11,14 +11,24 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models
-from .adapters import AdapterInputError
+from .adapters import AdapterInputError, validate_adapter_input
 from .capability_contract import plugin_contract
 from .capability_executor import execute_capability
-from .identity import resolve_identity
+from .identity import resolve_identity, resolve_twin_identity
 from .knowledge_adapter import select_adapter
 from .knowledge_registry import plugin_id_for_level, resolve as resolve_knowledge_base
 from .policy import DECISION_ALLOW, DECISION_APPROVAL, DECISION_DENY, ResourceRef, evaluate
 from .runtime_adapter import HarnessExecutionContext, RuntimeAdapter
+
+
+_DATABASE_SIGNAL_SCOPES = {
+    "VE-0001": {"statements", "locks", "indexes", "vacuum", "table_stats"},
+    "DB-WRITE-01": {"statements", "table_stats"},
+    "DB-LOCK-01": {"locks"},
+    "DB-VACUUM-01": {"vacuum", "table_stats"},
+    "DB-INDEX-01": {"indexes", "statements"},
+    "DB-QUERY-01": {"statements", "table_stats"},
+}
 
 
 def write_audit(
@@ -29,14 +39,17 @@ def write_audit(
     plugin_id: str,
     action: str,
     decision: str,
+    actor_id: str | None = None,
+    team_id: str | None = None,
     knowledge_base_id: str | None = None,
     reason: str | None = None,
     result_summary: str | None = None,
 ) -> int:
     event = models.AuditEvent(
         trace_id=trace_id or "NO-TRACE",
-        actor=employee_id,
+        actor=actor_id or employee_id,
         employee_id=employee_id,
+        team_id=team_id,
         plugin_id=plugin_id,
         knowledge_base_id=knowledge_base_id,
         action=action,
@@ -63,9 +76,32 @@ def invoke_plugin(
     runtime: RuntimeAdapter | None = None,
     execution_context: dict | None = None,
 ) -> dict:
+    context_data = execution_context or {}
+    team_id = str(context_data.get("team_id") or "").strip() or None
     subject = resolve_identity(db, employee_id)
     if subject is None:
         raise HTTPException(status_code=404, detail="数字员工不存在")
+    permission_subject = subject
+    if team_id:
+        permission_subject = resolve_twin_identity(
+            db, str(context_data.get("owner_human_no") or "")
+        )
+        if permission_subject is None:
+            audit_id = write_audit(
+                db,
+                trace_id=trace_id,
+                employee_id=employee_id,
+                team_id=team_id,
+                plugin_id=plugin_id,
+                action=action,
+                decision=DECISION_DENY,
+                reason="协作任务缺少有效数字分身权限主体",
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={"message": "协作任务缺少有效数字分身权限主体", "audit_id": audit_id},
+            )
+    audit_actor_id = permission_subject.employee_id
     plugin = db.get(models.Plugin, plugin_id)
     if plugin is None:
         raise HTTPException(status_code=404, detail="插件不存在")
@@ -74,6 +110,8 @@ def invoke_plugin(
             db,
             trace_id=trace_id,
             employee_id=employee_id,
+            actor_id=audit_actor_id,
+            team_id=team_id,
             plugin_id=plugin_id,
             action=action,
             decision=DECISION_DENY,
@@ -89,6 +127,8 @@ def invoke_plugin(
             db,
             trace_id=trace_id,
             employee_id=employee_id,
+            actor_id=audit_actor_id,
+            team_id=team_id,
             plugin_id=plugin_id,
             action=action,
             decision=DECISION_DENY,
@@ -103,6 +143,8 @@ def invoke_plugin(
             db,
             trace_id=trace_id,
             employee_id=employee_id,
+            actor_id=audit_actor_id,
+            team_id=team_id,
             plugin_id=plugin_id,
             action=action,
             decision=DECISION_DENY,
@@ -113,8 +155,56 @@ def invoke_plugin(
             detail={"message": f"能力 {plugin_id} 不支持动作 {action}", "audit_id": audit_id},
         )
 
+    if plugin_id == "agentteams-database-inspector":
+        try:
+            validate_adapter_input(plugin, params)
+        except AdapterInputError:
+            audit_id = write_audit(
+                db,
+                trace_id=trace_id,
+                employee_id=employee_id,
+                actor_id=audit_actor_id,
+                team_id=team_id,
+                plugin_id=plugin_id,
+                action=action,
+                decision=DECISION_DENY,
+                reason="工具参数不合法",
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "工具参数不合法", "audit_id": audit_id},
+            ) from None
+        allowed_signals = _DATABASE_SIGNAL_SCOPES.get(employee_id, set())
+        if params.get("signal") not in allowed_signals:
+            audit_id = write_audit(
+                db,
+                trace_id=trace_id,
+                employee_id=employee_id,
+                actor_id=audit_actor_id,
+                team_id=team_id,
+                plugin_id=plugin_id,
+                action=action,
+                decision=DECISION_DENY,
+                reason="database_signal_not_authorized",
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "message": "数据库信号未授权",
+                    "reason": "database_signal_not_authorized",
+                    "audit_id": audit_id,
+                },
+            )
+
     resource = ResourceRef(type=plugin.type, id=plugin.id, data_level=plugin.data_level)
-    result = evaluate(db, subject, resource, action)
+    result = evaluate(
+        db,
+        subject,
+        resource,
+        action,
+        context=context_data,
+        permission_subject=permission_subject,
+    )
 
     if result.decision == DECISION_DENY:
         reason = f"{result.policy_id}: {result.reason}" if result.policy_id else result.reason
@@ -122,6 +212,8 @@ def invoke_plugin(
             db,
             trace_id=trace_id,
             employee_id=employee_id,
+            actor_id=audit_actor_id,
+            team_id=team_id,
             plugin_id=plugin_id,
             action=action,
             decision=DECISION_DENY,
@@ -139,6 +231,8 @@ def invoke_plugin(
             db,
             trace_id=trace_id,
             employee_id=employee_id,
+            actor_id=audit_actor_id,
+            team_id=team_id,
             plugin_id=plugin_id,
             action=action,
             decision=DECISION_APPROVAL,
@@ -174,7 +268,6 @@ def invoke_plugin(
         runtime_context_id = f"{employee_id}:{trace_id or 'knowledge'}"
     else:
         employee = db.get(models.DigitalEmployee, employee_id)
-        context_data = execution_context or {}
         collaboration_summary = str(context_data.get("collaboration_summary") or "").strip()
         context = HarnessExecutionContext(
             task_id=str(context_data.get("task_id") or trace_id or "NO-TASK"),
@@ -205,6 +298,8 @@ def invoke_plugin(
                 db,
                 trace_id=trace_id,
                 employee_id=employee_id,
+                actor_id=audit_actor_id,
+                team_id=team_id,
                 plugin_id=plugin_id,
                 action=action,
                 decision=DECISION_DENY,
@@ -225,6 +320,8 @@ def invoke_plugin(
         db,
         trace_id=trace_id,
         employee_id=employee_id,
+        actor_id=audit_actor_id,
+        team_id=team_id,
         plugin_id=plugin_id,
         action=action,
         decision=DECISION_ALLOW,

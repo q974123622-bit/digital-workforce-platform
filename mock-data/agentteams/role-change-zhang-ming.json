@@ -1,0 +1,43 @@
+{
+  "employee_ref": "张明",
+  "hr_role_change": {
+    "evidence_ids": ["HR-RC-001", "HR-RC-002"],
+    "role_change": {
+      "current_role": "销售专员",
+      "target_role": "财务分析专员",
+      "effective_date": "2026-09-15",
+      "approval_status": "approved",
+      "materials_status": "complete"
+    }
+  },
+  "it_permission_plan": {
+    "evidence_ids": ["IT-RC-001", "IT-RC-002"],
+    "permission_plan": {
+      "revoke": ["销售客户系统写权限"],
+      "grant": ["财务分析平台只读权限", "预算报表查看权限"],
+      "account_status": "ready",
+      "activation_status": "pending_audit_review",
+      "requires_independent_review": true
+    }
+  },
+  "audit_review": {
+    "evidence_ids": ["AUD-RC-001"],
+    "approval_ref": "AUD-RC-001",
+    "review": {
+      "status": "approved",
+      "separation_of_duties": "passed",
+      "scope_matches_target_role": true,
+      "finding": "权限范围与目标岗位匹配，可以进入最终激活。"
+    }
+  },
+  "it_activation": {
+    "evidence_ids": ["IT-RC-003"],
+    "approval_ref": "AUD-RC-001",
+    "activation": {
+      "status": "completed",
+      "revoked": ["销售客户系统写权限"],
+      "granted": ["财务分析平台只读权限", "预算报表查看权限"],
+      "effective_date": "2026-09-15"
+    }
+  }
+}

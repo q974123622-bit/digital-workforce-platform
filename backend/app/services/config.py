@@ -6,8 +6,8 @@
 """
 
 import os
-from typing import Literal
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 
@@ -77,8 +77,12 @@ def agentteams_collaboration_enabled() -> bool:
 
 
 def agentteams_mode() -> Literal["local_demo", "agentteams_strict"]:
-    """Only the explicit demo value selects the credential-free branch."""
-    return "local_demo" if os.environ.get(DWP_AGENTTEAMS_MODE) == "local_demo" else "agentteams_strict"
+    """Select an explicit transport mode, defaulting every unknown value to strict."""
+    value = os.environ.get(DWP_AGENTTEAMS_MODE, "agentteams_strict")
+    if value == "local_demo":
+        return "local_demo"
+    return "agentteams_strict"
+
 
 def skip_auto_seed() -> bool:
     """Only literal ``1`` suppresses lifespan's demo seed recovery."""
@@ -146,7 +150,7 @@ def agentteams_collaboration_timeout() -> int:
 
 def agentteams_worker_model() -> str:
     """AgentTeams 协作 worker 使用的模型；避免将供应商模型名硬编码进生命周期逻辑。"""
-    return os.environ.get(AGENTTEAMS_WORKER_MODEL, "deepseek-chat")
+    return os.environ.get(AGENTTEAMS_WORKER_MODEL, "deepseek-v4-flash")
 
 
 def agentteams_worker_runtime() -> str:

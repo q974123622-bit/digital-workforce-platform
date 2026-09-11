@@ -388,9 +388,9 @@ class TeamTaskOrchestrator:
                 "source": "demo",
             },
         ]
+        subtasks: list[dict] = []
         try:
             raw = self.provider.structured_output(prompt, {"type": "object"})
-            subtasks: list[dict] = []
             for item in (raw.get("subtasks") or [])[:3]:
                 worker_id = self._resolve_worker(item.get("worker_id"), executable, members)
                 summary = str(item.get("summary", "")).strip()

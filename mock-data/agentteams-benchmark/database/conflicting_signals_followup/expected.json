@@ -1,0 +1,1 @@
+{"root_cause_id":"resource_heavy_analytics_query","aliases":["large_report_query","analytics_resource_contention"],"secondary_causes":[],"required_signals":["statements","table_stats","locks"],"requires_followup_signals":["locks"],"rationale":"报表聚合持续消耗 CPU、读带宽和临时空间；复核显示锁等待短且没有稳定阻塞链。"}

@@ -28,6 +28,26 @@ def provider() -> DeepSeekProvider:
     return DeepSeekProvider(api_key="test-key", base_url="https://example.invalid", model="test")
 
 
+def test_deepseek_provider_uses_configured_request_timeout(monkeypatch):
+    captured = {}
+
+    def capture_post(*_args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return StubResponse(data={"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(llm.httpx, "post", capture_post)
+
+    result = DeepSeekProvider(
+        api_key="test-key",
+        base_url="https://example.invalid",
+        model="test",
+        request_timeout=90.0,
+    ).chat(DEMO_MESSAGES)
+
+    assert result.content == "ok"
+    assert captured["timeout"] == 90.0
+
+
 def test_deepseek_structured_output_adds_json_instruction_to_outbound_messages(monkeypatch):
     captured_payload = {}
 
@@ -44,6 +64,38 @@ def test_deepseek_structured_output_adds_json_instruction_to_outbound_messages(m
         for message in captured_payload["messages"]
     )
     assert captured_payload["messages"][0] == {"role": "user", "content": "demo"}
+
+
+def test_deepseek_non_thinking_request_can_use_low_reasoning_effort(monkeypatch):
+    captured_payload = {}
+
+    def capture_post(*_args, **kwargs):
+        captured_payload.update(kwargs["json"])
+        return StubResponse(
+            data={
+                "choices": [{
+                    "message": {
+                        "content": '{"action":"complete"}',
+                    }
+                }]
+            }
+        )
+
+    monkeypatch.setattr(llm.httpx, "post", capture_post)
+
+    result = DeepSeekProvider(
+        api_key="test-key",
+        base_url="https://example.invalid",
+        model="deepseek-v4-flash",
+        thinking=False,
+        reasoning_effort="low",
+    ).structured_output_with_trace(DEMO_MESSAGES, {"type": "object"})
+
+    assert result.data == {"action": "complete"}
+    assert result.reasoning_content == ""
+    assert captured_payload["thinking"] == {"type": "disabled"}
+    assert captured_payload["reasoning_effort"] == "low"
+    assert captured_payload["temperature"] == 0.1
 
 
 def test_deepseek_network_failure_has_safe_machine_code(monkeypatch):

@@ -1,0 +1,1 @@
+[{"query_id":"csf-1","database":"trading","query":"SELECT account_id,sum(amount) FROM fills GROUP BY account_id","calls":8,"mean_ms":171000,"rows_per_call":39000000,"temp_mb":25100},{"query_id":"csf-2","database":"trading","query":"UPDATE positions SET mark = ? WHERE id = ?","calls":51000,"mean_ms":61,"rows_per_call":1}]

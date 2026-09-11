@@ -14,7 +14,7 @@ import hashlib
 import json
 import math
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Literal, Mapping
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -27,7 +27,9 @@ from . import config
 from .agentteams_protocol import AgentProtocolMessage
 from .agentteams_runtime_config import load_strict_runtime_config
 from .gateway import invoke_plugin
+from .identity import resolve_identity, resolve_twin_identity
 from .knowledge_registry import plugin_id_for_level, resolve as resolve_knowledge_base
+from .policy import DECISION_DENY, ResourceRef, evaluate
 
 
 class CollaborationConflict(RuntimeError):
@@ -128,11 +130,15 @@ class AgentTeamsCollaborationService:
         max_children: int = 5,
         max_rounds: int | None = None,
         max_nodes: int | None = None,
+        capability_catalog_source: Literal["configured", "database"] = "configured",
     ):
+        if capability_catalog_source not in {"configured", "database"}:
+            raise ValueError("invalid_capability_catalog_source")
         self.max_depth = max_depth
         self.max_children = max_children
         self.max_rounds = 3 if max_rounds is None else max_rounds
         self.max_nodes = 20 if max_nodes is None else max_nodes
+        self.capability_catalog_source = capability_catalog_source
 
     def create_task(
         self,
@@ -143,6 +149,7 @@ class AgentTeamsCollaborationService:
         title: str,
         instruction: str,
         material: dict,
+        owner_human_no: str = "",
     ) -> models.TaskRun:
         team = db.get(models.Team, team_id)
         if team is None:
@@ -161,6 +168,7 @@ class AgentTeamsCollaborationService:
         run = models.TaskRun(
             id=task_id,
             team_id=team.id,
+            owner_human_no=str(owner_human_no or "").strip(),
             trace_id=task_id,
             request=instruction,
             status="planning",
@@ -411,7 +419,9 @@ class AgentTeamsCollaborationService:
         ancestor_assignees = self._parent_chain_assignees(db, parent)
         capability_catalog = {
             item["agent_id"]: set(item["capabilities"])
-            for item in self._team_capability_catalog(db, run.team_id)
+            for item in self._team_capability_catalog(
+                db, run.team_id, owner_human_no=run.owner_human_no
+            )
         }
         for subtask in subtasks:
             assignee = db.get(models.DigitalEmployee, subtask["assignee_agent_id"])
@@ -629,6 +639,8 @@ class AgentTeamsCollaborationService:
                                 knowledge_base_id=knowledge_base_id,
                                 execution_context={
                                     "task_id": node.id,
+                                    "team_id": run.team_id,
+                                    "owner_human_no": run.owner_human_no,
                                     "request": root.instruction,
                                     "subtask": node.instruction,
                                     "collaboration_summary": message.payload.get("context", ""),
@@ -952,6 +964,9 @@ class AgentTeamsCollaborationService:
             "title": self._safe_cross_agent_text(child.title, _MAX_SUBTASK_TITLE_LENGTH),
             "instruction": self._safe_cross_agent_text(child.instruction, _MAX_SUBTASK_INSTRUCTION_LENGTH),
             "client_task_key": self._safe_client_task_key(child.client_task_key),
+            "required_capability": self._safe_cross_agent_text(
+                child.capability, _MAX_SUBTASK_CAPABILITY_LENGTH
+            ),
             "depends_on": [self._safe_client_task_key(key) for key in dependency_keys],
             "parent_chain_agent_ids": self._assignment_parent_chain(db, child),
             "team_capability_catalog": catalog,
@@ -1000,7 +1015,11 @@ class AgentTeamsCollaborationService:
             **dict(root.input_payload or {}),
             "coordination": {**coordination, "team_catalog_version": version},
         }
-        return self._team_capability_catalog(db, team_id), version
+        run = db.get(models.TaskRun, root.root_task_id)
+        owner_human_no = run.owner_human_no if run is not None else ""
+        return self._team_capability_catalog(
+            db, team_id, owner_human_no=owner_human_no
+        ), version
 
     def _propagate_required_failure(
         self, db: Session, failed_node: models.AgentTaskNode, actor_agent_id: str
@@ -1298,16 +1317,54 @@ class AgentTeamsCollaborationService:
             "material": dict(node.input_payload or {}),
         })
 
-    def _team_capability_catalog(self, db: Session, team_id: str) -> list[dict[str, Any]]:
-        """Expose only active, runtime-bound current-team members and granted tools."""
-        if config.agentteams_mode() == "agentteams_strict":
-            return self._strict_team_capability_catalog(db, team_id)
+    @staticmethod
+    def _capability_allowed_for_owner(
+        db: Session,
+        *,
+        employee_id: str,
+        team_id: str,
+        plugin_id: str,
+        action: str,
+        owner_human_no: str,
+    ) -> bool:
+        """Use the same policy evaluator as Gateway for a task owner's twin."""
+        if not owner_human_no:
+            return True
+        executor = resolve_identity(db, employee_id)
+        permission_subject = resolve_twin_identity(db, owner_human_no)
+        plugin = db.get(models.Plugin, plugin_id)
+        if executor is None or permission_subject is None or plugin is None:
+            return False
+        result = evaluate(
+            db,
+            executor,
+            ResourceRef(type=plugin.type, id=plugin.id, data_level=plugin.data_level),
+            action,
+            context={"team_id": team_id},
+            permission_subject=permission_subject,
+        )
+        return result.decision != DECISION_DENY
+
+    def _team_capability_catalog(
+        self, db: Session, team_id: str, *, owner_human_no: str = ""
+    ) -> list[dict[str, Any]]:
+        """Expose the Team, twin permission and VE capability intersection."""
+        if self.capability_catalog_source == "configured" and config.agentteams_mode() == "agentteams_strict":
+            return self._strict_team_capability_catalog(
+                db, team_id, owner_human_no=owner_human_no
+            )
         team = db.get(models.Team, team_id)
         if team is None:
             raise CollaborationConflict("unknown_team")
         member_ids = {team.leader_employee_id}
         member_ids.update(db.scalars(
             select(models.TeamMember.employee_id).where(models.TeamMember.team_id == team_id)
+        ))
+        team_capability_ids = set(db.scalars(
+            select(models.TeamPluginGrant.plugin_id).where(
+                models.TeamPluginGrant.team_id == team_id,
+                models.TeamPluginGrant.decision_mode == "allow",
+            )
         ))
         catalog: list[dict[str, Any]] = []
         for employee_id in sorted(member_ids):
@@ -1320,7 +1377,18 @@ class AgentTeamsCollaborationService:
                     models.EmployeePluginGrant.decision_mode == "allow",
                 )
             ))
-            capability_ids = sorted({grant.plugin_id for grant in grants})
+            capability_ids = sorted({
+                grant.plugin_id for grant in grants
+                if grant.plugin_id in team_capability_ids
+                and self._capability_allowed_for_owner(
+                    db,
+                    employee_id=employee_id,
+                    team_id=team_id,
+                    plugin_id=grant.plugin_id,
+                    action=grant.action,
+                    owner_human_no=owner_human_no,
+                )
+            })
             catalog.append({
                 "agent_id": employee.employee_no,
                 "name": employee.name,
@@ -1331,7 +1399,9 @@ class AgentTeamsCollaborationService:
             })
         return catalog
 
-    def _strict_team_capability_catalog(self, db: Session, team_id: str) -> list[dict[str, Any]]:
+    def _strict_team_capability_catalog(
+        self, db: Session, team_id: str, *, owner_human_no: str = ""
+    ) -> list[dict[str, Any]]:
         """Build a public capability view from the validated strict runtime only."""
         try:
             runtime = load_strict_runtime_config()
@@ -1376,6 +1446,29 @@ class AgentTeamsCollaborationService:
                 or matrix_user_id_for_runtime(employee.runtime_ref) != identity.mxid
             ):
                 continue
+            if owner_human_no:
+                permitted: list[str] = []
+                tool_bindings: dict[str, list[tuple[str, str]]] = {}
+                for tool in identity.safe_tool_catalog:
+                    required_capability = str(tool.get("required_capability") or "").strip()
+                    plugin_id = str(tool.get("plugin_id") or "").strip()
+                    action = str(tool.get("action") or "read").strip()
+                    if required_capability and plugin_id and action:
+                        tool_bindings.setdefault(required_capability, []).append((plugin_id, action))
+                for capability in capabilities:
+                    if any(
+                        self._capability_allowed_for_owner(
+                            db,
+                            employee_id=agent_id,
+                            team_id=team_id,
+                            plugin_id=plugin_id,
+                            action=action,
+                            owner_human_no=owner_human_no,
+                        )
+                        for plugin_id, action in tool_bindings.get(capability, [])
+                    ):
+                        permitted.append(capability)
+                capabilities = permitted
             catalog.append({
                 "agent_id": agent_id,
                 "name": employee.name,

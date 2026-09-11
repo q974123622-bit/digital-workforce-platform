@@ -7,6 +7,7 @@
 from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from .. import models
 
@@ -47,3 +48,21 @@ def resolve_identity(db: Session, employee_id: str) -> EmployeeIdentity | None:
         max_data_level=emp.max_data_level,
         allowed_domains=tuple(emp.allowed_domains or []),
     )
+
+
+def resolve_twin_identity(db: Session, owner_human_no: str) -> EmployeeIdentity | None:
+    """Resolve the one digital twin representing a trusted human task owner."""
+    human_no = str(owner_human_no or "").strip()
+    if not human_no:
+        return None
+    twin_id = db.scalar(
+        select(models.DigitalEmployee.employee_no)
+        .where(
+            models.DigitalEmployee.type == "twin",
+            models.DigitalEmployee.owner_human_no == human_no,
+            models.DigitalEmployee.status == "active",
+        )
+        .order_by(models.DigitalEmployee.employee_no)
+        .limit(1)
+    )
+    return resolve_identity(db, twin_id) if twin_id else None

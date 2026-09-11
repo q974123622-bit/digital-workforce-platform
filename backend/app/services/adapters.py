@@ -8,12 +8,20 @@ import json
 from pathlib import Path
 
 from .. import models
+from .agentteams_database_scenarios import DatabaseScenarioCatalog
 
 
 _ONBOARDING_FIXTURE = (
     Path(__file__).resolve().parents[3] / "mock-data" / "agentteams" / "onboarding-a.json"
 )
 _ONBOARDING_EMPLOYEE_REF = "新员工A"
+_ROLE_CHANGE_FIXTURE = (
+    Path(__file__).resolve().parents[3] / "mock-data" / "agentteams" / "role-change-zhang-ming.json"
+)
+_ROLE_CHANGE_EMPLOYEE_REF = "张明"
+_ROLE_CHANGE_APPROVAL_REF = "AUD-RC-001"
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_DATABASE_SCENARIOS: DatabaseScenarioCatalog | None = None
 
 
 class AdapterInputError(ValueError):
@@ -103,10 +111,115 @@ def _mock_agentteams_onboarding_evidence(_plugin: models.Plugin, params: dict) -
     }
 
 
+def _validate_role_change_input(params: dict) -> None:
+    if not isinstance(params, dict) or set(params) != {"employee_ref"}:
+        raise AdapterInputError("invalid_params")
+    if params.get("employee_ref") != _ROLE_CHANGE_EMPLOYEE_REF:
+        raise AdapterInputError("invalid_employee_ref")
+
+
+def _validate_role_change_activation_input(params: dict) -> None:
+    if not isinstance(params, dict) or set(params) != {"employee_ref", "approval_ref"}:
+        raise AdapterInputError("invalid_params")
+    if params.get("employee_ref") != _ROLE_CHANGE_EMPLOYEE_REF:
+        raise AdapterInputError("invalid_employee_ref")
+    if params.get("approval_ref") != _ROLE_CHANGE_APPROVAL_REF:
+        raise AdapterInputError("invalid_approval_ref")
+
+
+def _role_change_fixture_section(params: dict, section_name: str, *, activation: bool = False) -> dict:
+    ( _validate_role_change_activation_input if activation else _validate_role_change_input)(params)
+    try:
+        fixture = json.loads(_ROLE_CHANGE_FIXTURE.read_text(encoding="utf-8"))
+        section = fixture[section_name]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RuntimeError("role_change_demo_fixture_unavailable") from error
+    if not isinstance(section, dict):
+        raise RuntimeError("role_change_demo_fixture_unavailable")
+    return section
+
+
+def _role_change_view(params: dict, section_name: str, result_key: str, *, activation: bool = False) -> dict:
+    section = _role_change_fixture_section(params, section_name, activation=activation)
+    evidence_ids = section.get("evidence_ids")
+    result = section.get(result_key)
+    if (
+        not isinstance(evidence_ids, list)
+        or not all(isinstance(item, str) and item for item in evidence_ids)
+        or not isinstance(result, dict)
+    ):
+        raise RuntimeError("role_change_demo_fixture_unavailable")
+    response = {
+        "source": "demo",
+        "employee_ref": _ROLE_CHANGE_EMPLOYEE_REF,
+        "evidence_ids": list(evidence_ids),
+        result_key: dict(result),
+    }
+    approval_ref = section.get("approval_ref")
+    if isinstance(approval_ref, str) and approval_ref:
+        response["approval_ref"] = approval_ref
+    return response
+
+
+def _mock_agentteams_role_change_hr(_plugin: models.Plugin, params: dict) -> dict:
+    return _role_change_view(params, "hr_role_change", "role_change")
+
+
+def _mock_agentteams_role_change_it_plan(_plugin: models.Plugin, params: dict) -> dict:
+    return _role_change_view(params, "it_permission_plan", "permission_plan")
+
+
+def _mock_agentteams_role_change_audit(_plugin: models.Plugin, params: dict) -> dict:
+    return _role_change_view(params, "audit_review", "review")
+
+
+def _mock_agentteams_role_change_it_activate(_plugin: models.Plugin, params: dict) -> dict:
+    return _role_change_view(params, "it_activation", "activation", activation=True)
+
+
+def _database_catalog() -> DatabaseScenarioCatalog:
+    global _DATABASE_SCENARIOS
+    if _DATABASE_SCENARIOS is None:
+        _DATABASE_SCENARIOS = DatabaseScenarioCatalog.from_root(_PROJECT_ROOT)
+    return _DATABASE_SCENARIOS
+
+
+def _validate_database_inspection_input(params: dict) -> None:
+    if not isinstance(params, dict) or set(params) != {
+        "scenario_id", "signal", "filters", "limit",
+    }:
+        raise AdapterInputError("invalid_database_inspection")
+    try:
+        _database_catalog().inspect(
+            params.get("scenario_id"),
+            params.get("signal"),
+            filters=params.get("filters"),
+            limit=params.get("limit"),
+        )
+    except ValueError:
+        raise AdapterInputError("invalid_database_inspection") from None
+
+
+def _mock_agentteams_database_inspector(_plugin: models.Plugin, params: dict) -> dict:
+    _validate_database_inspection_input(params)
+    inspection = _database_catalog().inspect(
+        params["scenario_id"],
+        params["signal"],
+        filters=params["filters"],
+        limit=params["limit"],
+    )
+    return inspection.model_dump(mode="json")
+
+
 _INPUT_VALIDATORS: dict[str, callable] = {
     "mock://agentteams/onboarding-employee": _validate_onboarding_input,
     "mock://agentteams/it-readiness": _validate_onboarding_input,
     "mock://agentteams/onboarding-evidence": _validate_onboarding_input,
+    "mock://agentteams/role-change/hr": _validate_role_change_input,
+    "mock://agentteams/role-change/it-plan": _validate_role_change_input,
+    "mock://agentteams/role-change/audit": _validate_role_change_input,
+    "mock://agentteams/role-change/it-activate": _validate_role_change_activation_input,
+    "mock://agentteams/database-inspector": _validate_database_inspection_input,
 }
 
 
@@ -247,6 +360,11 @@ REGISTRY: dict[str, callable] = {
     "mock://agentteams/onboarding-employee": _mock_agentteams_onboarding_employee,
     "mock://agentteams/it-readiness": _mock_agentteams_it_readiness,
     "mock://agentteams/onboarding-evidence": _mock_agentteams_onboarding_evidence,
+    "mock://agentteams/role-change/hr": _mock_agentteams_role_change_hr,
+    "mock://agentteams/role-change/it-plan": _mock_agentteams_role_change_it_plan,
+    "mock://agentteams/role-change/audit": _mock_agentteams_role_change_audit,
+    "mock://agentteams/role-change/it-activate": _mock_agentteams_role_change_it_activate,
+    "mock://agentteams/database-inspector": _mock_agentteams_database_inspector,
     "mock://kb/l1": _mock_kb_l1,
     "mock://kb/l2": _mock_kb_l2,
     "mock://mcp/hr-employee": _mock_hr_mcp,

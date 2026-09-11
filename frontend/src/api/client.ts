@@ -7,12 +7,16 @@ import type {
   AgentMessage,
   AgentTaskEvent,
   AgentTaskGraph,
+  AgentTaskEvaluation,
   AuditEvent,
   Capability,
   ChatMessage,
   ChatReply,
   Conversation,
   ConversationSummary,
+  DatabaseBenchmarkCreate,
+  DatabaseBenchmarkExperiment,
+  DatabaseBenchmarkRun,
   Employee,
   KnowledgeBase,
   MemoryEntry,
@@ -122,6 +126,28 @@ export const api = {
   getAgentTeamsResult: (actorNo: string, taskId: string) =>
     request<AgentFinalResult>(
       `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/result${qs({ actor_no: actorNo })}`,
+    ),
+  evaluateAgentTeamsTask: (actorNo: string, taskId: string) =>
+    request<AgentTaskEvaluation>(
+      `/agentteams-collaboration/tasks/${encodeURIComponent(taskId)}/evaluation${qs({ actor_no: actorNo })}`,
+      { method: 'POST' },
+    ),
+  createDatabaseBenchmark: (actorNo: string, payload: DatabaseBenchmarkCreate) =>
+    request<DatabaseBenchmarkExperiment>(
+      `/agentteams-benchmarks/database/experiments${qs({ actor_no: actorNo })}`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  getLatestDatabaseBenchmark: (actorNo: string) =>
+    request<DatabaseBenchmarkExperiment | null>(
+      `/agentteams-benchmarks/database/experiments/latest${qs({ actor_no: actorNo })}`,
+    ),
+  getDatabaseBenchmark: (actorNo: string, experimentId: string) =>
+    request<DatabaseBenchmarkExperiment>(
+      `/agentteams-benchmarks/database/experiments/${encodeURIComponent(experimentId)}${qs({ actor_no: actorNo })}`,
+    ),
+  listDatabaseBenchmarkRuns: (actorNo: string, experimentId: string) =>
+    request<DatabaseBenchmarkRun[]>(
+      `/agentteams-benchmarks/database/experiments/${encodeURIComponent(experimentId)}/runs${qs({ actor_no: actorNo })}`,
     ),
   cancelAgentTeamsTask: (actorNo: string, taskId: string) =>
     request<AgentCollaborationTask>(

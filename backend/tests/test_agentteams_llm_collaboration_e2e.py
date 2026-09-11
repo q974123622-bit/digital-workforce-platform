@@ -834,8 +834,15 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     assert {"hr.onboarding.read"}.issubset(capability_catalog["VE-0002"])
     assert {"it.readiness.read"}.issubset(capability_catalog["VE-0003"])
     assert {"audit.evidence.read"}.issubset(capability_catalog["VE-0005"])
-    run = service.create_task(db_session, team_id="TEAM-ONBOARD", leader_agent_id="VE-0001", title="新员工A按期入职评估", instruction="评估新员工A是否可以按期入职。", material={})
-    run.owner_human_no = "E10281"
+    run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="新员工A按期入职评估",
+        instruction="评估新员工A是否可以按期入职。",
+        material={},
+        owner_human_no="E10281",
+    )
     db_session.commit()
     runner = AgentTeamsCollaborationRunner(service=service, gateway=bus.endpoint(mxids["platform"]), room_id="!task9:matrix.test")
     assert runner.transport_mode == "agentteams_strict"
@@ -877,6 +884,7 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
          for event in db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id).all()
          if event.event_type in {"task.failed", "protocol.rejected", "tool.failed", "tool.denied"}],
         handled_by_agent,
+        [(node.client_task_key, node.status) for node in nodes],
     )
     assert by_key["hr-check"].parent_task_id == run.id
     assert by_key["it-check"].parent_task_id == run.id

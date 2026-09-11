@@ -1,0 +1,1 @@
+[{"table":"fills","read_mb_per_minute":39500,"temp_mb_per_minute":25100,"cpu_percent":95,"cache_hit_ratio":0.75},{"table":"positions","sequential_scans":9,"index_scans":51000,"cache_hit_ratio":0.998}]

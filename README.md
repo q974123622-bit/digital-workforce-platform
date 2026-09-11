@@ -69,6 +69,13 @@ logicalNpc/
 - [协议说明](docs/agentteams/PROTOCOL.md)
 - [部署与排障](docs/agentteams/DEPLOYMENT.md)
 - [固定演示脚本](docs/agentteams/DEMO.md)
+- [严格 Matrix / DeepSeek 验收记录](docs/agentteams/REAL_MATRIX_ACCEPTANCE.md)
+
+严格模式运行路径由 Docker Synapse、Windows 后端、四个独立 Agent 进程和
+前端组成；平台仍是任务状态、策略和审计的唯一权威。当前仓库的确定性测试
+覆盖不等同于真实 Synapse、五账号 Matrix 或 DeepSeek 验收。开始严格演示前，
+先按验收记录完成镜像、五账号私房间和真实 smoke 检查；失败时保持 strict
+failure，不得把本地确定性演示标为真实连接。
 
 ## 手动启动
 

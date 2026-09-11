@@ -1,0 +1,1 @@
+{"root_cause_id":"invalid_covering_index","aliases":["invalid_index","missing_usable_index"],"secondary_causes":["autovacuum_lag"],"required_signals":["indexes","vacuum","table_stats"],"requires_followup_signals":["table_stats"],"rationale":"客户覆盖索引失效直接导致检索退化；清理滞后造成存储增长，是需要同时报告的伴随问题。"}

@@ -21,7 +21,7 @@ def smoke_module():
 def _detail():
     return {
         "nodes": [
-            {"id": "AT-1", "parent_task_id": None, "assignee_agent_id": "DT-E10281", "depth": 0},
+            {"id": "AT-1", "parent_task_id": None, "assignee_agent_id": "VE-0001", "depth": 0},
             {"id": "AT-2", "parent_task_id": "AT-1", "assignee_agent_id": "VE-0002", "depth": 1},
             {"id": "AT-3", "parent_task_id": "AT-1", "assignee_agent_id": "VE-0003", "depth": 1},
         ]
@@ -78,7 +78,7 @@ def test_build_evidence_rejects_detached_database_summary(smoke_module):
 def test_build_evidence_accepts_received_workers_and_manager_summary(smoke_module):
     messages = _received_workers() + [
         _message(
-            "DT-E10281",
+            "VE-0001",
             "task.summary",
             "$manager-summary",
             direction="inbound",
@@ -93,14 +93,14 @@ def test_build_evidence_accepts_received_workers_and_manager_summary(smoke_modul
     )
 
     assert evidence["ok"] is True
-    assert evidence["participant_ids"] == ["DT-E10281", "VE-0002", "VE-0003"]
-    assert evidence["matrix_event_ids"]["DT-E10281"] == ["$manager-summary"]
+    assert evidence["participant_ids"] == ["VE-0001", "VE-0002", "VE-0003"]
+    assert evidence["matrix_event_ids"]["VE-0001"] == ["$manager-summary"]
 
 
 def test_build_evidence_accepts_nested_protocol_payload_summary(smoke_module):
     messages = _received_workers() + [
         _message(
-            "DT-E10281",
+            "VE-0001",
             "task.summary",
             "$manager-summary",
             direction="inbound",
@@ -162,6 +162,8 @@ class _FakeClient:
     def __init__(self, get_values, post_values=()):
         self.get_values = iter(get_values)
         self.post_values = iter(post_values)
+        self.get_calls = []
+        self.post_calls = []
 
     def __enter__(self):
         return self
@@ -169,10 +171,12 @@ class _FakeClient:
     def __exit__(self, *_args):
         return None
 
-    def get(self, _url):
+    def get(self, _url, params=None):
+        self.get_calls.append((_url, params))
         return _FakeResponse(next(self.get_values))
 
-    def post(self, _url, json):
+    def post(self, _url, json, params=None):
+        self.post_calls.append((_url, json, params))
         return _FakeResponse(next(self.post_values))
 
 
@@ -196,7 +200,7 @@ def test_main_returns_safe_preflight_failure_for_non_json_health(smoke_module, m
 def test_main_returns_safe_run_failure_for_non_json_result(smoke_module, monkeypatch, capsys):
     messages = _received_workers() + [
         _message(
-            "DT-E10281", "task.summary", "$manager-summary", direction="inbound",
+            "VE-0001", "task.summary", "$manager-summary", direction="inbound",
             delivery_status="received", payload={"summary": "完成"},
         )
     ]
@@ -206,7 +210,7 @@ def test_main_returns_safe_run_failure_for_non_json_result(smoke_module, monkeyp
         "Client",
         lambda **_kwargs: _FakeClient(
             [
-                {"ready_for_demo": True},
+                {"ready_for_demo": True, "mode": "agentteams_strict", "transport": "matrix"},
                 {"status": "completed"},
                 _detail(),
                 [{"event_type": "task.progress"}],
@@ -224,3 +228,45 @@ def test_main_returns_safe_run_failure_for_non_json_result(smoke_module, monkeyp
         "task_id", "participant_ids", "matrix_event_ids", "summary", "missing_criteria"
     }
     assert "do not leak" not in output
+
+
+def test_main_rejects_local_demo_health_before_creating_a_task(smoke_module, monkeypatch, capsys):
+    client = _FakeClient([
+        {"ready_for_demo": True, "mode": "local_demo", "transport": "local"}
+    ])
+    monkeypatch.setattr(smoke_module.sys, "argv", ["agentteams_collaboration_smoke.py"])
+    monkeypatch.setattr(smoke_module.httpx, "Client", lambda **_kwargs: client)
+
+    assert smoke_module.main() == 2
+    assert client.post_calls == []
+    assert "Matrix" in capsys.readouterr().out
+
+
+def test_main_uses_actor_query_for_create_and_every_task_read(smoke_module, monkeypatch, capsys):
+    messages = _received_workers() + [
+        _message(
+            "VE-0001", "task.summary", "$manager-summary", direction="inbound",
+            delivery_status="received", payload={"summary": "入职准备已完成"},
+        )
+    ]
+    client = _FakeClient(
+        [
+            {"ready_for_demo": True, "mode": "agentteams_strict", "transport": "matrix"},
+            {"status": "completed"},
+            _detail(),
+            [{"event_type": "task.progress"}],
+            messages,
+            _completed_result(),
+        ],
+        [{"id": "AT-1"}],
+    )
+    monkeypatch.setattr(smoke_module.sys, "argv", ["agentteams_collaboration_smoke.py"])
+    monkeypatch.setattr(smoke_module.httpx, "Client", lambda **_kwargs: client)
+
+    assert smoke_module.main() == 0
+    capsys.readouterr()
+    assert smoke_module.FIXED_TASK["leader_agent_id"] == "VE-0001"
+    assert client.post_calls[0][2] == {"actor_no": smoke_module.ACTOR_NO}
+    task_gets = [call for call in client.get_calls if "/tasks/" in call[0]]
+    assert len(task_gets) == 5
+    assert all(params == {"actor_no": smoke_module.ACTOR_NO} for _, params in task_gets)

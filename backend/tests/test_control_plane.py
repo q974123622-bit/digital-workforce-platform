@@ -212,12 +212,13 @@ def test_gateway_unknown_plugin_default_deny(client):
 
 
 def test_gateway_no_grant_default_deny(client):
-    # DT-E20999 对 adp-onboarding 无授权：DENY + 审计
+    # DT-E20999 对 expense-claim 无授权：DENY + 审计。
+    # adp-onboarding 已由协作团队权限同步为该数字分身的个人授权。
     resp = client.post(
         "/internal/gateway/invoke",
         json={
             "employee_id": "DT-E20999",
-            "plugin_id": "adp-onboarding",
+            "plugin_id": "expense-claim",
             "action": "execute",
             "params": {},
             "trace_id": "T-GW-NOGRANT-001",

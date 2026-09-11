@@ -1,0 +1,1 @@
+[{"query_id":"bit-1","database":"crm","query":"SELECT id,name,tier FROM customers WHERE tenant_id = ? AND email = ?","calls":20100,"mean_ms":1490,"rows_per_call":1}]

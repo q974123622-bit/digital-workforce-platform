@@ -131,10 +131,16 @@ def plan(action="delegate"):
     return ManagerDecision(selected_skill_ids=["agentteams-onboarding-readiness"], action="fail", failure_reason="证据不足")
 
 
+def reasoned(decision, text):
+    decision._attach_reasoning(text)
+    return decision
+
+
 def assign_payload():
     return {
         "title": "HR 核查", "instruction": "核验新员工A的完整HR入职材料，并报告缺口。",
         "client_task_key": "hr", "dependency_results": [], "parent_chain_agent_ids": ["VE-0001"],
+        "required_capability": "hr.onboarding.read",
         "team_capability_catalog": manager_payload()["team_capability_catalog"], "team_catalog_version": 1,
     }
 
@@ -164,6 +170,47 @@ def test_manager_selects_skill_then_delegates_without_invalid_root_ack(tmp_path)
     assert {item["assignee_agent_id"] for item in sent[1].payload["subtasks"]} == {"VE-0002", "VE-0003"}
     assert all("required_capability" in item for item in sent[1].payload["subtasks"])
     assert pauses == [0.0, 0.0]
+
+
+def test_manager_persists_reasoning_before_the_delegate_action(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [reasoned(
+        SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"]),
+        "用户要求评估入职条件，应选择入职就绪 Skill。",
+    )]
+    engine.plans = [reasoned(
+        plan(),
+        "当前没有 HR 与 IT 的一手证据，应先并行派发核查任务。",
+    )]
+    gateway.events = [event(message(
+        type="task.submit",
+        sender="platform",
+        receiver="VE-0001",
+        payload=manager_payload(),
+    ))]
+
+    subject.run_once()
+
+    sent = sent_protocols(gateway)
+    assert [item.type for item in sent] == [
+        "agent.message", "agent.message", "agent.message", "task.delegate",
+    ]
+    traces = [item.payload for item in sent if item.payload.get("kind") == "decision.trace"]
+    assert traces == [
+        {
+            "kind": "decision.trace",
+            "stage": "skill_selection",
+            "iteration": 1,
+            "reasoning_segments": ["用户要求评估入职条件，应选择入职就绪 Skill。"],
+        },
+        {
+            "kind": "decision.trace",
+            "stage": "decision",
+            "iteration": 1,
+            "action": "delegate",
+            "reasoning_segments": ["当前没有 HR 与 IT 的一手证据，应先并行派发核查任务。"],
+        },
+    ]
 
 
 def test_runtime_surfaces_persistent_llm_unavailability_as_fixed_failure(tmp_path):
@@ -305,6 +352,51 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     saved = (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
     assert "exposed" not in saved and "password" not in saved and '"key"' not in saved
     assert "101" in saved
+
+
+def test_worker_persists_each_reasoning_iteration_around_tool_evidence(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [
+        reasoned(
+            WorkerDecision(action="tool", tool_name="query_onboarding_employee", tool_arguments={}),
+            "还没有员工材料证据，先调用查询工具。",
+        ),
+        reasoned(
+            WorkerDecision(action="complete", result="资料齐全"),
+            "工具已经返回成功审计记录，可以提交节点结果。",
+        ),
+    ]
+    assignment = message(
+        type="task.assign", sender="VE-0001", receiver="VE-0002",
+        parent_task_id="root-1", payload=assign_payload(),
+    )
+    tool_result = message(
+        type="tool.result", sender="platform", receiver="VE-0002",
+        parent_task_id="root-1",
+        payload={
+            "ok": True, "audit_ids": [101],
+            "team_capability_catalog": manager_payload()["team_capability_catalog"],
+            "team_catalog_version": 2,
+        },
+        key="tool-trace",
+    )
+    gateway.events = [
+        event(assignment, event_id="$assign-trace", sender=MXIDS["VE-0001"], ts=1),
+        event(tool_result, event_id="$tool-trace", ts=2),
+    ]
+
+    subject.run_once()
+
+    traces = [
+        item.payload for item in sent_protocols(gateway)
+        if item.payload.get("kind") == "decision.trace"
+    ]
+    assert [(item["iteration"], item["action"]) for item in traces] == [
+        (1, "tool"), (2, "complete"),
+    ]
+    assert "还没有员工材料证据" in "".join(traces[0]["reasoning_segments"])
+    assert "工具已经返回成功审计记录" in "".join(traces[1]["reasoning_segments"])
 
 
 def test_worker_prompt_receives_tool_input_schema_and_exact_arguments_reach_tool_request(tmp_path):
@@ -490,6 +582,17 @@ def test_cli_loaded_tool_catalog_controls_runtime_tool_requests(tmp_path):
     gateway.events = [event(message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload()), sender=MXIDS["VE-0001"])]
     AgentRuntime(config, gateway, engine, pause=lambda _: None).run_once()
     assert all(item.type != "tool.request" for item in sent_protocols(gateway))
+
+
+def test_agentteams_cli_builds_a_thinking_provider_with_the_configured_model(monkeypatch):
+    from scripts.run_agentteams_agent import build_decision_engine
+
+    monkeypatch.setenv("AGENTTEAMS_WORKER_MODEL", "deepseek-v4-flash")
+
+    engine = build_decision_engine("role-key", Path(__file__).resolve().parents[2])
+
+    assert engine.provider.model == "deepseek-v4-flash"
+    assert engine.provider.thinking is True
 
 
 @pytest.mark.parametrize("decision, expected", [

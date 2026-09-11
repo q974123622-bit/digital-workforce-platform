@@ -7,10 +7,11 @@ It deliberately has no Matrix, database, Tool, or permission side effects.
 from __future__ import annotations
 
 import json
+import re
 from time import sleep
 from typing import Any, Callable, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
 from .agentteams_skills import ProjectSkillRegistry, SkillRegistryError
 from .llm import LLMProvider, LLMUnavailableError
@@ -30,6 +31,24 @@ class _DecisionValidationError(ValueError):
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    _reasoning_content: str = PrivateAttr(default="")
+
+    @property
+    def reasoning_content(self) -> str:
+        return self._reasoning_content
+
+    def _attach_reasoning(self, value: str) -> None:
+        self._reasoning_content = value.strip()[:2048]
+
+
+def _contains_chinese(value: str) -> bool:
+    return any("\u4e00" <= character <= "\u9fff" for character in value)
+
+
+_ENGLISH_READINESS_TOKEN = re.compile(
+    r"(?<![A-Za-z_])(?:not_ready|ready|incomplete)(?![A-Za-z_])",
+    re.IGNORECASE,
+)
 
 
 class SkillSelection(_StrictModel):
@@ -54,6 +73,20 @@ class FinalSummary(_StrictModel):
     risks: list[str] = Field(default_factory=list)
     unknowns: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
+
+
+def _validate_final_summary_language(summary: FinalSummary) -> None:
+    narrative = [
+        summary.summary,
+        *summary.completed_items,
+        *summary.risks,
+        *summary.unknowns,
+        *summary.next_actions,
+    ]
+    if any(text and not _contains_chinese(text) for text in narrative):
+        raise _DecisionValidationError("user_facing_text_must_contain_chinese")
+    if any(_ENGLISH_READINESS_TOKEN.search(text) for text in narrative if text):
+        raise _DecisionValidationError("user_facing_text_must_translate_readiness_status")
 
 
 class ManagerDecision(_StrictModel):
@@ -171,6 +204,22 @@ _BUSINESS_RULE_FEEDBACK = {
     "cyclic_dependency": "Delegate dependencies must be acyclic.",
     "invalid_team_assignee": "Each assignee must be an agent from the current team catalog.",
     "capability_not_available": "Each required capability must belong to its assigned agent in the current team catalog.",
+    "user_facing_text_must_contain_chinese":
+        "Rewrite every user-facing narrative field in Simplified Chinese.",
+    "user_facing_text_must_translate_readiness_status":
+        "Translate ready, not_ready, and incomplete into Chinese inside narrative fields.",
+    "role_change_first_round_required":
+        "For this role-change scenario, first delegate HR role evidence and IT permission planning in one dependency-free batch.",
+    "role_change_follow_up_required":
+        "After the first evidence round, delegate audit review and IT activation in one batch, with IT activation depending on audit review.",
+    "role_change_final_summary_required":
+        "After the approved activation round, return the final successful Chinese summary.",
+    "role_change_final_has_unsubstantiated_gaps":
+        "All fixed Demo evidence is complete; return empty risks and unknowns instead of inventing gaps.",
+    "tool_outside_assigned_capability":
+        "Use only a Tool whose required capability matches the capability assigned to this task.",
+    "role_change_it_plan_must_return_to_manager":
+        "After inspecting the role-change permission plan, return the finding to Manager; do not delegate audit from this first-round task.",
 }
 
 
@@ -220,6 +269,33 @@ class AgentDecisionEngine:
     def plan(self, context: ManagerContext) -> ManagerDecision:
         manager_skill = self.skills.load([context.manager_skill_id])[0]
         selected_skills = self.skills.load(context.selected_skill_ids)
+        scenario_execution_contract: dict[str, Any] = {}
+        if "agentteams-role-change-readiness" in context.selected_skill_ids:
+            if not context.child_results:
+                scenario_execution_contract = {
+                    "required_action": "delegate",
+                    "parallel_capabilities": ["hr.role_change.read", "it.permission.plan"],
+                }
+            elif context.current_round == 1:
+                scenario_execution_contract = {
+                    "required_action": "delegate",
+                    "serial_capabilities": ["audit.permission.review", "it.permission.activate"],
+                    "dependency": "it.permission.activate depends_on audit.permission.review",
+                }
+            else:
+                scenario_execution_contract = {
+                    "required_action": "summarize",
+                    "required_readiness_decision": "ready",
+                    "evidence_precedence": "latest_completed_activation",
+                    "required_empty_fields": ["risks", "unknowns"],
+                    "narrative_language": "Simplified Chinese",
+                    "translate_status_words": {
+                        "ready": "已就绪",
+                        "approved": "已批准",
+                        "completed": "已完成",
+                        "pending_audit_review": "待审计复核",
+                    },
+                }
         messages = _messages(
             "You are an AgentTeams manager. Make a bounded, evidence-oriented decision for "
             "the current round. Return only JSON matching the supplied schema. Choose assignees "
@@ -229,6 +305,9 @@ class AgentDecisionEngine:
             "current team catalog. New client_task_key values must not reuse an existing child task key; "
             "do not assert unobserved facts. Return selected_skill_ids with exactly the selected scenario "
             "Skill IDs supplied below. Do not add, drop, or replace IDs; their order is not significant. "
+            "If action is summarize, write every user-facing narrative field in Simplified Chinese while "
+            "keeping Agent IDs, evidence IDs, and technical abbreviations unchanged. "
+            "Do not write ready, not_ready, or incomplete inside narrative fields; express those statuses in Chinese. "
             "When required evidence is confirmed missing, a summarize action must use readiness_decision "
             "not_ready or incomplete.",
             {
@@ -240,6 +319,7 @@ class AgentDecisionEngine:
                 "completed_direct_child_results": context.child_results,
                 "existing_child_task_keys": context.existing_child_task_keys,
                 "current_round": context.current_round,
+                "scenario_execution_contract": scenario_execution_contract,
                 "limits": {
                     "max_rounds": context.max_rounds,
                     "max_children": context.max_children,
@@ -250,10 +330,13 @@ class AgentDecisionEngine:
 
         def validate(raw: dict[str, Any]) -> ManagerDecision:
             decision = ManagerDecision.model_validate(raw)
+            if decision.summary is not None:
+                _validate_final_summary_language(decision.summary)
             if set(decision.selected_skill_ids) != set(context.selected_skill_ids):
                 raise _DecisionValidationError("selected_skills_must_match_loaded_skill_context")
             if decision.action == "delegate":
                 _validate_manager_delegate_plan(context, decision.subtasks)
+            _validate_role_change_manager_decision(context, decision)
             return decision
 
         return self._structured_with_retry(
@@ -277,7 +360,9 @@ class AgentDecisionEngine:
             "omit tool_name, tool_arguments, recipient_agent_id, message, subtask, and result. "
             "Do not invent facts, tools, agents, or Tool results. Delegate only bounded "
             "work and never delegate to yourself or an agent in the parent chain. Choose Ask and "
-            "Delegate recipients by capability from the supplied current-team catalog.",
+            "Delegate recipients by capability from the supplied current-team catalog. Write task "
+            "results as concise Chinese prose; do not use key=value syntax because it resembles "
+            "secret configuration and will be safely redacted.",
             {
                 "current_agent_id": context.current_agent_id,
                 "task": context.task,
@@ -308,6 +393,9 @@ class AgentDecisionEngine:
         messages = _messages(
             "You are an AgentTeams manager. Produce a final evidence-based summary only from the "
             "supplied direct-child results. Preserve unknowns and return only JSON matching the schema. "
+            "Write every user-facing narrative field in Simplified Chinese. Keep Agent IDs, evidence IDs, "
+            "and technical abbreviations such as MFA unchanged. "
+            "Do not write ready, not_ready, or incomplete inside narrative fields; express those statuses in Chinese. "
             "Return readiness_decision as ready, not_ready, or incomplete. When required evidence is "
             "confirmed missing, readiness_decision must be not_ready or incomplete.",
             {
@@ -323,10 +411,15 @@ class AgentDecisionEngine:
                 },
             },
         )
+        def validate(raw: dict[str, Any]) -> FinalSummary:
+            summary = FinalSummary.model_validate(raw)
+            _validate_final_summary_language(summary)
+            return summary
+
         return self._structured_with_retry(
             messages,
             FinalSummary,
-            FinalSummary.model_validate,
+            validate,
             error_code="summary_failed",
         )
 
@@ -367,14 +460,17 @@ class AgentDecisionEngine:
                     }
                 )
             try:
-                raw = self.provider.structured_output(attempt_messages, schema)
+                response = self.provider.structured_output_with_trace(attempt_messages, schema)
+                raw = response.data
             except LLMUnavailableError:
                 if request_number + 1 >= _MAX_MODEL_REQUESTS:
                     raise
                 self._pause(_LLM_UNAVAILABLE_RETRY_DELAY_SECONDS)
                 continue
             try:
-                return validate(raw)
+                decision = validate(raw)
+                decision._attach_reasoning(response.reasoning_content)
+                return decision
             except (ValidationError, _DecisionValidationError) as exc:
                 last_validation_error = exc
                 validation_attempts += 1
@@ -477,10 +573,57 @@ def _validate_manager_delegate_plan(context: ManagerContext, subtasks: list[Plan
         visit(key)
 
 
+def _validate_role_change_manager_decision(
+    context: ManagerContext,
+    decision: ManagerDecision,
+) -> None:
+    """Keep the fixed role-change demo evidence-led without replacing model planning."""
+    if "agentteams-role-change-readiness" not in context.selected_skill_ids:
+        return
+
+    by_capability = {
+        subtask.required_capability: subtask
+        for subtask in decision.subtasks
+    }
+    if not context.child_results:
+        expected = {"hr.role_change.read", "it.permission.plan"}
+        if (
+            decision.action != "delegate"
+            or set(by_capability) != expected
+            or any(by_capability[item].depends_on for item in expected)
+        ):
+            raise _DecisionValidationError("role_change_first_round_required")
+        return
+
+    if context.current_round == 1:
+        expected = {"audit.permission.review", "it.permission.activate"}
+        audit = by_capability.get("audit.permission.review")
+        activation = by_capability.get("it.permission.activate")
+        if (
+            decision.action != "delegate"
+            or set(by_capability) != expected
+            or audit is None
+            or activation is None
+            or audit.depends_on
+            or activation.depends_on != [audit.client_task_key]
+        ):
+            raise _DecisionValidationError("role_change_follow_up_required")
+        return
+
+    if (
+        decision.action != "summarize"
+        or decision.summary is None
+        or decision.summary.readiness_decision != "ready"
+    ):
+        raise _DecisionValidationError("role_change_final_summary_required")
+    if decision.summary.risks or decision.summary.unknowns:
+        raise _DecisionValidationError("role_change_final_has_unsubstantiated_gaps")
+
+
 def _validate_worker_decision(context: WorkerContext, decision: WorkerDecision) -> None:
     """Reject invented worker targets before the runtime performs an action."""
-    tool_names = {
-        item.get("name")
+    tools_by_name = {
+        item.get("name"): item
         for item in context.safe_tool_catalog
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
@@ -495,8 +638,16 @@ def _validate_worker_decision(context: WorkerContext, decision: WorkerDecision) 
         )
 
     if decision.action == "tool":
-        if decision.tool_name not in tool_names:
+        tool = tools_by_name.get(decision.tool_name)
+        if tool is None:
             raise _DecisionValidationError("tool_not_available")
+        assigned_capability = context.task.get("required_capability")
+        if (
+            isinstance(assigned_capability, str)
+            and assigned_capability
+            and tool.get("required_capability") != assigned_capability
+        ):
+            raise _DecisionValidationError("tool_outside_assigned_capability")
         return
     if decision.action == "ask":
         known_recipients = set(capabilities_by_agent).union(context.parent_chain_agent_ids)
@@ -507,6 +658,11 @@ def _validate_worker_decision(context: WorkerContext, decision: WorkerDecision) 
             raise _DecisionValidationError("ask_recipient_not_available")
         return
     if decision.action == "delegate":
+        if (
+            "it-role-change-assistant" in context.professional_skill_ids
+            and context.task.get("required_capability") == "it.permission.plan"
+        ):
+            raise _DecisionValidationError("role_change_it_plan_must_return_to_manager")
         subtask = decision.subtask
         if subtask is None:
             raise _DecisionValidationError("delegate_missing_subtask")

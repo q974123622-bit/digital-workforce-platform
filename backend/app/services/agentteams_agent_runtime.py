@@ -37,12 +37,23 @@ from .agentteams_runtime_config import is_safe_agent_id, require_safe_path
 from .llm import LLMUnavailableError
 
 
-Role = Literal["manager", "hr", "it", "audit"]
-_ROLES = {"manager", "hr", "it", "audit"}
+Role = Literal[
+    "manager", "hr", "it", "audit",
+    "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
+]
+_ROLES = {
+    "manager", "hr", "it", "audit",
+    "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
+}
 _ROLE_PROFESSIONAL_SKILLS = {
-    "hr": {"hr-onboarding-assistant"},
-    "it": {"it-service-assistant"},
-    "audit": {"audit-evidence-review"},
+    "hr": {"hr-onboarding-assistant", "hr-role-change-assistant"},
+    "it": {"it-service-assistant", "it-role-change-assistant"},
+    "audit": {"audit-evidence-review", "audit-role-change-review"},
+    "db_write": {"db-write-investigation"},
+    "db_lock": {"db-lock-investigation"},
+    "db_vacuum": {"db-vacuum-investigation"},
+    "db_index": {"db-index-investigation"},
+    "db_query": {"db-query-investigation"},
 }
 _SAFE_ERROR_CODES = {
     "skill_selection_failed", "planning_failed", "decision_failed", "summary_failed",
@@ -94,7 +105,11 @@ class AgentRuntimeConfig:
     allowed_skill_ids: set[str]
     team_catalog: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     safe_tool_catalog: list[dict[str, Any]] = field(default_factory=list)
-    scenario_skill_ids: set[str] = field(default_factory=lambda: {"agentteams-onboarding-readiness"})
+    scenario_skill_ids: set[str] = field(default_factory=lambda: {
+        "agentteams-onboarding-readiness",
+        "agentteams-role-change-readiness",
+        "agentteams-database-diagnosis",
+    })
     professional_skill_ids: set[str] | None = None
     state_dir: Path = field(default_factory=lambda: Path(".agentteams-runtime") / "state")
     pause_seconds: float = 0.0
@@ -315,8 +330,12 @@ class AgentRuntime:
         decision = self.decisions.plan(self._manager_context(
             goal=goal, selected=selected, catalog=catalog, child_results=[], existing_child_task_keys=[], current_round=1, limits={}
         ))
-        self._remember_manager(state, message, goal, selected, catalog_version)
-        return [skill_message, *self._manager_decision(message, decision, catalog, 1)]
+        self._remember_manager(state, message, goal, selected, catalog_version, decision_iteration=1)
+        responses = [skill_message]
+        responses.extend(self._reasoning_trace(message, selection, stage="skill_selection", iteration=1, sequence=len(responses)))
+        responses.extend(self._reasoning_trace(message, decision, stage="decision", iteration=1, sequence=len(responses), action=decision.action))
+        responses.extend(self._manager_decision(message, decision, catalog, 1, sequence=len(responses)))
+        return responses
 
     def _manager_review(self, message: AgentProtocolMessage, state: dict[str, Any]) -> list[AgentProtocolMessage]:
         stored = state["tasks"].get(message.task_id, {})
@@ -334,10 +353,29 @@ class AgentRuntime:
             existing_child_task_keys=message.payload.get("existing_child_task_keys"),
             current_round=current_round, limits=message.payload.get("remaining_limits", {}),
         ))
-        self._remember_manager(state, message, self._goal(message, stored.get("goal")), selected, catalog_version)
-        return self._manager_decision(message, decision, catalog, current_round)
+        decision_iteration = self._positive_int(stored.get("decision_iteration"), 1) + 1
+        self._remember_manager(
+            state, message, self._goal(message, stored.get("goal")), selected,
+            catalog_version, decision_iteration=decision_iteration,
+        )
+        responses = self._reasoning_trace(
+            message, decision, stage="decision", iteration=decision_iteration,
+            sequence=0, action=decision.action,
+        )
+        responses.extend(self._manager_decision(
+            message, decision, catalog, current_round, sequence=len(responses),
+        ))
+        return responses
 
-    def _manager_decision(self, message: AgentProtocolMessage, decision: Any, catalog: Mapping[str, Any], round_no: int) -> list[AgentProtocolMessage]:
+    def _manager_decision(
+        self,
+        message: AgentProtocolMessage,
+        decision: Any,
+        catalog: Mapping[str, Any],
+        round_no: int,
+        *,
+        sequence: int = 1,
+    ) -> list[AgentProtocolMessage]:
         selected = self._safe_selected(decision.selected_skill_ids, self.config.scenario_skill_ids)
         if decision.action == "delegate":
             subtasks = [self._safe_subtask(item, catalog) for item in decision.subtasks]
@@ -345,7 +383,7 @@ class AgentRuntime:
                 raise AgentDecisionError("planning_failed")
             return [self._reply(message, "task.delegate", "platform", {
                 "subtasks": subtasks, "selected_skill_ids": selected, "round": round_no,
-            }, 1)]
+            }, sequence)]
         if decision.action == "summarize":
             summary = decision.summary
             return [self._reply(message, "task.summary", "platform", {
@@ -355,8 +393,8 @@ class AgentRuntime:
                 "risks": self._bounded_text_list(summary.risks),
                 "unknowns": self._bounded_text_list(summary.unknowns),
                 "next_actions": self._bounded_text_list(summary.next_actions),
-            }, 1)]
-        return [self._failure(message, "planning_failed", sequence=1)]
+            }, sequence)]
+        return [self._failure(message, "planning_failed", sequence=sequence)]
 
     def _worker_assign(self, message: AgentProtocolMessage, state: dict[str, Any]) -> list[AgentProtocolMessage]:
         self._visible_pause()
@@ -378,7 +416,13 @@ class AgentRuntime:
             "kind": "skill.selected", "selected_skill_ids": selected,
         }, 2)
         self._visible_pause()
-        return [accepted, progress, selected_message, *self._worker_decide(message, state, context, 3)]
+        responses = [accepted, progress, selected_message]
+        responses.extend(self._reasoning_trace(
+            message, selection, stage="skill_selection", iteration=1,
+            sequence=len(responses),
+        ))
+        responses.extend(self._worker_decide(message, state, context, len(responses)))
+        return responses
 
     def _worker_continue(self, message: AgentProtocolMessage, state: dict[str, Any], *, evidence_kind: str) -> list[AgentProtocolMessage]:
         context = state["tasks"].get(message.task_id)
@@ -394,6 +438,8 @@ class AgentRuntime:
         return self._worker_decide(message, state, context, 0)
 
     def _worker_decide(self, message: AgentProtocolMessage, state: dict[str, Any], context: dict[str, Any], sequence: int) -> list[AgentProtocolMessage]:
+        iteration = self._positive_int(context.get("decision_iteration"), 0) + 1
+        context["decision_iteration"] = iteration
         decision = self.decisions.decide_work(WorkerContext(
             current_agent_id=self.config.agent_id,
             task=dict(context["task"]), professional_skill_ids=["employee-collaboration", *context["selected_skill_ids"]],
@@ -405,33 +451,38 @@ class AgentRuntime:
             parent_chain_agent_ids=self._bounded_text_list(context["parent_chain_agent_ids"]),
             previous_results=self._bounded_collection(context.get("evidence", [])),
         ))
+        responses = self._reasoning_trace(
+            message, decision, stage="decision", iteration=iteration,
+            sequence=sequence, action=decision.action,
+        )
+        action_sequence = sequence + len(responses)
         if decision.action == "tool":
             tool = self._tool(decision.tool_name)
             if tool is None:
                 raise AgentDecisionError("decision_failed")
-            return [self._reply(message, "tool.request", "platform", {
+            return [*responses, self._reply(message, "tool.request", "platform", {
                 "tool_name": decision.tool_name, "plugin_id": tool["plugin_id"], "action": tool["action"],
                 **({"required_capability": tool["required_capability"]} if tool.get("required_capability") else {}),
                 "params": self._bounded_value(decision.tool_arguments or {}),
-            }, sequence)]
+            }, action_sequence)]
         if decision.action == "ask":
             recipient = decision.recipient_agent_id
             if recipient not in self.config.trusted_sender_mxids or recipient in {"platform", self.config.agent_id}:
                 raise AgentDecisionError("decision_failed")
-            return [self._reply(message, "agent.message", recipient, {"kind": "peer.ask", "text": self._text(decision.message)}, sequence)]
+            return [*responses, self._reply(message, "agent.message", recipient, {"kind": "peer.ask", "text": self._text(decision.message)}, action_sequence)]
         if decision.action == "delegate":
             subtask = self._safe_subtask(decision.subtask, context.get("team_catalog", {}), parent_chain=context["parent_chain_agent_ids"])
-            return [self._reply(message, "task.delegate", "platform", {"subtasks": [subtask]}, sequence)]
+            return [*responses, self._reply(message, "task.delegate", "platform", {"subtasks": [subtask]}, action_sequence)]
         if decision.action == "complete":
             audit_ids = self._successful_audit_ids(context.get("evidence", []))
             if audit_ids:
-                return [self._reply(message, "task.result", "platform", {"result": self._text(decision.result), "audit_ids": audit_ids}, sequence)]
+                return [*responses, self._reply(message, "task.result", "platform", {"result": self._text(decision.result), "audit_ids": audit_ids}, action_sequence)]
             if not context.get("completion_corrected"):
                 context["completion_corrected"] = True
                 context["evidence"] = self._append_evidence(context.get("evidence", []), {"kind": "runtime.rejected", "reason": "successful_tool_evidence_required"})
-                return self._worker_decide(message, state, context, sequence + 1)
-            return [self._failure(message, "completion_without_tool_evidence", sequence=sequence)]
-        return [self._failure(message, "decision_failed", sequence=sequence)]
+                return [*responses, *self._worker_decide(message, state, context, action_sequence + 1)]
+            return [*responses, self._failure(message, "completion_without_tool_evidence", sequence=action_sequence)]
+        return [*responses, self._failure(message, "decision_failed", sequence=action_sequence)]
 
     def _worker_team_capability_catalog(self, raw: Any) -> list[dict[str, Any]]:
         if not isinstance(raw, Mapping):
@@ -678,12 +729,15 @@ class AgentRuntime:
             max_nodes=self._positive_int(safe_limits.get("nodes"), 20),
         )
 
-    def _remember_manager(self, state, message, goal, selected, catalog_version) -> None:
+    def _remember_manager(
+        self, state, message, goal, selected, catalog_version, *, decision_iteration: int,
+    ) -> None:
         # Catalog entries are a per-message authority snapshot.  Persist only
         # its monotonic version; a later planning round must supply a fresh one.
         state["tasks"][message.task_id] = {
             "kind": "manager", "goal": goal, "selected_skill_ids": selected,
             "team_catalog_version": catalog_version,
+            "decision_iteration": decision_iteration,
         }
         self._trim_tasks(state)
 
@@ -704,12 +758,38 @@ class AgentRuntime:
         catalog, version = self._fresh_team_catalog(message.payload)
         return {
             "kind": "worker", "selected_skill_ids": selected, "completion_corrected": False, "evidence": [],
+            "decision_iteration": 0,
             "parent_chain_agent_ids": self._bounded_text_list(parent_chain, 8),
             "team_catalog": catalog, "team_catalog_version": version,
             "task": {"title": self._text(message.payload.get("title", "task")), "goal": self._goal(message),
                      "client_task_key": self._text(message.payload.get("client_task_key", "task")),
+                     "required_capability": self._text(message.payload.get("required_capability", "")),
                      "dependency_results": self._bounded_collection(message.payload.get("dependency_results"))},
         }
+
+    def _reasoning_trace(
+        self,
+        source: AgentProtocolMessage,
+        decision: Any,
+        *,
+        stage: str,
+        iteration: int,
+        sequence: int,
+        action: str | None = None,
+    ) -> list[AgentProtocolMessage]:
+        reasoning = getattr(decision, "reasoning_content", "")
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            return []
+        text = reasoning.strip()[:2048]
+        payload: dict[str, Any] = {
+            "kind": "decision.trace",
+            "stage": stage,
+            "iteration": iteration,
+            "reasoning_segments": [text[index:index + 480] for index in range(0, len(text), 480)],
+        }
+        if action:
+            payload["action"] = action
+        return [self._reply(source, "agent.message", "platform", payload, sequence)]
 
     def _safe_subtask(self, subtask: PlannedSubtask | None, catalog: Mapping[str, Any], *, parent_chain: list[str] | None = None) -> dict[str, Any]:
         if subtask is None or not subtask.required_capability or subtask.assignee_agent_id == self.config.agent_id or subtask.assignee_agent_id in set(parent_chain or []):

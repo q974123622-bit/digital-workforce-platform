@@ -1,4 +1,4 @@
-param([switch]$NoFrontend)
+param([switch]$NoFrontend, [switch]$Strict)
 
 $ErrorActionPreference = 'Stop'
 
@@ -51,10 +51,113 @@ function Assert-PortAvailable {
     }
 }
 
+function Stop-AgentTeamsProcessTree {
+    param([Parameter(Mandatory = $true)][int]$RootProcessId)
+
+    if ($null -eq (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue)) {
+        return
+    }
+    # /T follows only descendants of this exact root PID; it never searches by
+    # executable name, so unrelated Python/Node processes are untouched.
+    & taskkill.exe /PID $RootProcessId /T /F 1>$null 2>$null
+    if ($LASTEXITCODE -ne 0 -and $null -ne (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue)) {
+        throw "Could not stop process tree rooted at PID $RootProcessId."
+    }
+}
+
+function Get-AgentTeamsFrontendArguments {
+    param([Parameter(Mandatory = $true)][int]$Port)
+
+    # pnpm passes arguments following the script name through to Vite. A bare
+    # separator here is itself forwarded by the installed pnpm version.
+    return @('--dir', 'frontend', 'dev', '--host', '127.0.0.1', '--port', [string]$Port)
+}
+
+function Start-AgentTeamsFrontendProcess {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$StandardOutputPath,
+        [Parameter(Mandatory = $true)][string]$StandardErrorPath
+    )
+
+    return Start-Process -FilePath 'pnpm.cmd' `
+        -ArgumentList (Get-AgentTeamsFrontendArguments -Port $Port) `
+        -WorkingDirectory $projectRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $StandardOutputPath `
+        -RedirectStandardError $StandardErrorPath `
+        -PassThru
+}
+
+function Wait-AgentTeamsHttpReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [int]$Attempts = 30,
+        [int]$DelayMilliseconds = 500
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            return $false
+        }
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method Get -TimeoutSec 2 -NoProxy
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
+                return $true
+            }
+        } catch {
+            # Vite may still be binding; the bounded loop remains the readiness authority.
+        }
+        if ($attempt -lt $Attempts) {
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
+    }
+    return $false
+}
+
+function Wait-AgentTeamsBackendReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [int]$Attempts = 30,
+        [int]$DelayMilliseconds = 1000
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            return $false
+        }
+        try {
+            $health = Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 2 -NoProxy
+            if ($health.status -eq 'ok') {
+                return $true
+            }
+        } catch {
+            # The backend may still be importing; the bounded loop remains authoritative.
+        }
+        if ($attempt -lt $Attempts) {
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
+    }
+    return $false
+}
+
 function Test-CollaborationPreflightReady {
     param([AllowNull()][object]$Health)
 
     return ($null -ne $Health -and $Health.ready_for_demo -eq $true)
+}
+
+function Set-AgentTeamsDemoProcessEnvironment {
+    param([bool]$StrictMode)
+
+    # Process scope is inherited by child processes and never persists to .env.
+    $env:DWP_AGENTTEAMS_COLLAB_ENABLED = '1'
+    $env:DWP_SKIP_AUTO_SEED = '1'
+    $env:DWP_AGENTTEAMS_MODE = if ($StrictMode) { 'agentteams_strict' } else { 'local_demo' }
 }
 
 if ($MyInvocation.InvocationName -eq '.') {
@@ -68,119 +171,143 @@ if (-not (Test-Path -LiteralPath $databasePath)) {
     throw 'backend/dwp.db is missing. Database initialization is an explicit, separately approved operation; this demo script will not create a database or seed data.'
 }
 
-# Deliberately process-scoped: do not write these values to backend/.env or any other file.
-$env:DWP_AGENTTEAMS_COLLAB_ENABLED = '1'
-$env:DWP_SKIP_AUTO_SEED = '1'
-
-Write-Host 'Starting AgentTeams collaboration demo (no installs, resets, or Matrix service creation).'
-
-$backendEnvPresent = Test-Path -LiteralPath $backendEnv
-Write-Host (if ($backendEnvPresent) { 'Backend .env: present (read-only check)' } else { 'Backend .env: missing; process environment can provide configuration (read-only check)' })
-
-$dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
-$dockerReady = $false
-if ($null -ne $dockerCommand) {
-    & docker version --format '{{.Server.Version}}' 1>$null 2>$null
-    $dockerReady = $LASTEXITCODE -eq 0
-}
-Write-Host (if ($dockerReady) { 'Docker: available (read-only check)' } else { 'Docker: unavailable or daemon not running (read-only check)' })
-
-$controllerContainer = $env:AGENTTEAMS_CONTROLLER_CONTAINER
-if ([string]::IsNullOrWhiteSpace($controllerContainer)) {
-    $controllerContainer = Get-DotEnvValue -Path $backendEnv -Name 'AGENTTEAMS_CONTROLLER_CONTAINER'
-}
-if ([string]::IsNullOrWhiteSpace($controllerContainer)) {
-    $controllerContainer = 'agentteams-controller'
-}
-
-$controllerRunning = $false
-if ($dockerReady) {
-    $controllerState = & docker container inspect $controllerContainer --format '{{.State.Running}}' 2>$null
-    $controllerRunning = $LASTEXITCODE -eq 0 -and [string]::Equals(
-        ([string]$controllerState).Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase
-    )
-}
-Write-Host (if ($controllerRunning) { 'Configured AgentTeams controller: running (read-only check)' } else { 'Configured AgentTeams controller: not confirmed running (read-only check)' })
-
+# Refuse conflicts for every requested service before running even the strict
+# read-only external diagnostics or starting either application process.
 Assert-PortAvailable -Port 8000
-$backendProcess = Start-Process -FilePath $python `
-    -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000') `
-    -WorkingDirectory $backend `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput $backendStdout `
-    -RedirectStandardError $backendStderr `
-    -PassThru
-
-$frontendProcess = $null
 if (-not $NoFrontend) {
-    Assert-PortAvailable -Port 5173
-    $frontendProcess = Start-Process -FilePath 'pnpm.cmd' `
-        -ArgumentList @('--dir', 'frontend', 'dev', '--', '--host', '127.0.0.1', '--port', '5173') `
-        -WorkingDirectory $projectRoot `
+    Assert-PortAvailable -Port 4173
+}
+
+# Deliberately process-scoped: do not write these values to backend/.env or any other file.
+Set-AgentTeamsDemoProcessEnvironment -StrictMode:$Strict
+
+Write-Host "Starting AgentTeams collaboration demo in $($env:DWP_AGENTTEAMS_MODE) mode (no installs, resets, or service creation)."
+
+if ($Strict) {
+    $backendEnvPresent = Test-Path -LiteralPath $backendEnv
+    Write-Host (if ($backendEnvPresent) { 'Backend .env: present (read-only check)' } else { 'Backend .env: missing; process environment can provide configuration (read-only check)' })
+
+    $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
+    $dockerReady = $false
+    if ($null -ne $dockerCommand) {
+        & docker version --format '{{.Server.Version}}' 1>$null 2>$null
+        $dockerReady = $LASTEXITCODE -eq 0
+    }
+    Write-Host (if ($dockerReady) { 'Docker: available (read-only check)' } else { 'Docker: unavailable or daemon not running (read-only check)' })
+
+    $controllerContainer = $env:AGENTTEAMS_CONTROLLER_CONTAINER
+    if ([string]::IsNullOrWhiteSpace($controllerContainer)) {
+        $controllerContainer = Get-DotEnvValue -Path $backendEnv -Name 'AGENTTEAMS_CONTROLLER_CONTAINER'
+    }
+    if ([string]::IsNullOrWhiteSpace($controllerContainer)) {
+        $controllerContainer = 'agentteams-controller'
+    }
+
+    $controllerRunning = $false
+    if ($dockerReady) {
+        $controllerState = & docker container inspect $controllerContainer --format '{{.State.Running}}' 2>$null
+        $controllerRunning = $LASTEXITCODE -eq 0 -and [string]::Equals(
+            ([string]$controllerState).Trim(), 'true', [System.StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    Write-Host (if ($controllerRunning) { 'Configured AgentTeams controller: running (read-only check)' } else { 'Configured AgentTeams controller: not confirmed running (read-only check)' })
+} else {
+    Write-Host 'Local demo: Matrix credentials are not required, used, probed, or output; Docker and controller checks are skipped.'
+}
+
+$backendProcess = $null
+$frontendProcess = $null
+try {
+    $backendProcess = Start-Process -FilePath $python `
+        -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000') `
+        -WorkingDirectory $backend `
         -WindowStyle Hidden `
-        -RedirectStandardOutput $frontendStdout `
-        -RedirectStandardError $frontendStderr `
+        -RedirectStandardOutput $backendStdout `
+        -RedirectStandardError $backendStderr `
         -PassThru
-}
 
-$backendReady = $false
-for ($attempt = 1; $attempt -le 30; $attempt++) {
-    Start-Sleep -Seconds 1
-    try {
-        $health = Invoke-RestMethod -Uri $backendHealthUrl -Method Get -TimeoutSec 2
-        if ($health.status -eq 'ok') {
-            $backendReady = $true
-            break
-        }
-    } catch {
-        # The launched process may still be importing; detailed diagnostics are in its log files.
+    $backendReady = Wait-AgentTeamsBackendReady `
+        -Uri $backendHealthUrl `
+        -Process $backendProcess `
+        -Attempts 30 `
+        -DelayMilliseconds 1000
+    if (-not $backendReady) {
+        throw 'Backend failed to become ready at http://127.0.0.1:8000 or exited early. Check the backend logs.'
     }
-}
 
-$collaborationReady = $false
-$collaborationStatus = 'unavailable'
-$collaborationReason = 'Backend health check failed or collaboration health endpoint is unavailable'
-if ($backendReady) {
-    try {
-        $collaborationHealth = Invoke-RestMethod -Uri $collaborationHealthUrl -Method Get -TimeoutSec 10
-        $collaborationReady = $collaborationHealth.ready_for_demo -eq $true
-        $collaborationStatus = if ($collaborationReady) { 'ready' } else { 'blocked' }
-        $collaborationReason = [string]$collaborationHealth.reason
-        if ([string]::IsNullOrWhiteSpace($collaborationReason)) {
-            $collaborationReason = 'none'
+    if (-not $NoFrontend) {
+        $frontendProcess = Start-AgentTeamsFrontendProcess `
+            -Port 4173 `
+            -StandardOutputPath $frontendStdout `
+            -StandardErrorPath $frontendStderr
+        $frontendReady = Wait-AgentTeamsHttpReady `
+            -Uri 'http://127.0.0.1:4173' `
+            -Process $frontendProcess `
+            -Attempts 30 `
+            -DelayMilliseconds 500
+        if (-not $frontendReady) {
+            throw 'Frontend failed to become ready at http://127.0.0.1:4173. Check the frontend logs.'
         }
-    } catch {
-        # Do not surface raw responses or exception text because they can include deployment details.
     }
-}
 
-$realPreflightReady = Test-CollaborationPreflightReady -Health $collaborationHealth
+    $collaborationHealth = $null
+    $collaborationReady = $false
+    $collaborationStatus = 'unavailable'
+    $collaborationReason = 'Backend health check failed or collaboration health endpoint is unavailable'
+    if ($backendReady) {
+        try {
+            $collaborationHealth = Invoke-RestMethod -Uri $collaborationHealthUrl -Method Get -TimeoutSec 10 -NoProxy
+            $collaborationReady = $collaborationHealth.ready_for_demo -eq $true
+            $collaborationStatus = if ($collaborationReady) { 'ready' } else { 'blocked' }
+            $collaborationReason = [string]$collaborationHealth.reason
+            if ([string]::IsNullOrWhiteSpace($collaborationReason)) {
+                $collaborationReason = 'none'
+            }
+        } catch {
+            # Do not surface raw responses or exception text because they can include deployment details.
+        }
+    }
 
-Write-Host ''
-Write-Host "Backend health: $(if ($backendReady) { 'ok' } else { 'unavailable' })"
-Write-Host "Collaboration health: status=$collaborationStatus; reason=$collaborationReason"
-Write-Host 'Backend URL: http://127.0.0.1:8000/health'
-Write-Host 'Collaboration health URL: http://127.0.0.1:8000/api/v1/agentteams-collaboration/health'
-Write-Host "Backend PID: $($backendProcess.Id)"
-Write-Host "Backend logs: $backendStdout; $backendStderr"
+    $realPreflightReady = Test-CollaborationPreflightReady -Health $collaborationHealth
 
-if ($null -ne $frontendProcess) {
-    Write-Host 'Frontend URL: http://127.0.0.1:5173'
-    Write-Host "Frontend PID: $($frontendProcess.Id)"
-    Write-Host "Frontend logs: $frontendStdout; $frontendStderr"
-    Write-Host 'The frontend is UI-only and cannot prove Matrix/AgentTeams connectivity by itself.'
-} else {
-    Write-Host 'Frontend: skipped by -NoFrontend (UI-only).'
-}
+    Write-Host ''
+    Write-Host "Backend health: $(if ($backendReady) { 'ok' } else { 'unavailable' })"
+    Write-Host "Collaboration health: status=$collaborationStatus; reason=$collaborationReason"
+    Write-Host 'Backend URL: http://127.0.0.1:8000/health'
+    Write-Host 'Collaboration health URL: http://127.0.0.1:8000/api/v1/agentteams-collaboration/health'
+    Write-Host "Backend PID: $($backendProcess.Id)"
+    Write-Host "Backend logs: $backendStdout; $backendStderr"
 
-Write-Host "Real collaboration smoke: $smokeCommand"
-Write-Host "Stop backend: Stop-Process -Id $($backendProcess.Id)"
-if ($null -ne $frontendProcess) {
-    Write-Host "Stop frontend: Stop-Process -Id $($frontendProcess.Id)"
-}
+    if ($null -ne $frontendProcess) {
+        Write-Host 'Frontend URL: http://127.0.0.1:4173'
+        Write-Host "Frontend PID: $($frontendProcess.Id)"
+        Write-Host "Frontend logs: $frontendStdout; $frontendStderr"
+        Write-Host 'The frontend is UI-only and cannot prove Matrix/AgentTeams connectivity by itself.'
+    } else {
+        Write-Host 'Frontend: skipped by -NoFrontend (UI-only).'
+    }
 
-if ($realPreflightReady) {
-    Write-Host 'Collaboration preflight passed. Run the smoke command above for independent real-collaboration evidence.'
-} else {
-    Write-Warning 'Collaboration preflight is blocked. Only local services were started; this does not claim AgentTeams is connected. Fix the preflight items, then run the smoke command above for evidence.'
+    $escapedScriptPath = $PSCommandPath.Replace("'", "''")
+    Write-Host "Stop backend tree: powershell -NoProfile -ExecutionPolicy Bypass -Command `". '$escapedScriptPath'; Stop-AgentTeamsProcessTree -RootProcessId $($backendProcess.Id)`""
+    if ($null -ne $frontendProcess) {
+        Write-Host "Stop frontend (including Vite tree): powershell -NoProfile -ExecutionPolicy Bypass -Command `". '$escapedScriptPath'; Stop-AgentTeamsProcessTree -RootProcessId $($frontendProcess.Id)`""
+    }
+
+    if ($realPreflightReady -and $Strict) {
+        Write-Host "Real collaboration smoke: $smokeCommand"
+        Write-Host 'Strict collaboration preflight passed. Run the smoke command above for independent real-collaboration evidence.'
+    } elseif ($realPreflightReady) {
+        Write-Host 'Local demo preflight passed. The Agent outputs are deterministic demo data; platform orchestration and persistence remain real.'
+    } else {
+        Write-Warning 'Collaboration preflight is blocked. Services starting does not prove the selected transport is ready; fix the server-reported items before submitting.'
+    }
+} catch {
+    Write-Warning 'AgentTeams demo startup failed; stopping only the process trees created by this invocation.'
+    if ($null -ne $frontendProcess) {
+        Stop-AgentTeamsProcessTree -RootProcessId $frontendProcess.Id
+    }
+    if ($null -ne $backendProcess) {
+        Stop-AgentTeamsProcessTree -RootProcessId $backendProcess.Id
+    }
+    throw
 }

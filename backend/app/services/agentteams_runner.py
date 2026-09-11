@@ -1,4 +1,4 @@
-"""Persistent Matrix post-office loop for AgentTeams collaboration.
+"""Persistent transport post-office loop for AgentTeams collaboration.
 
 The runner deliberately has no application-lifecycle side effects.  A later
 lifecycle owner may call :meth:`run_forever`; direct tests use
@@ -15,7 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from .. import models
@@ -25,44 +25,58 @@ from .agentteams_collaboration import AgentTeamsCollaborationService, Collaborat
 from .agentteams_gateway import AgentTeamsGateway, MatrixEvent
 from .agentteams_protocol import PREFIX, AgentProtocolMessage, parse_protocol_lines, render_protocol_line
 from .agentteams_runtime_config import load_strict_runtime_config
+from .agentteams_transport import AgentTeamsTransport, create_agentteams_transport
 
 
-_CURSOR_SCOPE_PREFIX = "agentteams:matrix-sync:"
+_CURSOR_SCOPE_PREFIX = "agentteams:transport-sync:"
 _TERMINAL_STATUSES = {"completed", "failed", "timed_out", "cancelled"}
 logger = logging.getLogger(__name__)
 
 
 class AgentTeamsCollaborationRunner:
-    """Moves persisted AgentTeams outbox and inbox data through Matrix safely."""
+    """Moves persisted AgentTeams outbox and inbox data through a transport safely."""
 
     def __init__(
         self,
-        gateway: AgentTeamsGateway | None = None,
+        gateway: AgentTeamsTransport | None = None,
         service: AgentTeamsCollaborationService | None = None,
         room_id: str | None = None,
+        transport: AgentTeamsTransport | None = None,
     ):
+        selected_transport = transport if transport is not None else gateway
         strict_runtime = None
-        if gateway is None:
-            # Strict delivery must use the same validated identity contract as
-            # strict health; legacy AGENTTEAMS_* values are not a fallback.
+        if selected_transport is not None:
+            self.transport = selected_transport
+        elif config.agentteams_mode() == "agentteams_strict":
+            # Strict delivery shares the validated five-identity contract used
+            # by health.  It must never silently fall back to legacy env vars.
             strict_runtime = load_strict_runtime_config()
-            gateway = AgentTeamsGateway(
+            self.transport = AgentTeamsGateway(
                 base_url=strict_runtime.matrix_url,
                 matrix_token=strict_runtime.platform.token,
             )
-        self.gateway = gateway
-        # Strict is self-contained; an explicit local layer may override this instance.
-        self.transport_mode = "agentteams_strict"
+        else:
+            self.transport = create_agentteams_transport()
+        # Compatibility alias for existing tests and callers using ``gateway=``.
+        self.gateway = self.transport
+        self.transport_mode = (
+            "local_demo"
+            if getattr(self.transport, "mode", None) == "local_demo"
+            else "agentteams_strict"
+        )
         self.service = service or AgentTeamsCollaborationService(
             max_depth=config.agentteams_max_depth(),
             max_children=config.agentteams_max_children(),
         )
-        self.room_id = room_id or (
+        configured_room = room_id or (
             strict_runtime.room_id
             if strict_runtime is not None
             else config.get(config.AGENTTEAMS_ROOM_ID)
-        ) or ""
-        self._cursor_scope = self._matrix_account_scope()
+        )
+        self.room_id = configured_room or (
+            "local-demo" if self.transport_mode == "local_demo" else ""
+        )
+        self._cursor_scope = self._transport_cursor_scope()
         self._closed = False
 
     def tick_once(self, db: Session) -> None:
@@ -98,15 +112,25 @@ class AgentTeamsCollaborationRunner:
         if self._closed:
             return
         self._closed = True
-        self.gateway.close()
+        self.transport.close()
 
     def _send_pending(self, db: Session) -> None:
+        delivery_filter = models.AgentMessage.delivery_status == "pending"
+        if self.transport_mode == "local_demo":
+            delivery_filter = or_(
+                delivery_filter,
+                and_(
+                    models.AgentMessage.delivery_status == "sent",
+                    models.AgentMessage.matrix_room_id == self.room_id,
+                    models.AgentMessage.matrix_event_id.like("local-out-%"),
+                ),
+            )
         pending = list(
             db.scalars(
                 select(models.AgentMessage)
                 .where(
                     models.AgentMessage.direction == "outbound",
-                    models.AgentMessage.delivery_status == "pending",
+                    delivery_filter,
                 )
                 .order_by(models.AgentMessage.created_at, models.AgentMessage.id)
             )
@@ -123,7 +147,7 @@ class AgentTeamsCollaborationRunner:
                 continue
             try:
                 protocol = self._outbound_protocol(db, outbound)
-                matrix_event_id = self.gateway.send_protocol_message(
+                matrix_event_id = self.transport.send_protocol_message(
                     self.room_id,
                     outbound.body,
                     render_protocol_line(protocol),
@@ -148,7 +172,7 @@ class AgentTeamsCollaborationRunner:
 
     def _receive_new(self, db: Session) -> None:
         since = self._load_cursor(db)
-        batch = self.gateway.sync_messages(since, {self.room_id})
+        batch = self.transport.sync_messages(since, {self.room_id})
 
         # The savepoint keeps earlier sends in this tick eligible for commit, yet
         # rolls back every current-batch effect (and its cursor) if a technical
@@ -522,10 +546,16 @@ class AgentTeamsCollaborationRunner:
         db.flush()
         return event
 
-    @staticmethod
-    def _matrix_account_scope() -> str:
+    def _transport_cursor_scope(self) -> str:
         account = (
             config.get(config.AGENTTEAMS_ADMIN_USER)
             or config.agentteams_bot_mxid()
         ).strip()
-        return f"{_CURSOR_SCOPE_PREFIX}{account or 'default'}"
+        return ":".join(
+            (
+                _CURSOR_SCOPE_PREFIX.rstrip(":"),
+                self.transport_mode,
+                account or "default",
+                self.room_id or "default-room",
+            )
+        )

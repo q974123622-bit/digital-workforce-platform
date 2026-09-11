@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import sys
 import time
 from typing import Any
@@ -16,17 +17,28 @@ from typing import Any
 import httpx
 
 
+BACKEND_ROOT = Path(__file__).resolve().parents[1] / "backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from app.services.agentteams_local_scenario import (  # noqa: E402
+    LOCAL_DEMO_INSTRUCTION,
+    LOCAL_DEMO_LEADER_ID,
+    LOCAL_DEMO_MATERIAL,
+    LOCAL_DEMO_TEAM_ID,
+    LOCAL_DEMO_TITLE,
+)
+
+
 BASE_URL = os.environ.get("DWP_BASE_URL", "http://127.0.0.1:8000/api/v1").rstrip("/")
+ACTOR_NO = os.environ.get("DWP_SMOKE_ACTOR_NO", "E10281")
 TERMINAL_STATUSES = {"completed", "failed", "timed_out", "cancelled"}
 FIXED_TASK = {
-    "team_id": "TEAM-ONBOARD",
-    "leader_agent_id": "DT-E10281",
-    "title": "新员工入职准备复核",
-    "instruction": (
-        "请协作完成新员工入职准备复核：HR核查制度和材料，IT核查账号与服务状态，"
-        "至少一次跨Agent澄清或继续委派，最后汇总完成项、风险和后续动作。"
-    ),
-    "material": {"employee": "待入职员工", "scenario": "smoke"},
+    "team_id": LOCAL_DEMO_TEAM_ID,
+    "leader_agent_id": LOCAL_DEMO_LEADER_ID,
+    "title": LOCAL_DEMO_TITLE,
+    "instruction": LOCAL_DEMO_INSTRUCTION,
+    "material": LOCAL_DEMO_MATERIAL,
 }
 
 
@@ -50,14 +62,17 @@ def _print_evidence(evidence: dict[str, Any]) -> None:
     print(json.dumps(printable, ensure_ascii=False, indent=2))
 
 
-def _get_json(client: httpx.Client, path: str) -> Any:
-    response = client.get(f"{BASE_URL}{path}")
+def _get_json(client: httpx.Client, path: str, *, actor_no: str | None = None) -> Any:
+    params = {"actor_no": actor_no} if actor_no is not None else None
+    response = client.get(f"{BASE_URL}{path}", params=params)
     response.raise_for_status()
     return response.json()
 
 
-def _post_json(client: httpx.Client, path: str, payload: dict[str, Any]) -> Any:
-    response = client.post(f"{BASE_URL}{path}", json=payload)
+def _post_json(
+    client: httpx.Client, path: str, payload: dict[str, Any], *, actor_no: str
+) -> Any:
+    response = client.post(f"{BASE_URL}{path}", json=payload, params={"actor_no": actor_no})
     response.raise_for_status()
     return response.json()
 
@@ -97,7 +112,9 @@ def wait_for_terminal(client: httpx.Client, task_id: str, timeout_seconds: int =
     deadline = time.monotonic() + timeout_seconds
     latest: dict[str, Any] = {}
     while True:
-        value = _get_json(client, f"/agentteams-collaboration/tasks/{task_id}")
+        value = _get_json(
+            client, f"/agentteams-collaboration/tasks/{task_id}", actor_no=ACTOR_NO
+        )
         latest = value if isinstance(value, dict) else {}
         if latest.get("status") in TERMINAL_STATUSES or time.monotonic() >= deadline:
             return latest
@@ -201,19 +218,32 @@ def main() -> int:
         if health.get("ready_for_demo") is not True:
             _print_evidence(_empty_evidence("预检未就绪"))
             return 2
+        if health.get("mode") != "agentteams_strict" or health.get("transport") != "matrix":
+            _print_evidence(_empty_evidence("预检不是AgentTeams strict Matrix传输"))
+            return 2
 
         try:
-            task = _post_json(client, "/agentteams-collaboration/tasks", FIXED_TASK)
+            task = _post_json(
+                client, "/agentteams-collaboration/tasks", FIXED_TASK, actor_no=ACTOR_NO
+            )
             task_id = str(task.get("id") or "").strip() if isinstance(task, dict) else ""
             if not task_id:
                 _print_evidence(_empty_evidence("任务创建响应缺少任务ID"))
                 return 1
 
             wait_for_terminal(client, task_id, timeout_seconds=600)
-            detail = _get_json(client, f"/agentteams-collaboration/tasks/{task_id}")
-            events = _get_json(client, f"/agentteams-collaboration/tasks/{task_id}/events")
-            messages = _get_json(client, f"/agentteams-collaboration/tasks/{task_id}/messages")
-            result = _get_json(client, f"/agentteams-collaboration/tasks/{task_id}/result")
+            detail = _get_json(
+                client, f"/agentteams-collaboration/tasks/{task_id}", actor_no=ACTOR_NO
+            )
+            events = _get_json(
+                client, f"/agentteams-collaboration/tasks/{task_id}/events", actor_no=ACTOR_NO
+            )
+            messages = _get_json(
+                client, f"/agentteams-collaboration/tasks/{task_id}/messages", actor_no=ACTOR_NO
+            )
+            result = _get_json(
+                client, f"/agentteams-collaboration/tasks/{task_id}/result", actor_no=ACTOR_NO
+            )
         except (httpx.HTTPError, TypeError, ValueError):
             _print_evidence(_empty_evidence("运行期间后端响应无效"))
             return 1

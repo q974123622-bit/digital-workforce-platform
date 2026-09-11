@@ -12,6 +12,7 @@ import type {
   AgentFinalResult,
   AgentMessage,
   AgentTaskEvent,
+  AgentTaskEvaluation,
   AgentTaskGraph,
   AgentTaskNode,
   Team,
@@ -19,14 +20,25 @@ import type {
 import { api } from '../../api/client';
 import { useCurrentUser } from '../../context/CurrentUserContext';
 import { TaskTree, AGENT_TASK_STATUS_META } from './TaskTree';
+import { EvaluationPanel } from './EvaluationPanel';
+import { DatabaseBenchmarkPanel } from './DatabaseBenchmarkPanel';
+import { NodeProcessDetails } from './NodeProcessDetails';
 import { TimelinePanel } from './TimelinePanel';
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out', 'cancelled']);
 const LOCAL_DEMO_TEAM_ID = 'TEAM-ONBOARD';
 const LOCAL_DEMO_TITLE = '新员工入职准备复核';
 const LOCAL_DEMO_INSTRUCTION = '请协作完成新员工入职准备复核：HR核查制度和材料，IT核查账号与服务状态，至少一次跨Agent澄清或继续委派，最后汇总完成项、风险和后续动作。';
-const DEFAULT_TASK_TITLE = '新员工入职评估';
-const DEFAULT_TASK_GOAL = '评估新员工A是否可以按期入职。';
+const DEFAULT_TASK_TITLE = '岗位调整评估';
+const DEFAULT_TASK_GOAL = '评估张明的岗位调整是否可以按期完成。';
+const DATABASE_TEAM_ID = 'TEAM-DB-BENCH';
+const DATABASE_SCENARIOS = [
+  { value: 'lock_contention', label: '锁等待与并发阻塞' },
+  { value: 'bulk_writes', label: '批量写入压力' },
+  { value: 'vacuum_pressure', label: '清理滞后与表膨胀' },
+  { value: 'index_anomaly', label: '索引异常' },
+  { value: 'large_query', label: '大查询资源占用' },
+];
 
 const EMPTY_GRAPH: AgentTaskGraph = {
   nodes: [],
@@ -60,6 +72,12 @@ function healthTag(label: string, status: string) {
   return <Tag color="error">{label}未就绪：{status || 'unknown'}</Tag>;
 }
 
+function managerHealthTag(status: string) {
+  if (status === 'ready') return <Tag color="success">Manager已就绪</Tag>;
+  if (status === 'configured') return <Tag color="processing">Manager已配置</Tag>;
+  return <Tag color="error">Manager未就绪：{status || 'unknown'}</Tag>;
+}
+
 function workerHealthTag(workers: AgentCollaborationHealth['workers']) {
   const readyWorkers = workers.filter((worker) => worker.status === 'ready').length;
   const configuredWorkers = workers.filter((worker) => worker.status === 'configured').length;
@@ -78,6 +96,24 @@ function workerHealthTag(workers: AgentCollaborationHealth['workers']) {
 function statusTag(status: string) {
   const meta = AGENT_TASK_STATUS_META[status] ?? { label: status, color: 'default' };
   return <Tag color={meta.color}>{meta.label}</Tag>;
+}
+
+function payloadTextList(payload: Record<string, unknown>, key: string) {
+  const value = payload[key];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+    : [];
+}
+
+function readinessLabel(value: unknown, roleChange = false) {
+  if (value === 'ready') return roleChange ? '岗位调整可以按期完成' : '可以按期入职';
+  if (value === 'not_ready') return roleChange ? '岗位调整暂不能按期完成' : '暂不能按期入职';
+  if (value === 'incomplete') return '信息不足，暂无法判断';
+  return '';
+}
+
+function displayProgress(node: AgentTaskNode) {
+  return node.status === 'completed' ? 100 : Math.max(0, Math.min(100, node.progress));
 }
 
 interface LoadedTask {
@@ -101,13 +137,16 @@ export default function AgentTeamsCollaborationPage() {
   const [newEventIds, setNewEventIds] = useState<Set<number>>(() => new Set());
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [result, setResult] = useState<AgentFinalResult | null>(null);
+  const [evaluation, setEvaluation] = useState<AgentTaskEvaluation | null>(null);
+  const [evaluationLoading, setEvaluationLoading] = useState(false);
+  const [evaluationError, setEvaluationError] = useState<string>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [teamId, setTeamId] = useState<string | undefined>();
   const [title, setTitle] = useState('');
   const [instruction, setInstruction] = useState('');
   const [material, setMaterial] = useState('');
+  const [databaseScenarioId, setDatabaseScenarioId] = useState('lock_contention');
   const [loading, setLoading] = useState(true);
-  const [taskLoading, setTaskLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [actingTaskIds, setActingTaskIds] = useState<Set<string>>(() => new Set());
   const [loadError, setLoadError] = useState<string>();
@@ -116,16 +155,33 @@ export default function AgentTeamsCollaborationPage() {
   const taskSelectionVersionRef = useRef(0);
   const actorVersionRef = useRef(0);
   const selectedTaskActorRef = useRef(actorNo);
+  const evaluationRequestRef = useRef(0);
   const selectTask = useCallback((taskId: string | null) => {
     if (taskId === selectedTaskId) return;
     taskSelectionVersionRef.current += 1;
     setSelectedTaskId(taskId);
   }, [selectedTaskId]);
   const selectedTeam = useMemo(() => teams.find((team) => team.id === teamId), [teamId, teams]);
+  const isDatabaseTeam = selectedTeam?.id === DATABASE_TEAM_ID;
   const selectedNode = useMemo(() => {
     const nodes = graph.nodes.length > 0 ? graph.nodes : selectedTask?.nodes ?? [];
     return nodes.find((node) => node.id === selectedNodeId) ?? null;
   }, [graph.nodes, selectedNodeId, selectedTask?.nodes]);
+  const finalPayload = useMemo(() => {
+    if (!result) return {} as Record<string, unknown>;
+    return result.node_results.find((node) => node.id === result.task_id)?.output_payload ?? {};
+  }, [result]);
+  const finalSections = useMemo(() => [
+    { title: '已完成', items: payloadTextList(finalPayload, 'completed_items') },
+    { title: '风险', items: payloadTextList(finalPayload, 'risks') },
+    { title: '信息缺口', items: payloadTextList(finalPayload, 'unknowns') },
+    { title: '后续操作', items: payloadTextList(finalPayload, 'next_actions') },
+  ].filter((section) => section.items.length > 0), [finalPayload]);
+  const isRoleChangeScenario = (graph.selected_skill_ids ?? []).includes('agentteams-role-change-readiness');
+  const isDatabaseBenchmarkScenario = (
+    selectedTask?.id === selectedTaskId
+    && (graph.selected_skill_ids ?? []).includes('agentteams-database-diagnosis')
+  );
 
   const loadInitial = useCallback(async () => {
     const actorVersion = actorVersionRef.current;
@@ -143,9 +199,14 @@ export default function AgentTeamsCollaborationPage() {
       setTasks(nextTasks);
       setTitle((current) => current || DEFAULT_TASK_TITLE);
       setInstruction((current) => current || DEFAULT_TASK_GOAL);
-      setTeamId((current) => nextHealth.mode === 'local_demo'
-        ? nextTeams.find((team) => team.id === LOCAL_DEMO_TEAM_ID)?.id
-        : current ?? nextTeams[0]?.id);
+      setTeamId((current) => {
+        const supportedTeams = nextHealth.mode === 'local_demo'
+          ? nextTeams.filter((team) => [LOCAL_DEMO_TEAM_ID, DATABASE_TEAM_ID].includes(team.id))
+          : nextTeams;
+        return supportedTeams.some((team) => team.id === current)
+          ? current
+          : supportedTeams.find((team) => team.id === LOCAL_DEMO_TEAM_ID)?.id ?? supportedTeams[0]?.id;
+      });
       setSelectedTaskId((current) => current ?? nextTasks[0]?.id ?? null);
     } catch (error) {
       if (actorVersionRef.current === actorVersion) setLoadError(errorText(error));
@@ -161,7 +222,6 @@ export default function AgentTeamsCollaborationPage() {
   ): Promise<LoadedTask | null> => {
     const isCurrentTask = () => taskSelectionVersionRef.current === requestVersion;
     if (!isCurrentTask()) return null;
-    setTaskLoading(true);
     try {
       const [task, nextGraph, nextEvents, nextMessages, nextResult] = await Promise.all([
         api.getAgentTeamsTask(actorNo, taskId),
@@ -190,8 +250,27 @@ export default function AgentTeamsCollaborationPage() {
     } catch (error) {
       if (isCurrentTask()) setActionError(`任务详情请求失败：${errorText(error)}`);
       return null;
+    }
+  }, [actorNo]);
+
+  const loadEvaluation = useCallback(async (taskId: string, selectionVersion: number) => {
+    const requestVersion = ++evaluationRequestRef.current;
+    const isCurrent = () => (
+      evaluationRequestRef.current === requestVersion
+      && taskSelectionVersionRef.current === selectionVersion
+    );
+    setEvaluationLoading(true);
+    setEvaluationError(undefined);
+    try {
+      const nextEvaluation = await api.evaluateAgentTeamsTask(actorNo, taskId);
+      if (!isCurrent()) return;
+      setEvaluation(nextEvaluation);
+    } catch (error) {
+      if (!isCurrent()) return;
+      setEvaluation(null);
+      setEvaluationError(`评测暂不可用：${errorText(error)}`);
     } finally {
-      if (isCurrentTask()) setTaskLoading(false);
+      if (isCurrent()) setEvaluationLoading(false);
     }
   }, [actorNo]);
 
@@ -206,8 +285,11 @@ export default function AgentTeamsCollaborationPage() {
     setNewEventIds(new Set());
     setMessages([]);
     setResult(null);
+    evaluationRequestRef.current += 1;
+    setEvaluation(null);
+    setEvaluationLoading(false);
+    setEvaluationError(undefined);
     setSelectedNodeId(null);
-    setTaskLoading(false);
     setSubmitting(false);
     setActingTaskIds(new Set());
     setLoadError(undefined);
@@ -229,9 +311,20 @@ export default function AgentTeamsCollaborationPage() {
     setEvents([]);
     setMessages([]);
     setResult(null);
+    evaluationRequestRef.current += 1;
+    setEvaluation(null);
+    setEvaluationLoading(false);
+    setEvaluationError(undefined);
     setSelectedNodeId(selectedTaskId);
     void loadTask(selectedTaskId, requestVersion);
   }, [actorNo, loadTask, selectedTaskId]);
+
+  useEffect(() => {
+    if (!selectedTaskId || selectedTask?.id !== selectedTaskId || selectedTask.status !== 'completed') return;
+    if (isDatabaseBenchmarkScenario) return;
+    if (evaluation || evaluationLoading || evaluationError) return;
+    void loadEvaluation(selectedTaskId, taskSelectionVersionRef.current);
+  }, [evaluation, evaluationError, evaluationLoading, isDatabaseBenchmarkScenario, loadEvaluation, selectedTask, selectedTaskId]);
 
   useEffect(() => {
     if (!selectedTaskId || selectedTask?.id !== selectedTaskId || isTerminal(selectedTask.status)) return;
@@ -243,7 +336,8 @@ export default function AgentTeamsCollaborationPage() {
   }, [loadTask, selectedTask, selectedTaskId]);
 
   const handleSubmit = async () => {
-    if (!selectedTeam || !health?.ready_for_demo || submitting) return;
+    const selectedTeamReady = isDatabaseTeam ? health?.enabled : health?.ready_for_demo;
+    if (!selectedTeam || !selectedTeamReady || submitting) return;
     const trimmedTitle = title.trim();
     const trimmedInstruction = instruction.trim();
     if (!trimmedTitle || !trimmedInstruction) {
@@ -251,7 +345,7 @@ export default function AgentTeamsCollaborationPage() {
       return;
     }
     let parsedMaterial: Record<string, unknown> = {};
-    if (material.trim()) {
+    if (!isDatabaseTeam && material.trim()) {
       try {
         const parsed = JSON.parse(material) as unknown;
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not object');
@@ -270,9 +364,13 @@ export default function AgentTeamsCollaborationPage() {
       const task = await api.createAgentTeamsTask(actorNo, {
         team_id: selectedTeam.id,
         leader_agent_id: selectedTeam.leader_employee_id,
-        title: health?.mode === 'local_demo' ? LOCAL_DEMO_TITLE : trimmedTitle,
-        instruction: health?.mode === 'local_demo' ? LOCAL_DEMO_INSTRUCTION : trimmedInstruction,
-        material: health?.mode === 'local_demo' ? {} : parsedMaterial,
+        title: health?.mode === 'local_demo' && !isDatabaseTeam ? LOCAL_DEMO_TITLE : trimmedTitle,
+        instruction: health?.mode === 'local_demo' && !isDatabaseTeam ? LOCAL_DEMO_INSTRUCTION : trimmedInstruction,
+        material: isDatabaseTeam
+          ? { scenario_id: databaseScenarioId }
+          : health?.mode === 'local_demo'
+            ? {}
+            : parsedMaterial,
       });
       if (actorVersionRef.current !== actorVersion) return;
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
@@ -282,6 +380,10 @@ export default function AgentTeamsCollaborationPage() {
       setNewEventIds(new Set());
       setMessages([]);
       setResult(null);
+      evaluationRequestRef.current += 1;
+      setEvaluation(null);
+      setEvaluationLoading(false);
+      setEvaluationError(undefined);
       setSelectedNodeId(task.id);
       selectTask(task.id);
       setTitle(DEFAULT_TASK_TITLE);
@@ -292,6 +394,12 @@ export default function AgentTeamsCollaborationPage() {
     } finally {
       if (actorVersionRef.current === actorVersion) setSubmitting(false);
     }
+  };
+
+  const handleEvaluationRetry = () => {
+    if (!selectedTaskId || evaluationLoading || isDatabaseBenchmarkScenario) return;
+    setEvaluationError(undefined);
+    void loadEvaluation(selectedTaskId, taskSelectionVersionRef.current);
   };
 
   const handleCancel = async () => {
@@ -308,6 +416,10 @@ export default function AgentTeamsCollaborationPage() {
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       setGraph((current) => ({ ...current, nodes: task.nodes }));
       setResult(null);
+      evaluationRequestRef.current += 1;
+      setEvaluation(null);
+      setEvaluationLoading(false);
+      setEvaluationError(undefined);
     } catch (error) {
       if (isCurrentTask()) setActionError(`取消任务失败：${errorText(error)}`);
     } finally {
@@ -338,6 +450,10 @@ export default function AgentTeamsCollaborationPage() {
       setNewEventIds(new Set());
       setMessages([]);
       setResult(null);
+      evaluationRequestRef.current += 1;
+      setEvaluation(null);
+      setEvaluationLoading(false);
+      setEvaluationError(undefined);
       setSelectedNodeId(task.id);
       selectTask(task.id);
     } catch (error) {
@@ -353,10 +469,13 @@ export default function AgentTeamsCollaborationPage() {
     }
   };
 
-  const canSubmit = Boolean(health?.ready_for_demo && selectedTeam && title.trim() && instruction.trim() && !submitting);
+  const selectedTeamReady = isDatabaseTeam ? health?.enabled : health?.ready_for_demo;
+  const canSubmit = Boolean(selectedTeamReady && selectedTeam && title.trim() && instruction.trim() && !submitting);
   const nodes: AgentTaskNode[] = graph.nodes.length > 0 ? graph.nodes : selectedTask?.nodes ?? [];
   const isLocalDemo = health?.mode === 'local_demo';
-  const selectableTeams = isLocalDemo ? teams.filter((team) => team.id === LOCAL_DEMO_TEAM_ID) : teams;
+  const selectableTeams = isLocalDemo
+    ? teams.filter((team) => [LOCAL_DEMO_TEAM_ID, DATABASE_TEAM_ID].includes(team.id))
+    : teams;
 
   return (
     <div className="agentteams-page">
@@ -398,7 +517,7 @@ export default function AgentTeamsCollaborationPage() {
                   <Space size={[6, 6]} wrap>
                     {!isLocalDemo && healthTag('Matrix', health.matrix)}
                     {!isLocalDemo && healthTag('房间', health.room)}
-                    {healthTag('Manager', health.manager)}
+                    {managerHealthTag(health.manager)}
                     {workerHealthTag(health.workers)}
                   </Space>
                   <Space size={4}>
@@ -411,13 +530,18 @@ export default function AgentTeamsCollaborationPage() {
                     <Tag>严格就绪：{health.strict_ready ? '是' : '否'}</Tag>
                     <Tag>已配置团队：{health.configured_team_id || '未产生'}</Tag>
                   </Space>
+                  {!health.ready_for_demo && (
+                    <Typography.Text type="secondary">
+                      此状态只控制 TEAM-ONBOARD；TEAM-DB-BENCH 场景和数据库诊断 A/B 基准独立运行，不受此状态影响。
+                    </Typography.Text>
+                  )}
                 </Space>
               }
               className="at-alert"
             />
           )}
 
-          <Row gutter={[16, 16]}>
+          <Row gutter={[16, 16]} data-testid="agentteams-overview-row">
             <Col xs={24} xl={8}>
               <Card title="提交协作任务" className="at-card" extra={<Tag color="blue">服务端预检</Tag>}>
                 <div className="at-form-fields">
@@ -426,9 +550,16 @@ export default function AgentTeamsCollaborationPage() {
                     id="agentteams-team"
                     aria-label="协作团队"
                     value={teamId}
-                    onChange={setTeamId}
+                    onChange={(nextTeamId) => {
+                      setTeamId(nextTeamId);
+                      if (nextTeamId === DATABASE_TEAM_ID) {
+                        setTitle('数据库锁等待诊断');
+                        setInstruction('请由数据库诊断团队并行检查写入、锁、清理、索引和查询信号，汇总根因、证据与优化建议。');
+                        setMaterial('');
+                      }
+                    }}
                     options={selectableTeams.map((team) => ({ value: team.id, label: `${team.name}（${team.id}）` }))}
-                    disabled={isLocalDemo}
+                    disabled={selectableTeams.length < 2}
                     placeholder="选择协作团队"
                   />
                   <Typography.Text type="secondary" className="at-leader-text">
@@ -445,14 +576,32 @@ export default function AgentTeamsCollaborationPage() {
                     autoSize={{ minRows: 4, maxRows: 8 }}
                     maxLength={2000}
                   />
-                  <label htmlFor="agentteams-material">补充材料（可选 JSON）</label>
-                  <Input.TextArea
-                    id="agentteams-material"
-                    value={material}
-                    onChange={(event) => setMaterial(event.target.value)}
-                    autoSize={{ minRows: 2, maxRows: 5 }}
-                    placeholder='例如：{"policy_version":"2026.09"}'
-                  />
+                  {isDatabaseTeam ? (
+                    <>
+                      <label htmlFor="agentteams-database-scenario">数据库诊断场景</label>
+                      <Select
+                        id="agentteams-database-scenario"
+                        aria-label="数据库诊断场景"
+                        value={databaseScenarioId}
+                        onChange={setDatabaseScenarioId}
+                        options={DATABASE_SCENARIOS}
+                      />
+                      <Typography.Text type="secondary">
+                        运行时只读取所选的脱敏固定场景；任务标题和说明不会作为数据库材料发送给模型。
+                      </Typography.Text>
+                    </>
+                  ) : (
+                    <>
+                      <label htmlFor="agentteams-material">补充材料（可选 JSON）</label>
+                      <Input.TextArea
+                        id="agentteams-material"
+                        value={material}
+                        onChange={(event) => setMaterial(event.target.value)}
+                        autoSize={{ minRows: 2, maxRows: 5 }}
+                        placeholder='例如：{"policy_version":"2026.09"}'
+                      />
+                    </>
+                  )}
                   {formError && <Alert type="error" showIcon message={formError} />}
                   <Button
                     type="primary"
@@ -465,7 +614,7 @@ export default function AgentTeamsCollaborationPage() {
                   >
                     提交协作任务
                   </Button>
-                  {!health?.ready_for_demo && (
+                  {!selectedTeamReady && (
                     <Typography.Text type="secondary">提交已由服务端健康预检门禁禁用。</Typography.Text>
                   )}
                 </div>
@@ -501,6 +650,37 @@ export default function AgentTeamsCollaborationPage() {
 
           {actionError && <Alert type="error" showIcon message={actionError} closable onClose={() => setActionError(undefined)} className="at-alert" />}
 
+          {selectedTask && isTerminal(selectedTask.status) && (
+            <Card
+              title="最终汇总"
+              className="at-final-result at-final-result-wide"
+              data-testid="agentteams-result-panel"
+              data-layout="full-width"
+            >
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                {statusTag(result?.status ?? selectedTask.status)}
+                {readinessLabel(finalPayload.readiness_decision, isRoleChangeScenario) && (
+                  <Typography.Text strong className="at-final-decision">
+                    结论：{readinessLabel(finalPayload.readiness_decision, isRoleChangeScenario)}
+                  </Typography.Text>
+                )}
+                <Typography.Paragraph className="at-final-summary">
+                  {result?.summary || selectedTask.summary || '服务端尚未返回最终汇总。'}
+                </Typography.Paragraph>
+                {finalSections.length > 0 && (
+                  <div className="at-final-sections">
+                    {finalSections.map((section) => (
+                      <section key={section.title} className="at-final-section">
+                        <Typography.Text strong>{section.title}</Typography.Text>
+                        <ul>{section.items.map((item) => <li key={item}>{item}</li>)}</ul>
+                      </section>
+                    ))}
+                  </div>
+                )}
+              </Space>
+            </Card>
+          )}
+
           {selectedTask && (
             <div className="at-task-workspace">
               <Card
@@ -534,33 +714,59 @@ export default function AgentTeamsCollaborationPage() {
                     ? graph.selected_skill_ids?.map((skillId) => <Tag color="purple" key={skillId}>已选择 Skill：{skillId}</Tag>)
                     : <Tag>已选择 Skill：尚未产生</Tag>}
                 </Space>
-                {taskLoading && <Typography.Text type="secondary">正在刷新服务端协作轨迹…</Typography.Text>}
-                <Row gutter={[16, 16]}>
-                  <Col xs={24} lg={12}>
-                    <TaskTree nodes={nodes} graph={graph} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
-                  </Col>
-                  <Col xs={24} lg={12}>
-                    <Card size="small" title="当前节点状态" className="at-detail-card">
-                      {selectedNode ? (
-                        <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                          <Space size={[6, 6]} wrap>
-                            <Typography.Text strong>{selectedNode.title}</Typography.Text>
-                            {statusTag(selectedNode.status)}
-                            <Tag>执行人：{selectedNode.assignee_agent_id}</Tag>
-                            <Tag>协调人：{selectedNode.coordinator_agent_id}</Tag>
-                          </Space>
-                          <Progress percent={Math.max(0, Math.min(100, selectedNode.progress))} />
-                          {selectedNode.error_message && <Alert type="error" showIcon message={selectedNode.error_message} />}
-                          {Object.keys(selectedNode.output_payload).length > 0 && (
-                            <Typography.Text type="secondary">服务端已保存该节点的受控结果，可在最终汇总中核对。</Typography.Text>
-                          )}
-                        </Space>
-                      ) : (
-                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择一个节点查看状态" />
+                <div className="at-workspace-grid" data-testid="agentteams-workspace">
+                <Row gutter={[16, 16]} className="at-workspace-row">
+                  <Col xs={24} lg={16}>
+                    <div className="at-main-stack" data-testid="agentteams-main-stack">
+                      <TaskTree nodes={nodes} graph={graph} events={events} messages={messages} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
+                      {selectedTask.status === 'completed' && isDatabaseBenchmarkScenario && (
+                        <Alert
+                          type="info"
+                          showIcon
+                          data-testid="database-task-evaluation-routing"
+                          message="该任务使用数据库 A/B 基准评测"
+                          description="当前协作树来自页面下方的数据库诊断对照实验；量化结果请在下方 A/B 指标和运行明细中核对，不调用旧版 100 分任务评测。"
+                        />
                       )}
-                    </Card>
+                      {selectedTask.status === 'completed' && !isDatabaseBenchmarkScenario && (
+                        <EvaluationPanel
+                          evaluation={evaluation}
+                          loading={evaluationLoading}
+                          error={evaluationError}
+                          onRetry={handleEvaluationRetry}
+                        />
+                      )}
+                    </div>
+                  </Col>
+                  <Col xs={24} lg={8}>
+                    <div className="at-side-stack" data-testid="agentteams-side-stack">
+                      <Card size="small" title="当前节点状态" className="at-detail-card" data-testid="agentteams-node-detail">
+                        {selectedNode ? (
+                          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                            <Space size={[6, 6]} wrap>
+                              <Typography.Text strong>{selectedNode.title}</Typography.Text>
+                              {statusTag(selectedNode.status)}
+                              <Tag>执行人：{selectedNode.assignee_agent_id}</Tag>
+                              <Tag>协调人：{selectedNode.coordinator_agent_id}</Tag>
+                            </Space>
+                            <Progress percent={displayProgress(selectedNode)} />
+                            {selectedNode.error_message && <Alert type="error" showIcon message={selectedNode.error_message} />}
+                            <NodeProcessDetails
+                              node={selectedNode}
+                              messages={messages}
+                              taskSummary={selectedTask.summary}
+                              rootSkillIds={graph.selected_skill_ids ?? []}
+                            />
+                          </Space>
+                        ) : (
+                          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择一个节点查看状态" />
+                        )}
+                      </Card>
+                    </div>
                   </Col>
                 </Row>
+                </div>
+
               </Card>
 
               <TimelinePanel
@@ -571,18 +777,9 @@ export default function AgentTeamsCollaborationPage() {
                 isRealMatrix={health?.transport === 'matrix'}
               />
 
-              {isTerminal(selectedTask.status) && (
-                <Card title="最终汇总" className="at-card at-final-result">
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    <Space size={8}>{statusTag(result?.status ?? selectedTask.status)}<Typography.Text type="secondary">服务端根任务结果</Typography.Text></Space>
-                    <Typography.Paragraph>
-                      {result?.summary || selectedTask.summary || '服务端尚未返回最终汇总。'}
-                    </Typography.Paragraph>
-                  </Space>
-                </Card>
-              )}
             </div>
           )}
+          <DatabaseBenchmarkPanel actorNo={actorNo} onSelectTask={(taskId) => selectTask(taskId)} />
         </>
       )}
     </div>

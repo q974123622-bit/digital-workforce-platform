@@ -7,6 +7,7 @@ from app import models
 from app.routers import agentteams_collaboration
 from app.services.agentteams_gateway import AgentTeamsResult
 from app.services.agentteams_agent_runtime import heartbeat_signature
+from app.services.agentteams_local_scenario import LOCAL_DEMO_INSTRUCTION, LOCAL_DEMO_TITLE
 
 
 ONE_WORKER_HEALTH = {
@@ -38,7 +39,7 @@ def test_health_requires_room_manager_and_two_workers(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["ready_for_demo"] is False
-    assert "至少需要两个Worker" in response.json()["reason"]
+    assert "至少需要两名指定Worker" in response.json()["reason"]
 
 
 def test_health_normalises_unknown_mode_to_unready_strict(client, monkeypatch):
@@ -68,8 +69,8 @@ def test_task_submission_cannot_bypass_the_normalized_health_gate(client, db_ses
         json={
             "team_id": "TEAM-ONBOARD",
             "leader_agent_id": "VE-0001",
-            "title": "入职协作",
-            "instruction": "完成制度和账号核查",
+            "title": LOCAL_DEMO_TITLE,
+            "instruction": LOCAL_DEMO_INSTRUCTION,
             "material": {},
         },
     )
@@ -149,7 +150,7 @@ def test_health_rejects_whitespace_worker_runtime_refs(client, db_session, monke
 
     assert response.status_code == 200
     assert response.json()["ready_for_demo"] is False
-    assert "至少需要两个Worker" in response.json()["reason"]
+    assert "至少需要两名指定Worker" in response.json()["reason"]
 
 
 def test_health_closes_every_constructed_gateway_when_membership_check_raises(

@@ -27,41 +27,69 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from app.services.agentteams_runtime_config import demo_employee_ref_input_schema, require_safe_path
+from app.services.agentteams_runtime_config import (
+    demo_employee_ref_input_schema,
+    require_safe_path,
+    role_change_activation_input_schema,
+    role_change_employee_ref_input_schema,
+)
 DEFAULT_MATRIX_URL = "http://127.0.0.1:8008"
 TEAM_ID = "TEAM-ONBOARD"
 ACCOUNT_NAMES = ("platform", "manager", "hr", "it", "audit")
 
 
-def _demo_tool(name: str, plugin_id: str, required_capability: str) -> dict[str, Any]:
+def _demo_tool(
+    name: str,
+    plugin_id: str,
+    required_capability: str,
+    *,
+    input_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "name": name,
         "plugin_id": plugin_id,
         "action": "execute",
         "required_capability": required_capability,
-        "input_schema": demo_employee_ref_input_schema(),
+        "input_schema": input_schema or demo_employee_ref_input_schema(),
     }
 
 
 ROLE_IDENTITIES = {
-    "manager": {"agent_id": "VE-0001", "skill": "agentteams-onboarding-readiness", "tools": []},
+    "manager": {
+        "agent_id": "VE-0001",
+        "skills": ["agentteams-onboarding-readiness", "agentteams-role-change-readiness"],
+        "tools": [],
+    },
     "hr": {
-        "agent_id": "VE-0002", "skill": "hr-onboarding-assistant",
-        "tools": [_demo_tool("agentteams.hr.lookup_onboarding", "agentteams-onboarding-employee", "hr.onboarding.read")],
+        "agent_id": "VE-0002",
+        "skills": ["hr-onboarding-assistant", "hr-role-change-assistant"],
+        "tools": [
+            _demo_tool("agentteams.hr.lookup_onboarding", "agentteams-onboarding-employee", "hr.onboarding.read"),
+            _demo_tool("agentteams.hr.lookup_role_change", "agentteams-role-change-hr", "hr.role_change.read", input_schema=role_change_employee_ref_input_schema()),
+        ],
     },
     "it": {
-        "agent_id": "VE-0003", "skill": "it-service-assistant",
-        "tools": [_demo_tool("agentteams.it.lookup_readiness", "agentteams-it-readiness", "it.readiness.read")],
+        "agent_id": "VE-0003",
+        "skills": ["it-service-assistant", "it-role-change-assistant"],
+        "tools": [
+            _demo_tool("agentteams.it.lookup_readiness", "agentteams-it-readiness", "it.readiness.read"),
+            _demo_tool("agentteams.it.lookup_permission_plan", "agentteams-role-change-it-plan", "it.permission.plan", input_schema=role_change_employee_ref_input_schema()),
+            _demo_tool("agentteams.it.activate_role_change", "agentteams-role-change-it-activate", "it.permission.activate", input_schema=role_change_activation_input_schema()),
+        ],
     },
     "audit": {
-        "agent_id": "VE-0005", "skill": "audit-evidence-review",
-        "tools": [_demo_tool("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read")],
+        "agent_id": "VE-0005",
+        "skills": ["audit-evidence-review", "audit-role-change-review"],
+        "tools": [
+            _demo_tool("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read"),
+            _demo_tool("agentteams.audit.review_role_change", "agentteams-role-change-audit", "audit.permission.review", input_schema=role_change_employee_ref_input_schema()),
+        ],
     },
 }
 TEAM_CATALOG = {
-    "VE-0002": {"capabilities": ["hr.onboarding.read"]},
-    "VE-0003": {"capabilities": ["it.readiness.read"]},
-    "VE-0005": {"capabilities": ["audit.evidence.read"]},
+    "VE-0002": {"capabilities": ["hr.onboarding.read", "hr.role_change.read"]},
+    "VE-0003": {"capabilities": ["it.readiness.read", "it.permission.plan", "it.permission.activate"]},
+    "VE-0005": {"capabilities": ["audit.evidence.read", "audit.permission.review"]},
 }
 
 
@@ -192,7 +220,7 @@ def build_runtime_configuration(credentials: Mapping[str, Mapping[str, str]], ro
             raise BootstrapError("invalid_matrix_bootstrap")
         agents[role] = {
             "agent_id": definition["agent_id"], "mxid": identity["mxid"], "token": identity["token"],
-            "allowed_skill_ids": [definition["skill"]], "safe_tool_catalog": definition["tools"],
+            "allowed_skill_ids": definition["skills"], "safe_tool_catalog": definition["tools"],
         }
     return {
         "matrix_url": matrix_url.rstrip("/"), "room_id": room_id, "team_id": TEAM_ID,

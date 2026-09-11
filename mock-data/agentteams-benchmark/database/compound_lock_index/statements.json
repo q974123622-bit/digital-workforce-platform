@@ -1,0 +1,1 @@
+[{"query_id":"cli-1","database":"orders","query":"UPDATE orders SET status = ? WHERE id = ?","calls":910,"mean_ms":9100,"rows_per_call":1},{"query_id":"cli-2","database":"crm","query":"SELECT id,name FROM customers WHERE tenant_id = ? AND email = ?","calls":14000,"mean_ms":1680,"rows_per_call":1}]

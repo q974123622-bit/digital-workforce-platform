@@ -65,6 +65,9 @@ function Get-AgentRoleApiKeyEnvironment([string]$Role, [hashtable]$RoleApiKeys) 
     if ([string]::IsNullOrWhiteSpace($variableName) -or [string]::IsNullOrWhiteSpace([string]$value)) { throw $Role }
     return @{$variableName = $value}
 }
+function Get-BackendApiKeyEnvironment([hashtable]$RoleApiKeys) {
+    return Get-AgentRoleApiKeyEnvironment 'manager' $RoleApiKeys
+}
 function Test-StringArrayEqual([object[]]$Actual, [object[]]$Expected) {
     if ($Actual.Count -ne $Expected.Count) { return $false }; for ($i=0; $i -lt $Actual.Count; $i++) { if ([string]$Actual[$i] -cne [string]$Expected[$i]) { return $false } }; return $true
 }
@@ -185,12 +188,27 @@ function Assert-NoExistingDemoProcesses {
     if (-not (Test-Path -LiteralPath $pidsPath)) { return }; try { $saved=Get-Content -LiteralPath $pidsPath -Raw|ConvertFrom-Json } catch { throw 'Invalid existing AgentTeams PID record; refusing duplicate start.' }
     if ($saved.status -eq 'running') { foreach ($record in @($saved.processes)) { if ($NoFrontend -and $record.name -eq 'frontend') { continue }; if (Test-OwnedRecordedProcess $record) { throw "An AgentTeams real-demo process is already running for this worktree (PID $($record.process_id))." } } }
 }
-function Wait-SynapseReady {
+function Get-AgentTeamsLoopbackStatusCode([string]$Uri) {
+    Add-Type -AssemblyName System.Net.Http
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $handler.UseProxy = $false
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    try {
+        $client.Timeout = [TimeSpan]::FromSeconds(2)
+        $response = $client.GetAsync($Uri).GetAwaiter().GetResult()
+        try { return [int]$response.StatusCode } finally { $response.Dispose() }
+    } finally {
+        $client.Dispose()
+        $handler.Dispose()
+    }
+}
+function Wait-SynapseReady([string]$BaseUri = 'http://127.0.0.1:8008') {
+    $base = $BaseUri.TrimEnd('/')
     for ($attempt=0;$attempt -lt 30;$attempt++) {
         try {
-            $versions = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8008/_matrix/client/versions' -TimeoutSec 2
-            $registration = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8008/_synapse/admin/v1/register' -TimeoutSec 2
-            if ($versions.StatusCode -eq 200 -and $registration.StatusCode -eq 200) { return $true }
+            $versions = Get-AgentTeamsLoopbackStatusCode "$base/_matrix/client/versions"
+            $registration = Get-AgentTeamsLoopbackStatusCode "$base/_synapse/admin/v1/register"
+            if ($versions -eq 200 -and $registration -eq 200) { return $true }
         } catch {}
         Start-Sleep -Seconds 1
     }
@@ -209,7 +227,7 @@ try {
     & $python $bootstrap --runtime-dir $runtimeDirectory --prepare-synapse-env; if ($LASTEXITCODE -ne 0) { throw 'Synapse secret preparation failed.' }
     $ownedCompose=$true; & docker compose -p dwp-agentteams -f $composeFile up -d; if ($LASTEXITCODE -ne 0) { throw 'Synapse compose startup failed.' }; if (-not (Wait-SynapseReady)) { throw 'Synapse did not become ready at 127.0.0.1:8008.' }
     & $python $bootstrap --runtime-dir $runtimeDirectory --matrix-url 'http://127.0.0.1:8008'; if ($LASTEXITCODE -ne 0) { throw 'Matrix account and private-room bootstrap failed.' }
-    $backendRecord=Start-OwnedProcess 'backend' $backend $python (Get-ExpectedArguments 'backend'); $records+=$backendRecord
+    $backendRecord=Start-OwnedProcess 'backend' $backend $python (Get-ExpectedArguments 'backend') (Get-BackendApiKeyEnvironment $roleApiKeys); $records+=$backendRecord
     $listener=$null; for ($attempt=0;$attempt -lt 40 -and $null -eq $listener;$attempt++) { try { $listener=Get-OwnedBackendListenerRecord $backendRecord } catch { if ($attempt -eq 39) { throw }; Start-Sleep -Milliseconds 250 } }; $backendRecord.listener=$listener
     foreach ($role in 'manager','hr','it','audit') { $records+=Start-OwnedProcess $role $workspace $python (Get-ExpectedArguments $role) (Get-AgentRoleApiKeyEnvironment $role $roleApiKeys) }; if (-not $NoFrontend) { $records+=Start-OwnedProcess 'frontend' (Join-Path $workspace 'frontend') (Get-ExpectedExecutable 'frontend') (Get-ExpectedArguments 'frontend') }
     Write-ProcessRecord $records 'running'; $success=$true; Write-Host "AgentTeams strict demo started: recorded $($records.Count) worktree-owned processes."

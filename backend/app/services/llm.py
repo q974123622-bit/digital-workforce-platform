@@ -41,6 +41,12 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class StructuredLLMResponse:
+    data: dict
+    reasoning_content: str = ""
+
+
 class LLMProvider(ABC):
     """统一 LLM 接口。"""
 
@@ -55,6 +61,14 @@ class LLMProvider(ABC):
     @abstractmethod
     def structured_output(self, messages: list[dict], schema: dict) -> dict:
         """要求 JSON 结构化输出。"""
+
+    def structured_output_with_trace(
+        self,
+        messages: list[dict],
+        schema: dict,
+    ) -> StructuredLLMResponse:
+        """Return structured data plus optional provider reasoning metadata."""
+        return StructuredLLMResponse(data=self.structured_output(messages, schema))
 
 
 def _assert_safemode(messages: list[dict]) -> None:
@@ -136,10 +150,20 @@ class DeepSeekProvider(LLMProvider):
         api_key: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
+        thinking: bool = False,
+        reasoning_effort: str | None = None,
+        request_timeout: float = 60.0,
     ):
+        if isinstance(request_timeout, bool) or not 0 < float(request_timeout) <= 600:
+            raise ValueError("invalid_llm_request_timeout")
+        if reasoning_effort is not None and reasoning_effort not in {"low", "medium", "high"}:
+            raise ValueError("invalid_llm_reasoning_effort")
         self.api_key = api_key or os.environ.get(DEEPSEEK_API_KEY)
         self.base_url = (base_url or os.environ.get(DEEPSEEK_BASE_URL) or DEFAULT_BASE_URL).rstrip("/")
         self.model = model or os.environ.get(DEEPSEEK_MODEL) or DEFAULT_MODEL
+        self.thinking = thinking
+        self.reasoning_effort = reasoning_effort
+        self.request_timeout = float(request_timeout)
 
     def _post(self, payload: dict) -> dict:
         if not self.api_key:
@@ -149,7 +173,7 @@ class DeepSeekProvider(LLMProvider):
                 f"{self.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
                 json=payload,
-                timeout=60.0,
+                timeout=self.request_timeout,
             )
         except httpx.HTTPError as exc:
             raise LLMUnavailableError("DeepSeek 网络请求失败", code="network_error") from exc
@@ -194,6 +218,13 @@ class DeepSeekProvider(LLMProvider):
         return resp
 
     def structured_output(self, messages: list[dict], schema: dict) -> dict:
+        return self.structured_output_with_trace(messages, schema).data
+
+    def structured_output_with_trace(
+        self,
+        messages: list[dict],
+        schema: dict,
+    ) -> StructuredLLMResponse:
         structured_messages = [
             *messages,
             {
@@ -207,17 +238,36 @@ class DeepSeekProvider(LLMProvider):
             "model": self.model,
             "messages": [{k: v for k, v in m.items() if k != "source"} for m in structured_messages],
             "response_format": {"type": "json_object"},
-            "temperature": 0.1,
         }
+        if self.thinking:
+            payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = self.reasoning_effort or "high"
+        else:
+            if self.reasoning_effort is not None:
+                payload["thinking"] = {"type": "disabled"}
+                payload["reasoning_effort"] = self.reasoning_effort
+            payload["temperature"] = 0.1
         data = self._post(payload)
-        content = _response_message(data).get("content")
+        response_message = _response_message(data)
+        content = response_message.get("content")
         if not isinstance(content, str) or not content:
             raise LLMUnavailableError(
                 "模型未返回结构化输出", code="invalid_structured_json",
             )
         try:
-            return json.loads(content)
+            parsed = json.loads(content)
         except (json.JSONDecodeError, TypeError) as exc:
             raise LLMUnavailableError(
                 "模型返回非 JSON 结构化输出", code="invalid_structured_json",
             ) from exc
+        reasoning_content = response_message.get("reasoning_content")
+        if reasoning_content is None:
+            reasoning_content = ""
+        elif not isinstance(reasoning_content, str):
+            raise LLMUnavailableError(
+                "DeepSeek 思考内容结构无效", code="invalid_response_json",
+            )
+        return StructuredLLMResponse(
+            data=parsed,
+            reasoning_content=reasoning_content.strip(),
+        )

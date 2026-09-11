@@ -1,0 +1,1 @@
+[{"table":"orders","dead_tuples":3900,"live_tuples":1050000,"last_autovacuum_minutes":16},{"table":"customers","dead_tuples":21000,"live_tuples":9400000,"last_autovacuum_minutes":19}]

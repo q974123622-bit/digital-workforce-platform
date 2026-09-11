@@ -39,7 +39,7 @@ The wire example above is a child-task envelope and therefore includes `parent_t
 |---|---|---|
 | `task.submit` | `platform` | Root coordinator. Created when the platform creates the root task; it is outbound-only to the collaboration service. |
 | `task.delegate` | Current node assignee | `platform`. The assignee creates one or more children and moves itself to `waiting_children`. A worker can therefore delegate within its own subtree. |
-| `task.assign` | Child coordinator | Child assignee. The platform queues and delivers this assignment after a valid delegation; it is outbound-only to the collaboration service. |
+| `task.assign` | `platform` on the strict Matrix envelope; business coordinator remains persisted with the assignment | Child assignee. The platform queues and delivers this assignment after a valid delegation; it is outbound-only to the collaboration service. |
 | `task.accepted` | Current node assignee | `platform`. Moves `assigned` to `accepted`. |
 | `task.progress` | Current node assignee | `platform`. Moves `accepted` to `running` on the first update, or updates an already `running` node. |
 | `agent.message` | Current node assignee or coordinator | Logical receiver named in the envelope. It records a cross-Agent communication event without changing task status. |
@@ -47,7 +47,7 @@ The wire example above is a child-task envelope and therefore includes `parent_t
 | `tool.result` | `platform` | Requesting node assignee. The platform queues this safe, auditable response; it is outbound-only to the collaboration service. |
 | `task.result` | Current node assignee | `platform`. Completes the node and preserves its payload as node output. |
 | `task.failed` | Current node assignee | `platform`. Fails the node with the supplied error fields. |
-| `task.summary` | `platform` for the summary request; current node coordinator for the summary response | The platform requests a summary after all required children complete. A coordinator response completes that node; a root response also completes the root `TaskRun` and saves its summary. |
+| `task.summary` | `platform` for the summary request; root Manager/coordinator for the final response | The platform requests a child summary from that parent node's assignee. A non-root Worker returns `task.result` after combining children; the root Manager response completes the root `TaskRun` and saves its summary. |
 | `task.cancel` | `platform` | Each non-terminal assignee. The HTTP cancellation action queues these outbound notifications. It is not an inbound service transition. |
 
 The inbound state handlers are intentionally narrower than the envelope vocabulary: `task.delegate`, `task.accepted`, `task.progress`, `agent.message`, `tool.request`, `task.result`, `task.failed`, and the coordinator response form of `task.summary` are accepted. A valid envelope with another type is an `unsupported_message_type` conflict rather than an implicit action.
@@ -79,7 +79,7 @@ These examples show the message-specific `payload` object only. Every example mu
       "depends_on": [],
       "material": {"checklist": "onboarding"},
       "required": true,
-      "capability": "knowledge.read"
+      "required_capability": "knowledge.read"
     },
     {
       "client_task_key": "it-account",
@@ -89,7 +89,7 @@ These examples show the message-specific `payload` object only. Every example mu
       "depends_on": [],
       "material": {},
       "required": true,
-      "capability": "service.read"
+      "required_capability": "service.read"
     }
   ]
 }
@@ -174,3 +174,46 @@ This means an envelope cannot claim another worker’s employee number simply be
 Plain Matrix text is saved as a non-state `matrix.text` audit record. A prefixed line with invalid JSON, missing/extra envelope fields, an unknown type, or an unsupported version is recorded as `protocol.invalid` with bounded error metadata and a protocol-invalid event; no task status transition is applied.
 
 An envelope whose version is not `1.0` fails model validation. It is logged as invalid and **must not mutate collaboration task state**. A syntactically valid envelope rejected for an unknown root/task, sender or authorization mismatch, or invalid state transition is recorded as `protocol.rejected`; its message-level state changes are rolled back, while the runner continues with later events and advances the completed batch cursor. Unexpected technical failures still roll back the whole receive batch and leave its cursor unchanged. Operators should correct the sender, room, payload, or state sequence and then inspect persisted task events and Matrix message records.
+
+## Strict runtime delivery clarification
+
+The following is the current strict-path architecture.  It separates the
+physical Matrix posting account from the business actor recorded in the task
+tree; do not treat a Matrix sender string as an authorization bypass.
+
+```text
+Browser / HTTP caller
+  -> platform create_task() -> persisted outbox -> Runner / Matrix gateway
+  -> Manager or Worker Matrix process -> DWP_EVENT response
+  -> Runner -> apply_message() -> TaskRun / nodes / events / audit / outbox
+```
+
+| Situation | Physical Matrix event sender | Protocol `sender` | `receiver` | Required payload / durable effect |
+|---|---|---|---|---|
+| Root submit | Platform account | `platform` | Manager Agent ID | Title, instruction, material, team catalog/version. Creates root in `planning`; Manager Runtime selects Skills and plans. |
+| Strict child assignment | Platform account | `platform` | Child assignee | Parent chain, assignment instruction, capability catalog/version, selected context. Persisted message still keeps the business coordinator/parent chain. |
+| Manager/Worker reply | That Agent's own account | Mapped Agent ID | `platform` or named peer | The event sender MXID must map to the same active team member as the logical sender. |
+| Tool result | Platform account | `platform` | Requesting Worker | Safe result fields plus positive audit IDs after Gateway/Policy/Audit processing. |
+| Child-summary request | Platform account | `platform` | Parent **assignee** | Child results, current round, remaining limits. A non-root Worker combines its children and returns `task.result`; platform then requests the root Manager summary. |
+| Root final summary | Manager account | Manager Agent ID | `platform` | Summary, completed items, risks, unknowns, next actions. Root node and TaskRun become `completed` only here. |
+
+### State and retry rules by message
+
+| Message | Actor input | State change | Next trigger | Failure / duplicate behavior |
+|---|---|---|---|---|
+| `task.delegate` | Assignee provides validated subtask list with `required_capability`, dependencies, material, and required flag. | Parent becomes `waiting_children`; independent children are `assigned`, dependency-bound children are `blocked`. | Platform queues strict assignments for released children. | Bad team/capability/depth/chain/round input is rejected atomically; no partial tree. Same protocol key has no second effect. |
+| `task.accepted` / `task.progress` | Assigned Worker reports its own node. | `assigned → accepted`; first progress makes `accepted → running`. | Worker may ask, delegate, request a Tool, complete, or fail. | MXID/logical-sender/role/state mismatch becomes `protocol.rejected`; duplicate key changes nothing. |
+| `agent.message` | Assignee or coordinator sends bounded peer text. | Records an event only. | Recipient may use it as context. | It does not complete, fail, or advance a node. |
+| `tool.request` | Worker names an allowed tool/action/params and receiver `platform`. | No Worker completion is implied. | Gateway invokes policy and adapter, writes AuditEvent, then queues `tool.result`. | Denial/technical failure returns a safe result; raw endpoint, credential, and stack text are not protocol evidence. |
+| `task.result` | Assignee returns result after valid evidence. | Node becomes `completed`, progress 100; dependencies may release. | If all required direct children are terminal, platform requests parent summary. | Replayed protocol key is no-op; a new Matrix event with an existing protocol key is audit-visible as `matrix.duplicate`, not a second result. |
+| `task.failed` | Assignee sends safe error code/message. | Node becomes `failed`. A required child failure propagates `failed` to required ancestors and root TaskRun. | Dependency descendants are cancelled where applicable. | Replayed failure key adds no event. This is a state-machine failure, not evidence that policy can be bypassed. |
+| `task.summary` | Platform request or coordinator response. | Non-root completion continues upward; root coordinator response completes TaskRun. | Final persisted summary is exposed through result API. | A Worker cannot impersonate coordinator; early/invalid summary is rejected and audited. |
+
+Source locations: envelope parsing/rendering is
+`backend/app/services/agentteams_protocol.py`; state authorization and
+transitions are `backend/app/services/agentteams_collaboration.py` (`create_task`,
+`apply_message`, `_apply_result`, `_apply_summary`, `_apply_tool_request`,
+`_maybe_request_parent_summary`, `_authorize`); outbox/inbox delivery is
+`backend/app/services/agentteams_runner.py`; independent receive/decision/state
+persistence is `backend/app/services/agentteams_agent_runtime.py` (`run_once`,
+`_manager_submit`, `_worker_continue`, `_new_worker_context`).

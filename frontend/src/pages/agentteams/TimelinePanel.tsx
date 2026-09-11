@@ -34,6 +34,46 @@ function positiveAuditIds(payload: Record<string, unknown>) {
   return auditIds(payload).filter((value) => Number.isInteger(value) && value > 0);
 }
 
+function nestedToolPayload(payload: Record<string, unknown>) {
+  const nested = payload.payload;
+  return nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : payload;
+}
+
+interface ToolAuditRecord {
+  id: string;
+  request?: AgentMessage;
+  result?: AgentMessage;
+}
+
+function pairToolMessages(messages: AgentMessage[]) {
+  const records: ToolAuditRecord[] = [];
+  const pendingByTask = new Map<string, ToolAuditRecord[]>();
+
+  for (const message of messages) {
+    if (message.message_type === 'tool.request') {
+      const record = { id: message.id, request: message };
+      records.push(record);
+      const pending = pendingByTask.get(message.task_id) ?? [];
+      pending.push(record);
+      pendingByTask.set(message.task_id, pending);
+      continue;
+    }
+    if (message.message_type !== 'tool.result') continue;
+
+    const pending = pendingByTask.get(message.task_id) ?? [];
+    const record = pending.shift();
+    if (record) {
+      record.result = message;
+    } else {
+      records.push({ id: message.id, result: message });
+    }
+  }
+
+  return records;
+}
+
 function policyLabel(decision: string) {
   if (decision === 'allow') return '允许';
   if (decision === 'deny') return '拒绝';
@@ -54,7 +94,7 @@ function messageSummary(message: AgentMessage) {
 export function TimelinePanel({ events, messages, newEventIds = new Set(), selectedTaskId, isRealMatrix = false }: Props) {
   const visibleEvents = selectedTaskId ? events.filter((event) => event.task_id === selectedTaskId) : events;
   const visibleMessages = selectedTaskId ? messages.filter((message) => message.task_id === selectedTaskId) : messages;
-  const toolMessages = visibleMessages.filter((message) => message.message_type.startsWith('tool.'));
+  const toolAudits = pairToolMessages(visibleMessages);
   const protocolErrors = visibleEvents.filter((event) => event.event_type === 'protocol.invalid');
 
   return (
@@ -128,32 +168,41 @@ export function TimelinePanel({ events, messages, newEventIds = new Set(), selec
       </Card>
 
       <Card size="small" title="工具审计" className="at-detail-card">
-        {toolMessages.length === 0 ? (
+        {toolAudits.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前节点暂无工具调用记录" />
         ) : (
           <List
             size="small"
-            dataSource={toolMessages}
-            renderItem={(message) => {
-              const decision = payloadString(message.payload, 'decision') || '未返回';
-              const ids = positiveAuditIds(message.payload);
-              const toolName = payloadString(message.payload, 'tool_name') || payloadString(message.payload, 'tool_type') || '未提供';
-              const result = typeof message.payload.data === 'string'
-                ? safeText(message.payload.data, 160)
-                : message.payload.truncated === true
+            dataSource={toolAudits}
+            renderItem={(audit) => {
+              const requestPayload = audit.request ? nestedToolPayload(audit.request.payload) : {};
+              const resultPayload = audit.result?.payload ?? {};
+              const decision = payloadString(resultPayload, 'decision');
+              const ids = positiveAuditIds(resultPayload);
+              const toolName = payloadString(resultPayload, 'tool_name')
+                || payloadString(requestPayload, 'tool_name')
+                || payloadString(resultPayload, 'tool_type')
+                || '未提供';
+              const caller = audit.request?.sender_agent_id ?? audit.result?.receiver_agent_id ?? '未提供';
+              const result = typeof resultPayload.data === 'string'
+                ? safeText(resultPayload.data, 160)
+                : resultPayload.truncated === true
                   ? '受控结果已截断'
-                  : '已返回受控结果摘要';
+                  : audit.result
+                    ? '已返回受控结果摘要'
+                    : '等待平台返回';
               return (
-                <List.Item>
+                <List.Item key={audit.id}>
                   <div className="at-tool-row">
                     <Typography.Text strong>工具调用：{toolName}</Typography.Text>
                     <Space size={[6, 4]} wrap>
-                      <Tag color={decision === 'allow' ? 'success' : decision === 'deny' ? 'error' : 'warning'}>
-                        权限检查：{policyLabel(decision)}
+                      <Tag>调用者：{caller}</Tag>
+                      <Tag color={decision === 'allow' ? 'success' : decision === 'deny' ? 'error' : decision ? 'warning' : 'processing'}>
+                        权限检查：{decision ? policyLabel(decision) : '等待检查'}
                       </Tag>
                       {ids.length > 0
                         ? ids.map((id) => <Tag key={id}>审计记录ID：{id}</Tag>)
-                        : <Tag>审计记录ID：未产生</Tag>}
+                        : <Tag>审计记录ID：{audit.result ? '未产生' : '等待产生'}</Tag>}
                     </Space>
                     <Typography.Text type="secondary">结果摘要：{result}</Typography.Text>
                   </div>

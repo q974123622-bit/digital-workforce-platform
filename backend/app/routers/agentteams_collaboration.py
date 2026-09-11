@@ -13,11 +13,14 @@ import json
 import os
 from pathlib import Path
 import stat
+from threading import Lock
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from .. import models, schemas
 from ..database import get_db
@@ -29,7 +32,14 @@ from ..services.agentteams_collaboration import (
 )
 from ..services.agentteams_gateway import AgentTeamsGateway
 from ..services.agentteams_agent_runtime import heartbeat_signature
+from ..services.agentteams_database_collaboration import (
+    DATABASE_TEAM_ID,
+    enqueue_database_collaboration_task,
+)
+from ..services.agentteams_database_scenarios import DatabaseScenarioCatalog
+from ..services.agentteams_evaluation import AgentTeamsEvaluator
 from ..services.agentteams_runtime_config import default_runtime_config_path, load_strict_runtime_config
+from ..services.llm import DeepSeekProvider
 from ..services.agentteams_local_scenario import (
     LOCAL_DEMO_INSTRUCTION,
     LOCAL_DEMO_LEADER_ID,
@@ -46,6 +56,15 @@ _TERMINAL_STATUSES = {"completed", "failed", "timed_out", "cancelled"}
 _LOCAL_DEMO_TEAM_ID = LOCAL_DEMO_TEAM_ID
 _LOCAL_DEMO_LEADER_ID = LOCAL_DEMO_LEADER_ID
 _LOCAL_DEMO_WORKER_IDS = LOCAL_DEMO_WORKER_IDS
+_EVALUATION_LOCKS_GUARD = Lock()
+_EVALUATION_LOCKS: dict[str, Lock] = {}
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _evaluation_lock(task_id: str) -> Lock:
+    """Serialize one task's model call in this demo backend process."""
+    with _EVALUATION_LOCKS_GUARD:
+        return _EVALUATION_LOCKS.setdefault(task_id, Lock())
 
 
 def _configured(value: str | None) -> bool:
@@ -105,21 +124,24 @@ def _normalise_health(raw_health: dict) -> dict:
                 matrix_user_id.startswith("@")
                 and matrix_user_id_for_runtime(matrix_user_id) == matrix_user_id
             )
-            is_local_demo_identity = (
+            # The local transport has no Matrix session.  Its readiness is
+            # established by the fixed, persisted Team membership below, so
+            # it must not reject otherwise valid local workers because the
+            # database happens to hold a strict-mode Matrix binding.
+            identity_is_valid = (
                 agent_id in _LOCAL_DEMO_WORKER_IDS
-                and matrix_user_id
-                == f"@dwp-{agent_id.lower()}:{config.agentteams_matrix_domain()}"
+                if mode == "local_demo"
+                else is_exact_mxid
             )
-            if (
-                raw_status in {"configured", "ready"}
-                and agent_id
-                and (
-                    is_local_demo_identity
-                    if mode == "local_demo"
-                    else is_exact_mxid
-                )
-            ):
+            if raw_status in {"configured", "ready"} and agent_id and identity_is_valid:
                 status = "ready" if mode == "agentteams_strict" and raw_status == "ready" else "configured"
+            elif (
+                mode == "agentteams_strict"
+                and agent_id
+                and identity_is_valid
+                and raw_status in {"stale_heartbeat", "unavailable", "invalid_runtime_binding"}
+            ):
+                status = raw_status
             elif not raw_worker.get("matrix_user_id"):
                 status = "missing_runtime_ref"
             else:
@@ -135,7 +157,13 @@ def _normalise_health(raw_health: dict) -> dict:
     enabled = raw_health.get("enabled") is True
     matrix = str(raw_health.get("matrix") or "not_configured")
     room = str(raw_health.get("room") or "not_configured")
-    manager = "configured" if raw_health.get("manager") in {"configured", "ready"} else "not_configured"
+    raw_manager = str(raw_health.get("manager") or "not_configured")
+    if mode == "local_demo":
+        manager = "configured" if raw_manager in {"configured", "ready"} else "not_configured"
+    elif raw_manager in {"ready", "configured", "stale_heartbeat", "unavailable", "invalid_runtime_binding"}:
+        manager = raw_manager
+    else:
+        manager = "not_configured"
     platform_team = "ready" if raw_health.get("platform_team") == "ready" else "missing"
 
     configured_workers = [
@@ -157,12 +185,20 @@ def _normalise_health(raw_health: dict) -> dict:
         reasons.append("Matrix登录未成功")
     if mode == "agentteams_strict" and room != "ready":
         reasons.append("配置的Matrix房间未加入")
-    if manager != "configured":
-        reasons.append(
-            "本地Demo指定Leader未就绪"
-            if mode == "local_demo"
-            else "Manager MXID未配置"
-        )
+    manager_expected_status = "configured" if mode == "local_demo" else "ready"
+    if manager != manager_expected_status:
+        if mode == "local_demo":
+            reasons.append("本地Demo指定Leader未就绪")
+        elif manager == "stale_heartbeat":
+            reasons.append("Manager未运行或心跳已过期")
+        elif manager == "invalid_runtime_binding":
+            reasons.append("Manager平台绑定与运行配置不一致")
+        elif manager == "unavailable":
+            reasons.append("Manager的Matrix登录或运行状态不可用")
+        elif manager == "configured":
+            reasons.append("Manager仅完成配置，尚未通过运行验证")
+        else:
+            reasons.append("Manager MXID未配置")
     if platform_team != "ready":
         reasons.append(
             "本地Demo seed团队不存在"
@@ -170,11 +206,24 @@ def _normalise_health(raw_health: dict) -> dict:
             else "平台至少需要一个Team"
         )
     if not workers_ready:
-        reasons.append(
-            "本地Demo团队至少需要两名指定Worker"
-            if mode == "local_demo"
-            else "至少需要两个Worker，且均须配置不同的可解析Matrix ID"
-        )
+        if mode == "local_demo":
+            reasons.append("本地Demo团队至少需要两名指定Worker")
+        else:
+            strict_worker_reasons = []
+            for worker in workers:
+                agent_id = worker["agent_id"] or "未知Worker"
+                status = worker["status"]
+                if status == "stale_heartbeat":
+                    strict_worker_reasons.append(f"{agent_id}未运行或心跳已过期")
+                elif status == "invalid_runtime_binding":
+                    strict_worker_reasons.append(f"{agent_id}平台绑定与运行配置不一致")
+                elif status == "unavailable":
+                    strict_worker_reasons.append(f"{agent_id}的Matrix登录或运行状态不可用")
+                elif status == "missing_runtime_ref":
+                    strict_worker_reasons.append(f"{agent_id}缺少运行时绑定")
+                elif status == "invalid_matrix_user_id":
+                    strict_worker_reasons.append(f"{agent_id}的Matrix ID无效")
+            reasons.extend(strict_worker_reasons or ["严格模式Worker尚未全部就绪"])
 
     return {
         "enabled": enabled,
@@ -208,34 +257,24 @@ def _local_demo_health(db: Session) -> dict:
             )
         ))
     leader = db.get(models.DigitalEmployee, _LOCAL_DEMO_LEADER_ID)
-    leader_mxid = (
-        matrix_user_id_for_runtime(leader.runtime_ref) if leader is not None else None
-    )
     leader_ready = (
         team is not None
         and team.leader_employee_id == _LOCAL_DEMO_LEADER_ID
         and leader is not None
         and leader.status == "active"
         and _LOCAL_DEMO_LEADER_ID in member_ids
-        and leader_mxid
-        == f"@dwp-{_LOCAL_DEMO_LEADER_ID.lower()}:{config.agentteams_matrix_domain()}"
     )
     workers = []
     for worker_id in sorted(_LOCAL_DEMO_WORKER_IDS):
         worker = db.get(models.DigitalEmployee, worker_id)
-        worker_mxid = (
-            matrix_user_id_for_runtime(worker.runtime_ref) if worker is not None else None
-        )
         worker_ready = (
             worker is not None
             and worker.status == "active"
             and worker_id in member_ids
-            and worker_mxid
-            == f"@dwp-{worker_id.lower()}:{config.agentteams_matrix_domain()}"
         )
         workers.append({
             "agent_id": worker_id,
-            "matrix_user_id": worker_mxid if worker_ready else "",
+            "matrix_user_id": "",
             "status": "configured" if worker_ready else "missing",
         })
     return _normalise_health({
@@ -321,10 +360,23 @@ def _strict_environment(db: Session, enabled: bool) -> dict:
         bound = bool(employee and employee.status == "active" and employee.runtime_type == "agentteams" and identity.agent_id in member_ids and matrix_user_id_for_runtime(employee.runtime_ref) == identity.mxid)
         heartbeat = _state_heartbeat(state_root, identity, now=now)
         ready = bool(verified.get(role) and bound and heartbeat)
+        if ready:
+            status = "ready"
+        elif not verified.get(role):
+            status = "unavailable"
+        elif not bound:
+            status = "invalid_runtime_binding"
+        else:
+            status = "stale_heartbeat"
         team_bound = team_bound and bound
-        workers.append({"agent_id": identity.agent_id, "matrix_user_id": identity.mxid, "status": "ready" if ready else "unavailable", **({"last_heartbeat_at": heartbeat} if heartbeat else {})})
+        workers.append({"agent_id": identity.agent_id, "matrix_user_id": identity.mxid, "status": status, **({"last_heartbeat_at": heartbeat} if heartbeat else {})})
     strict_ready = bool(enabled and verified.get("platform") and all(verified.get(role) for role in runtime.agents) and expected_members <= members and team_bound and all(item["status"] == "ready" for item in workers))
-    return _normalise_health({"enabled": enabled, "matrix": "ready" if verified.get("platform") else "unavailable", "room": "ready" if expected_members <= members else "unavailable", "manager": "ready" if verified.get("manager") else "not_configured", "platform_team": "ready" if team_bound else "missing", "workers": workers, "strict_ready": strict_ready, "configured_team_id": runtime.team_id})
+    manager_worker = next(
+        (item for item in workers if item["agent_id"] == runtime.agents["manager"].agent_id),
+        None,
+    )
+    manager_status = manager_worker["status"] if manager_worker is not None else "not_configured"
+    return _normalise_health({"enabled": enabled, "matrix": "ready" if verified.get("platform") else "unavailable", "room": "ready" if expected_members <= members else "unavailable", "manager": manager_status, "platform_team": "ready" if team_bound else "missing", "workers": workers, "strict_ready": strict_ready, "configured_team_id": runtime.team_id})
 
 
 def inspect_environment(db: Session) -> dict:
@@ -347,6 +399,33 @@ def _service() -> AgentTeamsCollaborationService:
         max_depth=config.agentteams_max_depth(),
         max_children=config.agentteams_max_children(),
     )
+
+
+def _build_evaluator() -> AgentTeamsEvaluator:
+    api_key = config.get("DEEPSEEK_API_KEY_MANAGER") or config.get("DEEPSEEK_API_KEY")
+    return AgentTeamsEvaluator(DeepSeekProvider(api_key=api_key))
+
+
+def _evaluation_demo_scenario(root: models.AgentTaskNode, selected_skill_ids: list[str]) -> tuple[str, str]:
+    input_payload = root.input_payload if isinstance(root.input_payload, dict) else {}
+    # ``coordination`` is generated by the platform. Any other root input key
+    # came from task material and is outside the outbound Demo evaluation boundary.
+    if set(input_payload) - {"coordination"}:
+        raise HTTPException(status_code=422, detail="仅支持不含用户材料的AgentTeams虚构演示任务评测")
+    selected = set(selected_skill_ids)
+    if (
+        root.title == "岗位调整评估"
+        and root.instruction == "评估张明的岗位调整是否可以按期完成。"
+        and selected == {"agentteams-role-change-readiness"}
+    ):
+        return "role_change", "评估演示员工的岗位调整是否可以按期完成"
+    if (
+        root.title == LOCAL_DEMO_TITLE
+        and root.instruction == LOCAL_DEMO_INSTRUCTION
+        and selected == {"agentteams-onboarding-readiness"}
+    ):
+        return "onboarding", "评估演示员工是否可以按期入职"
+    raise HTTPException(status_code=422, detail="仅支持已登记的AgentTeams虚构演示任务评测")
 
 
 def _require_actor(db: Session, actor_no: str) -> models.HumanEmployee:
@@ -422,6 +501,19 @@ def _task_out(
 
 
 def _require_ready(db: Session, *, team_id: str) -> None:
+    if team_id == DATABASE_TEAM_ID:
+        team = db.get(models.Team, DATABASE_TEAM_ID)
+        member_count = db.scalar(
+            select(func.count(models.TeamMember.id)).where(
+                models.TeamMember.team_id == DATABASE_TEAM_ID
+            )
+        ) or 0
+        if config.agentteams_collaboration_enabled() and team is not None and member_count == 6:
+            return
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "数据库 AgentTeams 场景未就绪"},
+        )
     health = (
         _local_demo_health(db)
         if config.agentteams_mode() == "local_demo"
@@ -444,7 +536,7 @@ def _require_supported_local_scenario(
     instruction: str,
     material: dict,
 ) -> None:
-    if config.agentteams_mode() != "local_demo":
+    if config.agentteams_mode() != "local_demo" or team_id == DATABASE_TEAM_ID:
         return
     if (team_id, leader_agent_id) != (_LOCAL_DEMO_TEAM_ID, _LOCAL_DEMO_LEADER_ID):
         raise HTTPException(
@@ -492,6 +584,13 @@ def create_task(
         raise HTTPException(status_code=404, detail="团队不存在")
     if payload.leader_agent_id != team.leader_employee_id:
         raise HTTPException(status_code=403, detail="协作任务必须使用团队指定负责人")
+    database_scenario_id = ""
+    if payload.team_id == DATABASE_TEAM_ID:
+        database_scenario_id = str(payload.material.get("scenario_id") or "").strip()
+        try:
+            DatabaseScenarioCatalog.from_root(_PROJECT_ROOT).get(database_scenario_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="请选择有效的数据库诊断场景") from None
     _require_supported_local_scenario(
         payload.team_id,
         payload.leader_agent_id,
@@ -500,7 +599,11 @@ def create_task(
         payload.material,
     )
     _require_ready(db, team_id=payload.team_id)
-    service = _service()
+    service = (
+        AgentTeamsCollaborationService(max_children=5, capability_catalog_source="database")
+        if payload.team_id == DATABASE_TEAM_ID
+        else _service()
+    )
 
     def create_for_actor() -> models.TaskRun:
         run = service.create_task(
@@ -510,11 +613,13 @@ def create_task(
             title=payload.title,
             instruction=payload.instruction,
             material=payload.material,
+            owner_human_no=actor.employee_no,
         )
-        run.owner_human_no = actor.employee_no
         return run
 
     run = _commit_or_conflict(db, create_for_actor)
+    if payload.team_id == DATABASE_TEAM_ID:
+        enqueue_database_collaboration_task(run.id, database_scenario_id)
     return _task_out(db, run)
 
 
@@ -591,6 +696,96 @@ def get_result(task_id: str, actor_no: str = Query(...), db: Session = Depends(g
     )
 
 
+@router.post("/tasks/{task_id}/evaluation", response_model=schemas.AgentTaskEvaluationOut)
+def evaluate_task(task_id: str, actor_no: str = Query(...), db: Session = Depends(get_db)):
+    actor, run, root = _require_task_access(db, task_id, actor_no)
+    if run.status not in _TERMINAL_STATUSES or root.status not in _TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail="协作任务结束后才能评测")
+
+    with _evaluation_lock(task_id):
+        cached = db.scalar(
+            select(models.AgentTaskEvent)
+            .where(
+                models.AgentTaskEvent.root_task_id == task_id,
+                models.AgentTaskEvent.event_type == "task.evaluation.completed",
+            )
+            .order_by(models.AgentTaskEvent.event_seq.desc())
+        )
+        if cached is not None:
+            try:
+                return schemas.AgentTaskEvaluationOut.model_validate(cached.detail)
+            except ValidationError:
+                # Ignore a corrupt historical cache entry and rebuild from the
+                # persisted collaboration facts below.
+                pass
+
+        graph = _service().build_graph(db, task_id)
+        scenario_id, safe_goal = _evaluation_demo_scenario(root, graph["selected_skill_ids"])
+        nodes = _task_nodes(db, task_id)
+        dependencies = list(db.scalars(
+            select(models.AgentTaskDependency)
+            .where(models.AgentTaskDependency.root_task_id == task_id)
+            .order_by(models.AgentTaskDependency.id)
+        ))
+        messages = list(db.scalars(
+            select(models.AgentMessage)
+            .where(models.AgentMessage.root_task_id == task_id)
+            .order_by(models.AgentMessage.created_at, models.AgentMessage.id)
+        ))
+        events = list(db.scalars(
+            select(models.AgentTaskEvent)
+            .where(models.AgentTaskEvent.root_task_id == task_id)
+            .order_by(models.AgentTaskEvent.event_seq, models.AgentTaskEvent.id)
+        ))
+        evaluation = _build_evaluator().evaluate(
+            task={
+                "scenario_id": scenario_id,
+                "goal": safe_goal,
+                "selected_skill_ids": graph["selected_skill_ids"],
+            },
+            nodes=nodes,
+            dependencies=dependencies,
+            messages=messages,
+            events=events,
+            summary=run.summary,
+        )
+        validated_model = schemas.AgentTaskEvaluationOut.model_validate(evaluation)
+        validated = validated_model.model_dump(mode="json")
+        completed = validated_model.model_status == "completed"
+        event_type = "task.evaluation.completed" if completed else "task.evaluation.partial"
+        next_seq = db.scalar(
+            select(func.max(models.AgentTaskEvent.event_seq)).where(
+                models.AgentTaskEvent.root_task_id == task_id
+            )
+        ) or 0
+        db.add(models.AgentTaskEvent(
+            root_task_id=task_id,
+            task_id=task_id,
+            event_seq=next_seq + 1,
+            event_type=event_type,
+            actor_agent_id=actor.employee_no,
+            target_agent_id=root.assignee_agent_id,
+            summary="task evaluation completed" if completed else "task rule evaluation completed",
+            detail=validated,
+        ))
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            winner = db.scalar(
+                select(models.AgentTaskEvent)
+                .where(
+                    models.AgentTaskEvent.root_task_id == task_id,
+                    models.AgentTaskEvent.event_type == "task.evaluation.completed",
+                )
+                .order_by(models.AgentTaskEvent.event_seq.desc())
+            )
+            if winner is not None:
+                return schemas.AgentTaskEvaluationOut.model_validate(winner.detail)
+            raise HTTPException(status_code=409, detail="评测记录发生并发冲突，请重试")
+        return schemas.AgentTaskEvaluationOut.model_validate(validated)
+
+
 @router.post("/tasks/{task_id}/cancel", response_model=schemas.AgentCollaborationTaskOut)
 def cancel_task(task_id: str, actor_no: str = Query(...), db: Session = Depends(get_db)):
     actor, run, root = _require_task_access(db, task_id, actor_no)
@@ -656,7 +851,18 @@ def retry_task(task_id: str, actor_no: str = Query(...), db: Session = Depends(g
         dict(root.input_payload or {}),
     )
     _require_ready(db, team_id=run.team_id)
-    service = _service()
+    database_scenario_id = ""
+    if run.team_id == DATABASE_TEAM_ID:
+        database_scenario_id = str((root.input_payload or {}).get("scenario_id") or "").strip()
+        try:
+            DatabaseScenarioCatalog.from_root(_PROJECT_ROOT).get(database_scenario_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="数据库诊断场景已失效") from None
+    service = (
+        AgentTeamsCollaborationService(max_children=5, capability_catalog_source="database")
+        if run.team_id == DATABASE_TEAM_ID
+        else _service()
+    )
 
     def retry_for_actor() -> models.TaskRun:
         retry_run = service.create_task(
@@ -666,9 +872,11 @@ def retry_task(task_id: str, actor_no: str = Query(...), db: Session = Depends(g
             title=root.title,
             instruction=root.instruction,
             material=dict(root.input_payload or {}),
+            owner_human_no=actor.employee_no,
         )
-        retry_run.owner_human_no = actor.employee_no
         return retry_run
 
     retry_run = _commit_or_conflict(db, retry_for_actor)
+    if retry_run.team_id == DATABASE_TEAM_ID:
+        enqueue_database_collaboration_task(retry_run.id, database_scenario_id)
     return _task_out(db, retry_run)

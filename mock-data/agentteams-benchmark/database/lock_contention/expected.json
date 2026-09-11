@@ -1,0 +1,1 @@
+{"root_cause_id":"lock_wait_chain","aliases":["blocking_transaction","row_lock_contention"],"required_signals":["locks","statements"],"rationale":"长事务持有 orders 行锁形成等待链，慢查询只是等待结果。"}

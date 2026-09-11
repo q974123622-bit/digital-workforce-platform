@@ -1,0 +1,1 @@
+[{"pid":"7101","relation":"positions","state":"waiting","mode":"RowExclusiveLock","wait_ms":42,"blocked_by":"7102"},{"pid":"7102","relation":"positions","state":"granted","mode":"RowExclusiveLock","wait_ms":0,"transaction_age_s":1}]

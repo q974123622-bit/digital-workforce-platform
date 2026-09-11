@@ -27,7 +27,8 @@ def test_capability_catalog_unifies_plugins_and_skills(client):
     resp = client.get("/api/v1/capabilities?actor_no=E10281")
     assert resp.status_code == 200
     rows = resp.json()
-    assert len(rows) == 19  # 15 plugins（含 3 个 AgentTeams 演示工具）+ 张三的 4 skills
+    assert len(rows) == 24  # 20 plugins (including the database inspector) + 4 user skills
+    assert any(row["id"] == "agentteams-database-inspector" for row in rows)
     skill = next(row for row in rows if row["id"] == "SK-0001")
     workflow = next(row for row in rows if row["id"] == "expense-claim")
     assert skill["kind"] == "instruction" and skill["executable"] is False

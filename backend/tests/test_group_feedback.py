@@ -73,6 +73,7 @@ class FakeGatewayFeedback:
 
 def test_group_feedback_writes_per_worker_messages(db_session, monkeypatch):
     conv = _seed_group(db_session)
+    monkeypatch.setenv("AGENTTEAMS_ROOM_ID", "!group-feedback:test")
     monkeypatch.setattr("app.services.group_chat.AgentTeamsGateway", lambda: FakeGatewayFeedback())
     monkeypatch.setattr("app.services.group_chat.config.team_backend_mode", lambda: "auto")
     classifier = lambda db, **kw: True  # noqa: E731
@@ -107,6 +108,7 @@ def test_group_feedback_writes_per_worker_messages(db_session, monkeypatch):
 def test_feedback_dedup_across_restart(db_session, monkeypatch):
     """持久化去重：同一房间事件即使再次 poll 也不重复回传（重启后同样生效）。"""
     conv = _seed_group(db_session)
+    monkeypatch.setenv("AGENTTEAMS_ROOM_ID", "!group-feedback:test")
     leader = db_session.get(models.DigitalEmployee, "DT-E10281")
 
     class FakeOnce:

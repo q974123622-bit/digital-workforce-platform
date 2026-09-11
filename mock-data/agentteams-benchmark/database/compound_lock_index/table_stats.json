@@ -1,0 +1,1 @@
+[{"table":"orders","sequential_scans":21,"index_scans":1090000,"cache_hit_ratio":0.996},{"table":"customers","sequential_scans":13780,"index_scans":9100,"cache_hit_ratio":0.984}]

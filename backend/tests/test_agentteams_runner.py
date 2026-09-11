@@ -21,6 +21,8 @@ ROOM_ID = "!agentteams:test"
 class FakeGateway:
     """In-memory Matrix boundary double; collaboration state stays real."""
 
+    mode = "agentteams_strict"
+
     def __init__(self, batches=None, *, send_error=None):
         self.batches = list(batches or [])
         self.send_error = send_error
@@ -47,6 +49,35 @@ class BatchWithoutCursor:
         self.events = events
 
 
+def test_runner_accepts_transport_keyword_and_keeps_gateway_alias():
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    transport = FakeGateway()
+
+    runner = AgentTeamsCollaborationRunner(transport=transport, room_id=ROOM_ID)
+
+    assert runner.transport is transport
+    assert runner.gateway is transport
+
+
+def test_runner_uses_transport_factory_when_not_injected(monkeypatch):
+    from app.services import agentteams_runner as runner_module
+
+    transport = FakeGateway()
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    monkeypatch.setattr(
+        runner_module,
+        "create_agentteams_transport",
+        lambda: transport,
+        raising=False,
+    )
+
+    runner = runner_module.AgentTeamsCollaborationRunner(room_id=ROOM_ID)
+
+    assert runner.transport is transport
+    assert runner.gateway is transport
+
+
 def test_strict_runner_factory_uses_validated_runtime_identity_and_room(monkeypatch, tmp_path):
     """Strict delivery must use the same identity contract as strict health."""
     from app.services import agentteams_runner as runner_module
@@ -67,16 +98,17 @@ def test_strict_runner_factory_uses_validated_runtime_identity_and_room(monkeypa
     }), encoding="utf-8")
     calls = []
 
-    class StrictGateway(FakeGateway):
+    class StrictTransport(FakeGateway):
         def __init__(self, *, base_url, matrix_token):
             super().__init__()
             calls.append((base_url, matrix_token))
 
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
     monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(runtime_path))
     monkeypatch.setenv("AGENTTEAMS_MATRIX_URL", "http://stale.example")
     monkeypatch.setenv("AGENTTEAMS_MATRIX_TOKEN", "stale-token")
     monkeypatch.setenv("AGENTTEAMS_ROOM_ID", "!stale-room:test")
-    monkeypatch.setattr(runner_module, "AgentTeamsGateway", StrictGateway)
+    monkeypatch.setattr(runner_module, "AgentTeamsGateway", StrictTransport, raising=False)
 
     runner = runner_module.AgentTeamsCollaborationRunner()
 
@@ -87,10 +119,13 @@ def test_strict_runner_factory_uses_validated_runtime_identity_and_room(monkeypa
 def test_strict_runner_factory_fails_closed_for_invalid_runtime(monkeypatch, tmp_path):
     from app.services.agentteams_runner import AgentTeamsCollaborationRunner
 
-    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(tmp_path / "missing.json"))
+    missing_runtime = tmp_path / "missing-runtime.json"
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(missing_runtime))
 
     with pytest.raises(ValueError, match="invalid_runtime_config"):
         AgentTeamsCollaborationRunner()
+
 
 def _enable_test_leader(db_session):
     leader = db_session.get(models.DigitalEmployee, "DT-E10281")
@@ -274,6 +309,8 @@ def test_tool_request_uses_platform_gateway(db_session, monkeypatch):
         "knowledge_base_id": "KB-REG-EXTERNAL",
         "execution_context": {
             "task_id": node.id,
+            "team_id": "TEAM-ONBOARD",
+            "owner_human_no": "E10281",
             "request": "协调完成入职准备",
             "subtask": "核查制度",
             "collaboration_summary": "已完成制度核查",
@@ -286,7 +323,10 @@ def test_tool_request_uses_platform_gateway(db_session, monkeypatch):
         f"{node.id}:tool.result:{hashlib.sha256(request.idempotency_key.encode()).hexdigest()[:32]}"
     )
     assert result.receiver_agent_id == node.assignee_agent_id
-    assert result.payload == {
+    assert {
+        key: value for key, value in result.payload.items()
+        if key not in {"team_capability_catalog", "team_catalog_version"}
+    } == {
         "ok": True,
         "decision": "allow",
         "audit_ids": [41, 42],
@@ -299,6 +339,11 @@ def test_tool_request_uses_platform_gateway(db_session, monkeypatch):
             "bounded": "x" * 512,
         },
     }
+    assert result.payload["team_catalog_version"] == 3
+    assert {item["agent_id"] for item in result.payload["team_capability_catalog"]} >= {
+        "VE-0002", "VE-0003", "VE-0005",
+    }
+    assert "token" not in json.dumps(result.payload).lower()
 
 
 def test_tool_request_derives_knowledge_plugin_from_kb_level(db_session, monkeypatch):
@@ -362,7 +407,12 @@ def test_tool_request_rejects_unknown_knowledge_base_without_gateway(db_session,
     result = db_session.query(models.AgentMessage).filter_by(
         direction="outbound", task_id=node.id, message_type="tool.result",
     ).one()
-    assert result.payload == {"ok": False, "decision": "deny", "audit_ids": []}
+    assert {
+        key: value for key, value in result.payload.items()
+        if key not in {"team_capability_catalog", "team_catalog_version"}
+    } == {"ok": False, "decision": "deny", "audit_ids": []}
+    assert result.payload["team_capability_catalog"]
+    assert result.payload["team_catalog_version"] >= 1
 
 
 def test_tool_request_rejects_non_knowledge_plugin_with_knowledge_base(db_session, monkeypatch):
@@ -547,8 +597,13 @@ def test_tool_result_payload_has_hard_utf8_byte_limit(db_session, monkeypatch):
     result = db_session.query(models.AgentMessage).filter_by(
         direction="outbound", task_id=node.id, message_type="tool.result",
     ).one()
-    assert set(result.payload) == {"ok", "decision", "audit_ids", "truncated"}
+    assert set(result.payload) == {
+        "ok", "decision", "audit_ids", "truncated",
+        "team_capability_catalog", "team_catalog_version",
+    }
     assert result.payload["truncated"] is True
+    assert result.payload["team_capability_catalog"]
+    assert result.payload["team_catalog_version"] >= 1
     assert len(json.dumps(result.payload, ensure_ascii=False).encode("utf-8")) <= 4096
 
 
@@ -605,7 +660,12 @@ def test_runner_rolls_back_gateway_writes_before_safe_failure_result(db_session,
     result = db_session.query(models.AgentMessage).filter_by(
         direction="outbound", task_id=node.id, message_type="tool.result",
     ).one()
-    assert result.payload == {"ok": False, "decision": "failed", "audit_ids": []}
+    assert {
+        key: value for key, value in result.payload.items()
+        if key not in {"team_capability_catalog", "team_catalog_version"}
+    } == {"ok": False, "decision": "failed", "audit_ids": []}
+    assert result.payload["team_capability_catalog"]
+    assert result.payload["team_catalog_version"] >= 1
 
 
 def test_runner_keeps_cursor_atomic_when_gateway_commits(db_session, monkeypatch):
@@ -691,7 +751,12 @@ def test_tool_request_policy_denied_returns_denied_tool_result(db_session, monke
     result = db_session.query(models.AgentMessage).filter_by(
         direction="outbound", task_id=node.id, message_type="tool.result",
     ).one()
-    assert result.payload == {"ok": False, "decision": "deny", "audit_ids": [73]}
+    assert {
+        key: value for key, value in result.payload.items()
+        if key not in {"team_capability_catalog", "team_catalog_version"}
+    } == {"ok": False, "decision": "deny", "audit_ids": [73]}
+    assert result.payload["team_capability_catalog"]
+    assert result.payload["team_catalog_version"] >= 1
     assert db_session.get(models.AgentTaskNode, node.id).status == "assigned"
     assert db_session.get(models.TaskRun, run.id).status == "planning"
 
@@ -864,6 +929,7 @@ def test_runner_keeps_outbox_pending_when_transport_returns_non_matrix_event_id(
     ).one()
     assert outbox.delivery_status == "pending"
     assert outbox.matrix_event_id is None
+
 
 def test_runner_does_not_advance_cursor_when_technical_batch_processing_fails(db_session, monkeypatch):
     from app.services.agentteams_runner import AgentTeamsCollaborationRunner
@@ -1050,6 +1116,196 @@ def test_new_runner_continues_from_saved_cursor(db_session):
 
     assert next_gateway.sync_calls == [("s2", {ROOM_ID}, 0)]
     assert db_session.query(models.AgentMatrixCursor).one().cursor == "s3"
+
+
+def test_runner_cursor_isolated_by_transport_mode_and_room(db_session):
+    from app.services.agentteams_local_demo import LocalDemoTransport
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    service, _run, _leader = _create_run(db_session)
+    local = LocalDemoTransport()
+    AgentTeamsCollaborationRunner(
+        transport=local,
+        service=service,
+        room_id="local-room",
+    )._receive_new(db_session)
+
+    strict_same_room = FakeGateway(
+        [MatrixSyncBatch(events=[], next_cursor="strict-same-room")]
+    )
+    AgentTeamsCollaborationRunner(
+        transport=strict_same_room,
+        service=service,
+        room_id="local-room",
+    )._receive_new(db_session)
+
+    strict_other_room = FakeGateway(
+        [MatrixSyncBatch(events=[], next_cursor="strict-other-room")]
+    )
+    AgentTeamsCollaborationRunner(
+        transport=strict_other_room,
+        service=service,
+        room_id="other-room",
+    )._receive_new(db_session)
+
+    assert strict_same_room.sync_calls[0][0] is None
+    assert strict_other_room.sync_calls[0][0] is None
+    assert db_session.query(models.AgentMatrixCursor).count() == 3
+
+
+def test_local_runner_restart_replays_sent_outbox_and_recovers_response(db_session, monkeypatch):
+    from app.services.agentteams_local_demo import LocalDemoTransport
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+
+    service = AgentTeamsCollaborationService()
+    run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="新员工入职",
+        instruction="协调完成入职准备",
+        material={"employee": "李四"},
+    )
+    interrupted = AgentTeamsCollaborationRunner(
+        transport=LocalDemoTransport(),
+        service=service,
+        room_id="local-demo",
+    )
+
+    interrupted._send_pending(db_session)
+    db_session.commit()
+    submit = db_session.query(models.AgentMessage).filter_by(
+        root_task_id=run.id,
+        direction="outbound",
+        message_type="task.submit",
+    ).one()
+    assert submit.delivery_status == "sent"
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id,
+    ).count() == 0
+
+    restarted = AgentTeamsCollaborationRunner(
+        transport=LocalDemoTransport(),
+        service=service,
+        room_id="local-demo",
+    )
+    restarted.tick_once(db_session)
+
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id,
+    ).count() == 2
+
+
+def test_restarted_local_runner_delivers_next_task_behind_old_cursor(db_session, monkeypatch):
+    from app.services.agentteams_local_demo import LocalDemoTransport
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+
+    service = AgentTeamsCollaborationService()
+    first_run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="first task",
+        instruction="establish a persisted local cursor",
+        material={},
+    )
+    AgentTeamsCollaborationRunner(
+        transport=LocalDemoTransport(),
+        service=service,
+        room_id="local-demo",
+    ).tick_once(db_session)
+    old_cursor = db_session.query(models.AgentMatrixCursor).one().cursor
+    old_event_ids = {
+        event_id
+        for (event_id,) in db_session.query(models.AgentMessage.matrix_event_id)
+        .filter_by(direction="inbound", root_task_id=first_run.id)
+        if event_id is not None
+    }
+    for queued_assignment in db_session.query(models.AgentMessage).filter_by(
+        direction="outbound",
+        root_task_id=first_run.id,
+        delivery_status="pending",
+    ):
+        queued_assignment.delivery_status = "cancelled"
+    db_session.commit()
+
+    second_run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="second task",
+        instruction="must not be skipped by the old cursor",
+        material={},
+    )
+    AgentTeamsCollaborationRunner(
+        transport=LocalDemoTransport(),
+        service=service,
+        room_id="local-demo",
+    ).tick_once(db_session)
+
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=second_run.id,
+    ).count() == 2
+    new_delegate = db_session.query(models.AgentMessage).filter_by(
+        direction="inbound",
+        root_task_id=second_run.id,
+        message_type="task.delegate",
+    ).one()
+    assert new_delegate.matrix_event_id not in old_event_ids
+    assert db_session.query(models.AgentMatrixCursor).one().cursor != old_cursor
+
+
+def test_local_runner_does_not_replay_strict_or_other_room_sent_outbox(db_session):
+    from app.services.agentteams_local_demo import LocalDemoTransport
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    service = AgentTeamsCollaborationService()
+    strict_run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="strict task",
+        instruction="must stay on strict transport",
+        material={},
+    )
+    other_room_run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="other room task",
+        instruction="must stay in its room",
+        material={},
+    )
+    strict_outbox = db_session.query(models.AgentMessage).filter_by(
+        root_task_id=strict_run.id,
+        direction="outbound",
+        message_type="task.submit",
+    ).one()
+    strict_outbox.delivery_status = "sent"
+    strict_outbox.matrix_room_id = "local-demo"
+    strict_outbox.matrix_event_id = "$strict-event"
+    other_room_outbox = db_session.query(models.AgentMessage).filter_by(
+        root_task_id=other_room_run.id,
+        direction="outbound",
+        message_type="task.submit",
+    ).one()
+    other_room_outbox.delivery_status = "sent"
+    other_room_outbox.matrix_room_id = "other-room"
+    other_room_outbox.matrix_event_id = "local-out-existing"
+    db_session.flush()
+
+    transport = LocalDemoTransport()
+    AgentTeamsCollaborationRunner(
+        transport=transport,
+        service=service,
+        room_id="local-demo",
+    )._send_pending(db_session)
+
+    assert transport.sync_messages(None, {"local-demo"}).events == []
 
 
 @pytest.mark.parametrize("bad_batch", ["empty", "missing"])

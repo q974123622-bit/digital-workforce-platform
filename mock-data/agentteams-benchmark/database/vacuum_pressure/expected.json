@@ -1,0 +1,1 @@
+{"root_cause_id":"autovacuum_lag","aliases":["table_bloat","dead_tuple_pressure"],"required_signals":["vacuum","table_stats"],"rationale":"事件表死元组比例过高且自动清理长时间未完成，造成表膨胀。"}

@@ -1,0 +1,1 @@
+{"root_cause_id":"resource_heavy_analytics_query","aliases":["large_report_query","analytics_resource_contention"],"required_signals":["statements","table_stats"],"rationale":"未受限报表聚合读取巨量行并产生临时文件，挤占在线负载资源。"}

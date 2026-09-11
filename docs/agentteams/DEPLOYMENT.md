@@ -1,8 +1,19 @@
 # AgentTeams collaboration deployment and operations
 
-This runbook starts the platform-side collaboration runner. It does **not** create Matrix, AgentTeams, Workers, containers, or database data. The first demo version depends on an already configured Matrix and AgentTeams environment and does not require Redis, Celery, or PostgreSQL; its durable demo state uses the platform’s existing database. The demo script requires an initialized `backend/dwp.db` and disables automatic seed recovery, so it cannot delete or reseed platform data.
+This runbook starts the platform-side collaboration runner in one of two explicit modes. It does **not** create Matrix, AgentTeams, Workers, containers, or database data. It requires an initialized `backend/dwp.db` and disables automatic seed recovery, so it cannot delete or reseed platform data.
+
+| Mode | Selection | External requirements | Failure behavior |
+|---|---|---|---|
+| `local_demo` | dedicated demo script default | does not require/use Matrix credentials or remote services; script does not probe/output them | fixed local seed readiness is blocking |
+| `agentteams_strict` | pass `-Strict` | existing Matrix room, Manager, Workers, and credentials | Matrix readiness is blocking; no local fallback |
+
+Local Agent business outputs are deterministic Demo data. Both modes execute the real platform orchestration, protocol validation, database persistence, Gateway permission/audit path, API, and UI. The page labels local event identifiers `Transport事件ID` and strict identifiers `Matrix事件ID`.
 
 ## Prerequisites
+
+Both modes require the existing Python/frontend dependencies, free ports, and an initialized database. Local mode additionally requires the fixed existing records `TEAM-ONBOARD`, Leader `VE-0001`, and Workers `VE-0002` / `VE-0003`; it does not create them and the UI does not depend on team-list order.
+
+The following external prerequisites apply only to `agentteams_strict`:
 
 Before starting the local platform process, confirm all of the following outside this repository:
 
@@ -11,16 +22,19 @@ Before starting the local platform process, confirm all of the following outside
 - A team already exists in the platform database. Its leader and at least two AgentTeams digital employees must have distinct, resolvable Matrix runtime references. The Worker records must be `runtime_type=agentteams`; health reports these bindings as `configured`, not as remotely connected.
 - An initialized local SQLite database already exists at `backend/dwp.db`. The demo script blocks before startup when this file is absent: database initialization is a separate, explicitly approved operation and is never performed by the script.
 - The repository has an existing `backend/.venv/Scripts/python.exe` with the project dependencies and frontend dependencies already installed. The startup script never installs dependencies.
-- Ports 8000 and, unless `-NoFrontend` is used, 5173 are free. The script refuses to stop or replace a process using either port.
+- Ports 8000 and, unless `-NoFrontend` is used, 4173 are free. The script refuses to stop or replace a process using either port. This demo uses 4173 because the target Windows host reserves a system range containing 5173; the script does not change system port rules.
 
 The controller check is intentionally read-only: if Docker is available, the script inspects the configured controller container. It never runs Docker Compose, creates a container, starts a service, or resets platform data.
 
 ## Required configuration names
 
+`DWP_AGENTTEAMS_MODE` is non-secret and accepts `local_demo` or `agentteams_strict`. Normal application configuration is fail-closed (`agentteams_strict` when not overridden); only the dedicated demo script opts its own process and inherited children into `local_demo`. Local transport does not require or use Matrix credentials, and the script does not probe or output them. This does not change the application-wide configuration loading boundary. The remaining Matrix names below apply to strict mode.
+
 Set deployment configuration through the normal environment or the ignored `backend/.env`; never commit values. The platform code requires the following names for a live Matrix-and-room readiness check:
 
 | Purpose | Names |
 |---|---|
+| Transport selection | `DWP_AGENTTEAMS_MODE` — process-scoped `local_demo` by default; `agentteams_strict` with `-Strict`. |
 | Enable the runner | `DWP_AGENTTEAMS_COLLAB_ENABLED` — the demo script sets this only in its own process and child processes; do not persist it merely to run the demo. |
 | Demo seed safety | `DWP_SKIP_AUTO_SEED` — an internal, non-secret safety switch set only by the demo script in its process and child processes. It skips `seed_if_empty()` while retaining normal schema compatibility checks for the existing database. |
 | Matrix endpoint and authentication | `AGENTTEAMS_MATRIX_URL`, plus either `AGENTTEAMS_MATRIX_TOKEN` or both `AGENTTEAMS_ADMIN_USER` and `AGENTTEAMS_ADMIN_PASSWORD` |
@@ -46,17 +60,23 @@ For an API-only session, run:
 .\scripts\run_agentteams_demo.ps1 -NoFrontend
 ```
 
+For a prepared real Matrix environment, run:
+
+```powershell
+.\scripts\run_agentteams_demo.ps1 -Strict
+```
+
 The script performs only these checks/actions:
 
 1. Checks the exact `backend/.venv/Scripts/python.exe` path and an existing `backend/dwp.db`. A missing database blocks startup; the script does not initialize a database or seed data.
-2. Sets `DWP_AGENTTEAMS_COLLAB_ENABLED=1` and the internal `DWP_SKIP_AUTO_SEED=1` only in its process environment and inherited child processes. The backend therefore retains its normal schema compatibility path but skips `seed_if_empty()`.
-3. Reads whether `backend/.env` exists, checks Docker availability, and, when Docker is reachable, inspects the configured controller container. These are advisory, read-only diagnostics; a missing `.env` is acceptable when the process environment supplies configuration. The script does not print configuration values.
-4. Starts FastAPI and, unless skipped, Vite as hidden child processes with explicit working directories. Standard output and error go directly to project log files.
+2. Sets `DWP_AGENTTEAMS_COLLAB_ENABLED=1`, `DWP_SKIP_AUTO_SEED=1`, and the selected `DWP_AGENTTEAMS_MODE` only in its process environment and inherited child processes. The backend therefore retains its normal schema compatibility path but skips `seed_if_empty()`.
+3. In default local mode, does not require/use/probe/output Matrix credentials and skips the script's `.env`, Docker, and controller diagnostics. Under `-Strict` only, it reads whether `backend/.env` exists, checks Docker availability, and, when Docker is reachable, inspects the configured controller container. These are advisory, read-only diagnostics. The script does not print configuration values.
+4. Checks port 8000 and, unless `-NoFrontend` is used, port 4173 before starting either service. It then starts FastAPI and Vite as hidden child processes with explicit working directories, waits for bounded HTTP readiness on `127.0.0.1:4173`, and treats a failed/early-exited frontend as startup failure. Standard output and error go directly to project log files.
 5. Waits for `/health`, then requests `/api/v1/agentteams-collaboration/health` and prints only a health status and reason. Its real collaboration preflight is determined only by that endpoint’s `ready_for_demo` result, not by `.env`, Docker, or controller diagnostic presence.
 
-It prints the URLs, launched PIDs, log locations, the independent smoke command, and exact `Stop-Process` commands. Use the PIDs printed by that run; do not broadly terminate all Python, Node, or Docker processes.
+It prints URLs, launched PIDs, log locations, and exact process-tree stop commands. The frontend command stops the launched wrapper and its Vite child tree. If a later startup step fails, the script invokes the same exact-PID tree cleanup for only the children it created. It prints the independent real-Matrix smoke command only under `-Strict`. Never broadly terminate all Python, Node, or Docker processes.
 
-If collaboration health is not ready, the script prints a blocking warning and the smoke command. A missing `.env`, unavailable Docker, or an unconfirmed controller is advisory only; process environment configuration can still yield a ready collaboration health result. The backend or UI being available is not a claim that AgentTeams is connected. The frontend is UI-only: it renders persisted server state and cannot independently prove Matrix connectivity.
+If collaboration health is not ready, the script prints a blocking warning. Under strict mode, a missing `.env`, unavailable Docker, or an unconfirmed controller is advisory only; process environment configuration can still yield a ready collaboration health result. The backend or UI being available is not a claim that AgentTeams is connected. The frontend is UI-only: it renders persisted server state and cannot independently prove Matrix connectivity.
 
 ## Formal-environment service order
 
@@ -81,16 +101,20 @@ GET /api/v1/agentteams-collaboration/health
 
 | Field | Meaning |
 |---|---|
+| `mode` | Server-selected `local_demo` or `agentteams_strict`; this drives the page badge. |
+| `transport` | `local` or `matrix`. |
 | `enabled` | Whether the collaboration runner feature is enabled in this backend process. |
 | `ready_for_demo` | Submission gate. It is true only when every required readiness condition below is met. |
 | `reason` | Semicolon-separated non-secret reasons why the gate is blocked. |
-| `matrix` | `ready` only after the Matrix gateway’s room check succeeds; otherwise disabled, not configured, or unavailable. |
+| `matrix` | `not_connected` in local mode; in strict mode, `ready` only after the Matrix gateway check succeeds. |
 | `room` | `ready` only after the configured room check succeeds; otherwise disabled, not configured, unchecked, or unavailable/detail. |
-| `manager` | `configured` means only that `AGENTTEAMS_MANAGER_MXID` is present. It is **not** a remote Manager connection or liveness assertion. |
-| `platform_team` | `ready` when any platform Team record exists. Health has no user-selected team; task creation still validates the selected team and leader. |
-| `workers` | Stored AgentTeams Worker bindings with `agent_id`, resolved `matrix_user_id`, and `configured`, `missing_runtime_ref`, or `invalid_matrix_user_id` status. `configured` is not remote liveness. |
+| `manager` | Local: fixed Leader `VE-0001` exists and is active. Strict: `configured` means only that `AGENTTEAMS_MANAGER_MXID` is present, not remote liveness. |
+| `platform_team` | Local: fixed `TEAM-ONBOARD` has the canonical Leader/members. Strict: `ready` means some platform Team exists; create still validates the selected team and leader. |
+| `workers` | Local: fixed `VE-0002`/`VE-0003` records and bindings are validated for the deterministic script. Strict: statuses describe stored/resolved Matrix bindings; `configured` is not remote liveness. |
 
-`ready_for_demo` requires: runner enabled, Matrix `ready`, room `ready`, Manager configured, a platform team, and at least two distinct configured Worker IDs with two distinct resolvable MXIDs. This readiness check intentionally never claims remote proof for Manager or Worker runtime processes.
+In local mode, `ready_for_demo` requires the runner plus the fixed seed team, designated Leader, and two demo Workers; Matrix and room readiness are not required. In strict mode it requires Matrix `ready`, room `ready`, Manager configured, a platform team, and at least two distinct configured Worker IDs with distinct resolvable MXIDs. The strict check intentionally never claims remote liveness for Manager or Worker runtimes.
+
+Local submission is intentionally not general-purpose: the API accepts only canonical `TEAM-ONBOARD` / `VE-0001`, title `新员工入职准备复核`, the documented fixed instruction, and material `{}`. Any difference returns HTTP 409 before a task is created. Strict mode keeps free-form title, instruction, and material.
 
 ## Demo caller boundary
 
@@ -111,7 +135,7 @@ Use the persisted collaboration APIs or the AgentTeams page to correlate evidenc
 |---|---|
 | Task ID | The root `TaskRun` ID returned by task creation. It has the `AT-` prefix and is the URL parameter for task, graph, event, message, and result endpoints. |
 | Trace ID | The root creation code sets it to the Task ID; child nodes retain that trace ID. Use it to group a root and all descendants. |
-| Matrix Event ID | Stored on durable `AgentMessage` records after successful outbound delivery or accepted inbound receipt. The UI’s Matrix message log displays it as “Matrix event ID”. |
+| Transport / Matrix Event ID | Stored on durable `AgentMessage` records. Local IDs prove only local transport processing and render as `Transport事件ID`; strict IDs render as `Matrix事件ID`. |
 | Event sequence | `AgentTaskEvent.event_seq` is append-only per root task and is the ordering evidence for the timeline. |
 
 For an API investigation, use `/tasks/{task_id}`, `/tasks/{task_id}/graph`, `/tasks/{task_id}/events`, `/tasks/{task_id}/messages`, and `/tasks/{task_id}/result` under the collaboration API prefix. Avoid putting raw Matrix message bodies or `.env` contents in an incident ticket; use Task ID, Trace ID, event sequence, event type, and Matrix event ID instead.
@@ -137,4 +161,49 @@ Normal backend unit tests force `DWP_AGENTTEAMS_COLLAB_ENABLED=0` in `backend/te
 cd backend; .\.venv\Scripts\python.exe ..\scripts\agentteams_collaboration_smoke.py
 ```
 
-That script does not start services. It first requires `ready_for_demo`, submits the fixed collaboration task, waits for a terminal result, and prints minimal evidence only. Run it only against an already-running, authorized environment.
+That script does not start services. It first requires `ready_for_demo=true`, `mode=agentteams_strict`, and `transport=matrix`; it submits the fixed collaboration task as actor `E10281` with canonical Leader `VE-0001`, waits for a terminal result, and prints minimal evidence only. Run it only against an already-running, authorized environment.
+
+## Strict real runtime topology and secret boundary
+
+`agentteams_strict` is four separate Windows Agent processes plus the platform
+services and one Docker-hosted Synapse.  It is not the default local demo and
+does not silently fall back to it.
+
+| Component | Host / owner | Starts it | Responsibility | Secret boundary |
+|---|---|---|---|---|
+| Synapse | Docker Compose project `dwp-agentteams` | `scripts/start_agentteams_real_demo.ps1` | Private Matrix homeserver on loopback; holds no platform task state. | Registration secret is mounted read-only from ignored `.agentteams-runtime/`; never print it. |
+| Bootstrap | Windows Python | Start script invokes `scripts/bootstrap_agentteams_matrix.py` | Prepares secret, creates/loads five accounts and one private room, atomically writes strict runtime config. | `runtime.json` is ignored under `.agentteams-runtime/`; it contains runtime credentials and must not be copied. |
+| Backend + Runner | Windows Python / FastAPI | Start script | Authoritative TaskRun/tree/message/event state, identity checks, Gateway/Policy/Audit, strict Matrix outbox/inbox. | Matrix/DeepSeek configuration is process environment or ignored `backend/.env`; health and APIs expose only safe status/evidence. |
+| Manager, HR, IT, Audit | Four Windows Python processes | Start script calls `scripts/run_agentteams_agent.py --role manager|hr|it|audit --config ...` | Each owns one Matrix identity, cursor/state file, Skill/LLM decisions, and protocol replies. | Per-Agent Matrix tokens are read from ignored runtime config; DeepSeek key is inherited privately, never logged. |
+| Frontend | Windows Node/Vite | Start script unless `-NoFrontend` | Reads persisted API evidence; does not send Matrix protocol messages or certify connectivity. | No Matrix or DeepSeek secret belongs in browser configuration. |
+
+The Compose file pins `matrixdotorg/synapse:v1.117.0`, binds local Synapse to
+`127.0.0.1:8008`, and mounts the homeserver/log templates plus the ignored
+registration-secret path.  Element documents both the official Docker Hub image
+and `ghcr.io/element-hq/synapse` in its [Synapse installation
+guide](https://element-hq.github.io/synapse/latest/setup/installation.html).
+Use that source documentation when an image pull fails; do not replace it with
+an unreviewed mirror.
+
+### Strict startup / stop order
+
+1. Confirm Docker Engine, the existing backend virtual environment, Node/Vite
+   if required, and a non-empty local DeepSeek configuration.  The script checks
+   presence without printing the value.
+2. Set only process-local `DWP_AGENTTEAMS_MODE=agentteams_strict` and
+   `DWP_AGENTTEAMS_RUNTIME_CONFIG=.agentteams-runtime/runtime.json`.
+3. Prepare the Synapse registration secret; bring up the scoped Compose project;
+   wait for loopback Synapse; bootstrap five accounts/private room/runtime JSON.
+4. Start backend, then the four named Agent processes, then frontend; retain only
+   created PID metadata under ignored `.agentteams-runtime/pids.json`.
+5. Use `verify_agentteams_matrix.py` before a real smoke task.  A `whoami`, room,
+   send, or sync failure is a nonzero failure and remains strict.
+6. Stop only through `scripts/stop_agentteams_real_demo.ps1`.  It verifies each
+   recorded PID/worktree and runs `docker compose -p dwp-agentteams ... down`
+   without removing the persistent Synapse volume.  Never kill all Python,
+   Node, Docker, or Matrix processes.
+
+Current live acceptance status is recorded in
+[REAL_MATRIX_ACCEPTANCE.md](REAL_MATRIX_ACCEPTANCE.md).  At this revision the
+Docker engine prerequisite exists, but the official Synapse image pull has not
+completed; this is not a strict deployment PASS.

@@ -1,0 +1,1 @@
+[{"pid":"8101","relation":"orders","state":"granted","mode":"RowExclusiveLock","wait_ms":0,"transaction_age_s":241},{"pid":"8102","relation":"orders","state":"waiting","mode":"RowExclusiveLock","wait_ms":9020,"blocked_by":"8101"},{"pid":"8103","relation":"orders","state":"waiting","mode":"RowExclusiveLock","wait_ms":8750,"blocked_by":"8102"}]

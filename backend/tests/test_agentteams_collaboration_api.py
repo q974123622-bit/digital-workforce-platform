@@ -5,13 +5,17 @@ import json
 
 from app import models
 from app.services.agentteams_collaboration import AgentTeamsCollaborationService
+from app.services.agentteams_local_scenario import (
+    LOCAL_DEMO_INSTRUCTION,
+    LOCAL_DEMO_TITLE,
+)
 
 
 READY_HEALTH = {
     "enabled": True,
     "matrix": "ready",
     "room": "ready",
-    "manager": "configured",
+    "manager": "ready",
     "platform_team": "ready",
     "strict_ready": True,
     "configured_team_id": "TEAM-ONBOARD",
@@ -21,12 +25,22 @@ READY_HEALTH = {
         {
             "agent_id": "VE-0001",
             "matrix_user_id": "@ve-0001:test",
-            "status": "configured",
+            "status": "ready",
         },
         {
             "agent_id": "VE-0002",
             "matrix_user_id": "@ve-0002:test",
-            "status": "configured",
+            "status": "ready",
+        },
+        {
+            "agent_id": "VE-0003",
+            "matrix_user_id": "@ve-0003:test",
+            "status": "ready",
+        },
+        {
+            "agent_id": "VE-0005",
+            "matrix_user_id": "@ve-0005:test",
+            "status": "ready",
         },
     ],
 }
@@ -73,6 +87,20 @@ def _create_task(db_session):
     return run
 
 
+def _prepare_alternative_team(db_session):
+    db_session.add(models.Team(
+        id="TEAM-ALT",
+        name="其他协作团队",
+        leader_employee_id="VE-0002",
+        description="不兼容固定本地场景的合法团队",
+    ))
+    db_session.add_all([
+        models.TeamMember(team_id="TEAM-ALT", employee_id="VE-0002", role="leader"),
+        models.TeamMember(team_id="TEAM-ALT", employee_id="VE-0003", role="worker"),
+    ])
+    db_session.flush()
+
+
 def test_health_reports_matrix_room_manager_and_workers(client):
     response = client.get("/api/v1/agentteams-collaboration/health")
 
@@ -80,6 +108,95 @@ def test_health_reports_matrix_room_manager_and_workers(client):
     body = response.json()
     assert {"matrix", "room", "manager", "platform_team", "workers", "ready_for_demo"} <= body.keys()
     assert body["ready_for_demo"] is False
+
+
+def test_local_demo_health_is_ready_without_matrix(client, monkeypatch):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    for name in (
+        "AGENTTEAMS_MATRIX_URL",
+        "AGENTTEAMS_MATRIX_TOKEN",
+        "AGENTTEAMS_ADMIN_USER",
+        "AGENTTEAMS_ADMIN_PASSWORD",
+        "AGENTTEAMS_ROOM_ID",
+        "AGENTTEAMS_MANAGER_MXID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    response = client.get("/api/v1/agentteams-collaboration/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready_for_demo"] is True
+    assert body["mode"] == "local_demo"
+    assert body["transport"] == "local"
+    assert body["matrix"] == "not_connected"
+
+
+def test_local_demo_health_requires_both_seed_team_workers(client, db_session, monkeypatch):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    worker = db_session.query(models.TeamMember).filter_by(
+        team_id="TEAM-ONBOARD", employee_id="VE-0003"
+    ).one()
+    db_session.delete(worker)
+    db_session.flush()
+
+    body = client.get("/api/v1/agentteams-collaboration/health").json()
+
+    assert body["ready_for_demo"] is False
+    assert "两名" in body["reason"]
+
+
+def test_local_demo_health_does_not_require_matrix_identity(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    db_session.get(models.DigitalEmployee, "VE-0003").runtime_ref = "@it:matrix.local"
+    db_session.flush()
+
+    body = client.get("/api/v1/agentteams-collaboration/health").json()
+
+    assert body["ready_for_demo"] is True
+    assert body["workers"][-1]["status"] == "configured"
+
+
+def test_local_demo_health_uses_local_wording_for_an_unavailable_leader(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    db_session.get(models.DigitalEmployee, "VE-0001").status = "disabled"
+    db_session.flush()
+
+    body = client.get("/api/v1/agentteams-collaboration/health").json()
+
+    assert body["ready_for_demo"] is False
+    assert "本地Demo指定Leader未就绪" in body["reason"]
+    assert "MXID" not in body["reason"]
+
+
+def test_strict_health_still_blocks_without_matrix(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(tmp_path / "missing-runtime.json"))
+    for name in (
+        "AGENTTEAMS_MATRIX_URL",
+        "AGENTTEAMS_MATRIX_TOKEN",
+        "AGENTTEAMS_ADMIN_USER",
+        "AGENTTEAMS_ADMIN_PASSWORD",
+        "AGENTTEAMS_ROOM_ID",
+        "AGENTTEAMS_MANAGER_MXID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    body = client.get("/api/v1/agentteams-collaboration/health").json()
+
+    assert body["ready_for_demo"] is False
+    assert body["mode"] == "agentteams_strict"
+    assert body["transport"] == "matrix"
+    assert body["matrix"] == "not_configured"
 
 
 def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbeats(
@@ -105,7 +222,9 @@ def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbe
     monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(config_path))
     for agent_id, mxid in (("VE-0001", "@manager:test"), ("VE-0002", "@hr:test"), ("VE-0003", "@it:test"), ("VE-0005", "@audit:test")):
         employee = db_session.get(models.DigitalEmployee, agent_id)
-        employee.runtime_ref, employee.runtime_type, employee.status = mxid, "agentteams", "active"
+        employee.runtime_ref = mxid
+        employee.runtime_type = "agentteams"
+        employee.status = "active"
     db_session.flush()
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -131,13 +250,38 @@ def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbe
 
     from app.routers import agentteams_collaboration
     monkeypatch.setattr(agentteams_collaboration, "AgentTeamsGateway", FakeGateway)
+
     body = client.get("/api/v1/agentteams-collaboration/health").json()
+
     assert body["ready_for_demo"] is True
     assert {item["agent_id"] for item in body["workers"]} == {"VE-0001", "VE-0002", "VE-0003", "VE-0005"}
     assert all(item["status"] == "ready" for item in body["workers"])
     assert "token" not in json.dumps(body).lower()
 
+    (state_dir / "VE-0005.json").unlink()
+    stale_body = client.get("/api/v1/agentteams-collaboration/health").json()
+    audit_worker = next(item for item in stale_body["workers"] if item["agent_id"] == "VE-0005")
+
+    assert stale_body["ready_for_demo"] is False
+    assert audit_worker["status"] == "stale_heartbeat"
+    assert "VE-0005未运行或心跳已过期" in stale_body["reason"]
+    assert "Matrix ID" not in stale_body["reason"]
+
+    heartbeat_at = datetime.now(timezone.utc).isoformat()
+    (state_dir / "VE-0005.json").write_text(json.dumps({
+        "agent_id": "VE-0005", "mxid": mxids["VE-0005"], "heartbeat_at": heartbeat_at,
+        "heartbeat_signature": heartbeat_signature("VE-0005", mxids["VE-0005"], heartbeat_at, tokens["VE-0005"]),
+    }), encoding="utf-8")
+    (state_dir / "VE-0001.json").unlink()
+    manager_stale = client.get("/api/v1/agentteams-collaboration/health").json()
+
+    assert manager_stale["manager"] == "stale_heartbeat"
+    assert manager_stale["ready_for_demo"] is False
+    assert "VE-0001未运行或心跳已过期" in manager_stale["reason"]
+
+
 def test_submit_returns_created_agentteams_task(client, db_session, monkeypatch):
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
     _prepare_leader(db_session)
     _stub_health(monkeypatch, READY_HEALTH)
 
@@ -163,6 +307,7 @@ def test_submit_returns_created_agentteams_task(client, db_session, monkeypatch)
 def test_submit_returns_503_when_environment_is_not_ready_without_creating_task(
     client, db_session, monkeypatch
 ):
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
     _prepare_leader(db_session)
     _stub_health(monkeypatch, {
         **READY_HEALTH,
@@ -185,6 +330,270 @@ def test_submit_returns_503_when_environment_is_not_ready_without_creating_task(
     )
 
     assert response.status_code == 503
+    assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
+
+
+def test_submit_rechecks_local_worker_status_from_database(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    db_session.get(models.DigitalEmployee, "VE-0003").status = "disabled"
+    db_session.flush()
+    _stub_health(monkeypatch, {
+        "mode": "local_demo",
+        "enabled": True,
+        "matrix": "not_connected",
+        "room": "local",
+        "manager": "configured",
+        "platform_team": "ready",
+        "workers": [
+            {"agent_id": "VE-0002", "matrix_user_id": "", "status": "configured"},
+            {"agent_id": "VE-0003", "matrix_user_id": "", "status": "configured"},
+        ],
+    })
+    before = db_session.query(models.TaskRun).filter_by(source="agentteams").count()
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-ONBOARD",
+            "leader_agent_id": "VE-0001",
+            "title": LOCAL_DEMO_TITLE,
+            "instruction": LOCAL_DEMO_INSTRUCTION,
+            "material": {},
+        },
+    )
+
+    assert response.status_code == 503
+    assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
+
+
+def test_submit_uses_configured_strict_mode_instead_of_raw_local_health(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    _stub_health(monkeypatch, {
+        "mode": "local_demo",
+        "enabled": True,
+        "matrix": "not_configured",
+        "room": "not_configured",
+        "manager": "configured",
+        "platform_team": "ready",
+        "workers": [
+            {"agent_id": "VE-0002", "matrix_user_id": "", "status": "configured"},
+            {"agent_id": "VE-0003", "matrix_user_id": "not-an-identity", "status": "configured"},
+        ],
+    })
+    before = db_session.query(models.TaskRun).filter_by(source="agentteams").count()
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-ONBOARD",
+            "leader_agent_id": "VE-0001",
+            "title": "不能把严格模式降级为本地模式",
+            "instruction": "不应创建",
+            "material": {},
+        },
+    )
+
+    assert response.status_code == 503
+    assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
+
+
+def test_local_demo_and_strict_reject_incompatible_team(
+    client, db_session, monkeypatch
+):
+    _prepare_alternative_team(db_session)
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    payload = {
+        "team_id": "TEAM-ALT",
+        "leader_agent_id": "VE-0002",
+        "title": "其他团队任务",
+        "instruction": "固定本地场景不能执行",
+        "material": {},
+    }
+    before = db_session.query(models.TaskRun).filter_by(source="agentteams").count()
+
+    local_response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json=payload,
+    )
+
+    assert local_response.status_code == 409
+    assert "TEAM-ONBOARD" in local_response.json()["error"]["message"]
+    assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    _stub_health(monkeypatch, READY_HEALTH)
+    strict_response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json=payload,
+    )
+    assert strict_response.status_code == 503
+    assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
+
+
+def test_strict_generic_entry_accepts_database_team_and_enqueues_real_scenario(
+    client, db_session, monkeypatch
+):
+    from app.routers import agentteams_collaboration
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    _stub_health(monkeypatch, READY_HEALTH)
+    queued: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        agentteams_collaboration,
+        "enqueue_database_collaboration_task",
+        lambda task_id, scenario_id: queued.append((task_id, scenario_id)),
+    )
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-DB-BENCH",
+            "leader_agent_id": "VE-0001",
+            "title": "锁等待诊断",
+            "instruction": "请由数据库团队协作定位锁等待根因。",
+            "material": {"scenario_id": "lock_contention"},
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["team_id"] == "TEAM-DB-BENCH"
+    assert body["status"] == "planning"
+    assert queued == [(body["id"], "lock_contention")]
+
+
+def test_local_demo_generic_entry_accepts_database_team_and_enqueues_real_scenario(
+    client, db_session, monkeypatch
+):
+    from app.routers import agentteams_collaboration
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    queued: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        agentteams_collaboration,
+        "enqueue_database_collaboration_task",
+        lambda task_id, scenario_id: queued.append((task_id, scenario_id)),
+    )
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-DB-BENCH",
+            "leader_agent_id": "VE-0001",
+            "title": "锁等待诊断",
+            "instruction": "请由数据库团队协作定位锁等待根因。",
+            "material": {"scenario_id": "lock_contention"},
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["team_id"] == "TEAM-DB-BENCH"
+    assert queued == [(body["id"], "lock_contention")]
+
+
+def test_database_team_generic_entry_requires_a_known_scenario(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    _stub_health(monkeypatch, READY_HEALTH)
+    before = db_session.query(models.TaskRun).filter_by(source="agentteams").count()
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-DB-BENCH",
+            "leader_agent_id": "VE-0001",
+            "title": "数据库诊断",
+            "instruction": "诊断一个不存在的场景。",
+            "material": {"scenario_id": "unknown"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "数据库诊断场景" in response.json()["error"]["message"]
+    assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
+
+def test_local_demo_rejects_non_fixed_business_input_without_creating_task(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    payload = {
+        "team_id": "TEAM-ONBOARD",
+        "leader_agent_id": "VE-0001",
+        "title": "任意销售分析",
+        "instruction": "分析本季度销售数据并给出预测",
+        "material": {"quarter": "Q3"},
+    }
+    before = db_session.query(models.TaskRun).filter_by(source="agentteams").count()
+
+    local_response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json=payload,
+    )
+
+    assert local_response.status_code == 409
+    assert "固定入职演示剧本" in local_response.json()["error"]["message"]
+    assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    _stub_health(monkeypatch, READY_HEALTH)
+    strict_response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json=payload,
+    )
+    assert strict_response.status_code == 201
+    assert strict_response.json()["title"] == "任意销售分析"
+
+
+def test_local_demo_retry_rejects_task_from_an_incompatible_team(
+    client, db_session, monkeypatch
+):
+    _prepare_alternative_team(db_session)
+    service = AgentTeamsCollaborationService()
+    run = service.create_task(
+        db_session,
+        team_id="TEAM-ALT",
+        leader_agent_id="VE-0002",
+        title="失败的其他团队任务",
+        instruction="不能切换到固定本地场景重试",
+        material={},
+    )
+    run.owner_human_no = ACTOR_NO
+    run.status = "failed"
+    db_session.get(models.AgentTaskNode, run.id).status = "failed"
+    db_session.commit()
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    before = db_session.query(models.TaskRun).filter_by(source="agentteams").count()
+
+    response = client.post(
+        f"/api/v1/agentteams-collaboration/tasks/{run.id}/retry",
+        params={"actor_no": ACTOR_NO},
+    )
+
+    assert response.status_code == 409
+    assert "TEAM-ONBOARD" in response.json()["error"]["message"]
     assert db_session.query(models.TaskRun).filter_by(source="agentteams").count() == before
 
 
@@ -214,6 +623,160 @@ def test_task_detail_graph_events_messages_and_result_only_use_the_root_id(clien
     assert result.status_code == 200
     assert result.json()["task_id"] == run.id
     assert result.json()["node_results"][0]["root_task_id"] == run.id
+
+
+def test_terminal_task_evaluation_is_persisted_and_reused(client, db_session, monkeypatch):
+    run = _create_task(db_session)
+    run.status = "completed"
+    run.summary = "岗位调整可以按期完成。"
+    root = db_session.get(models.AgentTaskNode, run.id)
+    root.status = "completed"
+    root.title = "岗位调整评估"
+    root.instruction = "评估张明的岗位调整是否可以按期完成。"
+    root.input_payload = {
+        "coordination": {
+            "round": 2,
+            "selected_skill_ids": ["agentteams-role-change-readiness"],
+            "team_catalog_version": 1,
+        }
+    }
+    db_session.flush()
+    expected = {
+        "version": "agentteams-evaluation-v1",
+        "evaluated_at": "2026-09-07T09:00:00+00:00",
+        "rule_score": 50,
+        "rule_max_score": 60,
+        "rule_dimensions": [],
+        "rule_deductions": ["缺少串行依赖。"],
+        "model_status": "completed",
+        "model_score": 34,
+        "model_max_score": 40,
+        "model_dimensions": [],
+        "model_strengths": ["拆解清楚"],
+        "model_deductions": ["结论可以更精简"],
+        "model_verdict": "协作过程完整。",
+        "total_score": 84,
+        "total_max_score": 100,
+    }
+
+    class FakeEvaluator:
+        calls = 0
+
+        def evaluate(self, **_kwargs):
+            self.calls += 1
+            return expected
+
+    evaluator = FakeEvaluator()
+    from app.routers import agentteams_collaboration
+    monkeypatch.setattr(agentteams_collaboration, "_build_evaluator", lambda: evaluator)
+    path = f"/api/v1/agentteams-collaboration/tasks/{run.id}/evaluation"
+
+    first = client.post(path, params={"actor_no": ACTOR_NO})
+    second = client.post(path, params={"actor_no": ACTOR_NO})
+
+    assert first.status_code == 200
+    assert first.json() == expected
+    assert second.json() == expected
+    assert evaluator.calls == 1
+    events = db_session.query(models.AgentTaskEvent).filter_by(
+        root_task_id=run.id, event_type="task.evaluation.completed"
+    ).all()
+    assert len(events) == 1
+    assert events[0].detail == expected
+
+
+def test_partial_evaluation_is_persisted_but_retried_until_model_completes(client, db_session, monkeypatch):
+    run = _create_task(db_session)
+    run.status = "completed"
+    run.summary = "岗位调整可以按期完成。"
+    root = db_session.get(models.AgentTaskNode, run.id)
+    root.status = "completed"
+    root.title = "岗位调整评估"
+    root.instruction = "评估张明的岗位调整是否可以按期完成。"
+    root.input_payload = {"coordination": {"selected_skill_ids": ["agentteams-role-change-readiness"]}}
+    db_session.flush()
+    base = {
+        "version": "agentteams-evaluation-v1", "evaluated_at": "2026-09-07T09:00:00+00:00",
+        "rule_score": 50, "rule_max_score": 60, "rule_dimensions": [], "rule_deductions": [],
+        "model_score": None, "model_max_score": 40, "model_dimensions": [], "model_strengths": [],
+        "model_deductions": ["大模型评测暂不可用。"], "model_verdict": "",
+        "total_score": None, "total_max_score": 100,
+    }
+    completed = {**base, "model_status": "completed", "model_score": 35, "model_deductions": [], "total_score": 85}
+
+    class FakeEvaluator:
+        calls = 0
+        def evaluate(self, **_kwargs):
+            self.calls += 1
+            return {**base, "model_status": "unavailable"} if self.calls == 1 else completed
+
+    evaluator = FakeEvaluator()
+    from app.routers import agentteams_collaboration
+    monkeypatch.setattr(agentteams_collaboration, "_build_evaluator", lambda: evaluator)
+    path = f"/api/v1/agentteams-collaboration/tasks/{run.id}/evaluation"
+
+    first = client.post(path, params={"actor_no": ACTOR_NO})
+    second = client.post(path, params={"actor_no": ACTOR_NO})
+    third = client.post(path, params={"actor_no": ACTOR_NO})
+
+    assert first.json()["model_status"] == "unavailable"
+    assert second.json()["model_status"] == "completed"
+    assert third.json()["model_status"] == "completed"
+    assert evaluator.calls == 2
+    assert db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id, event_type="task.evaluation.partial").count() == 1
+    assert db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id, event_type="task.evaluation.completed").count() == 1
+
+
+def test_evaluation_rejects_demo_task_with_user_material(client, db_session):
+    run = _create_task(db_session)
+    run.status = "completed"
+    run.summary = "岗位调整可以按期完成。"
+    root = db_session.get(models.AgentTaskNode, run.id)
+    root.status = "completed"
+    root.title = "岗位调整评估"
+    root.instruction = "评估张明的岗位调整是否可以按期完成。"
+    root.input_payload = {
+        "employee_phone": "13800138000",
+        "coordination": {"selected_skill_ids": ["agentteams-role-change-readiness"]},
+    }
+    db_session.flush()
+
+    response = client.post(
+        f"/api/v1/agentteams-collaboration/tasks/{run.id}/evaluation",
+        params={"actor_no": ACTOR_NO},
+    )
+
+    assert response.status_code == 422
+    assert "虚构演示任务" in response.json()["error"]["message"]
+
+
+def test_evaluation_requires_a_terminal_owned_task(client, db_session, monkeypatch):
+    run = _create_task(db_session)
+    path = f"/api/v1/agentteams-collaboration/tasks/{run.id}/evaluation"
+
+    assert client.post(path, params={"actor_no": ACTOR_NO}).status_code == 409
+    assert client.post(path, params={"actor_no": UNAUTHORIZED_ACTOR_NO}).status_code == 403
+
+
+def test_graph_returns_persisted_round_and_selected_skills(client, db_session):
+    run = _create_task(db_session)
+    root = db_session.get(models.AgentTaskNode, run.id)
+    root.input_payload = {
+        "coordination": {
+            "round": 2,
+            "selected_skill_ids": ["agentteams-onboarding-readiness"],
+        }
+    }
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/agentteams-collaboration/tasks/{run.id}/graph",
+        params={"actor_no": ACTOR_NO},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["current_round"] == 2
+    assert response.json()["selected_skill_ids"] == ["agentteams-onboarding-readiness"]
 
 
 def test_event_query_honors_after_event_id(client, db_session):
@@ -363,6 +926,7 @@ def test_submit_rejects_a_team_member_substituted_for_the_designated_leader(
 
 
 def test_creator_exclusively_owns_agentteams_tasks_after_creation(client, db_session, monkeypatch):
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
     _stub_health(monkeypatch, READY_HEALTH)
     created = client.post(
         "/api/v1/agentteams-collaboration/tasks",

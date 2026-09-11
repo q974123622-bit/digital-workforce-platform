@@ -1,0 +1,1 @@
+[{"table":"orders","index_name":"orders_pkey","valid":true,"scans":987000,"size_mb":48},{"table":"order_items","index_name":"order_items_order_id_idx","valid":true,"scans":12000,"size_mb":82}]

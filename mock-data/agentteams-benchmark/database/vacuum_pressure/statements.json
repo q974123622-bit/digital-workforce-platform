@@ -1,0 +1,1 @@
+[{"query_id":"vp-1","database":"analytics","query":"SELECT count(*) FROM events WHERE tenant_id = ?","calls":3400,"mean_ms":940,"rows_per_call":1}]

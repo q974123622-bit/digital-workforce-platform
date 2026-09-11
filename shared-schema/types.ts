@@ -370,6 +370,7 @@ export interface AgentTaskNode {
   id: string;
   root_task_id: string;
   parent_task_id: string | null;
+  client_task_key?: string;
   title: string;
   coordinator_agent_id: string;
   assignee_agent_id: string;
@@ -464,10 +465,121 @@ export interface AgentFinalResult {
   node_results: AgentTaskNode[];
 }
 
+export interface AgentEvaluationDimension {
+  key: string;
+  label: string;
+  score: number;
+  max_score: number;
+  reason: string;
+}
+
+export interface AgentTaskEvaluation {
+  version: string;
+  evaluated_at: string;
+  rule_score: number;
+  rule_max_score: number;
+  rule_dimensions: AgentEvaluationDimension[];
+  rule_deductions: string[];
+  model_status: 'completed' | 'unavailable';
+  model_score: number | null;
+  model_max_score: number;
+  model_dimensions: AgentEvaluationDimension[];
+  model_strengths: string[];
+  model_deductions: string[];
+  model_verdict: string;
+  total_score: number | null;
+  total_max_score: number;
+}
+
 export interface AgentCollaborationTaskCreate {
   team_id: string;
   leader_agent_id: string;
   title: string;
   instruction: string;
   material?: Record<string, unknown>;
+}
+
+export interface DatabaseBenchmarkCreate {
+  scenario_ids: string[];
+  repeats: number;
+  max_model_steps: number;
+  max_tool_calls: number;
+  timeout_ms: number;
+}
+
+export interface DatabaseBenchmarkModeSummary {
+  total_runs: number;
+  valid_runs: number;
+  failed_or_invalid_runs: number;
+  primary_accuracy: number | null;
+  top2_hit: number | null;
+  evidence_coverage: number | null;
+  evidence_validity: number | null;
+  secondary_cause_hit?: number | null;
+  conflict_resolution_rate?: number | null;
+  effective_rework_rate?: number | null;
+  budget_success_rate?: number | null;
+  success_rate: number | null;
+  average_model_steps: number | null;
+  average_critical_path_steps: number | null;
+  average_tool_calls: number | null;
+  average_duplicate_tool_calls: number | null;
+  average_rework_count: number | null;
+  average_parallel_speedup?: number | null;
+  p50_end_to_end_ms: number | null;
+  p50_valid_answer_ms?: number | null;
+  p95_end_to_end_ms: number | null;
+}
+
+export interface DatabaseBenchmarkSummary {
+  provenance?: { benchmark_id?: string; label?: string };
+  single_agent?: DatabaseBenchmarkModeSummary;
+  agentteams?: DatabaseBenchmarkModeSummary;
+  agentteams_full?: DatabaseBenchmarkModeSummary;
+  agentteams_serial?: DatabaseBenchmarkModeSummary;
+  agentteams_uncoordinated?: DatabaseBenchmarkModeSummary;
+  comparison?: { p50_speedup: number | null };
+  attribution?: {
+    parallel_time_reduction: number | null;
+    coordination_accuracy_gain: number | null;
+    coordination_evidence_gain: number | null;
+    full_team_parallel_speedup: number | null;
+  };
+  failure_code?: string;
+}
+
+export interface DatabaseBenchmarkExperiment {
+  id: string;
+  benchmark_id: string;
+  status: string;
+  scenario_ids: string[];
+  repeats: number;
+  fairness_config: Record<string, unknown>;
+  fairness_fingerprint: string;
+  summary: DatabaseBenchmarkSummary;
+  total_runs: number;
+  completed_runs: number;
+  failed_runs: number;
+  invalid_runs: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface DatabaseBenchmarkRun {
+  id: string;
+  experiment_id: string;
+  ordinal: number;
+  scenario_id: string;
+  repeat_index: number;
+  mode: 'single_agent' | 'agentteams' | 'agentteams_full' | 'agentteams_serial' | 'agentteams_uncoordinated';
+  status: string;
+  task_run_id: string | null;
+  fairness_fingerprint: string;
+  metrics: Record<string, unknown>;
+  diagnosis: Record<string, unknown>;
+  failure_code: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
 }

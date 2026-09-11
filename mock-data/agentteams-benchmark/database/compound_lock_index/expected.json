@@ -1,0 +1,1 @@
+{"root_cause_id":"lock_wait_chain","aliases":["blocking_transaction","row_lock_contention"],"secondary_causes":["invalid_covering_index"],"required_signals":["locks","statements","indexes"],"requires_followup_signals":["indexes"],"rationale":"长事务锁等待链直接阻断交易写入；无效覆盖索引是同时存在但影响客户检索的伴随问题。"}

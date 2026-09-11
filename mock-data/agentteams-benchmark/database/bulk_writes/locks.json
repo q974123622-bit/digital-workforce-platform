@@ -1,0 +1,1 @@
+[{"pid":"3101","relation":"order_items","state":"granted","mode":"RowExclusiveLock","wait_ms":0}]

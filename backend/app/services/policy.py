@@ -121,20 +121,41 @@ def _best(matched: list[Rule]) -> Rule:
     return max(matched, key=lambda r: r.priority)
 
 
+def _is_team_member(db: Session, team_id: str, employee_id: str) -> bool:
+    team = db.get(models.Team, team_id)
+    if team is None:
+        return False
+    if team.leader_employee_id == employee_id:
+        return True
+    return db.scalar(
+        select(models.TeamMember.id).where(
+            models.TeamMember.team_id == team_id,
+            models.TeamMember.employee_id == employee_id,
+        )
+    ) is not None
+
+
 def evaluate(
     db: Session,
     subject: EmployeeIdentity,
     resource: ResourceRef,
     action: str,
     context: dict | None = None,
+    permission_subject: EmployeeIdentity | None = None,
 ) -> EvaluationResult:
     """四维评估：subject / resource / action / environment（environment 取自 subject 绑定配置）。"""
+    personal_subject = permission_subject or subject
+    policy_subjects = (
+        (subject, personal_subject)
+        if personal_subject.employee_id != subject.employee_id
+        else (subject,)
+    )
     # L3 读取使用显式白名单，且只认访问审批链写入的 whitelist grant。
     # L3 执行类动作继续由 POLICY-005 控制，白名单不得绕过人工审批。
     if resource.data_level == "L3" and action == "read":
         whitelist = db.scalar(
             select(models.EmployeePluginGrant).where(
-                models.EmployeePluginGrant.employee_id == subject.employee_id,
+                models.EmployeePluginGrant.employee_id == personal_subject.employee_id,
                 models.EmployeePluginGrant.plugin_id == resource.id,
                 models.EmployeePluginGrant.action == "read",
                 models.EmployeePluginGrant.decision_mode == DECISION_ALLOW,
@@ -145,40 +166,66 @@ def evaluate(
             return EvaluationResult(DECISION_DENY, "P-DATA-003", "L3 敏感数据需先申请并通过白名单审批")
         return EvaluationResult(DECISION_ALLOW, "P-DATA-003", "L3 敏感数据白名单授权通过")
 
-    matched = [r for r in RULES if r.condition(subject, resource, action)]
+    matched = [
+        rule
+        for rule in RULES
+        if any(rule.condition(candidate, resource, action) for candidate in policy_subjects)
+    ]
 
     deny_rules = [r for r in matched if r.effect == DECISION_DENY]
     if deny_rules:
         best = _best(deny_rules)
         return EvaluationResult(DECISION_DENY, best.policy_id, best.reason)
 
-    # 插件授权检查（employee_plugin_grant）：无授权默认拒绝
-    grant = None
+    # 普通调用沿用当前 subject 的个人授权；协作调用的个人层来自任务
+    # 发起数字分身。VE Worker 仍需属于所选团队，但不充当个人权限主体。
+    personal_grants: list[models.EmployeePluginGrant] = []
+    team_grants: list[models.TeamPluginGrant] = []
+    team_id = str((context or {}).get("team_id") or "").strip()
     if resource.type in PLUGIN_RESOURCE_TYPES:
-        grant = db.scalar(
+        personal_grants = list(db.scalars(
             select(models.EmployeePluginGrant).where(
-                models.EmployeePluginGrant.employee_id == subject.employee_id,
+                models.EmployeePluginGrant.employee_id == personal_subject.employee_id,
                 models.EmployeePluginGrant.plugin_id == resource.id,
                 models.EmployeePluginGrant.action == action,
             )
-        )
-        if grant is None:
+        ))
+        if not personal_grants:
             return EvaluationResult(DECISION_DENY, None, "未授权插件：默认拒绝")
-        if grant.decision_mode == DECISION_DENY:
-            return EvaluationResult(DECISION_DENY, None, f"插件授权为 deny：{resource.id}")
+        if team_id:
+            if not _is_team_member(db, team_id, subject.employee_id):
+                return EvaluationResult(DECISION_DENY, None, f"数字员工不是团队成员：{team_id}")
+            team_grants = list(db.scalars(
+                select(models.TeamPluginGrant).where(
+                    models.TeamPluginGrant.team_id == team_id,
+                    models.TeamPluginGrant.plugin_id == resource.id,
+                    models.TeamPluginGrant.action == action,
+                )
+            ))
+            if not team_grants:
+                return EvaluationResult(DECISION_DENY, None, f"团队未授权插件：{resource.id}")
+
+        if any(grant.decision_mode == DECISION_DENY for grant in team_grants):
+            return EvaluationResult(DECISION_DENY, None, f"团队授权为 deny：{resource.id}")
+        if any(grant.decision_mode == DECISION_DENY for grant in personal_grants):
+            return EvaluationResult(DECISION_DENY, None, f"个人授权为 deny：{resource.id}")
 
     approval_rules = [r for r in matched if r.effect == DECISION_APPROVAL]
     if approval_rules:
         best = _best(approval_rules)
         return EvaluationResult(DECISION_APPROVAL, best.policy_id, best.reason)
-    if grant is not None and grant.decision_mode == DECISION_APPROVAL:
-        return EvaluationResult(DECISION_APPROVAL, None, f"插件授权为 approval：{resource.id}")
+    if any(grant.decision_mode == DECISION_APPROVAL for grant in team_grants):
+        return EvaluationResult(DECISION_APPROVAL, None, f"团队授权为 approval：{resource.id}")
+    if any(grant.decision_mode == DECISION_APPROVAL for grant in personal_grants):
+        return EvaluationResult(DECISION_APPROVAL, None, f"个人授权为 approval：{resource.id}")
 
     allow_rules = [r for r in matched if r.effect == DECISION_ALLOW]
     if allow_rules:
         best = _best(allow_rules)
         return EvaluationResult(DECISION_ALLOW, best.policy_id, best.reason)
-    if grant is not None and grant.decision_mode == DECISION_ALLOW:
-        return EvaluationResult(DECISION_ALLOW, None, f"插件授权为 allow：{resource.id}")
+    if personal_grants and all(grant.decision_mode == DECISION_ALLOW for grant in personal_grants):
+        if team_id:
+            return EvaluationResult(DECISION_ALLOW, None, f"团队授权和个人授权均为 allow：{resource.id}")
+        return EvaluationResult(DECISION_ALLOW, None, f"个人授权为 allow：{resource.id}")
 
     return EvaluationResult(DECISION_DENY, None, "默认拒绝：无匹配策略")

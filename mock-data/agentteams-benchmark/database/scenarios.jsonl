@@ -1,0 +1,8 @@
+{"id":"bulk_writes","title":"批量写入导致吞吐下降","task":"定位订单库写入延迟突增的主要原因，并用数据库信号给出证据。","directory":"bulk_writes"}
+{"id":"lock_contention","title":"锁等待链导致请求堆积","task":"定位 orders 表请求堆积的主要原因，并区分慢查询与锁等待。","directory":"lock_contention"}
+{"id":"vacuum_pressure","title":"清理滞后引发膨胀","task":"定位事件表扫描变慢和磁盘增长的主要原因。","directory":"vacuum_pressure"}
+{"id":"index_anomaly","title":"索引异常导致回表扫描","task":"定位客户检索接口延迟升高的主要原因。","directory":"index_anomaly"}
+{"id":"large_query","title":"大查询挤占数据库资源","task":"定位报表时段在线交易抖动的主要原因，并排除锁冲突干扰。","directory":"large_query"}
+{"id":"compound_lock_index","title":"锁等待与索引异常叠加","task":"订单更新和客户检索同时恶化。判断阻断交易的主要根因、伴随问题，并说明还需复核哪类证据。","directory":"compound_lock_index","complexity":"coordination","tool_budget":4}
+{"id":"conflicting_signals_followup","title":"冲突信号下的二次复核","task":"夜间报表期间交易接口抖动，慢 SQL 与短暂锁等待同时出现。需要通过二次定向调查裁决主要根因。","directory":"conflicting_signals_followup","complexity":"coordination","tool_budget":4}
+{"id":"budgeted_incident_triage","title":"受限预算下的复合故障分诊","task":"客户检索变慢且存储增长，只允许三次数据库信号检查。识别主要根因和伴随问题。","directory":"budgeted_incident_triage","complexity":"coordination","tool_budget":3}

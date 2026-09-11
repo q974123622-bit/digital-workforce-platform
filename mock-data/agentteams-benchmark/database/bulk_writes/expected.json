@@ -1,0 +1,1 @@
+{"root_cause_id":"unbatched_bulk_writes","aliases":["row_by_row_writes","write_amplification"],"required_signals":["statements","table_stats"],"rationale":"逐行提交造成高频 WAL 和事务开销，写入吞吐下降。"}

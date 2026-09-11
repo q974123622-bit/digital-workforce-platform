@@ -1,0 +1,1 @@
+{"root_cause_id":"invalid_covering_index","aliases":["invalid_index","missing_usable_index"],"required_signals":["indexes","statements"],"rationale":"目标覆盖索引处于 invalid 状态，查询退化为大量顺序扫描。"}

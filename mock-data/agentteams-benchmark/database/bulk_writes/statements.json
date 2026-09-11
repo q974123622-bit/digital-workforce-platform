@@ -1,0 +1,1 @@
+[{"query_id":"bw-1","database":"orders","query":"INSERT INTO order_items VALUES (...)","calls":182400,"mean_ms":4.8,"rows_per_call":1},{"query_id":"bw-2","database":"orders","query":"SELECT status FROM orders WHERE id = ?","calls":9200,"mean_ms":1.1,"rows_per_call":1}]

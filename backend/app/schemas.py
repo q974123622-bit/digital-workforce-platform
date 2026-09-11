@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class GrantOut(BaseModel):
@@ -732,3 +732,93 @@ class AgentFinalResultOut(BaseModel):
     status: str
     summary: str
     node_results: list[AgentTaskNodeOut] = Field(default_factory=list)
+
+
+class AgentEvaluationDimensionOut(BaseModel):
+    key: str = Field(min_length=1, max_length=40)
+    label: str = Field(min_length=1, max_length=40)
+    score: int = Field(ge=0)
+    max_score: int = Field(gt=0)
+    reason: str = Field(min_length=1, max_length=240)
+
+    @model_validator(mode="after")
+    def score_not_above_maximum(self):
+        if self.score > self.max_score:
+            raise ValueError("score_exceeds_maximum")
+        return self
+
+
+class AgentTaskEvaluationOut(BaseModel):
+    version: str
+    evaluated_at: str
+    rule_score: int = Field(ge=0, le=60)
+    rule_max_score: Literal[60]
+    rule_dimensions: list[AgentEvaluationDimensionOut] = Field(default_factory=list)
+    rule_deductions: list[str] = Field(default_factory=list)
+    model_status: Literal["completed", "unavailable"]
+    model_score: int | None = Field(default=None, ge=0, le=40)
+    model_max_score: Literal[40]
+    model_dimensions: list[AgentEvaluationDimensionOut] = Field(default_factory=list)
+    model_strengths: list[str] = Field(default_factory=list)
+    model_deductions: list[str] = Field(default_factory=list)
+    model_verdict: str = ""
+    total_score: int | None = Field(default=None, ge=0, le=100)
+    total_max_score: Literal[100]
+
+    @model_validator(mode="after")
+    def scores_match_status_and_total(self):
+        if self.model_status == "completed":
+            if self.model_score is None or self.total_score != self.rule_score + self.model_score:
+                raise ValueError("invalid_completed_evaluation_total")
+        elif self.model_score is not None or self.total_score is not None:
+            raise ValueError("unavailable_model_must_not_have_total")
+        return self
+
+
+class DatabaseBenchmarkExperimentCreateIn(BaseModel):
+    scenario_ids: list[str] = Field(min_length=1, max_length=5)
+    repeats: int = Field(default=5, ge=1, le=10)
+    max_model_steps: int = Field(default=20, ge=1, le=200)
+    max_tool_calls: int = Field(default=10, ge=1, le=200)
+    timeout_ms: int = Field(default=30_000, ge=100, le=3_600_000)
+
+
+class DatabaseBenchmarkExperimentOut(BaseModel):
+    id: str
+    benchmark_id: str
+    status: str
+    scenario_ids: list[str]
+    repeats: int
+    fairness_config: dict
+    fairness_fingerprint: str
+    summary: dict
+    total_runs: int
+    completed_runs: int
+    failed_runs: int
+    invalid_runs: int
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+class DatabaseBenchmarkRunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    experiment_id: str
+    ordinal: int
+    scenario_id: str
+    repeat_index: int
+    mode: Literal[
+        "single_agent", "agentteams", "agentteams_full",
+        "agentteams_serial", "agentteams_uncoordinated",
+    ]
+    status: str
+    task_run_id: str | None
+    fairness_fingerprint: str
+    metrics: dict
+    diagnosis: dict
+    failure_code: str
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None

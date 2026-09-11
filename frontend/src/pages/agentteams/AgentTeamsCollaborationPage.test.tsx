@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import AgentTeamsCollaborationPage from './AgentTeamsCollaborationPage';
+import { TaskTree } from './TaskTree';
 import { CurrentUserProvider, useCurrentUser } from '../../context/CurrentUserContext';
 import type {
   AgentCollaborationHealth,
@@ -168,12 +169,326 @@ const completedMessages: AgentMessage[] = [
   },
 ];
 
+const processMessages: AgentMessage[] = [
+  {
+    ...completedMessages[0],
+    id: 'AM-ROOT-SKILL',
+    task_id: 'AT-ROOT',
+    parent_task_id: null,
+    message_type: 'agent.message',
+    sender_agent_id: 'DT-E10281',
+    receiver_agent_id: 'platform',
+    payload: {
+      payload: {
+        kind: 'skill.selected',
+        selected_skill_ids: ['agentteams-onboarding-readiness'],
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-ROOT-TRACE-1',
+    task_id: 'AT-ROOT',
+    parent_task_id: null,
+    message_type: 'agent.message',
+    sender_agent_id: 'DT-E10281',
+    receiver_agent_id: 'platform',
+    payload: {
+      payload: {
+        kind: 'decision.trace',
+        stage: 'skill_selection',
+        iteration: 1,
+        reasoning_segments: ['这是入职准备度场景，需要先使用对应的场景Skill。'],
+        action: 'select_skill',
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-ROOT-TRACE-2',
+    task_id: 'AT-ROOT',
+    parent_task_id: null,
+    message_type: 'agent.message',
+    sender_agent_id: 'DT-E10281',
+    receiver_agent_id: 'platform',
+    payload: {
+      payload: {
+        kind: 'decision.trace',
+        stage: 'decision',
+        iteration: 1,
+        reasoning_segments: ['制度核查是当前必需证据，先派发给HR节点。'],
+        action: 'delegate',
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-ROOT-DELEGATE-1',
+    task_id: 'AT-ROOT',
+    parent_task_id: null,
+    message_type: 'task.delegate',
+    sender_agent_id: 'DT-E10281',
+    receiver_agent_id: 'platform',
+    payload: {
+      payload: {
+        round: 1,
+        subtasks: [
+          {
+            client_task_key: 'policy-check',
+            title: '制度核查',
+            instruction: '核对员工制度材料并确认是否存在缺口。',
+            assignee_agent_id: 'VE-0001',
+            required_capability: 'hr.onboarding.read',
+            depends_on: [],
+            required: true,
+            material: {},
+          },
+        ],
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-WORKER-ASSIGN',
+    message_type: 'task.assign',
+    sender_agent_id: 'DT-E10281',
+    receiver_agent_id: 'VE-0001',
+    payload: {
+      payload: {
+        instruction: '核对员工制度材料并确认是否存在缺口。',
+        required_capability: 'hr.onboarding.read',
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-WORKER-SKILL',
+    message_type: 'agent.message',
+    payload: {
+      payload: {
+        kind: 'skill.selected',
+        selected_skill_ids: ['hr-onboarding-assistant'],
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-WORKER-TRACE-1',
+    message_type: 'agent.message',
+    payload: {
+      payload: {
+        kind: 'decision.trace',
+        stage: 'skill_selection',
+        iteration: 1,
+        reasoning_segments: ['任务要求核查制度材料，因此选择HR入职Skill。'],
+        action: 'select_skill',
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-WORKER-TRACE-2',
+    message_type: 'agent.message',
+    payload: {
+      payload: {
+        kind: 'decision.trace',
+        stage: 'decision',
+        iteration: 1,
+        reasoning_segments: ['需要先查询制度材料，才能给出有证据的结论。'],
+        action: 'tool',
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-WORKER-TOOL-REQUEST',
+    message_type: 'tool.request',
+    receiver_agent_id: 'platform',
+    payload: {
+      payload: {
+        tool_name: 'query_onboarding_employee',
+        required_capability: 'hr.onboarding.read',
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-WORKER-TOOL-RESULT',
+    message_type: 'tool.result',
+    sender_agent_id: 'platform',
+    receiver_agent_id: 'VE-0001',
+    payload: {
+      tool_name: 'query_onboarding_employee',
+      decision: 'allow',
+      audit_ids: [101],
+      data: '制度材料齐全',
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-WORKER-TRACE-3',
+    message_type: 'agent.message',
+    payload: {
+      payload: {
+        kind: 'decision.trace',
+        stage: 'decision',
+        iteration: 2,
+        reasoning_segments: ['Gateway已返回材料齐全，可以结束本节点并提交结果。'],
+        action: 'complete',
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-WORKER-RESULT',
+    message_type: 'task.result',
+    receiver_agent_id: 'platform',
+    payload: {
+      payload: {
+        result: '制度材料已核对，等待Manager汇总。',
+        audit_ids: [101],
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-ROOT-REVIEW-1',
+    task_id: 'AT-ROOT',
+    parent_task_id: null,
+    message_type: 'task.summary',
+    sender_agent_id: 'platform',
+    receiver_agent_id: 'DT-E10281',
+    payload: {
+      request: 'task.summary',
+      current_round: 1,
+      child_results: [{ client_task_key: 'policy-check', status: 'completed' }],
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-ROOT-TRACE-3',
+    task_id: 'AT-ROOT',
+    parent_task_id: null,
+    message_type: 'agent.message',
+    sender_agent_id: 'DT-E10281',
+    receiver_agent_id: 'platform',
+    payload: {
+      payload: {
+        kind: 'decision.trace',
+        stage: 'decision',
+        iteration: 2,
+        reasoning_segments: ['已有制度结果，但还缺审计证据，需要补充派发。'],
+        action: 'delegate',
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-ROOT-DELEGATE-2',
+    task_id: 'AT-ROOT',
+    parent_task_id: null,
+    message_type: 'task.delegate',
+    sender_agent_id: 'DT-E10281',
+    receiver_agent_id: 'platform',
+    payload: {
+      payload: {
+        round: 2,
+        subtasks: [
+          {
+            client_task_key: 'audit-review',
+            title: '补充审计复核',
+            instruction: '补充核对审计证据。',
+            assignee_agent_id: 'VE-0005',
+            required_capability: 'audit.evidence.read',
+            depends_on: [],
+            required: true,
+            material: {},
+          },
+        ],
+      },
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-ROOT-REVIEW-2',
+    task_id: 'AT-ROOT',
+    parent_task_id: null,
+    message_type: 'task.summary',
+    sender_agent_id: 'platform',
+    receiver_agent_id: 'DT-E10281',
+    payload: {
+      request: 'task.summary',
+      current_round: 2,
+      child_results: [{ client_task_key: 'audit-review', status: 'completed' }],
+    },
+  },
+  {
+    ...completedMessages[0],
+    id: 'AM-ROOT-TRACE-4',
+    task_id: 'AT-ROOT',
+    parent_task_id: null,
+    message_type: 'agent.message',
+    sender_agent_id: 'DT-E10281',
+    receiver_agent_id: 'platform',
+    payload: {
+      payload: {
+        kind: 'decision.trace',
+        stage: 'decision',
+        iteration: 3,
+        reasoning_segments: ['制度与审计证据都已返回，满足最终汇总条件。'],
+        action: 'complete',
+      },
+    },
+    created_at: '2026-09-01T10:01:06+08:00',
+  },
+];
+
 const completedResult: AgentFinalResult = {
   task_id: 'AT-ROOT',
   status: 'completed',
   summary: '制度材料和账号准备均已确认。',
   node_results: [rootNode, workerNode],
 };
+
+const completedEvaluation = {
+  version: 'agentteams-evaluation-v1',
+  evaluated_at: '2026-09-07T09:30:00+08:00',
+  rule_score: 58,
+  rule_max_score: 60,
+  rule_dimensions: [
+    { key: 'completion', label: '任务完成', score: 10, max_score: 10, reason: '必需任务和最终汇总均已完成。' },
+    { key: 'delegation', label: '拆解与派发', score: 10, max_score: 10, reason: '任务已拆给不同职责的Agent。' },
+  ],
+  rule_deductions: ['一条消息发生过重试。'],
+  model_status: 'completed',
+  model_score: 34,
+  model_max_score: 40,
+  model_dimensions: [
+    { key: 'decomposition', label: '任务拆解', score: 9, max_score: 10, reason: '拆解清楚。' },
+    { key: 'routing', label: 'Agent选择', score: 9, max_score: 10, reason: '职责匹配。' },
+    { key: 'follow_up', label: '后续判断', score: 8, max_score: 10, reason: '收到结果后继续派发。' },
+    { key: 'final_answer', label: '最终答案', score: 8, max_score: 10, reason: '结论完整。' },
+  ],
+  model_strengths: ['并行收集证据后继续派发'],
+  model_deductions: ['最终答案可以更精简。'],
+  model_verdict: '协作过程完整，结果可信。',
+  total_score: 92,
+  total_max_score: 100,
+} as const;
+
+const roleChangeNodes = [
+  { ...rootNode, id: 'AT-RC', root_task_id: 'AT-RC', client_task_key: 'root', title: '岗位调整评估' },
+  { ...workerNode, id: 'AT-RC-HR', root_task_id: 'AT-RC', parent_task_id: 'AT-RC', client_task_key: 'hr-check', title: 'HR岗位调整核查', assignee_agent_id: 'VE-0002' },
+  { ...workerNode, id: 'AT-RC-PLAN', root_task_id: 'AT-RC', parent_task_id: 'AT-RC', client_task_key: 'it-plan', title: 'IT权限计划核查', assignee_agent_id: 'VE-0003' },
+  { ...workerNode, id: 'AT-RC-AUDIT', root_task_id: 'AT-RC', parent_task_id: 'AT-RC', client_task_key: 'audit-review', title: '权限审计复核', assignee_agent_id: 'VE-0005' },
+  { ...workerNode, id: 'AT-RC-ACTIVATE', root_task_id: 'AT-RC', parent_task_id: 'AT-RC', client_task_key: 'it-activate', title: 'IT权限激活', assignee_agent_id: 'VE-0003' },
+];
+
+const roleChangeEvents: AgentTaskEvent[] = [
+  { ...completedEvents[0], root_task_id: 'AT-RC', task_id: 'AT-RC', id: 10, event_seq: 10, event_type: 'task.delegate', detail: { round: 1, client_task_keys: ['hr-check', 'it-plan'] } },
+  { ...completedEvents[0], root_task_id: 'AT-RC', task_id: 'AT-RC', id: 20, event_seq: 20, event_type: 'task.summarizing', summary: 'Manager复核第一轮结果', detail: { round: 1 } },
+  { ...completedEvents[0], root_task_id: 'AT-RC', task_id: 'AT-RC', id: 30, event_seq: 30, event_type: 'task.delegate', detail: { round: 2, client_task_keys: ['audit-review', 'it-activate'] } },
+];
 
 type MockRoute = unknown | ((init?: RequestInit) => unknown | Promise<unknown>);
 
@@ -216,6 +531,7 @@ function completedTaskRoutes(task: AgentCollaborationTask = completedTask): Reco
     'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages': completedMessages,
     'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/result': completedResult,
     'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT': task,
+    'POST /api/v1/agentteams-collaboration/tasks/AT-ROOT/evaluation': completedEvaluation,
   };
 }
 
@@ -275,6 +591,7 @@ describe('AgentTeams collaboration API client', () => {
     await api.getAgentTeamsEvents(actorNo, 'AT /1', 0);
     await api.getAgentTeamsMessages(actorNo, 'AT /1');
     await api.getAgentTeamsResult(actorNo, 'AT /1');
+    await api.evaluateAgentTeamsTask(actorNo, 'AT /1');
     await api.cancelAgentTeamsTask(actorNo, 'AT /1');
     await api.retryAgentTeamsTask(actorNo, 'AT /1');
 
@@ -286,11 +603,13 @@ describe('AgentTeams collaboration API client', () => {
       '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/events?actor_no=E10281&after_event_id=0',
       '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/messages?actor_no=E10281',
       '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/result?actor_no=E10281',
+      '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/evaluation?actor_no=E10281',
       '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/cancel?actor_no=E10281',
       '/api/v1/agentteams-collaboration/tasks/AT%20%2F1/retry?actor_no=E10281',
     ]);
     expect(fetchMock.mock.calls[7][1]).toMatchObject({ method: 'POST' });
     expect(fetchMock.mock.calls[8][1]).toMatchObject({ method: 'POST' });
+    expect(fetchMock.mock.calls[9][1]).toMatchObject({ method: 'POST' });
   });
 
   it('submits the complete collaboration task request body', async () => {
@@ -335,6 +654,107 @@ describe('AgentTeams collaboration API client', () => {
 });
 
 describe('AgentTeams collaboration page', () => {
+  it('renders direct delegation as a hierarchy chart with compact Tool leaves', () => {
+    const toolMessages: AgentMessage[] = [
+      {
+        ...completedMessages[0],
+        id: 'AM-RC-HR-REQUEST',
+        task_id: 'AT-RC-HR',
+        message_type: 'tool.request',
+        sender_agent_id: 'VE-0002',
+        receiver_agent_id: 'platform',
+        payload: { tool_name: 'agentteams.hr.lookup_role_change' },
+      },
+      {
+        ...completedMessages[0],
+        id: 'AM-RC-HR-RESULT',
+        task_id: 'AT-RC-HR',
+        message_type: 'tool.result',
+        sender_agent_id: 'platform',
+        receiver_agent_id: 'VE-0002',
+        payload: {
+          tool_name: 'agentteams.hr.lookup_role_change',
+          decision: 'allow',
+          audit_ids: [89],
+        },
+      },
+    ];
+    render(
+      <TaskTree
+        nodes={roleChangeNodes}
+        graph={{
+          nodes: roleChangeNodes,
+          parent_edges: roleChangeNodes.slice(1).map((node) => ({ parent_task_id: 'AT-RC', task_id: node.id })),
+          dependency_edges: [{ depends_on_task_id: 'AT-RC-AUDIT', task_id: 'AT-RC-ACTIVATE' }],
+          communication_edges: [],
+        }}
+        events={roleChangeEvents}
+        messages={toolMessages}
+        selectedId="AT-RC"
+        onSelect={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: /选择任务 岗位调整评估/ })).toBeInTheDocument();
+    const chart = screen.getByTestId('agentteams-task-chart');
+    expect(chart.querySelector('[data-parent-task-id="AT-RC"]')).not.toBeNull();
+    expect(chart.querySelectorAll('.at-chart-node-card')).toHaveLength(5);
+    expect(chart).toHaveTextContent('HR岗位调整核查');
+    expect(chart).toHaveTextContent('IT权限计划核查');
+    expect(chart).toHaveTextContent('权限审计复核');
+    expect(chart).toHaveTextContent('IT权限激活');
+    expect(screen.getByText('岗位调整HR记录查询Tool · Gateway通过 · 审计#89')).toBeInTheDocument();
+    expect(screen.queryByText('第1轮')).not.toBeInTheDocument();
+    expect(screen.queryByText('第2轮')).not.toBeInTheDocument();
+  });
+
+  it('renders a persisted serial dependency below its predecessor even when nodes arrive out of order', () => {
+    const mixedNodes = [
+      roleChangeNodes[0],
+      { ...roleChangeNodes[4], client_task_key: 'activate' },
+      { ...roleChangeNodes[2], client_task_key: 'plan' },
+      { ...roleChangeNodes[1], client_task_key: 'hr' },
+    ];
+    render(
+      <TaskTree
+        nodes={mixedNodes}
+        graph={{
+          nodes: mixedNodes,
+          parent_edges: mixedNodes.slice(1).map((node) => ({ parent_task_id: 'AT-RC', task_id: node.id })),
+          dependency_edges: [{ depends_on_task_id: 'AT-RC-PLAN', task_id: 'AT-RC-ACTIVATE' }],
+          communication_edges: [],
+        }}
+        events={[{ ...roleChangeEvents[0], detail: { round: 1, client_task_keys: ['activate', 'plan', 'hr'] } }]}
+        messages={[]}
+        selectedId="AT-RC"
+        onSelect={() => undefined}
+      />,
+    );
+
+    const chart = screen.getByTestId('agentteams-task-chart');
+    const planBranch = chart.querySelector('[data-parent-task-id="AT-RC-PLAN"]');
+    expect(planBranch).not.toBeNull();
+    expect(planBranch).toHaveTextContent('IT权限激活');
+    expect(screen.queryByText('第1轮')).not.toBeInTheDocument();
+  });
+
+  it('displays a completed Manager node as 100 percent when persisted progress has not caught up', async () => {
+    const laggingRoot = { ...rootNode, progress: 0 };
+    const task = { ...completedTask, nodes: [laggingRoot] };
+    const routes = completedTaskRoutes(task);
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/graph'] = {
+      nodes: [laggingRoot], parent_edges: [], dependency_edges: [], communication_edges: [],
+    };
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/result'] = {
+      ...completedResult, node_results: [laggingRoot],
+    };
+    mockPageApi(routes);
+    renderPage();
+
+    const detailPanel = await screen.findByTestId('agentteams-node-detail');
+    expect(within(detailPanel).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
+  });
+
   it('renders persisted skills, round, blocked dependency, audit, and real Matrix evidence', async () => {
     const blockedNode = {
       ...workerNode,
@@ -376,7 +796,7 @@ describe('AgentTeams collaboration page', () => {
 
     expect(await screen.findByText('已选择 Skill：agentteams-onboarding-readiness')).toBeInTheDocument();
     expect(screen.getByText('第 2 轮')).toBeInTheDocument();
-    expect(screen.getByText('已阻塞，等待依赖：AT-POLICY')).toBeInTheDocument();
+    expect(screen.getByText('等待前置任务：AT-POLICY')).toBeInTheDocument();
     expect(screen.getByText('工具调用：agentteams-onboarding-employee')).toBeInTheDocument();
     expect(screen.getByText('权限检查：允许')).toBeInTheDocument();
     expect(screen.getByText('审计记录ID：101')).toBeInTheDocument();
@@ -392,7 +812,7 @@ describe('AgentTeams collaboration page', () => {
     renderPage();
 
     const instruction = await screen.findByLabelText('任务说明');
-    expect(instruction).toHaveValue('评估新员工A是否可以按期入职。');
+    expect(instruction).toHaveValue('评估张明的岗位调整是否可以按期完成。');
     expect(instruction).not.toBeDisabled();
     expect(screen.getByLabelText('任务标题')).not.toBeDisabled();
     expect(screen.getByLabelText('补充材料（可选 JSON）')).not.toBeDisabled();
@@ -456,9 +876,9 @@ describe('AgentTeams collaboration page', () => {
     expect(teamSelect).toBeDisabled();
     expect(screen.getByText('负责人 Agent：VE-0001')).toBeInTheDocument();
     expect(screen.getByLabelText('任务标题')).not.toBeDisabled();
-    expect(screen.getByLabelText('任务标题')).toHaveValue('新员工入职评估');
+    expect(screen.getByLabelText('任务标题')).toHaveValue('岗位调整评估');
     expect(screen.getByLabelText('任务说明')).not.toBeDisabled();
-    expect(screen.getByLabelText('任务说明')).toHaveValue('评估新员工A是否可以按期入职。');
+    expect(screen.getByLabelText('任务说明')).toHaveValue('评估张明的岗位调整是否可以按期完成。');
     expect(screen.getByLabelText('补充材料（可选 JSON）')).not.toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '提交协作任务' }));
 
@@ -529,7 +949,51 @@ describe('AgentTeams collaboration page', () => {
     });
   });
 
-  it('treats configured Manager and workers as pending verification when the server gate is ready', async () => {
+  it('switches to and launches an allowlisted database team in local demo mode', async () => {
+    const databaseTeam: Team = {
+      id: 'TEAM-DB-BENCH',
+      name: '数据库诊断团队',
+      leader_employee_id: 'VE-0001',
+      description: '数据库专项协作',
+    };
+    const submittedTask: AgentCollaborationTask = {
+      ...completedTask,
+      id: 'AT-DB-NEW',
+      team_id: databaseTeam.id,
+      trace_id: 'AT-DB-NEW',
+      title: '数据库锁等待诊断',
+      status: 'planning',
+      nodes: [],
+      summary: '',
+    };
+    const fetchMock = mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': localReadyHealth,
+      'GET /api/v1/teams': [...teams, databaseTeam],
+      'GET /api/v1/agentteams-collaboration/tasks': [],
+      'POST /api/v1/agentteams-collaboration/tasks': submittedTask,
+    });
+    renderPage();
+
+    const teamSelect = await screen.findByRole('combobox', { name: '协作团队' });
+    fireEvent.mouseDown(teamSelect);
+    fireEvent.click(await screen.findByText(/数据库诊断团队（TEAM-DB-BENCH）/));
+    expect(await screen.findByRole('combobox', { name: '数据库诊断场景' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '提交协作任务' })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '提交协作任务' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks') && init?.method === 'POST',
+      );
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
+        team_id: 'TEAM-DB-BENCH',
+        leader_agent_id: 'VE-0001',
+        material: { scenario_id: 'lock_contention' },
+      });
+    });
+  });
+
+  it('shows a configured Manager as configured rather than claiming it is running', async () => {
     mockPageApi({
       'GET /api/v1/agentteams-collaboration/health': readyHealth,
       'GET /api/v1/teams': teams,
@@ -537,7 +1001,8 @@ describe('AgentTeams collaboration page', () => {
     });
     renderPage();
 
-    expect(await screen.findByText('Manager已配置/待实测')).toBeInTheDocument();
+    expect(await screen.findByText('Manager已配置')).toHaveClass('ant-tag-processing');
+    expect(screen.queryByText('Manager已就绪')).not.toBeInTheDocument();
     expect(screen.getByText('Worker 已配置/待实测：2/2')).toBeInTheDocument();
     expect(screen.queryByText(/Manager未就绪/)).not.toBeInTheDocument();
   });
@@ -656,7 +1121,7 @@ describe('AgentTeams collaboration page', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getAllByText('B 节点')).toHaveLength(2);
+      expect(screen.getAllByText('B 节点')).toHaveLength(1);
       expect(screen.getByText('B 的轨迹事件')).toBeInTheDocument();
       expect(screen.getByText('B 的 Matrix 消息')).toBeInTheDocument();
       expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
@@ -701,7 +1166,7 @@ describe('AgentTeams collaboration page', () => {
     const retryB = await screen.findByRole('button', { name: /重试/ });
     expect(retryB).not.toBeDisabled();
     expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
-    expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(2);
+    expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(1);
     expect(screen.queryByText(/取消任务失败/)).not.toBeInTheDocument();
 
     await act(async () => {
@@ -710,7 +1175,7 @@ describe('AgentTeams collaboration page', () => {
 
     await waitFor(() => {
       expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
-      expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(2);
+      expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(1);
       expect(screen.getByRole('button', { name: /重试/ })).not.toBeDisabled();
       expect(screen.queryByText('A 运行任务 节点')).not.toBeInTheDocument();
       expect(screen.queryByText(/取消任务失败/)).not.toBeInTheDocument();
@@ -756,7 +1221,7 @@ describe('AgentTeams collaboration page', () => {
     const retryB = await screen.findByRole('button', { name: /重试/ });
     expect(retryB).not.toBeDisabled();
     expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
-    expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(2);
+    expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(1);
     expect(screen.queryByText(/重试任务失败/)).not.toBeInTheDocument();
 
     await act(async () => {
@@ -765,7 +1230,7 @@ describe('AgentTeams collaboration page', () => {
 
     await waitFor(() => {
       expect(screen.getByText('B 的最终汇总')).toBeInTheDocument();
-      expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(2);
+      expect(screen.getAllByText('B 失败任务 节点')).toHaveLength(1);
       expect(screen.getByRole('button', { name: /重试/ })).not.toBeDisabled();
       expect(screen.queryByText('A 重试任务 节点')).not.toBeInTheDocument();
       expect(screen.queryByText(/重试任务失败/)).not.toBeInTheDocument();
@@ -773,16 +1238,313 @@ describe('AgentTeams collaboration page', () => {
     });
   });
 
-  it('renders recursive delegation, relationship edges, and the final summary', async () => {
+  it('renders persisted delegation as a collaboration hierarchy and keeps messages in node detail', async () => {
     mockPageApi(completedTaskRoutes());
     renderPage();
 
     expect(await screen.findByText('入职协作分析')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /选择任务 制度核查/ })).toBeInTheDocument();
-    expect(screen.getByText('父子委派')).toBeInTheDocument();
-    expect(screen.getByText('任务依赖')).toBeInTheDocument();
-    expect(screen.getByText('消息关系')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /选择任务 制度核查/ })).toBeInTheDocument();
+    expect(screen.getByText('协作调用树')).toBeInTheDocument();
+    expect(screen.getByTestId('agentteams-task-chart')).toBeInTheDocument();
+    expect(screen.queryByText('VE-0001 → DT-E10281：发送协作消息')).not.toBeInTheDocument();
+    expect(screen.queryByText('父子委派')).not.toBeInTheDocument();
+    expect(screen.queryByText('任务依赖')).not.toBeInTheDocument();
+    expect(screen.queryByText('消息关系')).not.toBeInTheDocument();
     expect(await screen.findByText('制度材料和账号准备均已确认。')).toBeInTheDocument();
+  });
+
+  it('shows the selected worker process from persisted instructions, skills, tools, and results', async () => {
+    const routes = completedTaskRoutes();
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages'] = processMessages;
+    mockPageApi(routes);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /选择任务 制度核查/ }));
+
+    const detail = screen.getByTestId('agentteams-node-detail');
+    expect(detail).toHaveTextContent('制度材料已核对，等待Manager汇总。');
+    expect(detail).toHaveTextContent('节点处理过程');
+    expect(detail).toHaveTextContent('核对员工制度材料并确认是否存在缺口。');
+    expect(detail).toHaveTextContent('hr-onboarding-assistant');
+    expect(detail).toHaveTextContent('hr.onboarding.read');
+    expect(detail).toHaveTextContent('接收 Manager 派发的任务');
+    expect(detail).toHaveTextContent('第1轮：选择 Skill');
+    expect(detail).toHaveTextContent('第1轮：决定调用 Tool');
+    expect(detail).toHaveTextContent('Gateway 返回：查询员工入职信息');
+    expect(detail).toHaveTextContent('第2轮：决定形成节点结果');
+    expect(detail).toHaveTextContent('向 Manager 返回节点结果');
+    expect(detail).not.toHaveTextContent('决策依据');
+    expect(detail).not.toHaveTextContent('需要先查询制度材料，才能给出有证据的结论。');
+    expect(detail).not.toHaveTextContent('Gateway已返回材料齐全，可以结束本节点并提交结果。');
+    expect(within(detail).queryByRole('button', { name: /Gateway 返回：查询员工入职信息/ })).not.toBeInTheDocument();
+
+    fireEvent.click(within(detail).getByRole('button', { name: '展开决策依据：第1轮：选择 Skill' }));
+    expect(detail).toHaveTextContent('任务要求核查制度材料，因此选择HR入职Skill。');
+    expect(detail).not.toHaveTextContent('需要先查询制度材料，才能给出有证据的结论。');
+    fireEvent.click(within(detail).getByRole('button', { name: '收起决策依据：第1轮：选择 Skill' }));
+
+    fireEvent.click(within(detail).getByRole('button', { name: '展开决策依据：第1轮：决定调用 Tool' }));
+    expect(detail).toHaveTextContent('需要先查询制度材料，才能给出有证据的结论。');
+    expect(detail).not.toHaveTextContent('Gateway已返回材料齐全，可以结束本节点并提交结果。');
+    fireEvent.click(within(detail).getByRole('button', { name: '收起决策依据：第1轮：决定调用 Tool' }));
+    expect(detail).not.toHaveTextContent('需要先查询制度材料，才能给出有证据的结论。');
+
+    fireEvent.click(within(detail).getByRole('button', { name: /展开决策依据，用时/ }));
+
+    expect(detail).toHaveTextContent('节点处理过程');
+    expect(detail).toHaveTextContent('决策依据');
+    expect(detail).toHaveTextContent('需要先查询制度材料，才能给出有证据的结论。');
+    expect(detail).toHaveTextContent('第1轮：决定调用 Tool');
+    expect(detail).toHaveTextContent('Gateway通过');
+    expect(detail).toHaveTextContent('审计#101');
+    expect(detail).toHaveTextContent('Gateway已返回材料齐全，可以结束本节点并提交结果。');
+    expect(detail).toHaveTextContent('制度材料已核对，等待Manager汇总。');
+    expect(detail).not.toHaveTextContent('DeepSeek');
+    expect(detail).not.toHaveTextContent('DWP_EVENT');
+
+    fireEvent.click(within(detail).getByRole('button', { name: /收起决策依据，用时/ }));
+    expect(detail).toHaveTextContent('第1轮：决定调用 Tool');
+    expect(detail).toHaveTextContent('向 Manager 返回节点结果');
+    expect(detail).not.toHaveTextContent('需要先查询制度材料，才能给出有证据的结论。');
+  });
+
+  it('shows the Manager review and supplementary delegation in decision order', async () => {
+    const routes = completedTaskRoutes();
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages'] = processMessages;
+    mockPageApi(routes);
+    renderPage();
+
+    const detail = await screen.findByTestId('agentteams-node-detail');
+    expect(detail).toHaveTextContent('已形成最终汇总，可在上方“最终汇总”区域核对。');
+    expect(detail).toHaveTextContent('Manager决策过程');
+    expect(detail).toHaveTextContent('第1轮：选择场景 Skill');
+    expect(detail).toHaveTextContent('第1轮：派发子任务');
+    expect(detail).toHaveTextContent('接收第1轮子任务结果');
+    expect(detail).toHaveTextContent('第2轮：派发子任务');
+    expect(detail).toHaveTextContent('接收第2轮子任务结果');
+    expect(detail).toHaveTextContent('第3轮：形成最终汇总');
+    expect(detail).not.toHaveTextContent('制度核查是当前必需证据，先派发给HR节点。');
+    expect(detail).not.toHaveTextContent('已有制度结果，但还缺审计证据，需要补充派发。');
+
+    fireEvent.click(within(detail).getByRole('button', { name: /展开决策依据，用时/ }));
+
+    expect(detail).toHaveTextContent('Manager决策过程');
+    expect(detail).toHaveTextContent('agentteams-onboarding-readiness');
+    expect(detail).toHaveTextContent('第1轮：选择场景 Skill');
+    expect(detail).toHaveTextContent('第1轮：派发子任务');
+    expect(detail).toHaveTextContent('接收第1轮子任务结果');
+    expect(detail).toHaveTextContent('第2轮：派发子任务');
+    expect(detail).toHaveTextContent('接收第2轮子任务结果');
+    expect(detail).toHaveTextContent('第3轮：形成最终汇总');
+    expect(detail).toHaveTextContent('已有制度结果，但还缺审计证据，需要补充派发。');
+    expect(detail).toHaveTextContent('制度与审计证据都已返回，满足最终汇总条件。');
+    const dispatches = [...detail.querySelectorAll<HTMLElement>('.at-process-step-delegate')];
+    const reviews = [...detail.querySelectorAll<HTMLElement>('.at-process-step-review')];
+    expect(dispatches).toHaveLength(2);
+    expect(reviews).toHaveLength(2);
+    expect(dispatches.every((step) => step.getAttribute('style') === null)).toBe(true);
+    expect(reviews.every((step) => step.getAttribute('style') === null)).toBe(true);
+    const content = detail.textContent ?? '';
+    expect(content.indexOf('第1轮：选择场景 Skill')).toBeLessThan(content.indexOf('第1轮：派发子任务'));
+    expect(content.indexOf('第1轮：派发子任务')).toBeLessThan(content.indexOf('接收第1轮子任务结果'));
+    expect(content.indexOf('接收第1轮子任务结果')).toBeLessThan(content.indexOf('第2轮：派发子任务'));
+    expect(content.indexOf('第2轮：派发子任务')).toBeLessThan(content.indexOf('接收第2轮子任务结果'));
+    expect(content.indexOf('接收第2轮子任务结果')).toBeLessThan(content.indexOf('第3轮：形成最终汇总'));
+
+    fireEvent.click(within(detail).getByRole('button', { name: /收起决策依据，用时/ }));
+    expect(detail).toHaveTextContent('第1轮：派发子任务');
+    expect(detail).toHaveTextContent('第3轮：形成最终汇总');
+    expect(detail).not.toHaveTextContent('制度与审计证据都已返回，满足最终汇总条件。');
+  });
+
+  it('places the final result full-width below the submission and task-record cards', async () => {
+    mockPageApi(completedTaskRoutes());
+    renderPage();
+
+    const overviewRow = await screen.findByTestId('agentteams-overview-row');
+    const resultPanel = screen.getByTestId('agentteams-result-panel');
+    const workspace = await screen.findByTestId('agentteams-workspace');
+    const sideStack = within(workspace).getByTestId('agentteams-side-stack');
+    expect(overviewRow).toHaveTextContent('提交协作任务');
+    expect(overviewRow).toHaveTextContent('协作任务记录');
+    expect(resultPanel).toHaveAttribute('data-layout', 'full-width');
+    expect(overviewRow.compareDocumentPosition(resultPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(resultPanel.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(workspace).queryByTestId('agentteams-result-panel')).not.toBeInTheDocument();
+    expect(within(sideStack).queryByTestId('agentteams-result-panel')).not.toBeInTheDocument();
+    expect(sideStack).toHaveTextContent('当前节点状态');
+  });
+
+  it('places the legacy task evaluation below the collaboration tree instead of in the side column', async () => {
+    mockPageApi(completedTaskRoutes());
+    renderPage();
+
+    const workspace = await screen.findByTestId('agentteams-workspace');
+    const mainStack = within(workspace).getByTestId('agentteams-main-stack');
+    const sideStack = within(workspace).getByTestId('agentteams-side-stack');
+    expect(mainStack).toHaveTextContent('协作调用树');
+    expect(mainStack).toHaveTextContent('旧版单任务协作评分');
+    expect(within(mainStack).getByTestId('agentteams-evaluation-panel')).toHaveAttribute('data-layout', 'horizontal');
+    expect(sideStack).toHaveTextContent('当前节点状态');
+    expect(within(sideStack).queryByTestId('agentteams-evaluation-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('agentteams-workspace-bottom-row')).not.toBeInTheDocument();
+  });
+
+  it('places the database benchmark panel after the collaboration workspace at the bottom of the page', async () => {
+    mockPageApi(completedTaskRoutes());
+    renderPage();
+
+    const overviewRow = await screen.findByTestId('agentteams-overview-row');
+    const workspace = await screen.findByTestId('agentteams-workspace');
+    const benchmarkPanel = await screen.findByTestId('database-benchmark-panel');
+    expect(overviewRow.compareDocumentPosition(benchmarkPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(workspace.compareDocumentPosition(benchmarkPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows persisted rule and model scores for a completed task', async () => {
+    const fetchMock = mockPageApi(completedTaskRoutes());
+    renderPage();
+
+    const panel = await screen.findByTestId('agentteams-evaluation-panel');
+    await waitFor(() => expect(panel).toHaveTextContent('92/100'));
+    expect(panel).toHaveTextContent('规则评测 58/60');
+    expect(panel).toHaveTextContent('大模型评测 34/40');
+    expect(panel).toHaveTextContent('一条消息发生过重试。');
+    expect(panel).toHaveTextContent('协作过程完整，结果可信。');
+    expect(fetchMock.mock.calls.some(([url, init]) => (
+      String(url).includes('/tasks/AT-ROOT/evaluation') && init?.method === 'POST'
+    ))).toBe(true);
+  });
+
+  it('routes a database benchmark task to A/B evaluation without calling the legacy evaluator', async () => {
+    const databaseTask = {
+      ...completedTask,
+      title: '数据库异常诊断：锁等待链导致请求堆积',
+    };
+    const routes = completedTaskRoutes(databaseTask);
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/graph'] = {
+      ...completedGraph,
+      selected_skill_ids: ['agentteams-database-diagnosis'],
+    };
+    routes['GET /api/v1/agentteams-benchmarks/database/experiments/latest'] = null;
+    const fetchMock = mockPageApi(routes);
+
+    renderPage();
+
+    const routingNotice = await screen.findByTestId('database-task-evaluation-routing');
+    expect(routingNotice).toHaveTextContent('该任务使用数据库 A/B 基准评测');
+    expect(routingNotice).toHaveTextContent('不调用旧版 100 分任务评测');
+    expect(screen.queryByTestId('agentteams-evaluation-panel')).not.toBeInTheDocument();
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => (
+      String(url).includes('/tasks/AT-ROOT/evaluation') && init?.method === 'POST'
+    ))).toBe(false));
+  });
+
+  it('allows a failed evaluation request to be retried from the panel', async () => {
+    let calls = 0;
+    const routes = completedTaskRoutes();
+    routes['POST /api/v1/agentteams-collaboration/tasks/AT-ROOT/evaluation'] = () => {
+      calls += 1;
+      if (calls === 1) throw new Error('DeepSeek临时不可用');
+      return completedEvaluation;
+    };
+    mockPageApi(routes);
+    renderPage();
+
+    expect(await screen.findByText(/评测暂不可用/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新评测' }));
+
+    const panel = await screen.findByTestId('agentteams-evaluation-panel');
+    await waitFor(() => expect(panel).toHaveTextContent('92/100'));
+    expect(calls).toBe(2);
+  });
+
+  it('shows a compact node execution chain and renders the final result above the workspace', async () => {
+    const routes = completedTaskRoutes();
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages'] = [
+      completedMessages[0],
+      {
+        ...completedMessages[0],
+        id: 'AM-TOOL-REQUEST',
+        message_type: 'tool.request',
+        sender_agent_id: 'VE-0001',
+        receiver_agent_id: 'platform',
+        payload: {
+          payload: {
+            tool_name: 'query_onboarding_employee',
+            plugin_id: 'agentteams-onboarding-employee',
+          },
+        },
+      },
+      {
+        ...completedMessages[0],
+        id: 'AM-TOOL-RESULT',
+        message_type: 'tool.result',
+        sender_agent_id: 'platform',
+        receiver_agent_id: 'VE-0001',
+        payload: {
+          tool_name: 'query_onboarding_employee',
+          decision: 'allow',
+          audit_ids: [101],
+          data: '身份核验与合同签署已完成',
+        },
+      },
+    ];
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/result'] = {
+      ...completedResult,
+      node_results: [
+        {
+          ...rootNode,
+          output_payload: {
+            readiness_decision: 'incomplete',
+            completed_items: ['身份核验和合同签署已完成'],
+            risks: ['MFA注册确认材料缺失'],
+            unknowns: [],
+            next_actions: ['补齐IT-A-003后重新核查'],
+          },
+        },
+        workerNode,
+      ],
+    };
+    mockPageApi(routes);
+    renderPage();
+
+    expect(await screen.findByText('查询员工入职信息 · Gateway通过 · 审计#101')).toBeInTheDocument();
+    expect(screen.queryByText('本节点执行链')).not.toBeInTheDocument();
+    expect(screen.getByText('结论：信息不足，暂无法判断')).toBeInTheDocument();
+    expect(screen.getByText('身份核验和合同签署已完成')).toBeInTheDocument();
+    expect(screen.getByText('MFA注册确认材料缺失')).toBeInTheDocument();
+    expect(screen.getByText('补齐IT-A-003后重新核查')).toBeInTheDocument();
+
+    expect(screen.getByTestId('agentteams-result-panel')).toHaveTextContent('最终汇总');
+    expect(screen.getByTestId('agentteams-result-panel')).toHaveTextContent('MFA注册确认材料缺失');
+    expect(screen.getByTestId('agentteams-result-panel')).toHaveTextContent('制度材料和账号准备均已确认。');
+
+    fireEvent.click(screen.getByRole('button', { name: /选择任务 制度核查/ }));
+    const auditPanel = screen.getByText('工具审计').closest('.ant-card');
+    expect(auditPanel).not.toBeNull();
+    expect(auditPanel).toHaveTextContent('工具调用：query_onboarding_employee');
+    expect(auditPanel).toHaveTextContent('调用者：VE-0001');
+    expect(auditPanel?.querySelectorAll('.at-tool-row')).toHaveLength(1);
+    expect(auditPanel).not.toHaveTextContent('工具调用：未提供');
+    expect(auditPanel).not.toHaveTextContent('权限检查：未产生');
+  });
+
+  it('keeps protocol message details out of the compact call tree', () => {
+    render(
+      <TaskTree
+        nodes={[rootNode]}
+        graph={{ nodes: [rootNode], parent_edges: [], dependency_edges: [], communication_edges: [] }}
+        events={[]}
+        messages={[{ ...completedMessages[0], message_type: 'task.submit', task_id: rootNode.id }]}
+        selectedId={rootNode.id}
+        onSelect={() => undefined}
+      />,
+    );
+
+    expect(screen.getByTestId('agentteams-task-chart')).toBeInTheDocument();
+    expect(screen.queryByText(/提交根任务/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/task\.submit/)).not.toBeInTheDocument();
   });
 
   it('filters the timeline and Matrix messages when a child task is selected', async () => {
@@ -807,10 +1569,16 @@ describe('AgentTeams collaboration page', () => {
       },
       'GET /api/v1/teams': teams,
       'GET /api/v1/agentteams-collaboration/tasks': [],
+      'GET /api/v1/agentteams-benchmarks/database/experiments/latest': null,
     });
     renderPage();
 
     expect(await screen.findByText('Matrix 登录失败：连接被拒绝')).toBeInTheDocument();
+    const benchmarkPanel = await screen.findByTestId('database-benchmark-panel');
+    const healthAlert = screen.getByText('协作环境未就绪').closest('.ant-alert');
+    expect(healthAlert).not.toBeNull();
+    expect(healthAlert!.compareDocumentPosition(benchmarkPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(healthAlert).toHaveTextContent('TEAM-DB-BENCH 场景和数据库诊断 A/B 基准独立运行，不受此状态影响');
     expect(screen.getByRole('button', { name: '提交协作任务' })).toBeDisabled();
   });
 
@@ -869,7 +1637,13 @@ describe('AgentTeams collaboration page', () => {
       latest_event_id: 0,
       summary: '',
     };
+    const pendingRefresh = deferred<AgentCollaborationTask>();
+    let taskReads = 0;
     const routes = completedTaskRoutes(runningTask);
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT'] = () => {
+      taskReads += 1;
+      return taskReads === 1 ? runningTask : pendingRefresh.promise;
+    };
     routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/graph'] = {
       nodes: [runningNode],
       parent_edges: [],
@@ -898,6 +1672,10 @@ describe('AgentTeams collaboration page', () => {
     await waitFor(() => {
       const after = fetchMock.mock.calls.filter(([input]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks/AT-ROOT')).length;
       expect(after).toBeGreaterThan(before);
+    });
+    expect(screen.queryByText('正在刷新服务端协作轨迹…')).not.toBeInTheDocument();
+    await act(async () => {
+      pendingRefresh.resolve(runningTask);
     });
   }, 6000);
 

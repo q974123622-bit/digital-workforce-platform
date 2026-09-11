@@ -13,7 +13,7 @@ from app.services.agentteams_decisions import (
     WorkerContext,
 )
 from app.services.agentteams_skills import ProjectSkillRegistry
-from app.services.llm import LLMProvider, LLMUnavailableError
+from app.services.llm import LLMProvider, LLMUnavailableError, StructuredLLMResponse
 
 
 VALID_MANAGER_PLAN = {
@@ -107,6 +107,165 @@ def test_manager_plan_is_validated_and_retried_once(fake_llm, registry, manager_
     assert "bad" not in retry["content"]
 
 
+def test_manager_decision_keeps_provider_reasoning_for_runtime_trace(registry, manager_context):
+    class TraceLLM(FakeLLM):
+        def structured_output_with_trace(self, messages, schema):
+            return StructuredLLMResponse(
+                data=self.structured_output(messages, schema),
+                reasoning_content="现有信息不足，需要先向 HR 派发证据核查任务。",
+            )
+
+    provider = TraceLLM()
+    provider.outputs = [VALID_MANAGER_PLAN]
+
+    decision = AgentDecisionEngine(provider, registry).plan(manager_context)
+
+    assert decision.reasoning_content == "现有信息不足，需要先向 HR 派发证据核查任务。"
+
+
+def test_role_change_manager_is_corrected_into_parallel_then_serial_two_round_plan(
+    fake_llm, registry,
+):
+    first_plan = {
+        "selected_skill_ids": ["agentteams-role-change-readiness"],
+        "action": "delegate",
+        "subtasks": [
+            {"client_task_key": "hr-role", "title": "HR岗位核查", "goal": "核查张明岗位调整记录。", "required_capability": "hr.role_change.read", "assignee_agent_id": "VE-0002", "depends_on": [], "required": True, "reason": "取得HR一手证据。"},
+            {"client_task_key": "it-plan", "title": "IT权限计划", "goal": "核查张明权限变更计划。", "required_capability": "it.permission.plan", "assignee_agent_id": "VE-0003", "depends_on": [], "required": True, "reason": "取得IT一手证据。"},
+        ],
+    }
+    follow_up = {
+        "selected_skill_ids": ["agentteams-role-change-readiness"],
+        "action": "delegate",
+        "subtasks": [
+            {"client_task_key": "audit-review", "title": "权限审计复核", "goal": "独立复核张明权限范围。", "required_capability": "audit.permission.review", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "激活前必须独立复核。"},
+            {"client_task_key": "it-activate", "title": "IT权限激活", "goal": "使用审计批准编号激活张明权限。", "required_capability": "it.permission.activate", "assignee_agent_id": "VE-0003", "depends_on": ["audit-review"], "required": True, "reason": "审计通过后才能激活。"},
+        ],
+    }
+    catalog = [
+        {"agent_id": "VE-0002", "capabilities": ["hr.role_change.read"]},
+        {"agent_id": "VE-0003", "capabilities": ["it.permission.plan", "it.permission.activate"]},
+        {"agent_id": "VE-0005", "capabilities": ["audit.permission.review"]},
+    ]
+    base = dict(
+        user_goal="评估张明的岗位调整是否可以按期完成。",
+        manager_skill_id="agentteams-manager-coordination",
+        selected_skill_ids=["agentteams-role-change-readiness"],
+        team_capability_catalog=catalog,
+        max_rounds=3,
+        max_children=5,
+        max_nodes=20,
+    )
+    invalid_summary = {
+        "selected_skill_ids": ["agentteams-role-change-readiness"],
+        "action": "summarize",
+        "summary": {"summary": "可以完成。", "readiness_decision": "ready", "completed_items": [], "risks": [], "unknowns": [], "next_actions": []},
+    }
+
+    fake_llm.outputs = [invalid_summary, first_plan]
+    round_one = AgentDecisionEngine(fake_llm, registry).plan(ManagerContext(
+        **base, child_results=[], existing_child_task_keys=[], current_round=1,
+    ))
+    assert {task.required_capability for task in round_one.subtasks} == {
+        "hr.role_change.read", "it.permission.plan",
+    }
+    assert all(not task.depends_on for task in round_one.subtasks)
+
+    fake_llm.outputs = [invalid_summary, follow_up]
+    round_two = AgentDecisionEngine(fake_llm, registry).plan(ManagerContext(
+        **base,
+        child_results=[{"client_task_key": "hr-role", "status": "completed"}, {"client_task_key": "it-plan", "status": "completed"}],
+        existing_child_task_keys=["hr-role", "it-plan"],
+        current_round=1,
+    ))
+    activation = next(task for task in round_two.subtasks if task.required_capability == "it.permission.activate")
+    audit = next(task for task in round_two.subtasks if task.required_capability == "audit.permission.review")
+    assert activation.depends_on == [audit.client_task_key]
+
+    successful_summary = {
+        "selected_skill_ids": ["agentteams-role-change-readiness"],
+        "action": "summarize",
+        "summary": {
+            "summary": "张明的岗位调整证据完整，可以按期完成。",
+            "readiness_decision": "ready",
+            "completed_items": ["岗位材料、权限计划、独立审计和权限激活均已完成"],
+            "risks": [],
+            "unknowns": [],
+            "next_actions": ["按计划生效并归档审计记录"],
+        },
+    }
+    fake_llm.outputs = [
+        {
+            **invalid_summary,
+            "summary": {
+                **invalid_summary["summary"],
+                "risks": ["可能存在未观察到的风险"],
+                "unknowns": ["可能还需要其他信息"],
+            },
+        },
+        successful_summary,
+    ]
+    final = AgentDecisionEngine(fake_llm, registry).plan(ManagerContext(
+        **base,
+        child_results=[
+            {"client_task_key": key, "status": "completed"}
+            for key in ("hr-role", "it-plan", "audit-review", "it-activate")
+        ],
+        existing_child_task_keys=["hr-role", "it-plan", "audit-review", "it-activate"],
+        current_round=2,
+    ))
+    assert final.summary is not None
+    assert final.summary.readiness_decision == "ready"
+    assert final.summary.risks == []
+    assert final.summary.unknowns == []
+    final_round_prompt = "\n".join(
+        message["content"] for message in fake_llm.calls[-2]
+    )
+    assert '"required_action": "summarize"' in final_round_prompt
+    assert '"required_readiness_decision": "ready"' in final_round_prompt
+    assert '"evidence_precedence": "latest_completed_activation"' in final_round_prompt
+
+
+def test_role_change_it_plan_cannot_activate_or_delegate_before_returning_to_manager(
+    fake_llm, registry,
+):
+    context = WorkerContext(
+        current_agent_id="VE-0003",
+        task={
+            "title": "IT权限计划核查",
+            "goal": "核查张明权限变更计划。",
+            "client_task_key": "it-plan",
+            "required_capability": "it.permission.plan",
+        },
+        professional_skill_ids=["employee-collaboration", "it-role-change-assistant"],
+        safe_tool_catalog=[
+            {"name": "agentteams.it.lookup_permission_plan", "required_capability": "it.permission.plan"},
+            {"name": "agentteams.it.activate_role_change", "required_capability": "it.permission.activate"},
+        ],
+        current_team_capability_catalog=[
+            {"agent_id": "VE-0005", "capabilities": ["audit.permission.review"]},
+        ],
+        previous_results=[],
+    )
+    fake_llm.outputs = [
+        {"action": "tool", "tool_name": "agentteams.it.activate_role_change", "tool_arguments": {"employee_ref": "张明", "approval_ref": "AUD-RC-001"}},
+        {"action": "tool", "tool_name": "agentteams.it.lookup_permission_plan", "tool_arguments": {"employee_ref": "张明"}},
+    ]
+    decision = AgentDecisionEngine(fake_llm, registry).decide_work(context)
+    assert decision.tool_name == "agentteams.it.lookup_permission_plan"
+    assert len(fake_llm.calls) == 2
+
+    fake_llm.outputs = [
+        {"action": "delegate", "subtask": {"client_task_key": "audit", "title": "审计复核", "goal": "复核权限。", "required_capability": "audit.permission.review", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "需要审计。"}},
+        {"action": "complete", "result": "IT权限计划已核查，需由Manager继续安排独立审计。"},
+    ]
+    decision = AgentDecisionEngine(fake_llm, registry).decide_work(context.model_copy(update={
+        "previous_results": [{"kind": "tool.result", "value": {"ok": True}}],
+    }))
+    assert decision.action == "complete"
+    assert len(fake_llm.calls) == 4
+
+
 def test_manager_prompt_requires_selected_skill_ids_to_match_loaded_context(
     fake_llm, registry, manager_context,
 ):
@@ -133,7 +292,7 @@ def test_manager_plan_summary_prompt_requires_non_ready_for_confirmed_missing_ev
         "selected_skill_ids": ["agentteams-onboarding-readiness"],
         "action": "summarize",
         "summary": {
-            "summary": "MFA confirmation is missing.",
+            "summary": "缺少MFA注册确认材料。",
             "readiness_decision": "not_ready",
         },
     }]
@@ -147,6 +306,40 @@ def test_manager_plan_summary_prompt_requires_non_ready_for_confirmed_missing_ev
         "a summarize action must use readiness_decision not_ready or incomplete"
         in instruction
     )
+
+
+def test_manager_plan_retry_explains_chinese_summary_validation(
+    fake_llm, registry, manager_context,
+):
+    """A rejected English summary must receive an actionable, trusted correction."""
+    fake_llm.outputs = [
+        {
+            "selected_skill_ids": ["agentteams-onboarding-readiness"],
+            "action": "summarize",
+            "summary": {
+                "summary": "HR is ready but MFA evidence is missing.",
+                "readiness_decision": "incomplete",
+            },
+        },
+        {
+            "selected_skill_ids": ["agentteams-onboarding-readiness"],
+            "action": "summarize",
+            "summary": {
+                "summary": "HR材料已就绪，但MFA注册证据缺失。",
+                "readiness_decision": "incomplete",
+            },
+        },
+    ]
+
+    decision = AgentDecisionEngine(fake_llm, registry).plan(manager_context)
+
+    assert decision.summary is not None
+    feedback = json.loads(fake_llm.calls[1][-1]["content"])
+    assert feedback["validation_errors"] == [{
+        "loc": [],
+        "type": "business_rule",
+        "msg": "Rewrite every user-facing narrative field in Simplified Chinese.",
+    }]
 
 
 def test_manager_duplicate_delegate_key_is_corrected_without_replaying_model_output(
@@ -256,12 +449,12 @@ def test_manager_summary_requires_readiness_decision_and_retries_missing_field(
             "next_actions": ["Obtain MFA confirmation"],
         },
         {
-            "summary": "MFA confirmation is missing.",
+            "summary": "缺少MFA注册确认材料。",
             "readiness_decision": "not_ready",
             "completed_items": [],
-            "risks": ["MFA evidence missing"],
+            "risks": ["MFA证明缺失"],
             "unknowns": [],
-            "next_actions": ["Obtain MFA confirmation"],
+            "next_actions": ["补齐MFA注册确认材料"],
         },
     ]
 
@@ -274,6 +467,58 @@ def test_manager_summary_requires_readiness_decision_and_retries_missing_field(
     assert "not_ready or incomplete" in instruction
 
 
+def test_manager_summary_retries_english_only_narrative_and_returns_chinese(
+    fake_llm, registry, manager_context,
+):
+    """The final user-facing result must be Chinese while preserving technical IDs."""
+    fake_llm.outputs = [
+        {
+            "summary": "MFA confirmation IT-A-003 is missing.",
+            "readiness_decision": "not_ready",
+            "completed_items": ["HR checks complete"],
+            "risks": ["MFA evidence missing"],
+            "unknowns": [],
+            "next_actions": ["Obtain IT-A-003"],
+        },
+        {
+            "summary": "缺少MFA注册确认材料IT-A-003，当前无法确认可按期入职。",
+            "readiness_decision": "not_ready",
+            "completed_items": ["HR身份与合同核查已完成"],
+            "risks": ["MFA注册证明缺失"],
+            "unknowns": [],
+            "next_actions": ["补齐IT-A-003后重新核查"],
+        },
+    ]
+
+    summary = AgentDecisionEngine(fake_llm, registry).summarize(manager_context)
+
+    assert summary.summary.startswith("缺少MFA")
+    assert summary.next_actions == ["补齐IT-A-003后重新核查"]
+    assert len(fake_llm.calls) == 2
+    assert "Simplified Chinese" in fake_llm.calls[0][0]["content"]
+    assert "validation_errors" in fake_llm.calls[1][-1]["content"]
+
+
+def test_manager_summary_retries_english_readiness_tokens_inside_chinese_narrative(
+    fake_llm, registry, manager_context,
+):
+    fake_llm.outputs = [
+        {
+            "summary": "IT就绪状态为incomplete，当前不能按期入职。",
+            "readiness_decision": "incomplete",
+        },
+        {
+            "summary": "IT准备信息不足，当前无法确认可以按期入职。",
+            "readiness_decision": "incomplete",
+        },
+    ]
+
+    summary = AgentDecisionEngine(fake_llm, registry).summarize(manager_context)
+
+    assert summary.summary == "IT准备信息不足，当前无法确认可以按期入职。"
+    assert len(fake_llm.calls) == 2
+
+
 def test_manager_summary_rejects_invalid_readiness_decision_and_retries(
     fake_llm, registry, manager_context,
 ):
@@ -284,7 +529,7 @@ def test_manager_summary_rejects_invalid_readiness_decision_and_retries(
             "readiness_decision": "needs_more_work",
         },
         {
-            "summary": "A source remains unavailable.",
+            "summary": "仍有一项数据源不可用。",
             "readiness_decision": "incomplete",
         },
     ]
@@ -515,6 +760,7 @@ def test_worker_prompt_explicitly_requires_action_payload_field_exclusivity(
     assert "complete: action and result" in instruction
     assert "fail: action and failure_reason" in instruction
     assert "all other action-specific fields must be omitted" in instruction
+    assert "do not use key=value syntax" in instruction
 
 
 def test_worker_prompt_receives_current_agent_and_current_team_capabilities(
@@ -563,7 +809,11 @@ def _worker_context_for_collaboration_validation() -> WorkerContext:
         task={"goal": "核查 HR 入职材料", "required_capability": "hr.onboarding.read"},
         professional_skill_ids=["hr-onboarding-assistant"],
         safe_tool_catalog=[
-            {"name": "query_onboarding_employee", "description": "查询演示材料"},
+            {
+                "name": "query_onboarding_employee",
+                "description": "查询演示材料",
+                "required_capability": "hr.onboarding.read",
+            },
         ],
         current_team_capability_catalog=[
             {"agent_id": "VE-0001", "capabilities": ["team.coordinate"]},

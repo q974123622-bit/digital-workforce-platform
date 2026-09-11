@@ -1,0 +1,1 @@
+[{"table":"fills","index_name":"fills_ts_idx","valid":true,"scans":6200,"size_mb":3220},{"table":"positions","index_name":"positions_pkey","valid":true,"scans":51000,"size_mb":170}]

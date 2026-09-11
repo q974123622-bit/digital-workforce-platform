@@ -6,6 +6,67 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def test_strict_runtime_accepts_the_bounded_database_inspector_schema():
+    from app.services.agentteams_runtime_config import _tool_input_schema
+
+    schema = {
+        "type": "object",
+        "required": ["scenario_id", "signal", "filters", "limit"],
+        "properties": {
+            "scenario_id": {"type": "string", "enum": ["bulk_writes", "lock_contention"]},
+            "signal": {"type": "string", "enum": ["statements", "locks"]},
+            "filters": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "maxProperties": 4,
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        "additionalProperties": False,
+    }
+
+    assert _tool_input_schema(schema) == schema
+
+
+def test_database_runtime_shape_syncs_seeded_team_tools_and_bindings(db_session, tmp_path):
+    from app import models
+    from app.seed import sync_strict_runtime_state
+    from app.services.agentteams_runtime_config import load_strict_runtime_config
+
+    path = tmp_path / "database-runtime.json"
+    path.write_text(json.dumps(_database_runtime_config()), encoding="utf-8")
+    runtime = load_strict_runtime_config(path, environ={})
+
+    db_session.query(models.TeamMember).filter_by(team_id="TEAM-DB-BENCH").delete()
+    db_session.query(models.Team).filter_by(id="TEAM-DB-BENCH").delete()
+    db_session.commit()
+
+    sync_strict_runtime_state(db_session, runtime)
+
+    team = db_session.get(models.Team, "TEAM-DB-BENCH")
+    assert team is not None
+    assert team.leader_employee_id == "VE-0001"
+    assert {
+        member.employee_id: member.role
+        for member in db_session.query(models.TeamMember).filter_by(team_id="TEAM-DB-BENCH")
+    } == {
+        "VE-0001": "leader",
+        "DB-WRITE-01": "worker",
+        "DB-LOCK-01": "worker",
+        "DB-VACUUM-01": "worker",
+        "DB-INDEX-01": "worker",
+        "DB-QUERY-01": "worker",
+    }
+    assert db_session.query(models.EmployeePluginGrant).filter(
+        models.EmployeePluginGrant.employee_id.in_({
+            "VE-0001", "DB-WRITE-01", "DB-LOCK-01",
+            "DB-VACUUM-01", "DB-INDEX-01", "DB-QUERY-01",
+        }),
+        models.EmployeePluginGrant.plugin_id == "agentteams-database-inspector",
+        models.EmployeePluginGrant.decision_mode == "allow",
+    ).count() == 6
+
+
 def test_sync_strict_runtime_creates_team_and_exact_matrix_bindings_from_seed(db_session, tmp_path):
     """A strict startup must be self-contained, without a manual database edit."""
     from app import models
@@ -59,6 +120,10 @@ def test_strict_tool_sync_repairs_only_referenced_demo_plugins_and_grants(db_ses
         "agentteams-onboarding-employee",
         "agentteams-it-readiness",
         "agentteams-onboarding-evidence",
+        "agentteams-role-change-hr",
+        "agentteams-role-change-it-plan",
+        "agentteams-role-change-it-activate",
+        "agentteams-role-change-audit",
     }
     db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
@@ -111,9 +176,18 @@ def test_strict_tool_sync_repairs_only_referenced_demo_plugins_and_grants(db_ses
     }
     assert set(plugins) == demo_plugin_ids
     assert all(
-        plugin.runtime_meta["input_schema"] == _employee_ref_schema()
-        for plugin in plugins.values()
+        plugins[plugin_id].runtime_meta["input_schema"] == _employee_ref_schema()
+        for plugin_id in {
+            "agentteams-onboarding-employee", "agentteams-it-readiness", "agentteams-onboarding-evidence",
+        }
     )
+    assert all(
+        plugins[plugin_id].runtime_meta["input_schema"] == _role_change_schema()
+        for plugin_id in {
+            "agentteams-role-change-hr", "agentteams-role-change-it-plan", "agentteams-role-change-audit",
+        }
+    )
+    assert plugins["agentteams-role-change-it-activate"].runtime_meta["input_schema"] == _role_change_activation_schema()
     grants = db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
     ).all()
@@ -124,6 +198,10 @@ def test_strict_tool_sync_repairs_only_referenced_demo_plugins_and_grants(db_ses
         ("VE-0002", "agentteams-onboarding-employee", "execute", "allow"),
         ("VE-0003", "agentteams-it-readiness", "execute", "allow"),
         ("VE-0005", "agentteams-onboarding-evidence", "execute", "allow"),
+        ("VE-0002", "agentteams-role-change-hr", "execute", "allow"),
+        ("VE-0003", "agentteams-role-change-it-plan", "execute", "allow"),
+        ("VE-0003", "agentteams-role-change-it-activate", "execute", "allow"),
+        ("VE-0005", "agentteams-role-change-audit", "execute", "allow"),
     }
     assert db_session.get(models.Plugin, "unrelated-preserved-plugin") is not None
     assert db_session.query(models.EmployeePluginGrant).filter_by(
@@ -163,6 +241,10 @@ def test_strict_runtime_sync_rolls_back_tools_when_binding_phase_fails(
         "agentteams-onboarding-employee",
         "agentteams-it-readiness",
         "agentteams-onboarding-evidence",
+        "agentteams-role-change-hr",
+        "agentteams-role-change-it-plan",
+        "agentteams-role-change-it-activate",
+        "agentteams-role-change-audit",
     }
     db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
@@ -209,6 +291,10 @@ def test_strict_enabled_lifespan_syncs_bindings_before_starting_runner(db_sessio
         "agentteams-onboarding-employee",
         "agentteams-it-readiness",
         "agentteams-onboarding-evidence",
+        "agentteams-role-change-hr",
+        "agentteams-role-change-it-plan",
+        "agentteams-role-change-it-activate",
+        "agentteams-role-change-audit",
     }
     db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
@@ -229,8 +315,9 @@ def test_strict_enabled_lifespan_syncs_bindings_before_starting_runner(db_sessio
             for plugin in db_session.query(models.Plugin).filter(models.Plugin.id.in_(demo_plugin_ids))
         } == demo_plugin_ids
         assert db_session.query(models.EmployeePluginGrant).filter(
-            models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
-        ).count() == 3
+            models.EmployeePluginGrant.employee_id.in_(("VE-0001", "VE-0002", "VE-0003", "VE-0005")),
+            models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids),
+            ).count() == 7
         return NoopRunner()
 
     monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
@@ -263,11 +350,63 @@ def _runtime_config() -> dict:
         "team_id": "TEAM-ONBOARD",
         "platform": {"mxid": "@platform:test", "token": "platform-token"},
         "agents": {
-            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token", "allowed_skill_ids": ["agentteams-onboarding-readiness"], "safe_tool_catalog": []},
-            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token", "allowed_skill_ids": ["hr-onboarding-assistant"], "safe_tool_catalog": [{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "agentteams-onboarding-employee", "action": "execute", "required_capability": "hr.onboarding.read", "input_schema": _employee_ref_schema()}]},
-            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token", "allowed_skill_ids": ["it-service-assistant"], "safe_tool_catalog": [{"name": "agentteams.it.lookup_readiness", "plugin_id": "agentteams-it-readiness", "action": "execute", "required_capability": "it.readiness.read", "input_schema": _employee_ref_schema()}]},
-            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token", "allowed_skill_ids": ["audit-evidence-review"], "safe_tool_catalog": [{"name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "audit.evidence.read", "input_schema": _employee_ref_schema()}]},
+            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token", "allowed_skill_ids": ["agentteams-onboarding-readiness", "agentteams-role-change-readiness"], "safe_tool_catalog": []},
+            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token", "allowed_skill_ids": ["hr-onboarding-assistant", "hr-role-change-assistant"], "safe_tool_catalog": [
+                {"name": "agentteams.hr.lookup_onboarding", "plugin_id": "agentteams-onboarding-employee", "action": "execute", "required_capability": "hr.onboarding.read", "input_schema": _employee_ref_schema()},
+                {"name": "agentteams.hr.lookup_role_change", "plugin_id": "agentteams-role-change-hr", "action": "execute", "required_capability": "hr.role_change.read", "input_schema": _role_change_schema()},
+            ]},
+            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token", "allowed_skill_ids": ["it-service-assistant", "it-role-change-assistant"], "safe_tool_catalog": [
+                {"name": "agentteams.it.lookup_readiness", "plugin_id": "agentteams-it-readiness", "action": "execute", "required_capability": "it.readiness.read", "input_schema": _employee_ref_schema()},
+                {"name": "agentteams.it.lookup_permission_plan", "plugin_id": "agentteams-role-change-it-plan", "action": "execute", "required_capability": "it.permission.plan", "input_schema": _role_change_schema()},
+                {"name": "agentteams.it.activate_role_change", "plugin_id": "agentteams-role-change-it-activate", "action": "execute", "required_capability": "it.permission.activate", "input_schema": _role_change_activation_schema()},
+            ]},
+            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token", "allowed_skill_ids": ["audit-evidence-review", "audit-role-change-review"], "safe_tool_catalog": [
+                {"name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "audit.evidence.read", "input_schema": _employee_ref_schema()},
+                {"name": "agentteams.audit.review_role_change", "plugin_id": "agentteams-role-change-audit", "action": "execute", "required_capability": "audit.permission.review", "input_schema": _role_change_schema()},
+            ]},
         },
+        "team_catalog": {},
+    }
+
+
+def _database_runtime_config() -> dict:
+    from app.seed import load_seed
+
+    database_plugin = next(
+        row for row in load_seed()["plugins"]
+        if row["id"] == "agentteams-database-inspector"
+    )
+    schema = database_plugin["runtime_meta"]["input_schema"]
+    roles = {
+        "manager": ("VE-0001", ["agentteams-database-diagnosis"]),
+        "db_write": ("DB-WRITE-01", ["db-write-investigation"]),
+        "db_lock": ("DB-LOCK-01", ["db-lock-investigation"]),
+        "db_vacuum": ("DB-VACUUM-01", ["db-vacuum-investigation"]),
+        "db_index": ("DB-INDEX-01", ["db-index-investigation"]),
+        "db_query": ("DB-QUERY-01", ["db-query-investigation"]),
+    }
+    agents = {}
+    for role, (agent_id, skills) in roles.items():
+        tools = [{
+            "name": f"agentteams.{role}.inspect_database_signal",
+            "plugin_id": "agentteams-database-inspector",
+            "action": "read",
+            "required_capability": "agentteams-database-inspector",
+            "input_schema": schema,
+        }]
+        agents[role] = {
+            "agent_id": agent_id,
+            "mxid": f"@{role}:test",
+            "token": f"{role}-token",
+            "allowed_skill_ids": skills,
+            "safe_tool_catalog": tools,
+        }
+    return {
+        "matrix_url": "http://matrix.test",
+        "room_id": "!database:test",
+        "team_id": "TEAM-DB-BENCH",
+        "platform": {"mxid": "@platform:test", "token": "platform-token"},
+        "agents": agents,
         "team_catalog": {},
     }
 
@@ -278,6 +417,29 @@ def _employee_ref_schema() -> dict:
         "required": ["employee_ref"],
         "properties": {
             "employee_ref": {"type": "string", "const": "新员工A", "maxLength": 16},
+        },
+        "additionalProperties": False,
+    }
+
+
+def _role_change_schema() -> dict:
+    return {
+        "type": "object",
+        "required": ["employee_ref"],
+        "properties": {
+            "employee_ref": {"type": "string", "const": "张明", "maxLength": 16},
+        },
+        "additionalProperties": False,
+    }
+
+
+def _role_change_activation_schema() -> dict:
+    return {
+        "type": "object",
+        "required": ["employee_ref", "approval_ref"],
+        "properties": {
+            "employee_ref": {"type": "string", "const": "张明", "maxLength": 16},
+            "approval_ref": {"type": "string", "const": "AUD-RC-001", "maxLength": 32},
         },
         "additionalProperties": False,
     }

@@ -10,6 +10,7 @@ from .database import Base, SessionLocal, engine, ensure_schema_compatibility
 from .routers import (
     access,
     agentteams_collaboration,
+    agentteams_benchmarks,
     audit,
     chat,
     employees,
@@ -21,7 +22,12 @@ from .routers import (
     teams,
     workplace,
 )
-from .seed import seed_if_empty, sync_strict_runtime_state
+from .seed import (
+    seed_if_empty,
+    sync_collaboration_twin_plugin_grants,
+    sync_strict_runtime_state,
+    sync_team_plugin_grants,
+)
 from .services import config
 from .services.agentteams_runner import AgentTeamsCollaborationRunner
 from .services.agentteams_runtime_config import load_strict_runtime_config
@@ -32,7 +38,7 @@ runner_thread: threading.Thread | None = None
 
 
 def start_agentteams_runner(stop_event: threading.Event) -> threading.Thread:
-    """Start the opt-in Matrix runner without blocking the ASGI lifespan."""
+    """Start the opt-in runner with its configured transport factory."""
     runner = AgentTeamsCollaborationRunner()
 
     def run() -> None:
@@ -53,6 +59,12 @@ async def lifespan(_: FastAPI):
     ensure_schema_compatibility()
     if not config.skip_auto_seed():
         seed_if_empty()
+        db = SessionLocal()
+        try:
+            sync_team_plugin_grants(db)
+            sync_collaboration_twin_plugin_grants(db)
+        finally:
+            db.close()
     if config.agentteams_collaboration_enabled():
         if config.agentteams_mode() == "agentteams_strict":
             try:
@@ -80,7 +92,12 @@ app = FastAPI(title="数字员工平台 Demo API", version="0.1.0", lifespan=lif
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -150,3 +167,4 @@ app.include_router(workplace.skills_router, prefix=API_PREFIX)
 app.include_router(workplace.conversations_router, prefix=API_PREFIX)
 app.include_router(workplace.workflow_router, prefix=API_PREFIX)
 app.include_router(agentteams_collaboration.router, prefix=API_PREFIX)
+app.include_router(agentteams_benchmarks.router, prefix=API_PREFIX)

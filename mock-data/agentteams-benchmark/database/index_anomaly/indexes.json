@@ -1,0 +1,1 @@
+[{"table":"customers","index_name":"customers_tenant_email_cover_idx","valid":false,"scans":0,"size_mb":510},{"table":"customers","index_name":"customers_pkey","valid":true,"scans":8400,"size_mb":220}]
