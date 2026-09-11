@@ -46,7 +46,7 @@ rebuild_dsh_profile() {
     -f "$source_root/deploy/offline/rebuild/Dockerfile.dsh-profile-hotfix" \
     -t dwp-dsh:rc6 "$source_root"
   docker compose up -d --no-deps --force-recreate \
-    harness-ai-general harness-ai-investment harness-dt-e10281 harness-dt-e20999
+    harness-ai-general harness-ai-investment harness-ai-research harness-ai-fund harness-ai-xyzq harness-dt-e10281 harness-dt-e20999
 }
 
 case "$component" in

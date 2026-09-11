@@ -291,6 +291,23 @@ def mark_ready(db: Session, employee_id: str, error: str = "") -> models.AgentRu
     return row
 
 
+def terminate_task(employee_id: str) -> None:
+    """终止员工容器内正在运行的 dsh 进程（任务取消/超时回收时调用）。
+
+    只杀 dsh 进程、不停止容器，避免影响后续任务的容器复用。
+    容器或 Docker Engine 不可达时静默降级，不打断取消流程。
+    """
+    name = container_name(employee_id)
+    try:
+        exec_in_container(
+            name,
+            ["sh", "-c", "pkill -9 -f '/usr/local/bin/dsh' 2>/dev/null || true"],
+            timeout=15,
+        )
+    except RuntimeError:
+        return
+
+
 def main() -> None:
     if len(sys.argv) != 2 or sys.argv[1] != "ensure-all":
         raise SystemExit("usage: python -m app.services.runtime_manager ensure-all")

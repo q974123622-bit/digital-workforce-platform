@@ -7,6 +7,7 @@
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -38,6 +39,28 @@ EMBED_BASE_URL = "DWP_EMBED_BASE_URL"
 EMBED_API_KEY = "DWP_EMBED_API_KEY"
 EMBED_MODEL = "DWP_EMBED_MODEL"
 EMBED_DIMENSIONS = "DWP_EMBED_DIMENSIONS"
+
+# Harness 单轮执行超时（秒）。委派链路会拉长岗位数字员工的执行时间（多轮知识检索），
+# 120 秒在真实模型下不够，默认放宽到 300/360 秒，并允许通过环境变量覆盖。
+HARNESS_TIMEOUT_ROLE = "DWP_HARNESS_TIMEOUT_ROLE"
+HARNESS_TIMEOUT_TWIN = "DWP_HARNESS_TIMEOUT_TWIN"
+
+
+def harness_timeout_role() -> int:
+    """岗位数字员工（role_employee）的 Harness 执行超时，默认 300 秒。"""
+    try:
+        return max(60, int(os.environ.get(HARNESS_TIMEOUT_ROLE) or "300"))
+    except (TypeError, ValueError):
+        return 300
+
+
+def harness_timeout_twin() -> int:
+    """数字分身（human_twin）的 Harness 执行超时，默认 360 秒（需含委派等待）。"""
+    try:
+        return max(60, int(os.environ.get(HARNESS_TIMEOUT_TWIN) or "360"))
+    except (TypeError, ValueError):
+        return 360
+
 
 # AgentTeams 接入（Matrix 通道）
 AGENTTEAMS_MATRIX_URL = "AGENTTEAMS_MATRIX_URL"
@@ -174,3 +197,190 @@ def embedding_dimensions() -> int:
         return int(os.environ.get(EMBED_DIMENSIONS) or "1024")
     except (TypeError, ValueError):
         return 1024
+
+
+# 企业微信（智能机器人长连接）接入配置。
+# 长连接模式下由 backend 作为 WebSocket 客户端主动连接企微网关，
+# 无公网回调地址、无 Token/AESKey 加解密。bot_secret 属敏感凭据，
+# 优先从环境变量读取，其次从 secrets 文件读取（不落日志）。
+WECOM_BOT_ENABLED = "DWP_WECOM_BOT_ENABLED"
+WECOM_BOT_ID = "DWP_WECOM_BOT_ID"
+WECOM_BOT_SECRET = "DWP_WECOM_BOT_SECRET"
+WECOM_BOT_SECRET_FILE = "DWP_WECOM_BOT_SECRET_FILE"
+WECOM_WS_URL = "DWP_WECOM_WS_URL"
+WECOM_DRY_RUN = "DWP_WECOM_DRY_RUN"
+WECOM_USER_BINDINGS = "DWP_WECOM_USER_BINDINGS"
+WECOM_BOTS = "DWP_WECOM_BOTS"
+
+
+@dataclass(frozen=True)
+class WeComBotSpec:
+    """单个企微智能机器人的承载声明。
+
+    mode:
+      - ``"fixed"``：机器人固定承载某个岗位员工（``employee_no`` 必填）；
+      - ``"twin"``：机器人按发起人企微 userid 转接到其本人数字分身。
+
+    alias 用于执行会话键与日志标识（ASCII 短名，如 general/investment/research/twin）；
+    secret 为敏感凭据，不得写入日志或文档。
+    """
+
+    bot_id: str
+    secret: str
+    name: str
+    alias: str
+    mode: str = "twin"
+    employee_no: str | None = None
+
+
+def wecom_bot_enabled() -> bool:
+    """企微机器人长连接总开关；默认关闭，避免未配置时误连。"""
+    return os.environ.get(WECOM_BOT_ENABLED, "0") == "1"
+
+
+def wecom_bot_id() -> str:
+    return (os.environ.get(WECOM_BOT_ID) or "").strip()
+
+
+def wecom_bot_secret() -> str:
+    """bot_secret：环境变量优先，否则读 secrets 文件（不落日志）。"""
+    value = (os.environ.get(WECOM_BOT_SECRET) or "").strip()
+    if value:
+        return value
+    path = Path(os.environ.get(WECOM_BOT_SECRET_FILE, "/run/secrets/wecom_bot_secret"))
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def wecom_ws_url() -> str:
+    """企微长连接网关地址，默认官方 wss 网关。"""
+    return (os.environ.get(WECOM_WS_URL) or "wss://openws.work.weixin.qq.com").strip()
+
+
+def wecom_dry_run() -> bool:
+    """dry-run 开关：默认开启（"1"），只打印将要发送的内容，不真发消息。"""
+    return os.environ.get(WECOM_DRY_RUN, "1") != "0"
+
+
+def wecom_user_bindings() -> dict[str, str]:
+    """企微机器人体系 staff ID -> 员工工号 全局映射（JSON）。"""
+    raw = os.environ.get(WECOM_USER_BINDINGS) or "{}"
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(key): str(value) for key, value in parsed.items()}
+
+
+def wecom_bots() -> list[WeComBotSpec]:
+    """解析 ``DWP_WECOM_BOTS``（JSON 数组）得到机器人规格列表。
+
+    向后兼容：未配置 ``DWP_WECOM_BOTS`` 时回退到旧单 bot 变量
+    （``DWP_WECOM_BOT_ID`` + ``DWP_WECOM_BOT_SECRET``），其语义等价于一个
+    ``mode="twin"`` 的机器人，保证存量部署与既有测试不破。
+    """
+    raw = (os.environ.get(WECOM_BOTS) or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, list):
+            bots: list[WeComBotSpec] = []
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                bot_id = str(item.get("bot_id") or "").strip()
+                secret = str(item.get("secret") or "").strip()
+                if not bot_id or not secret:
+                    continue
+                mode = str(item.get("mode") or "twin").strip().lower()
+                if mode not in ("fixed", "twin"):
+                    mode = "twin"
+                bots.append(
+                    WeComBotSpec(
+                        bot_id=bot_id,
+                        secret=secret,
+                        name=str(item.get("name") or bot_id),
+                        alias=str(item.get("alias") or bot_id),
+                        mode=mode,
+                        employee_no=(str(item.get("employee_no") or "").strip()) or None,
+                    )
+                )
+            if bots:
+                return bots
+    bot_id = wecom_bot_id()
+    secret = wecom_bot_secret()
+    if bot_id and secret:
+        return [WeComBotSpec(bot_id=bot_id, secret=secret, name="数字分身", alias="twin", mode="twin")]
+    return []
+
+
+def wecom_bot_configured() -> bool:
+    """长连接所需的全部配置是否齐备（任一机器人凭据齐全即 True）。"""
+    return bool(wecom_bots())
+
+
+# 盈米 AI 开放平台 External MCP 接入配置。
+# api_key 属敏感凭据，优先从环境变量读取，其次从 secrets 文件读取（不落日志）。
+QIEMAN_MCP_URL = "DWP_QIEMAN_MCP_URL"
+QIEMAN_MCP_API_KEY = "DWP_QIEMAN_MCP_API_KEY"
+QIEMAN_MCP_API_KEY_FILE = "DWP_QIEMAN_MCP_API_KEY_FILE"
+QIEMAN_MCP_TIMEOUT = "DWP_QIEMAN_MCP_TIMEOUT"
+
+
+def qieman_mcp_url() -> str:
+    """盈米 MCP Streamable HTTP 端点地址（如 https://stargate.yingmi.com/mcp/v2）。"""
+    return (os.environ.get(QIEMAN_MCP_URL) or "").strip()
+
+
+def qieman_mcp_api_key() -> str:
+    """盈米 MCP api_key：环境变量优先，否则读 secrets 文件（不落日志）。"""
+    value = (os.environ.get(QIEMAN_MCP_API_KEY) or "").strip()
+    if value:
+        return value
+    path = Path(os.environ.get(QIEMAN_MCP_API_KEY_FILE, "/run/secrets/qieman_api_key"))
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def qieman_mcp_timeout() -> float:
+    """盈米 MCP 单次请求超时（秒），默认 20 秒。"""
+    try:
+        return max(5.0, float(os.environ.get(QIEMAN_MCP_TIMEOUT) or "20"))
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def qieman_mcp_configured() -> bool:
+    """盈米 MCP 接入是否配置齐备（URL 与 api_key 均非空）。"""
+    return bool(qieman_mcp_url() and qieman_mcp_api_key())
+
+
+# ---- 兴业证券 MCP（xyzq-mcp-server）----
+XYZQ_MCP_URL = "DWP_XYZQ_MCP_URL"
+XYZQ_MCP_TIMEOUT = "DWP_XYZQ_MCP_TIMEOUT"
+
+
+def xyzq_mcp_url() -> str:
+    """兴业证券 MCP Streamable HTTP 端点地址（如 https://developer.xyzq.cn/agent/a2a/mcp）。"""
+    return (os.environ.get(XYZQ_MCP_URL) or "").strip()
+
+
+def xyzq_mcp_timeout() -> float:
+    """兴业证券 MCP 单次请求超时（秒），默认 20 秒。"""
+    try:
+        return max(5.0, float(os.environ.get(XYZQ_MCP_TIMEOUT) or "20"))
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def xyzq_mcp_configured() -> bool:
+    """兴业证券 MCP 接入是否配置齐备（仅需 URL，匿名无 api_key）。"""
+    return bool(xyzq_mcp_url())

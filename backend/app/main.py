@@ -36,8 +36,12 @@ async def lifespan(_: FastAPI):
         from .services import memory_worker
 
         memory_task = asyncio.create_task(memory_worker.run(memory_stop))
+    # 企微机器人长连接：可插拔，未启用时自动空操作（见 wecom_bot.managed_lifespan）。
+    from .services import wecom_bot
+
     try:
-        yield
+        async with wecom_bot.managed_lifespan():
+            yield
     finally:
         if memory_task is not None:
             memory_stop.set()

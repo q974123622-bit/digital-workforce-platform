@@ -33,8 +33,6 @@ class DigitalEmployee(Base):
     internet: Mapped[str] = mapped_column(String, default="deny")
     max_data_level: Mapped[str] = mapped_column(String, default="L1")
     allowed_domains: Mapped[list] = mapped_column(JSON, default=list)
-
-
 class Plugin(Base):
     __tablename__ = "plugin"
 

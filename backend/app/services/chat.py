@@ -64,6 +64,10 @@ def knowledge_display_name(db: Session, knowledge_base_id: str) -> str:
     return knowledge_base.name if knowledge_base is not None and knowledge_base.name else knowledge_base_id
 
 
+def retrieval_source(data: object) -> str:
+    if not isinstance(data, dict) or not data.get("source"):
+        return "demo"
+    return str(data["source"])
 @dataclass
 class ToolCard:
     plugin_id: str
@@ -207,6 +211,7 @@ class ChatOrchestrator:
             "plugin_id": card.plugin_id,
             "name": card.name,
             "decision": card.decision,
+            "source": card.source,
             "policy_id": card.policy_id,
             "reason": card.reason,
         }
@@ -247,22 +252,27 @@ class ChatOrchestrator:
             )
             card = ToolCard(
                 plugin_id=f"knowledge:{kb_id}",
-                name=kb_id,
+                name=knowledge_display_name(db, kb_id),
                 decision="allow",
+                source=retrieval_source(result.get("data")),
                 policy_id=result.get("policy_id"),
             )
-            return card, f"工具结果（source=demo）：{json.dumps(result.get('data', {}), ensure_ascii=False)}"
+            return (
+                card,
+                f"工具结果（知识库：{card.name}，source={card.source}）："
+                f"{json.dumps(result.get('data', {}), ensure_ascii=False)}",
+            )
         except HTTPException as exc:
             if exc.status_code == 403:
                 detail = exc.detail if isinstance(exc.detail, dict) else {}
                 card = ToolCard(
                     plugin_id=f"knowledge:{kb_id}",
-                    name=kb_id,
+                    name=knowledge_display_name(db, kb_id),
                     decision="deny",
                     policy_id=detail.get("policy_id"),
                     reason=detail.get("reason"),
                 )
-                return card, "POLICY_DENIED（source=demo）：当前身份无权访问该知识库，请如实告知用户。"
+                return card, "POLICY_DENIED：当前身份无权访问该知识库，请如实告知用户。"
             raise
 
     def _system_prompt(self, db: Session, subject, requester_human_no: str | None = None) -> str:
@@ -276,7 +286,7 @@ class ChatOrchestrator:
         persona = subject.role_prompt or "你是数字员工平台的演示助手。"
         prompt = (
             f"【人设】{persona}\n"
-            "【身份】所有内容均为虚构演示数据（source=demo）。"
+            "【身份】知识检索结果以工具返回的 source 标签为准；internal 表示真实知识库，demo 表示演示数据。"
             f"当前数字员工：{subject.employee_id}（类型 {subject.employee_type}，身份 {role_label}，"
             f"部门 {subject.department}，Owner {subject.owner_id}）。"
             f"【知识库】{kb_access}"

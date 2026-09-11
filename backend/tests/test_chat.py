@@ -1,6 +1,6 @@
 """Sprint 4 Chat + LLM Provider 测试（FakeLLM，不依赖真实 DeepSeek）。"""
 
-from app.services.chat import ChatOrchestrator
+from app.services.chat import ChatOrchestrator, ChatResult, ToolCard
 from app.services.llm import LLMProvider, LLMResponse, LLMUnavailableError, ToolCall
 
 
@@ -33,8 +33,8 @@ def _tool_script(kb_id, query, final_answer):
 
 
 def test_chat_orchestrator_tool_allow_path(db_session):
-    """场景 A：AI员工平台问内部制度 → 工具经 Gateway Allow → 正常回答。"""
-    fake = FakeLLM(_tool_script("KB-INTERNAL", "内部制度", "根据内部制度库，入职流程如下…"))
+    """场景 A：AI员工平台问 IT 服务 → 工具经 Gateway Allow → 正常回答。"""
+    fake = FakeLLM(_tool_script("KB-IT-SERVICE", "VPN 怎么连", "根据 IT 服务知识库，VPN 连接流程如下…"))
     orchestrator = ChatOrchestrator(fake)
     result = orchestrator.handle_message(
         db_session,
@@ -42,13 +42,79 @@ def test_chat_orchestrator_tool_allow_path(db_session):
         message="查询一下内部制度。",
         session_id=None,
     )
-    assert result.message == "根据内部制度库，入职流程如下…"
+    assert result.message == "根据 IT 服务知识库，VPN 连接流程如下…"
     assert len(result.tool_cards) == 1
     assert result.tool_cards[0].decision == "allow"
+    assert result.tool_cards[0].name == "IT 服务知识库"
+    assert result.tool_cards[0].source == "demo"
     assert result.policy_denied is None
-    # 工具结果确实来自 Gateway（虚构内容，带 source=demo 标签）
+    # 工具结果确实来自 Gateway（虚构内容，带知识库名称和 source=demo 标签）
     tool_msgs = [m for m in fake.calls[1] if m["role"] == "tool"]
-    assert any("source=demo" in m["content"] for m in tool_msgs)
+    assert any("知识库：IT 服务知识库" in m["content"] and "source=demo" in m["content"] for m in tool_msgs)
+
+
+def test_chat_orchestrator_labels_internal_knowledge_base(db_session, monkeypatch):
+    """真实知识引擎检索时，卡片和工具消息必须显示真实库名与 source=internal。"""
+    monkeypatch.setenv("DWP_KB_MODE", "internal")
+
+    def fake_search_knowledge(*_args, **_kwargs):
+        return {
+            "ok": True,
+            "decision": "allow",
+            "policy_id": "POLICY-001",
+            "data": {
+                "source": "internal",
+                "knowledge_base_id": "KB-IT-SERVICE",
+                "query": "VPN 怎么连",
+                "hits": [{"title": "VPN 接入指引", "snippet": "使用企业 VPN 客户端连接。"}],
+            },
+        }
+
+    monkeypatch.setattr("app.services.chat.search_knowledge", fake_search_knowledge)
+    fake = FakeLLM(_tool_script("KB-IT-SERVICE", "VPN 怎么连", "已根据真实知识库确认 VPN 连接方式。"))
+    result = ChatOrchestrator(fake).handle_message(
+        db_session,
+        employee_no="AI-GENERAL",
+        message="查询一下 VPN 连接方式。",
+        session_id=None,
+    )
+    assert result.tool_cards[0].name == "IT 服务知识库"
+    assert result.tool_cards[0].source == "internal"
+    tool_message = next(m for m in fake.calls[1] if m["role"] == "tool")["content"]
+    assert "知识库：IT 服务知识库" in tool_message
+    assert "source=internal" in tool_message
+    assert "source=demo" not in tool_message
+    assert "Authorization" not in tool_message
+    assert "DWP_INTERNAL_KB_" not in tool_message
+
+
+def test_chat_endpoint_returns_internal_source_label(client, monkeypatch):
+    """Chat API 必须保留真实库名称和 source 字段，供前端渲染来源标签。"""
+    result = ChatResult(
+        session_id="S-SOURCE",
+        trace_id="T-SOURCE",
+        message="已确认。",
+        tool_cards=[
+            ToolCard(
+                plugin_id="knowledge:KB-IT-SERVICE",
+                name="IT 服务知识库",
+                decision="allow",
+                source="internal",
+                policy_id="POLICY-001",
+            )
+        ],
+    )
+    monkeypatch.setattr("app.routers.employees.run_agent", lambda *_args, **_kwargs: result)
+    response = client.post("/api/v1/employees/AI-GENERAL/chat", json={"message": "查询 VPN。"})
+    assert response.status_code == 200
+    assert response.json()["tool_cards"][0] == {
+        "plugin_id": "knowledge:KB-IT-SERVICE",
+        "name": "IT 服务知识库",
+        "decision": "allow",
+        "source": "internal",
+        "policy_id": "POLICY-001",
+        "reason": None,
+    }
 
 
 def test_chat_endpoint_intern_deny(db_session):
@@ -101,7 +167,7 @@ def test_system_prompt_hides_inaccessible_kb_names(db_session):
         db_session, employee_no="DT-E20999", message="你好", session_id=None,
     )
     system_prompt = fake.calls[0][0]["content"]
-    assert "公共知识（L1）" in system_prompt
+    assert "公共知识（L1）" not in system_prompt
     assert "示例客户敏感信息库" not in system_prompt
     assert "IT 服务知识库" not in system_prompt
 

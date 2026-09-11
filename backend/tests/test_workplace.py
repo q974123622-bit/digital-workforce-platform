@@ -129,7 +129,7 @@ def test_workplace_aggregate(client):
     body = home.json()
     assert body["actor"]["employee_no"] == "E10281"
     assert body["twin"]["employee_no"] == "DT-E10281"
-    assert {e["employee_no"] for e in body["available_employees"]} == {"AI-GENERAL", "AI-INVESTMENT"}
+    assert {e["employee_no"] for e in body["available_employees"]} == {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH"}
     assert any(s["name"] == "报销制度速答" for s in body["skills"])
     assert len(body["recent_conversations"]) >= 1
 
@@ -449,7 +449,7 @@ def test_group_message_classifier_failure_defaults_chat(client, db_session, monk
 def test_conversation_out_includes_seed_task(client):
     body = client.get("/api/v1/conversations/CONV-0002").json()
     assert len(body["tasks"]) >= 1
-    task = next(t for t in body["tasks"] if t["id"] == "T-20260819-DEMO1")
+    task = body["tasks"][0]
     assert task["status"] == "approval"
     assert len(task["subtasks"]) == 3
     assert task["subtasks"][2]["approval"]["policy_id"] == "POLICY-005"

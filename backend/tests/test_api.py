@@ -6,10 +6,10 @@ def test_health(client):
 
 def test_seed_counts(client):
     employees = client.get("/api/v1/employees").json()
-    assert len(employees) == 9
-    assert {employee["employee_no"] for employee in employees} >= {"AI-GENERAL", "AI-INVESTMENT"}
+    assert len(employees) == 10
+    assert {employee["employee_no"] for employee in employees} >= {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH"}
     assert len([e for e in employees if e["type"] == "twin"]) == 2
-    assert len([e for e in employees if e["type"] == "virtual"]) == 6
+    assert len([e for e in employees if e["type"] == "virtual"]) == 7
     assert len([e for e in employees if e["type"] == "rpa"]) == 1
     assert len(client.get("/api/v1/plugins").json()) == 12
     assert len(client.get("/api/v1/policies").json()) == 9

@@ -58,8 +58,8 @@ def test_mcp_catalog_allows_one_delegate_for_twin(client, monkeypatch):
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
     )
     names = [tool["name"] for tool in response.json()["result"]["tools"]]
-    # 张三分身没有直接知识库；可进行一次受控委派，并可保存显式长期记忆。
-    assert names == ["ask_digital_employee", "save_memory"]
+    # 张三分身没有直接知识库；可进行一次受控委派、保存显式长期记忆，并可显式加载已授权技能。
+    assert names == ["ask_digital_employee", "save_memory", "load_skill"]
 
 
 def test_role_employee_cannot_delegate(client, monkeypatch):
@@ -105,3 +105,82 @@ def test_tool_body_cannot_override_token_identity(client, monkeypatch):
         json={"employee_id": "AI-INVESTMENT", "knowledge_base_id": "KB-IT-SERVICE", "query": "VPN"},
     )
     assert response.status_code == 422
+
+
+class _FakeQiemanAdapter:
+    def configured(self):
+        return True
+
+    def is_authorized(self, db, employee_id):
+        return True
+
+    def prefixed_tools(self, force=False):
+        return [{"name": "qieman__SearchFunds", "description": "搜索基金", "inputSchema": {"type": "object"}}]
+
+    def call_tool(self, name, arguments):
+        return {"content": [{"type": "text", "text": f"called:{name}"}], "isError": False}
+
+
+def test_mcp_catalog_merges_and_forwards_qieman_tools(client, monkeypatch):
+    monkeypatch.setenv("DWP_HARNESS_TOOL_SIGNING_SECRET", "unit-test-secret")
+    from app.routers import internal as internal_mod
+
+    monkeypatch.setattr(internal_mod, "_qieman_adapter", _FakeQiemanAdapter())
+    token = issue_token(employee_id="AI-GENERAL", requester_human_no="E10281", trace_id="T-QIEMAN", depth=0)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # tools/list 动态合并盈米工具，且保留内部工具
+    response = client.post(
+        "/internal/agent-tools/mcp", headers=headers,
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+    )
+    names = [tool["name"] for tool in response.json()["result"]["tools"]]
+    assert "qieman__SearchFunds" in names
+    assert "search_knowledge" in names
+
+    # tools/call 按前缀转发到盈米
+    response2 = client.post(
+        "/internal/agent-tools/mcp", headers=headers,
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+              "params": {"name": "qieman__SearchFunds", "arguments": {"keyword": "x"}}},
+    )
+    assert response2.json()["result"]["content"][0]["text"] == "called:qieman__SearchFunds"
+
+
+def test_load_skill_returns_full_content_and_audits(client, monkeypatch, db_session):
+    monkeypatch.setenv("DWP_HARNESS_TOOL_SIGNING_SECRET", "unit-test-secret")
+    from app import models
+
+    token = issue_token(employee_id="DT-E10281", requester_human_no="E10281", trace_id="T-SKILL", depth=0)
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.post(
+        "/internal/agent-tools/mcp", headers=headers,
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "load_skill", "arguments": {"skill_name": "报销制度速答"}}},
+    )
+    assert response.status_code == 200
+    import json as _json
+    payload = _json.loads(response.json()["result"]["content"][0]["text"])
+    assert payload["name"] == "报销制度速答"
+    assert "600" in payload["content"]  # 返回完整内容，而非截断
+    audits = db_session.query(models.AuditEvent).filter(
+        models.AuditEvent.trace_id == "T-SKILL",
+        models.AuditEvent.plugin_id == "SKILL-SK-0001",
+        models.AuditEvent.action == "execute",
+    ).all()
+    assert len(audits) == 1
+
+
+def test_load_skill_denies_unauthorized_employee(client, monkeypatch):
+    monkeypatch.setenv("DWP_HARNESS_TOOL_SIGNING_SECRET", "unit-test-secret")
+    # AI-GENERAL 无任何 skill 授权
+    token = issue_token(employee_id="AI-GENERAL", requester_human_no="E10281", trace_id="T-SKILL-DENY", depth=0)
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.post(
+        "/internal/agent-tools/mcp", headers=headers,
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "load_skill", "arguments": {"skill_name": "报销制度速答"}}},
+    )
+    result = response.json()["result"]
+    assert result["isError"] is True
+    assert "无权" in result["content"][0]["text"]

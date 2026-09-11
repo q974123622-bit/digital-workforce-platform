@@ -1,4 +1,24 @@
 # Knowledge-only Agent profile. Platform tools are supplied over authenticated MCP.
+#
+# Model routing: the platform's model gateway exposes a qwen model through the
+# OpenAI-compatible DeepSeek route. The DSH base bundle hard-codes
+# `deepseek-v4-flash` as the default, so override it from the environment and pin
+# the only reasoning effort the gateway accepts (its legal set is
+# xhigh/medium/low; DSH only emits off/low/high/max, so `low` is the intersection).
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official
+    model: !!js process.env.DEEPSEEK_MODEL
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    reasoningEffort: low
+    # dsh 默认 maxTokens=256000，几乎占满模型 262144 上下文窗口，任何超过
+    # ~6K tokens 的 prompt 都会触发 CONTEXT_WINDOW_EXCEEDED；收敛为 16K 输出。
+    maxTokens: 16384
+    models:
+      - id: !!js process.env.DEEPSEEK_MODEL
 - id: tool-bash
   disabled: true
 - id: tool-pwsh

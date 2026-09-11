@@ -11,7 +11,7 @@
 - 堡垒机能够访问配置的模型网关
 - 针对当前目标堡垒机默认 Web 端口为 `18080`，可通过 `DWP_HTTP_PORT` 修改
 
-> 本包需要挂载 `/var/run/docker.sock`，因为后端必须管理四个独立 Harness 实例。请只部署在受控内网服务器，勿向互联网暴露。
+> 本包需要挂载 `/var/run/docker.sock`，因为后端必须管理五个独立 Harness 实例。请只部署在受控内网服务器，勿向互联网暴露。
 
 ## 包含的服务
 
@@ -21,10 +21,11 @@
 | 后端 | Compose backend | 登录、会话、SSE、策略、审计、工具网关 |
 | AI员工平台 | `dwp-harness-ai-general` | 综合知识问答 |
 | 投资分析AI员工 | `dwp-harness-ai-investment` | 证券与投行知识问答 |
+| 研究分析AI员工 | `dwp-harness-ai-research` | 证券/投行研报资料检索与分析 |
 | 张三数字分身 | `dwp-harness-dt-e10281` | 无直接知识库，必要时委派岗位员工 |
 | 陈晓萌数字分身 | `dwp-harness-dt-e20999` | 个人分身问答与受限委派 |
 
-当前不包含 AgentTeams、OpenSpec、企业微信正式接入和真实内部知识凭据。知识库默认是 Mock；改为 Internal 时失败会明确报错，不会静默回退。
+当前不包含 AgentTeams、OpenSpec 和真实内部知识凭据；企业微信智能机器人接入默认关闭，配置与联调见 `WECOM-INTEGRATION.md`。知识库默认是 Mock；改为 Internal 时失败会明确报错，不会静默回退。
 
 会话执行、清空恢复、SSE 重连与 mem0 同步的当前行为见 `source/docs/STABILITY_AND_RUNTIME_RECOVERY.md`。当前团队后端固定为 `DWP_TEAM_BACKEND=builtin`；旧 AgentTeams 配置不会进入运行路径。
 

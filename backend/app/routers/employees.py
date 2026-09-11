@@ -308,7 +308,7 @@ def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(g
     """一对一问答（Sprint 4）：User → Employee → LLM → Policy → Gateway → Adapter → LLM → Answer。"""
     try:
         employee = db.get(models.DigitalEmployee, employee_no)
-        if employee and employee_no in {"AI-GENERAL", "AI-INVESTMENT", "DT-E10281", "DT-E20999"} and (
+        if employee and employee_no in {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ", "DT-E10281", "DT-E20999"} and (
             config.get("DWP_AGENT_EXECUTION_MODE", "harness") or "harness"
         ) == "harness":
             result = run_agent(
@@ -329,6 +329,7 @@ def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(g
             "plugin_id": c.plugin_id,
             "name": c.name,
             "decision": c.decision,
+            "source": c.source,
             "policy_id": c.policy_id,
             "reason": c.reason,
         }
@@ -340,6 +341,7 @@ def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(g
             "plugin_id": result.policy_denied.plugin_id,
             "name": result.policy_denied.name,
             "decision": "deny",
+            "source": result.policy_denied.source,
             "policy_id": result.policy_denied.policy_id,
             "reason": result.policy_denied.reason,
         }

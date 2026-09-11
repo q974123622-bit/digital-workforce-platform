@@ -1,6 +1,10 @@
 """内部接口（服务间，不暴露前端）：Policy / Gateway / Harness tools。"""
 
+import asyncio
+import logging
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -12,13 +16,19 @@ from ..database import get_db
 from ..services.gateway import invoke_plugin, search_knowledge, write_audit
 from ..services.harness_token import HarnessClaims, verify_token
 from ..services.identity import resolve_identity
+from ..services.knowledge_registry import accessible_knowledge_bases
 from ..services.policy import DECISION_ALLOW, DECISION_DENY, ResourceRef, evaluate
 from ..services.runtime_adapter import DockerHarnessRuntimeAdapter, RuntimeResult
 from ..services.sandbox_manager import SandboxManager
 from ..services.sandbox_policy import from_identity
 from ..services import execution_events
+from ..services.external_mcp_adapter import qieman_adapter, xyzq_adapter
+from ..services.external_mcp_client import ExternalMcpError
 
 router = APIRouter(prefix="/internal", tags=["internal"])
+
+# External MCP 适配器注册表（进程级单例，缓存工具清单）。
+_EXTERNAL_ADAPTERS = (qieman_adapter, xyzq_adapter)
 
 
 class AgentKnowledgeToolIn(BaseModel):
@@ -139,6 +149,70 @@ def _agent_search(
     }
 
 
+def _authorized_skills(db: Session, claims: HarnessClaims) -> list[dict]:
+    """当前员工已绑定且启用的 Skill 路由清单（id/name/description）。"""
+    skills: list[dict] = []
+    for skill in db.query(models.Skill).filter(models.Skill.status == "active").all():
+        plugin_id = f"SKILL-{skill.id}"
+        bound = db.scalar(select(models.AgentPluginBinding).where(
+            models.AgentPluginBinding.plugin_id == plugin_id,
+            models.AgentPluginBinding.target_agent_id == claims.employee_id,
+            models.AgentPluginBinding.admin_enabled.is_(True),
+            models.AgentPluginBinding.employee_enabled.is_(True),
+            models.AgentPluginBinding.decision_mode == "allow",
+        ))
+        if bound is not None:
+            skills.append({"id": skill.id, "name": skill.name, "description": skill.description})
+    return skills
+
+
+def _load_skill(db: Session, claims: HarnessClaims, skill_name: str) -> dict:
+    """按名称加载当前员工已授权的 Skill 完整内容，并写入事件与审计轨迹。"""
+    skill = db.scalar(select(models.Skill).where(
+        models.Skill.name == skill_name,
+        models.Skill.status == "active",
+    ))
+    if skill is None:
+        raise HTTPException(status_code=404, detail="技能不存在")
+    plugin_id = f"SKILL-{skill.id}"
+    bound = db.scalar(select(models.AgentPluginBinding).where(
+        models.AgentPluginBinding.plugin_id == plugin_id,
+        models.AgentPluginBinding.target_agent_id == claims.employee_id,
+        models.AgentPluginBinding.admin_enabled.is_(True),
+        models.AgentPluginBinding.employee_enabled.is_(True),
+        models.AgentPluginBinding.decision_mode == "allow",
+    ))
+    if bound is None:
+        raise HTTPException(status_code=403, detail="当前员工无权使用该技能")
+    execution = execution_events.execution_for_trace(db, claims.trace_id)
+    if execution is not None:
+        execution_events.emit(
+            db, execution.id, event_type="skill_started", stage="skill",
+            status="running", actor_employee_id=claims.employee_id,
+            title=f"正在加载技能 {skill.name}", detail="正在读取技能方法论并准备按其执行",
+        )
+    write_audit(
+        db, trace_id=claims.trace_id, employee_id=claims.employee_id,
+        plugin_id=plugin_id, action="execute", decision="allow",
+        reason=f"加载技能 {skill.name}",
+        result_summary=__import__("json").dumps(
+            {"source": "skill", "tool": skill.name, "type": "skill"}, ensure_ascii=False,
+        ),
+    )
+    if execution is not None:
+        execution_events.emit(
+            db, execution.id, event_type="skill_completed", stage="skill",
+            status="running", actor_employee_id=claims.employee_id,
+            title=f"技能 {skill.name} 加载完成", detail="技能方法论已就绪",
+        )
+    return {
+        "skill_id": skill.id,
+        "name": skill.name,
+        "description": skill.description,
+        "content": skill.content,
+    }
+
+
 def _agent_delegate(
     db: Session, claims: HarnessClaims, payload: AgentDelegateToolIn,
 ) -> dict:
@@ -242,18 +316,31 @@ async def agent_tools_mcp(
     elif method == "notifications/initialized":
         return {"jsonrpc": "2.0", "result": {}}
     elif method == "tools/list":
-        tools = ([{
-            "name": "search_knowledge",
-            "description": "在当前数字员工已授权的一个知识库中检索，每次只能检索一库。",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "knowledge_base_id": {"type": "string"},
-                    "query": {"type": "string"},
+        tools = []
+        if _has_knowledge_tool(db, claims):
+            subject = resolve_identity(db, claims.employee_id)
+            allowed = (
+                accessible_knowledge_bases(db, subject, claims.requester_human_no)
+                if subject is not None else []
+            )
+            kb_schema = {"type": "string"}
+            kb_desc = "在当前数字员工已授权的一个知识库中检索，每次只能检索一库。"
+            if allowed:
+                kb_schema["enum"] = [kb["id"] for kb in allowed]
+                kb_desc += " knowledge_base_id 必须从以下已授权知识库中选择："
+                kb_desc += "、".join(f"{kb['id']}（{kb['name']}）" for kb in allowed)
+            tools.append({
+                "name": "search_knowledge",
+                "description": kb_desc,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "knowledge_base_id": kb_schema,
+                        "query": {"type": "string"},
+                    },
+                    "required": ["knowledge_base_id", "query"],
                 },
-                "required": ["knowledge_base_id", "query"],
-            },
-        }] if _has_knowledge_tool(db, claims) else [])
+            })
         if _can_delegate(db, claims):
             tools.append({
                 "name": "ask_digital_employee",
@@ -261,7 +348,7 @@ async def agent_tools_mcp(
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "target_agent_id": {"type": "string", "enum": ["AI-GENERAL", "AI-INVESTMENT"]},
+                        "target_agent_id": {"type": "string", "enum": ["AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ"]},
                         "question": {"type": "string"},
                     },
                     "required": ["target_agent_id", "question"],
@@ -269,7 +356,7 @@ async def agent_tools_mcp(
             })
         tools.append({
             "name": "save_memory",
-            "description": "仅在用户明确要求‘请记住’或‘以后都这样处理’时保存长期记忆。",
+            "description": "仅在用户明确要求'请记住'或'以后都这样处理'时保存长期记忆。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -279,20 +366,91 @@ async def agent_tools_mcp(
                 "required": ["content"],
             },
         })
+        # 追加当前员工已授权技能的显式加载工具（按需加载技能完整方法论）。
+        authorized_skills = _authorized_skills(db, claims)
+        if authorized_skills:
+            skill_desc = "加载一个已授权的员工技能，返回其完整方法论（SOP）；任务命中技能场景时先加载再按其执行。skill_name 必须从以下已授权技能中选择："
+            skill_desc += "、".join(f"{s['name']}（{s['description']}）" for s in authorized_skills)
+            tools.append({
+                "name": "load_skill",
+                "description": skill_desc,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {"type": "string", "enum": [s["name"] for s in authorized_skills]},
+                    },
+                    "required": ["skill_name"],
+                },
+            })
+        # 追加已授权员工的外部 MCP 工具（动态清单，加前缀；失败降级不阻塞内部工具）。
+        for adapter in _EXTERNAL_ADAPTERS:
+            if adapter.configured() and adapter.is_authorized(db, claims.employee_id):
+                try:
+                    tools.extend(adapter.prefixed_tools())
+                except ExternalMcpError as exc:
+                    logger.warning("合并外部 MCP 工具失败：%s", exc)
         result = {"tools": tools}
     elif method == "tools/call":
         params = body.get("params") or {}
         arguments = params.get("arguments") or {}
+        tool_name = params.get("name") or ""
         try:
-            if params.get("name") == "search_knowledge":
+            adapter = next(
+                (a for a in _EXTERNAL_ADAPTERS if tool_name.startswith(a.tool_prefix)),
+                None,
+            )
+            if adapter is not None:
+                # 外部 MCP 工具：转发到对应 adapter 的 ExternalMcpClient，
+                # 返回的 MCP result（content/isError）直接透传给 Harness。
+                # 同步 httpx 调用放入线程池，避免阻塞 uvicorn 事件循环。
+                raw_name = tool_name[len(adapter.tool_prefix):]
+                execution = execution_events.execution_for_trace(db, claims.trace_id)
+                if execution is not None:
+                    execution_events.emit(
+                        db, execution.id, event_type="external_mcp_started", stage="external_mcp",
+                        status="running", actor_employee_id=claims.employee_id,
+                        title=f"正在调用{adapter.source_label} MCP 工具 {raw_name}",
+                        detail=f"正在通过{adapter.source_label}开放平台获取数据",
+                    )
+                result = await asyncio.to_thread(
+                    adapter.call_tool, tool_name, arguments
+                )
+                if execution is not None:
+                    execution_events.emit(
+                        db, execution.id, event_type="external_mcp_completed", stage="external_mcp",
+                        status="running", actor_employee_id=claims.employee_id,
+                        title=f"{adapter.source_label} MCP 工具 {raw_name} 调用完成", detail="数据已获取",
+                    )
+                # 写审计，让前端执行轨迹可见外部 MCP 调用；只记工具名与来源，不落凭据/响应内容。
+                write_audit(
+                    db, trace_id=claims.trace_id, employee_id=claims.employee_id,
+                    plugin_id=adapter.plugin_id, action="execute", decision="allow",
+                    reason=f"调用{adapter.source_label} MCP 工具 {raw_name}",
+                    result_summary=__import__("json").dumps(
+                        {"source": adapter.plugin_id, "tool": raw_name, "type": "mcp"}, ensure_ascii=False,
+                    ),
+                )
+            elif tool_name == "load_skill":
+                data = _load_skill(db, claims, str(arguments.get("skill_name") or ""))
+                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
+            elif tool_name == "search_knowledge":
                 data = _agent_search(db, claims, AgentKnowledgeToolIn.model_validate(arguments))
-            elif params.get("name") == "ask_digital_employee":
-                data = _agent_delegate(db, claims, AgentDelegateToolIn.model_validate(arguments))
-            elif params.get("name") == "save_memory":
+                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
+            elif tool_name == "ask_digital_employee":
+                # 委派会同步拉起目标数字员工的 Harness 容器执行（最长约 2 分钟）。
+                # 这里必须放到线程池，否则会阻塞 uvicorn 事件循环，导致被委派方
+                # 的 MCP 回调（tools/list、search_knowledge）无法被处理而超时失败。
+                data = await asyncio.to_thread(
+                    _agent_delegate, db, claims, AgentDelegateToolIn.model_validate(arguments)
+                )
+                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
+            elif tool_name == "save_memory":
                 data = _save_memory(db, claims, SaveMemoryToolIn.model_validate(arguments))
+                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
             else:
                 raise HTTPException(status_code=404, detail="未知工具")
-            result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
+        except ExternalMcpError as exc:
+            result = {"isError": True, "content": [{"type": "text", "text": f"外部 MCP 工具调用失败：{exc}"}]}
         except Exception as exc:
             detail = exc.detail if isinstance(exc, HTTPException) else "工具执行失败"
             result = {"isError": True, "content": [{"type": "text", "text": str(detail)}]}

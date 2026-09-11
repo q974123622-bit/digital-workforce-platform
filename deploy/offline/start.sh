@@ -35,7 +35,7 @@ available_kb="$(df -Pk "$docker_root" | awk 'NR == 2 {print $4}')"
 
 umask 077
 mkdir -p secrets data backups
-for employee_id in AI-GENERAL AI-INVESTMENT DT-E10281 DT-E20999; do
+for employee_id in AI-GENERAL AI-INVESTMENT AI-RESEARCH AI-FUND DT-E10281 DT-E20999; do
   mkdir -p "harness/$employee_id/dsh-home" "harness/$employee_id/workspace"
 done
 chmod 700 secrets data backups harness
@@ -154,7 +154,7 @@ fi
 echo "[2/5] 校验 Docker Compose 配置……"
 docker compose config --quiet
 
-echo "[3/5] 启动平台和四个独立 Harness 实例……"
+echo "[3/5] 启动平台和独立 Harness 实例……"
 docker compose up -d --remove-orphans
 
 echo "[4/5] 等待平台健康检查……"
@@ -173,8 +173,8 @@ for _ in $(seq 1 48); do
 done
 [ "$healthy" -eq 1 ] || fail "后端健康检查超时，请运行 ./status.sh"
 
-echo "[5/5] 自检四个 Harness 实例……"
-for container in dwp-harness-ai-general dwp-harness-ai-investment dwp-harness-dt-e10281 dwp-harness-dt-e20999; do
+echo "[5/5] 自检 Harness 实例……"
+for container in dwp-harness-ai-general dwp-harness-ai-investment dwp-harness-ai-research dwp-harness-ai-fund dwp-harness-dt-e10281 dwp-harness-dt-e20999; do
   running="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)"
   [ "$running" = "true" ] || fail "$container 未运行"
   docker exec "$container" sh -c 'command -v dsh >/dev/null && test -f /dsh-home/profiles/dwp-knowledge-agent-v2/cordis.yml' \
@@ -183,7 +183,7 @@ done
 
 host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
-echo "启动完成：前端、后端和 4 个 Harness 实例均已运行"
+echo "启动完成：前端、后端和 6 个 Harness 实例均已运行"
 echo "本机访问: http://127.0.0.1:${port}"
 if [ -n "$host_ip" ]; then
   echo "局域网访问: http://${host_ip}:${port}"

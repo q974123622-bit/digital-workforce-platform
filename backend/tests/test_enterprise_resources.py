@@ -60,22 +60,12 @@ def test_registry_kb_not_found(client):
 # ---- 安全资源边界：正式 / 实习 / 虚拟员工 ----
 
 
-def test_general_employee_read_internal_kb_allow(client):
+def test_general_employee_read_internal_kb_deny(client):
     resp = _search(client, "AI-GENERAL", "KB-INTERNAL", "入职流程", "T-S3-FORMAL-001")
-    assert resp.status_code == 200
+    assert resp.status_code == 403
     body = resp.json()
-    assert body["ok"] is True
-    assert body["decision"] == "allow"
-    assert body["policy_id"] is None
-    assert body["data"]["source"] == "demo"
-    assert body["data"]["knowledge_base_id"] == "KB-INTERNAL"
-    assert len(body["data"]["hits"]) >= 1
-
-    audit = client.get(f"/api/v1/audit/{body['audit_ids'][0]}").json()
-    assert audit["knowledge_base_id"] == "KB-INTERNAL"
-    assert audit["employee_id"] == "AI-GENERAL"
-    assert audit["decision"] == "allow"
-    assert audit["trace_id"] == "T-S3-FORMAL-001"
+    assert body["error"]["code"] == "POLICY_DENIED"
+    assert body["error"]["detail"]["policy_id"] == "AGENT-KB-GRANT"
 
 
 def test_intern_twin_read_internal_kb_deny(client):
@@ -116,12 +106,23 @@ def test_virtual_employee_internal_kb_deny(client):
     assert resp.json()["error"]["code"] == "POLICY_DENIED"
 
 
-def test_public_kb_any_employee_allow(client):
+def test_public_kb_requires_explicit_grant(client):
     resp = _search(client, "DT-E20999", "KB-PUBLIC", "员工守则", "T-S3-PUB-001")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["decision"] == "allow"
-    assert body["policy_id"] == "P-DEFAULT-001"
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "POLICY_DENIED"
+
+
+def test_knowledge_grants_do_not_cross_assign(client):
+    cases = [
+        ("AI-GENERAL", "KB-SECURITIES", "股票期权", "T-P17-CROSS-001"),
+        ("AI-INVESTMENT", "KB-IT-SERVICE", "企业邮箱", "T-P17-CROSS-002"),
+    ]
+    for employee_id, kb_id, query, trace_id in cases:
+        resp = _search(client, employee_id, kb_id, query, trace_id)
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["error"]["code"] == "POLICY_DENIED"
+        assert body["error"]["detail"]["policy_id"] == "AGENT-KB-GRANT"
 
 
 def test_fintech_kb_unapproved_deny(client):
@@ -169,18 +170,18 @@ def test_new_securities_kb_l2_intern_deny(client):
     assert resp.json()["error"]["detail"]["policy_id"] == "POLICY-002"
 
 
-def test_new_internal_reg_kb_l2_formal_allow(client):
+def test_internal_reg_kb_removed_from_general(client):
+    # 内规（742）已从内部引擎下线，AI-GENERAL 不再持有 KB-REG-INTERNAL 授权。
     resp = _search(client, "AI-GENERAL", "KB-REG-INTERNAL", "反洗钱", "T-P17-REG-001")
-    assert resp.status_code == 200
-    assert resp.json()["decision"] == "allow"
-    assert len(resp.json()["data"]["hits"]) >= 1
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "POLICY_DENIED"
+    assert resp.json()["error"]["detail"]["policy_id"] == "AGENT-KB-GRANT"
 
 
-def test_new_external_reg_kb_l1_any_employee_allow(client):
+def test_new_external_reg_kb_l1_requires_grant(client):
     resp = _search(client, "DT-E20999", "KB-REG-EXTERNAL", "反垄断", "T-P17-EXT-001")
-    assert resp.status_code == 200
-    assert resp.json()["decision"] == "allow"
-    assert len(resp.json()["data"]["hits"]) >= 1
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "POLICY_DENIED"
 
 
 def test_multiformat_directory_search_returns_nonempty_hits(client):
@@ -188,8 +189,6 @@ def test_multiformat_directory_search_returns_nonempty_hits(client):
     cases = [
         ("AI-GENERAL", "KB-IT-SERVICE", "企业邮箱"),
         ("AI-INVESTMENT", "KB-SECURITIES", "股票期权"),
-        ("AI-GENERAL", "KB-REG-INTERNAL", "适当性"),
-        ("AI-GENERAL", "KB-REG-EXTERNAL", "尽职调查"),
     ]
     for i, (emp, kb_id, query) in enumerate(cases):
         resp = _search(client, emp, kb_id, query, f"T-P17-MF-{i}")

@@ -233,7 +233,7 @@ def member_replies(
             )
         try:
             employee = db.get(models.DigitalEmployee, employee_no)
-            if use_harness and employee_no in {"AI-GENERAL", "AI-INVESTMENT", "DT-E10281", "DT-E20999"}:
+            if use_harness and employee_no in {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ", "DT-E10281", "DT-E20999"}:
                 result = run_agent(
                     db,
                     employee_id=employee_no,
@@ -272,6 +272,7 @@ def member_replies(
                     "plugin_id": card.plugin_id,
                     "name": card.name,
                     "decision": card.decision,
+                    "source": card.source,
                     "policy_id": card.policy_id,
                     "reason": card.reason,
                 }

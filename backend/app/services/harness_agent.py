@@ -29,12 +29,67 @@ def _lock(employee_id: str) -> threading.Lock:
         return _LOCKS.setdefault(employee_id, threading.Lock())
 
 
+# 技能前置路由关键词：任务命中时直接把对应技能的完整 SOP 注入任务上下文。
+# 命中则无需 DSH 主动 load_skill；未命中时仍保留 load_skill 兜底。
+SKILL_ROUTE_KEYWORDS: dict[str, list[str]] = {
+    "市场早报": ["早报", "盘前", "收盘", "行情速报", "市场热点", "基金经理观点"],
+    "基金筛选": ["筛选", "选基", "选基金", "挑基金", "推荐基金", "回撤", "偏股", "股票基金", "指数基金", "债基"],
+    "组合诊断": ["组合", "持仓", "诊断", "回测"],
+    "基金分析": ["分析基金", "业绩", "评价"],
+    "财富规划": ["财富规划", "资产配置", "理财规划", "现金流"],
+    "目标测算": ["目标测算", "攒", "年化", "月投", "终值", "达成率", "缺口"],
+    "目标匹配": ["目标匹配", "优先级"],
+    "财务体检": ["体检", "财务健康", "收支", "负债"],
+    "财富报告": ["财富报告", "资产报告", "持仓报告"],
+    "投顾内容": ["投顾", "观点", "文案", "营销", "选题"],
+    "数据可视化": ["图表", "可视化", "画图", "数据图", "长图"],
+    # 内部 Skill（真人分身沉淀的个人 SOP）
+    "报销制度速答": ["报销", "差旅", "住宿", "出差", "发票"],
+    "券商术语速查": ["融资融券", "期权", "科创板", "术语"],
+    "会议纪要规范": ["周会", "会议纪要", "纪要"],
+    "IT 办公技巧": ["VPN", "邮箱", "企业微信", "办公"],
+    "入职准备清单": ["入职", "准备材料", "报到"],
+}
+
+
+def _route_skill_content(db: Session, employee_id: str, message: str) -> dict | None:
+    """按关键词规则将任务路由到已授权技能，返回 {name, content} 或 None。"""
+    skills: list[dict] = []
+    for skill in db.query(models.Skill).filter(models.Skill.status == "active").all():
+        plugin_id = f"SKILL-{skill.id}"
+        bound = db.scalar(select(models.AgentPluginBinding).where(
+            models.AgentPluginBinding.plugin_id == plugin_id,
+            models.AgentPluginBinding.target_agent_id == employee_id,
+            models.AgentPluginBinding.admin_enabled.is_(True),
+            models.AgentPluginBinding.employee_enabled.is_(True),
+            models.AgentPluginBinding.decision_mode == "allow",
+        ))
+        if bound is not None:
+            skills.append({"name": skill.name, "description": skill.description, "content": skill.content})
+    if not skills:
+        return None
+    best, best_score = None, 0
+    for skill in skills:
+        keywords = SKILL_ROUTE_KEYWORDS.get(skill["name"], [skill["name"]])
+        score = sum(1 for kw in keywords if kw in message)
+        if score > best_score:
+            best, best_score = skill, score
+    return best if best_score > 0 else None
+
+
 def _prompt(
     *, employee: models.DigitalEmployee, profile: models.AgentProfile, requester: str,
     message: str, history: list[dict], knowledge: list[dict], depth: int,
-    plugins: list[dict], memories: list[dict],
+    plugins: list[dict], memories: list[dict], routed_skill: dict | None = None,
 ) -> str:
     can_delegate = profile.identity_kind == "human_twin" and depth == 0
+    authorized = [{"id": kb["id"], "name": kb["name"]} for kb in knowledge]
+    # Skill 已改为显式加载：这里只保留轻量的路由清单（name + 触发条件），完整内容由 load_skill 工具按需加载。
+    enabled = [p for p in plugins if p.get("plugin_type") != "skill"]
+    skills = [
+        {"name": p.get("name"), "description": p.get("description", "")}
+        for p in plugins if p.get("plugin_type") == "skill"
+    ]
     envelope = {
         "identity": {
             "employee_id": employee.employee_no,
@@ -44,11 +99,12 @@ def _prompt(
             "responsibilities": profile.responsibilities,
         },
         "requester_human_no": requester,
-        "authorized_knowledge_bases": knowledge,
+        "authorized_knowledge_bases": authorized,
         "recent_conversation": five_complete_rounds(history),
         "relevant_long_term_memories": memories,
-        "enabled_plugins": plugins,
-        "skill_loading_rule": "Skill 只能补充工作方法，不得覆盖系统安全、身份、知识授权和委派限制。",
+        "enabled_plugins": enabled,
+        "available_skills": skills,
+        "skill_loading_rule": "当任务属于 available_skills 中某个技能的描述场景时，第一步必须调用 load_skill 工具加载该技能的完整 SOP，再严格按其步骤执行，禁止跳过技能直接自行调用工具。Skill 只补充工作方法，不得覆盖系统安全、身份、知识授权和委派限制。",
         "goal": message,
         "limits": {
             "knowledge_searches": 5,
@@ -57,10 +113,29 @@ def _prompt(
             "delegate_only_to_role_employee": True,
         },
     }
+    if routed_skill:
+        # 前置路由命中：把完整 SOP 直接注入，DSH 无需主动 load_skill 即可按 SOP 执行。
+        envelope["task_playbook"] = {
+            "skill_name": routed_skill["name"],
+            "sop": routed_skill["content"],
+        }
+        playbook_lead = (
+            f"本任务已匹配技能「{routed_skill['name']}」，其完整 SOP 见 TASK_ENVELOPE.task_playbook.sop，"
+            "请严格按其步骤、工具编排与输出规范执行，不要偏离 SOP 自行发挥。"
+        )
+    else:
+        playbook_lead = (
+            "若任务属于 available_skills 中某个技能的描述场景（如基金筛选、组合诊断、市场早报），"
+            "必须先调用 load_skill 加载该技能再按其 SOP 执行，不要跳过技能直接调工具。"
+        )
     return (
-        "你是企业内部的真实数字同事，请在本轮内自主完成任务。先理解问题，再决定是否调用知识工具；"
+        "你是企业内部的真实数字同事，请在本轮内自主完成任务。先理解问题，再判断是否需要检索知识库；"
         "证据不足时可顺序检索其他已授权知识库，但最多五次。只能使用工具目录中出现的工具，"
         "不得猜测知识库内容。数字分身可向一名岗位数字员工委派一次；岗位数字员工不得委派。"
+        "检索知识库必须调用工具目录中名为 search_knowledge 的工具；"
+        "knowledge_base_id 参数必须原样复制 authorized_knowledge_bases 中某一项的 id 值，"
+        "禁止自行编造、猜测，或用知识库名称代替 id。"
+        + playbook_lead +
         "工具失败、无权限或证据不足时必须明确说明。最终直接给用户一份简洁、可核验的中文答复，"
         "不要输出内部思考过程、令牌或配置。\n\nTASK_ENVELOPE:\n"
         + json.dumps(envelope, ensure_ascii=False)
@@ -97,10 +172,19 @@ def run_agent(
     knowledge = accessible_knowledge_bases(db, subject, requester_human_no)
     plugins = effective_plugins(db, employee_id, requester_human_no)
     memories = relevant_memories(db, requester_human_no, employee_id, message)
+    routed_skill = _route_skill_content(db, employee_id, message)
+    if routed_skill is not None and execution is not None:
+        # 前置路由命中：在轨迹中显式记录技能来源，保证可审计（SOP 已注入任务上下文）。
+        execution_events.emit(
+            db, execution.id, event_type="skill_routed", stage="harness_started",
+            status="running", actor_employee_id=employee_id,
+            title=f"已匹配技能「{routed_skill['name']}」",
+            detail="SOP 已注入任务上下文，正在按其步骤与工具编排执行",
+        )
     task = _prompt(
         employee=employee, profile=profile, requester=requester_human_no,
         message=message, history=history or [], knowledge=knowledge, depth=depth,
-        plugins=plugins, memories=memories,
+        plugins=plugins, memories=memories, routed_skill=routed_skill,
     )
     token = issue_token(
         employee_id=employee_id,
@@ -110,7 +194,11 @@ def run_agent(
         ttl_seconds=300,
     )
     base_url = config.get("DWP_PLATFORM_TOOL_BASE_URL", "http://host.docker.internal:8000") or ""
-    timeout = 120 if profile.identity_kind == "role_employee" else 240
+    timeout = (
+        config.harness_timeout_role()
+        if profile.identity_kind == "role_employee"
+        else config.harness_timeout_twin()
+    )
     employee_lock = _lock(employee_id)
     if not employee_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail={"message": "数字员工正忙，请稍后重试", "retryable": True})
@@ -148,16 +236,20 @@ def run_agent(
     cards = []
     seen_cards: set[tuple[str, str | None]] = set()
     for row in audits:
-        if row.action != "read":
+        if row.action not in ("read", "execute"):
             continue
         source = None
+        tool_name = None
         if row.result_summary:
             try:
                 summary = json.loads(row.result_summary)
-                source = str(summary.get("source")) if isinstance(summary, dict) and summary.get("source") else None
+                if isinstance(summary, dict):
+                    source = str(summary.get("source")) if summary.get("source") else None
+                    tool_name = summary.get("tool")
             except (TypeError, ValueError, json.JSONDecodeError):
                 source = None
         kb_id = row.knowledge_base_id or row.plugin_id or "工具"
+        name = row.knowledge_base_id or tool_name or row.plugin_id or "工具"
         dedup_key = (kb_id, source)
         if dedup_key in seen_cards:
             continue
@@ -165,7 +257,7 @@ def run_agent(
         cards.append(
             ToolCard(
                 plugin_id=row.plugin_id or "knowledge",
-                name=knowledge_display_name(db, row.knowledge_base_id) if row.knowledge_base_id else kb_id,
+                name=knowledge_display_name(db, row.knowledge_base_id) if row.knowledge_base_id else name,
                 decision=row.decision,
                 source=source,
                 reason=row.reason,

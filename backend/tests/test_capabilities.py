@@ -217,4 +217,4 @@ def test_twin_effective_capabilities_expose_bounded_delegation(client, db_sessio
     body = client.get("/api/v1/agents/DT-E10281/effective-capabilities").json()
     delegation = next(row for row in body["capabilities"] if row["kind"] == "delegation")
     assert delegation["status"] == "available"
-    assert delegation["target_employee_ids"] == ["AI-GENERAL", "AI-INVESTMENT"]
+    assert delegation["target_employee_ids"] == ["AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH"]
