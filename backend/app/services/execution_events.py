@@ -216,3 +216,13 @@ def cancel_for_conversation(db: Session, conversation_id: str) -> None:
         row.completed_at = datetime.now()
         db.add(row)
     db.commit()
+    # 终止仍占用运行时的 dsh 进程并释放员工运行时，避免取消后新任务一直排队。
+    from . import runtime_manager
+    for row in rows:
+        if not row.primary_employee_id:
+            continue
+        try:
+            runtime_manager.terminate_task(row.primary_employee_id)
+            runtime_manager.mark_ready(db, row.primary_employee_id)
+        except Exception:
+            continue

@@ -22,13 +22,13 @@ from ..services.runtime_adapter import DockerHarnessRuntimeAdapter, RuntimeResul
 from ..services.sandbox_manager import SandboxManager
 from ..services.sandbox_policy import from_identity
 from ..services import execution_events
-from ..services.external_mcp_adapter import QIEMAN_PLUGIN_ID, TOOL_PREFIX, QiemanMcpAdapter
+from ..services.external_mcp_adapter import qieman_adapter, xyzq_adapter
 from ..services.external_mcp_client import ExternalMcpError
 
 router = APIRouter(prefix="/internal", tags=["internal"])
 
-# 盈米 External MCP 适配器（进程级单例，缓存工具清单）。
-_qieman_adapter = QiemanMcpAdapter()
+# External MCP 适配器注册表（进程级单例，缓存工具清单）。
+_EXTERNAL_ADAPTERS = (qieman_adapter, xyzq_adapter)
 
 
 class AgentKnowledgeToolIn(BaseModel):
@@ -348,7 +348,7 @@ async def agent_tools_mcp(
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "target_agent_id": {"type": "string", "enum": ["AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND"]},
+                        "target_agent_id": {"type": "string", "enum": ["AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ"]},
                         "question": {"type": "string"},
                     },
                     "required": ["target_agent_id", "question"],
@@ -382,46 +382,52 @@ async def agent_tools_mcp(
                     "required": ["skill_name"],
                 },
             })
-        # 追加已授权员工的盈米基金工具（动态清单，加 qieman__ 前缀；失败降级不阻塞内部工具）。
-        if _qieman_adapter.configured() and _qieman_adapter.is_authorized(db, claims.employee_id):
-            try:
-                tools.extend(_qieman_adapter.prefixed_tools())
-            except ExternalMcpError as exc:
-                logger.warning("合并盈米工具失败：%s", exc)
+        # 追加已授权员工的外部 MCP 工具（动态清单，加前缀；失败降级不阻塞内部工具）。
+        for adapter in _EXTERNAL_ADAPTERS:
+            if adapter.configured() and adapter.is_authorized(db, claims.employee_id):
+                try:
+                    tools.extend(adapter.prefixed_tools())
+                except ExternalMcpError as exc:
+                    logger.warning("合并外部 MCP 工具失败：%s", exc)
         result = {"tools": tools}
     elif method == "tools/call":
         params = body.get("params") or {}
         arguments = params.get("arguments") or {}
         tool_name = params.get("name") or ""
         try:
-            if tool_name.startswith(TOOL_PREFIX):
-                # 外部 MCP 工具（盈米基金数据）：转发到 ExternalMcpClient，
+            adapter = next(
+                (a for a in _EXTERNAL_ADAPTERS if tool_name.startswith(a.tool_prefix)),
+                None,
+            )
+            if adapter is not None:
+                # 外部 MCP 工具：转发到对应 adapter 的 ExternalMcpClient，
                 # 返回的 MCP result（content/isError）直接透传给 Harness。
                 # 同步 httpx 调用放入线程池，避免阻塞 uvicorn 事件循环。
-                raw_name = tool_name[len(TOOL_PREFIX):]
+                raw_name = tool_name[len(adapter.tool_prefix):]
                 execution = execution_events.execution_for_trace(db, claims.trace_id)
                 if execution is not None:
                     execution_events.emit(
                         db, execution.id, event_type="external_mcp_started", stage="external_mcp",
                         status="running", actor_employee_id=claims.employee_id,
-                        title=f"正在调用盈米 MCP 工具 {raw_name}", detail="正在通过盈米开放平台获取基金数据",
+                        title=f"正在调用{adapter.source_label} MCP 工具 {raw_name}",
+                        detail=f"正在通过{adapter.source_label}开放平台获取数据",
                     )
                 result = await asyncio.to_thread(
-                    _qieman_adapter.call_tool, tool_name, arguments
+                    adapter.call_tool, tool_name, arguments
                 )
                 if execution is not None:
                     execution_events.emit(
                         db, execution.id, event_type="external_mcp_completed", stage="external_mcp",
                         status="running", actor_employee_id=claims.employee_id,
-                        title=f"盈米 MCP 工具 {raw_name} 调用完成", detail="基金数据已获取",
+                        title=f"{adapter.source_label} MCP 工具 {raw_name} 调用完成", detail="数据已获取",
                     )
-                # 写审计，让前端执行轨迹可见盈米 MCP 调用；只记工具名与来源，不落凭据/响应内容。
+                # 写审计，让前端执行轨迹可见外部 MCP 调用；只记工具名与来源，不落凭据/响应内容。
                 write_audit(
                     db, trace_id=claims.trace_id, employee_id=claims.employee_id,
-                    plugin_id=QIEMAN_PLUGIN_ID, action="execute", decision="allow",
-                    reason=f"调用盈米 MCP 工具 {raw_name}",
+                    plugin_id=adapter.plugin_id, action="execute", decision="allow",
+                    reason=f"调用{adapter.source_label} MCP 工具 {raw_name}",
                     result_summary=__import__("json").dumps(
-                        {"source": "qieman", "tool": raw_name, "type": "mcp"}, ensure_ascii=False,
+                        {"source": adapter.plugin_id, "tool": raw_name, "type": "mcp"}, ensure_ascii=False,
                     ),
                 )
             elif tool_name == "load_skill":
@@ -444,7 +450,7 @@ async def agent_tools_mcp(
             else:
                 raise HTTPException(status_code=404, detail="未知工具")
         except ExternalMcpError as exc:
-            result = {"isError": True, "content": [{"type": "text", "text": f"盈米工具调用失败：{exc}"}]}
+            result = {"isError": True, "content": [{"type": "text", "text": f"外部 MCP 工具调用失败：{exc}"}]}
         except Exception as exc:
             detail = exc.detail if isinstance(exc, HTTPException) else "工具执行失败"
             result = {"isError": True, "content": [{"type": "text", "text": str(detail)}]}

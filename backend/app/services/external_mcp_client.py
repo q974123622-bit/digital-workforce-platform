@@ -42,6 +42,7 @@ class ExternalMcpClient:
         self._next_id = 1
         self._protocol_version = "2024-11-05"
         self._initialized = False
+        self._session_id = ""
 
     # -- helpers ---------------------------------------------------------
 
@@ -51,11 +52,15 @@ class ExternalMcpClient:
         return request_id
 
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "x-api-key": self._api_key,
         }
+        if self._api_key:
+            headers["x-api-key"] = self._api_key
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        return headers
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -82,10 +87,20 @@ class ExternalMcpClient:
         except httpx.RequestError:
             raise ExternalMcpError("无法连接 External MCP 服务") from None
 
-        try:
-            envelope = response.json()
-        except ValueError:
-            raise ExternalMcpError("External MCP 返回了无效 JSON") from None
+        # 保存会话 ID（stateful streamable HTTP 需要后续请求携带）
+        session_id = response.headers.get("Mcp-Session-Id")
+        if session_id:
+            self._session_id = session_id
+
+        content_type = response.headers.get("content-type", "")
+        text = response.text
+        if "text/event-stream" in content_type or text.lstrip().startswith(("data:", "event:", "id:")):
+            envelope = self._parse_sse(text)
+        else:
+            try:
+                envelope = response.json()
+            except ValueError:
+                raise ExternalMcpError("External MCP 返回了无效 JSON") from None
         if not isinstance(envelope, dict):
             raise ExternalMcpError("External MCP 返回了非预期响应") from None
 
@@ -98,6 +113,24 @@ class ExternalMcpClient:
         if not isinstance(result, dict):
             raise ExternalMcpError("External MCP 响应缺少 result")
         return result
+
+    def _parse_sse(self, text: str) -> dict[str, Any]:
+        """解析 SSE 文本，返回最后一个 data: 事件的 JSON 对象。
+
+        某些 MCP server（如兴业证券）在 tools/list、tools/call 时以
+        ``id:``/``event:``/``data:`` 的 SSE 帧返回，需提取最后一个 data 载荷。
+        """
+        data_payload = None
+        for line in text.splitlines():
+            if line.startswith("data:"):
+                data_payload = line[5:].strip()
+        if not data_payload:
+            raise ExternalMcpError("External MCP 返回了空 SSE 数据")
+        try:
+            envelope = json.loads(data_payload)
+        except ValueError:
+            raise ExternalMcpError("External MCP SSE 数据非有效 JSON") from None
+        return envelope
 
     def _ensure_initialized(self) -> None:
         if self._initialized:

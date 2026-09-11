@@ -9,7 +9,7 @@ from . import models
 from .database import DATABASE_URL, Base, SessionLocal, engine, ensure_schema_compatibility
 from .services import config
 from .services.auth import hash_password
-from .services.external_mcp_adapter import QIEMAN_PLUGIN_ID
+from .services.external_mcp_adapter import QIEMAN_PLUGIN_ID, XYZQ_PLUGIN_ID
 
 SEED_PATH = Path(__file__).resolve().parents[2] / "mock-data" / "seed.json"
 
@@ -134,6 +134,13 @@ def ensure_mvp_seed(db) -> None:
             "domains": ["基金分析", "基金数据", "资产配置"],
             "responsibilities": ["查询基金产品数据", "分析基金业绩与归因", "输出有出处的基金分析结论"],
         },
+        "AI-XYZQ": {
+            "name": "兴业证券智能投顾助手",
+            "department": "证券投顾",
+            "persona": "你是兴业证券智能投顾助手，是公司中的证券投资咨询专业同事。你负责证券投资类咨询，可调用兴业证券智能投顾工具回答金融知识科普、股票/基金/理财咨询、投资规则解读、市场资讯参考、开户及业务办理指引等问题。结论必须由工具返回的真实数据支撑，注明数据来源，不提供未经核实或推测的信息。",
+            "domains": ["证券投顾", "证券投资", "市场资讯"],
+            "responsibilities": ["回答证券投资类咨询", "解读投资规则与市场资讯", "提供开户及业务办理指引"],
+        },
     }
     # 当前知识问答 MVP 只保留三名岗位型数字员工；真人分身继续保留。
     # 历史演示员工改为 inactive，以保留审计/历史关联但不再出现在通讯录中。
@@ -194,6 +201,7 @@ def ensure_mvp_seed(db) -> None:
         "AI-INVESTMENT": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
         "AI-RESEARCH": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
         "AI-FUND": ["KB-SECURITIES"],
+        "AI-XYZQ": ["KB-SECURITIES"],
         # 张三的分身不直接持有知识库；遇到知识问题必须委派给岗位数字员工。
         "DT-E10281": [],
         "DT-E20999": [],
@@ -308,7 +316,8 @@ def ensure_mvp_seed(db) -> None:
             ))
     for skill in db.query(models.Skill).all():
         plugin_id = f"SKILL-{skill.id}"
-        if db.get(models.Plugin, plugin_id) is None:
+        plugin = db.get(models.Plugin, plugin_id)
+        if plugin is None:
             db.add(models.Plugin(
                 id=plugin_id, name=skill.name, type="mcp", plugin_type="skill", scope="personal",
                 owner_human_no=skill.owner_human_no, current_version="1.0.0", status="active",
@@ -327,6 +336,12 @@ def ensure_mvp_seed(db) -> None:
                     plugin_id=plugin_id, target_agent_id=twin_id, authorized_by="migration",
                     employee_enabled=skill.status == "active", admin_enabled=True,
                 ))
+        else:
+            # 幂等修复历史遗留：plugin_type 对齐为 skill（旧库可能存成默认 "mcp"）
+            plugin.name = skill.name
+            plugin.description = skill.description
+            plugin.plugin_type = "skill"
+            plugin.status = "active"
     db.flush()
     for grant in db.query(models.EmployeePluginGrant).all():
         plugin = db.get(models.Plugin, grant.plugin_id)
@@ -403,7 +418,122 @@ def ensure_mvp_seed(db) -> None:
                 # 重新绑定：更新真人映射并保持 active，避免陈旧指向。
                 existing.human_employee_no = employee_no
                 existing.status = "active"
+    ensure_qieman_skills(db)
+    ensure_xyzq_mcp(db)
     db.commit()
+
+
+# 盈米 Skill 的中文显示名（load_skill 与 available_skills 用中文名，DSH 更易关联场景）
+QIEMAN_SKILL_NAMES = {
+    "fund-screener": "基金筛选",
+    "portfolio-doctor": "组合诊断",
+    "market-morning-brief": "市场早报",
+    "fund-analyst": "基金分析",
+    "advisor-content-studio": "投顾内容",
+    "wealth-family-advisor": "财富规划",
+    "wealth-goalcalc": "目标测算",
+    "wealth-goalmatch": "目标匹配",
+    "wealth-healthcheck": "财务体检",
+    "wealth-report": "财富报告",
+    "design-data-visualization": "数据可视化",
+}
+
+
+def ensure_qieman_skills(db) -> None:
+    """接入盈米金融 Skill：读取 mock-data/qieman-skills.json，创建 Skill/插件并绑定 AI-FUND。
+
+    盈米 Skill 是场景化 SOP（意图识别 + 工具编排 + 输出规范），通过 load_skill 显式加载。
+    skill_id 使用 QM- 前缀区分平台演示 Skill（SK-），插件绑定到 AI-FUND（岗位员工）。
+    """
+    path = Path(__file__).resolve().parents[2] / "mock-data" / "qieman-skills.json"
+    if not path.is_file():
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    now = __import__("datetime").datetime.now()
+    for item in data:
+        skill_id = f"QM-{item['id']}"
+        plugin_id = f"SKILL-{skill_id}"
+        display_name = QIEMAN_SKILL_NAMES.get(item["id"], item["name"])
+        # Skill 记录（幂等：已存在则更新 name/content/description）
+        skill = db.get(models.Skill, skill_id)
+        if skill is None:
+            db.add(models.Skill(
+                id=skill_id, owner_human_no="SYS-ADMIN", name=display_name,
+                description=item["description"], content=item["content"], status="active",
+            ))
+        else:
+            skill.name = display_name
+            skill.description = item["description"]
+            skill.content = item["content"]
+            skill.status = "active"
+        # Plugin 记录（幂等：已存在则更新 name/description）
+        # scope 用 shared：skill 是团队共享能力，若用 personal + SYS-ADMIN owner
+        # 会被 effective_plugins 按 owner 过滤掉，导致 available_skills 为空。
+        plugin = db.get(models.Plugin, plugin_id)
+        if plugin is None:
+            db.add(models.Plugin(
+                id=plugin_id, name=display_name, type="mcp", plugin_type="skill",
+                scope="shared", owner_human_no="SYS-ADMIN", status="active",
+                description=item["description"], current_version="1.0.0",
+            ))
+            db.add(models.PluginVersion(
+                plugin_id=plugin_id, version="1.0.0", deployment_mode="instruction",
+                artifact_path="", sha256="qieman",
+                manifest={"instruction_summary": item["description"]},
+                data_level="L2", review_status="approved", publish_status="published",
+                submitted_by="qieman", reviewed_by="qieman", reviewed_at=now, published_at=now,
+            ))
+        else:
+            plugin.name = display_name
+            plugin.description = item["description"]
+            plugin.plugin_type = "skill"
+            plugin.scope = "shared"
+            plugin.status = "active"
+        if db.scalar(select(models.AgentPluginBinding).where(
+            models.AgentPluginBinding.plugin_id == plugin_id,
+            models.AgentPluginBinding.target_agent_id == "AI-FUND",
+        )) is None:
+            db.add(models.AgentPluginBinding(
+                plugin_id=plugin_id, target_agent_id="AI-FUND",
+                authorized_by="qieman", employee_enabled=True, admin_enabled=True,
+                decision_mode="allow",
+            ))
+
+
+def ensure_xyzq_mcp(db) -> None:
+    """接入兴业证券 External MCP：注册 xyzq-mcp-server 插件并授权 AI-XYZQ（与盈米隔离）。
+
+    工具由 ExternalMcpClient 动态发现（listChanged=true），Manifest 不静态声明 Schema。
+    匿名可调（无 api_key），响应为 SSE（text/event-stream）。
+    """
+    if not config.xyzq_mcp_configured():
+        return
+    if db.get(models.Plugin, XYZQ_PLUGIN_ID) is None:
+        db.add(models.Plugin(
+            id=XYZQ_PLUGIN_ID, name="兴业证券智能投顾 MCP", type="mcp",
+            plugin_type="mcp", endpoint_ref="external://xyzq", data_level="L2",
+            status="active", description="兴业证券智能投顾助手（External MCP，chat 工具，匿名）",
+            runtime_meta={"mcp_url_ref": config.XYZQ_MCP_URL},
+            scope="shared", mcp_category="cloud_information", current_version="1.0.0",
+        ))
+        db.add(models.PluginVersion(
+            plugin_id=XYZQ_PLUGIN_ID, version="1.0.0",
+            deployment_mode="external", artifact_path="", sha256="seed",
+            manifest={"tools": [], "external_mcp": True},
+            data_level="L2", review_status="approved", publish_status="published",
+            submitted_by="seed", reviewed_by="seed",
+            reviewed_at=__import__("datetime").datetime.now(),
+            published_at=__import__("datetime").datetime.now(),
+        ))
+    if db.scalar(select(models.AgentPluginBinding).where(
+        models.AgentPluginBinding.plugin_id == XYZQ_PLUGIN_ID,
+        models.AgentPluginBinding.target_agent_id == "AI-XYZQ",
+    )) is None:
+        db.add(models.AgentPluginBinding(
+            plugin_id=XYZQ_PLUGIN_ID, target_agent_id="AI-XYZQ",
+            authorized_by="seed", employee_enabled=True, admin_enabled=True,
+            decision_mode="allow",
+        ))
 
 
 def seed_if_empty() -> None:

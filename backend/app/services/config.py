@@ -359,3 +359,26 @@ def qieman_mcp_timeout() -> float:
 def qieman_mcp_configured() -> bool:
     """盈米 MCP 接入是否配置齐备（URL 与 api_key 均非空）。"""
     return bool(qieman_mcp_url() and qieman_mcp_api_key())
+
+
+# ---- 兴业证券 MCP（xyzq-mcp-server）----
+XYZQ_MCP_URL = "DWP_XYZQ_MCP_URL"
+XYZQ_MCP_TIMEOUT = "DWP_XYZQ_MCP_TIMEOUT"
+
+
+def xyzq_mcp_url() -> str:
+    """兴业证券 MCP Streamable HTTP 端点地址（如 https://developer.xyzq.cn/agent/a2a/mcp）。"""
+    return (os.environ.get(XYZQ_MCP_URL) or "").strip()
+
+
+def xyzq_mcp_timeout() -> float:
+    """兴业证券 MCP 单次请求超时（秒），默认 20 秒。"""
+    try:
+        return max(5.0, float(os.environ.get(XYZQ_MCP_TIMEOUT) or "20"))
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def xyzq_mcp_configured() -> bool:
+    """兴业证券 MCP 接入是否配置齐备（仅需 URL，匿名无 api_key）。"""
+    return bool(xyzq_mcp_url())
