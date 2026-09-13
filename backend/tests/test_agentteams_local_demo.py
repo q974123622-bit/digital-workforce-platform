@@ -7,6 +7,11 @@ from app.services.agentteams_protocol import (
     parse_protocol_lines,
     render_protocol_line,
 )
+from app.services.agentteams_role_change_scenario import (
+    ROLE_CHANGE_FIRST_ROUND_CAPABILITIES,
+    ROLE_CHANGE_SECOND_ROUND_CAPABILITIES,
+    ROLE_CHANGE_SKILL_ID,
+)
 
 
 ROOM_ID = "local-demo"
@@ -82,6 +87,65 @@ def test_submit_enqueues_manager_delegate_with_preserved_context(monkeypatch):
     assert [item["assignee_agent_id"] for item in messages[0].payload["subtasks"]] == [
         "VE-0002",
         "VE-0003",
+    ]
+
+
+def test_submit_emits_shared_role_change_skill_trace_and_first_round():
+    transport = LocalDemoTransport()
+
+    _send(transport, _message("task.submit", payload={
+        "title": "岗位调整评估",
+        "instruction": "评估张明的岗位调整是否可以按期完成。",
+    }))
+    messages = _messages(transport.sync_messages(None, {ROOM_ID}))
+
+    assert [message.type for message in messages] == [
+        "agent.message",
+        "agent.message",
+        "task.delegate",
+    ]
+    assert messages[0].payload == {
+        "kind": "skill.selected",
+        "selected_skill_ids": [ROLE_CHANGE_SKILL_ID],
+    }
+    assert messages[1].payload["kind"] == "decision.trace"
+    assert messages[1].payload["reasoning_segments"]
+    assert messages[2].payload["round"] == 1
+    assert {
+        item["capability"] for item in messages[2].payload["subtasks"]
+    } == ROLE_CHANGE_FIRST_ROUND_CAPABILITIES
+
+
+def test_root_summary_after_round_one_delegates_a_second_manager_round():
+    transport = LocalDemoTransport()
+    request = _message(
+        "task.summary",
+        payload={
+            "request": "task.summary",
+            "current_round": 1,
+            "child_results": [
+                {"client_task_key": "role-change-hr", "result": "HR证据已返回"},
+                {"client_task_key": "role-change-it-plan", "result": "IT证据已返回"},
+            ],
+        },
+    )
+
+    _send(transport, request)
+    messages = _messages(transport.sync_messages(None, {ROOM_ID}))
+
+    assert [message.type for message in messages] == ["agent.message", "task.delegate"]
+    assert messages[0].payload["kind"] == "decision.trace"
+    assert messages[0].payload["action"] == "delegate"
+    assert messages[1].payload["round"] == 2
+    assert {
+        item["capability"] for item in messages[1].payload["subtasks"]
+    } == ROLE_CHANGE_SECOND_ROUND_CAPABILITIES
+    by_capability = {
+        item["capability"]: item for item in messages[1].payload["subtasks"]
+    }
+    assert by_capability["audit.permission.review"]["depends_on"] == []
+    assert by_capability["it.permission.activate"]["depends_on"] == [
+        by_capability["audit.permission.review"]["client_task_key"]
     ]
 
 

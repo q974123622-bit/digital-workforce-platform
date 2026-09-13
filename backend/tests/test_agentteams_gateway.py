@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.services.agentteams_gateway import AgentTeamsGateway, AgentTeamsUnavailableError
@@ -18,9 +20,11 @@ class _Client:
     def __init__(self, responses):
         self.responses = list(responses)
         self.urls = []
+        self.calls = []
 
-    def get(self, url, **_kwargs):
+    def get(self, url, **kwargs):
         self.urls.append(url)
+        self.calls.append((url, kwargs))
         return self.responses.pop(0)
 
     def close(self):
@@ -59,3 +63,38 @@ def test_gateway_maps_membership_http_failure_without_response_body():
 
     with pytest.raises(AgentTeamsUnavailableError, match="joined_members.*HTTP 403"):
         gateway.joined_members("!team:test")
+
+
+def test_sync_requests_a_bounded_room_timeline_large_enough_for_agent_bursts():
+    gateway = AgentTeamsGateway(base_url="http://matrix", matrix_token="secret")
+    gateway._client = _Client([
+        _Response(200, {
+            "next_batch": "s2",
+            "rooms": {"join": {"!team:test": {"timeline": {"events": []}}}},
+        }),
+    ])
+
+    gateway.sync_messages("s1", {"!team:test"})
+
+    params = gateway._client.calls[0][1]["params"]
+    matrix_filter = json.loads(params["filter"])
+    assert matrix_filter["room"]["timeline"]["limit"] >= 100
+
+
+def test_sync_rejects_a_limited_timeline_instead_of_advancing_past_missing_events():
+    gateway = AgentTeamsGateway(base_url="http://matrix", matrix_token="secret")
+    gateway._client = _Client([
+        _Response(200, {
+            "next_batch": "s2",
+            "rooms": {
+                "join": {
+                    "!team:test": {
+                        "timeline": {"limited": True, "prev_batch": "gap", "events": []}
+                    }
+                }
+            },
+        }),
+    ])
+
+    with pytest.raises(AgentTeamsUnavailableError, match="limited"):
+        gateway.sync_messages("s1", {"!team:test"})

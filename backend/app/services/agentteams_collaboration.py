@@ -931,10 +931,18 @@ class AgentTeamsCollaborationService:
             result["error_message"] = self._safe_tool_text(node.error_message)
         if self._serialized_tool_result_size(result) <= _MAX_SAFE_NODE_RESULT_BYTES:
             return result
+        payload = node.output_payload or {}
+        minimal_result = {
+            "summary": self._safe_tool_text(str(payload.get("summary", ""))),
+            "audit_ids": self._safe_audit_ids(payload.get("audit_ids", [])),
+        }
+        approval_ref = payload.get("approval_ref")
+        if isinstance(approval_ref, str) and self._safe_tool_text(approval_ref) == approval_ref:
+            minimal_result["approval_ref"] = approval_ref
         return {
             "client_task_key": self._safe_client_task_key(node.client_task_key),
             "status": node.status,
-            "result": {"summary": self._safe_tool_text(str((node.output_payload or {}).get("summary", ""))), "audit_ids": self._safe_audit_ids((node.output_payload or {}).get("audit_ids", []))},
+            "result": minimal_result,
             "truncated": True,
         }
 

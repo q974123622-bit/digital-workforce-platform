@@ -27,8 +27,8 @@ import { TimelinePanel } from './TimelinePanel';
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out', 'cancelled']);
 const LOCAL_DEMO_TEAM_ID = 'TEAM-ONBOARD';
-const LOCAL_DEMO_TITLE = '新员工入职准备复核';
-const LOCAL_DEMO_INSTRUCTION = '请协作完成新员工入职准备复核：HR核查制度和材料，IT核查账号与服务状态，至少一次跨Agent澄清或继续委派，最后汇总完成项、风险和后续动作。';
+const LOCAL_DEMO_TITLE = '岗位调整评估';
+const LOCAL_DEMO_INSTRUCTION = '评估张明的岗位调整是否可以按期完成。';
 const DEFAULT_TASK_TITLE = '岗位调整评估';
 const DEFAULT_TASK_GOAL = '评估张明的岗位调整是否可以按期完成。';
 const DATABASE_TEAM_ID = 'TEAM-DB-BENCH';

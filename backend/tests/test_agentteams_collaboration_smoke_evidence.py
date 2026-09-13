@@ -242,6 +242,24 @@ def test_main_rejects_local_demo_health_before_creating_a_task(smoke_module, mon
     assert "Matrix" in capsys.readouterr().out
 
 
+def test_main_disables_environment_proxy_for_loopback_backend(smoke_module, monkeypatch, capsys):
+    captured = {}
+    client = _FakeClient([
+        {"ready_for_demo": True, "mode": "local_demo", "transport": "local"}
+    ])
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return client
+
+    monkeypatch.setattr(smoke_module.sys, "argv", ["agentteams_collaboration_smoke.py"])
+    monkeypatch.setattr(smoke_module.httpx, "Client", fake_client)
+
+    assert smoke_module.main() == 2
+    capsys.readouterr()
+    assert captured["trust_env"] is False
+
+
 def test_main_uses_actor_query_for_create_and_every_task_read(smoke_module, monkeypatch, capsys):
     messages = _received_workers() + [
         _message(

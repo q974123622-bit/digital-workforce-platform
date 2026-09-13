@@ -476,7 +476,14 @@ class AgentRuntime:
         if decision.action == "complete":
             audit_ids = self._successful_audit_ids(context.get("evidence", []))
             if audit_ids:
-                return [*responses, self._reply(message, "task.result", "platform", {"result": self._text(decision.result), "audit_ids": audit_ids}, action_sequence)]
+                result_payload = {
+                    "result": self._text(decision.result),
+                    "audit_ids": audit_ids,
+                    **self._successful_evidence_references(context.get("evidence", [])),
+                }
+                return [*responses, self._reply(
+                    message, "task.result", "platform", result_payload, action_sequence,
+                )]
             if not context.get("completion_corrected"):
                 context["completion_corrected"] = True
                 context["evidence"] = self._append_evidence(context.get("evidence", []), {"kind": "runtime.rejected", "reason": "successful_tool_evidence_required"})
@@ -855,6 +862,18 @@ class AgentRuntime:
                 ):
                     return ids[:16]
         return []
+
+    def _successful_evidence_references(self, evidence: Any) -> dict[str, str]:
+        """Preserve only explicit, non-sensitive references from successful Tool data."""
+        if not isinstance(evidence, list):
+            return {}
+        for item in reversed(evidence):
+            value = item.get("value") if isinstance(item, Mapping) and item.get("kind") == "tool.result" else None
+            data = value.get("data") if isinstance(value, Mapping) and value.get("ok") is True else None
+            approval_ref = data.get("approval_ref") if isinstance(data, Mapping) else None
+            if self._safe_protocol_text(approval_ref):
+                return {"approval_ref": approval_ref}
+        return {}
 
     def _load_state(self) -> dict[str, Any]:
         default = {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}, "pending_outbox": None, "agent_id": None, "mxid": None, "heartbeat_at": None, "heartbeat_signature": None}

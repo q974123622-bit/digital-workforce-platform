@@ -13,6 +13,7 @@ from pathlib import Path
 import sys
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -206,7 +207,8 @@ def main() -> int:
         description="Run a configured AgentTeams collaboration smoke check without starting services."
     )
     parser.parse_args()
-    with httpx.Client(timeout=20.0) as client:
+    loopback = urlsplit(BASE_URL).hostname in {"127.0.0.1", "localhost", "::1"}
+    with httpx.Client(timeout=20.0, trust_env=not loopback) as client:
         try:
             health = _get_json(client, "/agentteams-collaboration/health")
         except (httpx.HTTPError, TypeError, ValueError):

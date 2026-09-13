@@ -183,6 +183,27 @@ function workerActions(node: AgentTaskNode, messages: AgentMessage[]) {
       pendingToolDecision = action === 'tool' ? step : undefined;
       continue;
     }
+    if (message.message_type === 'task.delegate') {
+      const subtasks = objectList(payload, 'subtasks');
+      const assignees = [...new Set(
+        subtasks.map((subtask) => stringValue(subtask, 'assignee_agent_id')).filter(Boolean),
+      )];
+      const detail = subtasks
+        .map((subtask) => {
+          const title = stringValue(subtask, 'title');
+          const instruction = stringValue(subtask, 'instruction');
+          return [title, instruction].filter(Boolean).join('：');
+        })
+        .filter(Boolean)
+        .join('；');
+      actions.push({
+        key: message.id,
+        title: `嵌套委派：${message.sender_agent_id} → ${assignees.join('、') || '未指定 Agent'}`,
+        description: detail,
+        kind: 'delegate',
+      });
+      continue;
+    }
     if (message.message_type === 'tool.request') {
       const name = stringValue(payload, 'tool_name') || '未标识工具';
       if (pendingToolDecision) {

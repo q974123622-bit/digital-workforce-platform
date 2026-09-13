@@ -758,10 +758,11 @@ def test_safe_child_results_are_bounded_and_redacted(db_session):
     run, leader = _create_run(db_session)
     _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("one", "VE-0002")])
     node = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
-    node.output_payload = {"deep": {"url": "https://secret.example/token", "token": "no"}, "items": ["x" * 10000] * 20, "audit_ids": [7]}
+    node.output_payload = {"deep": {"url": "https://secret.example/token", "token": "no"}, "items": ["x" * 10000] * 20, "audit_ids": [7], "approval_ref": "AUD-RC-001"}
     safe = AgentTeamsCollaborationService()._safe_child_results(db_session, run.id)
     assert safe[0]["truncated"] is True
     assert safe[0]["result"]["audit_ids"] == [7]
+    assert safe[0]["result"]["approval_ref"] == "AUD-RC-001"
     assert "token" not in str(safe)
 
 

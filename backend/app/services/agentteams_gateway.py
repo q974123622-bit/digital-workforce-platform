@@ -8,6 +8,7 @@
 本地 backend/.env gitignored），不入库、不落日志。
 """
 
+import json
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -15,6 +16,9 @@ from uuid import uuid4
 import httpx
 
 from . import config
+
+
+_MATRIX_SYNC_TIMELINE_LIMIT = 100
 
 
 class AgentTeamsUnavailableError(RuntimeError):
@@ -167,7 +171,13 @@ class AgentTeamsGateway:
         self, since: str | None, room_ids: set[str], timeout_ms: int = 0
     ) -> MatrixSyncBatch:
         token = self.login()
-        params = {"timeout": str(timeout_ms)}
+        params = {
+            "timeout": str(timeout_ms),
+            "filter": json.dumps(
+                {"room": {"timeline": {"limit": _MATRIX_SYNC_TIMELINE_LIMIT}}},
+                separators=(",", ":"),
+            ),
+        }
         if since:
             params["since"] = since
         response = self._client.get(
@@ -182,7 +192,10 @@ class AgentTeamsGateway:
         for room_id, room_data in (data.get("rooms", {}).get("join", {})).items():
             if room_id not in room_ids:
                 continue
-            for event in room_data.get("timeline", {}).get("events", []):
+            timeline = room_data.get("timeline", {})
+            if timeline.get("limited") is True:
+                raise AgentTeamsUnavailableError("sync返回limited时间线，拒绝推进游标")
+            for event in timeline.get("events", []):
                 content = event.get("content") or {}
                 if event.get("type") == "m.room.message" and content.get("msgtype") == "m.text":
                     events.append(

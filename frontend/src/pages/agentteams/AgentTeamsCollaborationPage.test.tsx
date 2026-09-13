@@ -889,8 +889,8 @@ describe('AgentTeams collaboration page', () => {
       expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
         team_id: 'TEAM-ONBOARD',
         leader_agent_id: 'VE-0001',
-        title: '新员工入职准备复核',
-        instruction: '请协作完成新员工入职准备复核：HR核查制度和材料，IT核查账号与服务状态，至少一次跨Agent澄清或继续委派，最后汇总完成项、风险和后续动作。',
+        title: '岗位调整评估',
+        instruction: '评估张明的岗位调整是否可以按期完成。',
         material: {},
       });
     });
@@ -1306,6 +1306,42 @@ describe('AgentTeams collaboration page', () => {
     expect(detail).toHaveTextContent('第1轮：决定调用 Tool');
     expect(detail).toHaveTextContent('向 Manager 返回节点结果');
     expect(detail).not.toHaveTextContent('需要先查询制度材料，才能给出有证据的结论。');
+  });
+
+  it('shows a worker-created subtask as nested delegation instead of a Manager round', async () => {
+    const routes = completedTaskRoutes();
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/messages'] = [
+      ...processMessages,
+      {
+        ...completedMessages[0],
+        id: 'AM-WORKER-DELEGATE',
+        message_type: 'task.delegate',
+        sender_agent_id: 'VE-0001',
+        receiver_agent_id: 'platform',
+        payload: {
+          payload: {
+            round: 2,
+            subtasks: [
+              {
+                client_task_key: 'worker-follow-up',
+                title: '补充材料复核',
+                instruction: '请协助确认岗位材料的生效时间。',
+                assignee_agent_id: 'VE-0002',
+              },
+            ],
+          },
+        },
+      },
+    ];
+    mockPageApi(routes);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: /选择任务 制度核查/ }));
+
+    const detail = screen.getByTestId('agentteams-node-detail');
+    expect(detail).toHaveTextContent('嵌套委派：VE-0001 → VE-0002');
+    expect(detail).toHaveTextContent('补充材料复核：请协助确认岗位材料的生效时间。');
+    expect(detail).not.toHaveTextContent('第2轮：派发子任务');
   });
 
   it('shows the Manager review and supplementary delegation in decision order', async () => {

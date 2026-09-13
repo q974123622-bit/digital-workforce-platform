@@ -3,6 +3,18 @@ from __future__ import annotations
 from app import models
 from app.services.agentteams_collaboration import AgentTeamsCollaborationService
 from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+from app.services.agentteams_role_change_scenario import (
+    ROLE_CHANGE_INSTRUCTION,
+    ROLE_CHANGE_TITLE,
+)
+
+
+ROLE_CHANGE_PLUGIN_IDS = {
+    "agentteams-role-change-hr",
+    "agentteams-role-change-it-plan",
+    "agentteams-role-change-audit",
+    "agentteams-role-change-it-activate",
+}
 
 
 def test_local_demo_completes_the_persisted_collaboration_loop(db_session, monkeypatch):
@@ -14,9 +26,9 @@ def test_local_demo_completes_the_persisted_collaboration_loop(db_session, monke
         db_session,
         team_id="TEAM-ONBOARD",
         leader_agent_id="VE-0001",
-        title="新员工入职协作",
-        instruction="完成入职材料、制度与 IT 账号准备核查",
-        material={"employee": "李四"},
+        title=ROLE_CHANGE_TITLE,
+        instruction=ROLE_CHANGE_INSTRUCTION,
+        material={},
     )
     run.owner_human_no = "E10281"
     db_session.commit()
@@ -25,7 +37,7 @@ def test_local_demo_completes_the_persisted_collaboration_loop(db_session, monke
     try:
         assert runner.transport_mode == "local_demo"
         assert runner.room_id == "local-demo"
-        for _ in range(10):
+        for _ in range(20):
             runner.tick_once(db_session)
             db_session.commit()
             db_session.refresh(run)
@@ -37,12 +49,47 @@ def test_local_demo_completes_the_persisted_collaboration_loop(db_session, monke
     root = db_session.get(models.AgentTaskNode, run.id)
     nodes = db_session.query(models.AgentTaskNode).filter_by(root_task_id=run.id).all()
     by_key = {node.client_task_key: node for node in nodes}
-    assert run.status == "completed"
+    diagnostic_messages = [
+        (message.direction, message.message_type, message.delivery_status, message.payload)
+        for message in db_session.query(models.AgentMessage)
+        .filter_by(root_task_id=run.id)
+        .order_by(models.AgentMessage.id)
+    ]
+    diagnostic_events = [
+        (event.event_type, event.summary, event.detail)
+        for event in db_session.query(models.AgentTaskEvent)
+        .filter_by(root_task_id=run.id)
+        .order_by(models.AgentTaskEvent.event_seq)
+    ]
+    assert run.status == "completed", {
+        "nodes": [(node.client_task_key, node.status, node.error_code) for node in nodes],
+        "rejections": [
+            event for event in diagnostic_events
+            if "reject" in event[0] or "failed" in event[0]
+        ],
+        "pending": [
+            message for message in diagnostic_messages
+            if message[2] not in {"received", "sent"}
+        ],
+    }
     assert root.status == "completed"
-    assert set(by_key) == {"root", "hr-policy", "it-account", "hr-it-check"}
-    assert by_key["hr-policy"].parent_task_id == root.id
-    assert by_key["it-account"].parent_task_id == root.id
-    assert by_key["hr-it-check"].parent_task_id == by_key["hr-policy"].id
+    assert set(by_key) == {
+        "root",
+        "role-change-hr",
+        "role-change-it-plan",
+        "role-change-audit",
+        "role-change-it-activate",
+    }
+    assert all(node.parent_task_id == root.id for key, node in by_key.items() if key != "root")
+    audit = by_key["role-change-audit"]
+    activation = by_key["role-change-it-activate"]
+    dependency = db_session.query(models.AgentTaskDependency).filter_by(
+        task_id=activation.id,
+        depends_on_task_id=audit.id,
+    ).one_or_none()
+    assert dependency is not None
+    graph = service.build_graph(db_session, run.id)
+    assert graph["current_round"] == 2
 
     events = db_session.query(models.AgentTaskEvent).filter_by(
         root_task_id=run.id
@@ -57,17 +104,17 @@ def test_local_demo_completes_the_persisted_collaboration_loop(db_session, monke
         "task.summary",
     } <= event_types
     tool_events = [event for event in events if event.event_type == "tool.result"]
-    assert len(tool_events) == 1
-    assert tool_events[0].detail["decision"] == "allow"
-    audit_ids = tool_events[0].detail["audit_ids"]
+    assert len(tool_events) == 4
+    assert all(event.detail["decision"] == "allow" for event in tool_events)
+    audit_ids = [audit_id for event in tool_events for audit_id in event.detail["audit_ids"]]
     assert audit_ids
     audits = db_session.query(models.AuditEvent).filter(
         models.AuditEvent.id.in_(audit_ids)
     ).all()
     assert len(audits) == len(audit_ids)
     assert all(audit.trace_id == run.trace_id for audit in audits)
-    assert all(audit.employee_id == "VE-0003" for audit in audits)
-    assert all(audit.plugin_id == "adp-onboarding" for audit in audits)
+    assert {audit.employee_id for audit in audits} == {"VE-0002", "VE-0003", "VE-0005"}
+    assert {audit.plugin_id for audit in audits} == ROLE_CHANGE_PLUGIN_IDS
     assert all(audit.action == "execute" and audit.decision == "allow" for audit in audits)
 
     messages = db_session.query(models.AgentMessage).filter_by(root_task_id=run.id).all()
@@ -87,6 +134,6 @@ def test_local_demo_completes_the_persisted_collaboration_loop(db_session, monke
     # for the separate strict Matrix / DeepSeek acceptance scripts.
     assert all(not event_id.startswith("$") for event_id in outbound_ids | inbound_ids)
     assert any(message.message_type == "tool.result" for message in messages)
-    assert "已完成事项" in run.summary
-    assert "风险" in run.summary
-    assert "下一步" in run.summary
+    assert "岗位调整" in run.summary
+    assert "审计" in run.summary
+    assert "权限激活" in run.summary

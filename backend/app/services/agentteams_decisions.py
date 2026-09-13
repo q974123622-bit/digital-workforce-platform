@@ -13,6 +13,11 @@ from typing import Any, Callable, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from .agentteams_role_change_scenario import (
+    ROLE_CHANGE_FIRST_ROUND_CAPABILITIES,
+    ROLE_CHANGE_SECOND_ROUND_CAPABILITIES,
+    ROLE_CHANGE_SKILL_ID,
+)
 from .agentteams_skills import ProjectSkillRegistry, SkillRegistryError
 from .llm import LLMProvider, LLMUnavailableError
 
@@ -270,16 +275,16 @@ class AgentDecisionEngine:
         manager_skill = self.skills.load([context.manager_skill_id])[0]
         selected_skills = self.skills.load(context.selected_skill_ids)
         scenario_execution_contract: dict[str, Any] = {}
-        if "agentteams-role-change-readiness" in context.selected_skill_ids:
+        if ROLE_CHANGE_SKILL_ID in context.selected_skill_ids:
             if not context.child_results:
                 scenario_execution_contract = {
                     "required_action": "delegate",
-                    "parallel_capabilities": ["hr.role_change.read", "it.permission.plan"],
+                    "parallel_capabilities": sorted(ROLE_CHANGE_FIRST_ROUND_CAPABILITIES),
                 }
             elif context.current_round == 1:
                 scenario_execution_contract = {
                     "required_action": "delegate",
-                    "serial_capabilities": ["audit.permission.review", "it.permission.activate"],
+                    "serial_capabilities": sorted(ROLE_CHANGE_SECOND_ROUND_CAPABILITIES),
                     "dependency": "it.permission.activate depends_on audit.permission.review",
                 }
             else:
@@ -578,7 +583,7 @@ def _validate_role_change_manager_decision(
     decision: ManagerDecision,
 ) -> None:
     """Keep the fixed role-change demo evidence-led without replacing model planning."""
-    if "agentteams-role-change-readiness" not in context.selected_skill_ids:
+    if ROLE_CHANGE_SKILL_ID not in context.selected_skill_ids:
         return
 
     by_capability = {
@@ -586,7 +591,7 @@ def _validate_role_change_manager_decision(
         for subtask in decision.subtasks
     }
     if not context.child_results:
-        expected = {"hr.role_change.read", "it.permission.plan"}
+        expected = ROLE_CHANGE_FIRST_ROUND_CAPABILITIES
         if (
             decision.action != "delegate"
             or set(by_capability) != expected
@@ -596,7 +601,7 @@ def _validate_role_change_manager_decision(
         return
 
     if context.current_round == 1:
-        expected = {"audit.permission.review", "it.permission.activate"}
+        expected = ROLE_CHANGE_SECOND_ROUND_CAPABILITIES
         audit = by_capability.get("audit.permission.review")
         activation = by_capability.get("it.permission.activate")
         if (

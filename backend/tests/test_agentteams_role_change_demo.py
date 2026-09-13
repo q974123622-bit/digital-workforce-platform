@@ -7,7 +7,17 @@ import pytest
 from fastapi import HTTPException
 
 from app import models
+from app.services.agentteams_local_scenario import (
+    LOCAL_DEMO_INSTRUCTION,
+    LOCAL_DEMO_TITLE,
+)
 from app.services.agentteams_skills import ProjectSkillRegistry
+from app.services.agentteams_role_change_scenario import (
+    ROLE_CHANGE_FIRST_ROUND_CAPABILITIES,
+    ROLE_CHANGE_INSTRUCTION,
+    ROLE_CHANGE_SECOND_ROUND_CAPABILITIES,
+    ROLE_CHANGE_TITLE,
+)
 from app.services.gateway import invoke_plugin
 
 
@@ -32,6 +42,20 @@ def _invoke(db_session, employee_id: str, plugin_id: str, params: dict):
         params=params,
         trace_id=f"ROLE-CHANGE-{employee_id}-{plugin_id}",
     )
+
+
+def test_local_and_matrix_role_change_rules_share_one_contract():
+    """A local-only title or capability set would make the two runtimes drift again."""
+    assert LOCAL_DEMO_TITLE == ROLE_CHANGE_TITLE
+    assert LOCAL_DEMO_INSTRUCTION == ROLE_CHANGE_INSTRUCTION
+    assert ROLE_CHANGE_FIRST_ROUND_CAPABILITIES == {
+        "hr.role_change.read",
+        "it.permission.plan",
+    }
+    assert ROLE_CHANGE_SECOND_ROUND_CAPABILITIES == {
+        "audit.permission.review",
+        "it.permission.activate",
+    }
 
 
 @pytest.mark.parametrize(

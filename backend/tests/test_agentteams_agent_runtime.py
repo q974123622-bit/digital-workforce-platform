@@ -330,7 +330,7 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
         member["mxid"] = f"@{member['agent_id'].lower()}:must-not-reach-model"
         member["token"] = "must-not-reach-model"
     assignment = message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=payload)
-    tool_result = message(type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1", payload={"ok": True, "audit_ids": [101], "data": {"source": "demo", "key": "drop", "note": "api_key: exposed password=hidden"}, "team_capability_catalog": manager_payload()["team_capability_catalog"], "team_catalog_version": 2}, key="tool")
+    tool_result = message(type="tool.result", sender="platform", receiver="VE-0002", parent_task_id="root-1", payload={"ok": True, "audit_ids": [101], "data": {"source": "demo", "approval_ref": "AUD-RC-001", "key": "drop", "note": "api_key: exposed password=hidden"}, "team_capability_catalog": manager_payload()["team_capability_catalog"], "team_catalog_version": 2}, key="tool")
     gateway.events = [event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1), event(tool_result, event_id="$tool", ts=2)]
 
     subject.run_once()
@@ -340,6 +340,7 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     assert sent[3].receiver == "platform"
     assert sent[3].payload["plugin_id"] == "agentteams-onboarding-employee"
     assert sent[-1].payload["audit_ids"] == [101]
+    assert sent[-1].payload["approval_ref"] == "AUD-RC-001"
     assert engine.worker_contexts[0].task["goal"] == "核验新员工A的完整HR入职材料，并报告缺口。"
     assert engine.worker_contexts[0].current_agent_id == "VE-0002"
     assert engine.worker_contexts[0].current_team_capability_catalog == [
