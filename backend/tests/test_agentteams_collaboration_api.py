@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -346,6 +347,114 @@ def test_submit_returns_created_agentteams_task(client, db_session, monkeypatch)
         task_id=body["id"], message_type="task.submit"
     ).one()
     assert submit.payload["thinking_enabled"] is False
+
+
+def test_submit_without_team_lets_manager_select_team_leader(
+    client, db_session, monkeypatch
+):
+    from app.routers import agentteams_collaboration
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    _stub_health(monkeypatch, READY_HEALTH)
+    observed = {}
+
+    class FakeSelectionEngine:
+        def select_team(self, context):
+            observed["context"] = context
+            return SimpleNamespace(
+                action="delegate",
+                team_id="TEAM-ONBOARD",
+                leader_agent_id="VE-0001",
+                reason="任务与新员工入职团队的职责匹配。",
+                reasoning_content="",
+            )
+
+    monkeypatch.setattr(
+        agentteams_collaboration,
+        "_team_selection_engine",
+        lambda: FakeSelectionEngine(),
+    )
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "title": "入职协作",
+            "instruction": "完成制度和账号核查",
+            "material": {},
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["team_id"] == "TEAM-ONBOARD"
+    assert {item.team_id for item in observed["context"].team_catalog} >= {
+        "TEAM-ONBOARD", "TEAM-DB-BENCH"
+    }
+    root = db_session.get(models.AgentTaskNode, body["id"])
+    assert root.assignee_agent_id == "VE-0001"
+    selected = db_session.query(models.AgentTaskEvent).filter_by(
+        root_task_id=body["id"], event_type="team.selected"
+    ).one()
+    assert selected.target_agent_id == "VE-0001"
+    assert selected.detail == {
+        "team_id": "TEAM-ONBOARD",
+        "leader_agent_id": "VE-0001",
+        "reason": "任务与新员工入职团队的职责匹配。",
+        "selection_mode": "manager",
+    }
+
+
+def test_local_demo_manager_selects_its_fixed_team_without_a_model_key(
+    client, monkeypatch
+):
+    from app.routers import agentteams_collaboration
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "local_demo")
+    monkeypatch.setattr(
+        agentteams_collaboration,
+        "_team_selection_engine",
+        lambda: (_ for _ in ()).throw(AssertionError("fixed demo must not call a model")),
+    )
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "title": LOCAL_DEMO_TITLE,
+            "instruction": LOCAL_DEMO_INSTRUCTION,
+            "material": {},
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["team_id"] == "TEAM-ONBOARD"
+
+
+def test_submit_rejects_half_explicit_team_override_without_calling_manager(
+    client, monkeypatch
+):
+    from app.routers import agentteams_collaboration
+
+    monkeypatch.setattr(
+        agentteams_collaboration,
+        "_team_selection_engine",
+        lambda: (_ for _ in ()).throw(AssertionError("manager must not run")),
+    )
+
+    response = client.post(
+        "/api/v1/agentteams-collaboration/tasks",
+        params={"actor_no": ACTOR_NO},
+        json={
+            "team_id": "TEAM-ONBOARD",
+            "title": "入职协作",
+            "instruction": "完成制度和账号核查",
+            "material": {},
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_submit_returns_503_when_environment_is_not_ready_without_creating_task(

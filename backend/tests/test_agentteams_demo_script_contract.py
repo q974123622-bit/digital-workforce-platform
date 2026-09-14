@@ -102,9 +102,10 @@ def test_real_demo_synapse_probe_bypasses_host_proxy_for_loopback():
 def test_local_demo_health_probes_bypass_host_proxy():
     source = SCRIPT.read_text(encoding="utf-8")
 
-    assert "Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method Get -TimeoutSec 2 -NoProxy" in source
-    assert "Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 2 -NoProxy" in source
-    assert "Invoke-RestMethod -Uri $collaborationHealthUrl -Method Get -TimeoutSec 10 -NoProxy" in source
+    assert "function Invoke-AgentTeamsLocalGet" in source
+    assert "$request.Proxy = $null" in source
+    assert "Invoke-AgentTeamsLocalGet -Uri $Uri -TimeoutSeconds 2" in source
+    assert "Invoke-AgentTeamsLocalGet -Uri $collaborationHealthUrl -TimeoutSeconds 10" in source
 
 
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is required to probe demo mode selection")

@@ -75,7 +75,13 @@ def _next_employee_no(db: Session, type: str, source: str | None) -> str:
     rows = db.scalars(
         select(models.DigitalEmployee.employee_no).where(models.DigitalEmployee.employee_no.like(f"{prefix}-%"))
     ).all()
-    max_n = max((int(n.split("-")[1]) for n in rows if "-" in n), default=0)
+    numeric_suffixes = [
+        int(suffix)
+        for employee_no in rows
+        for suffix in [employee_no.removeprefix(f"{prefix}-")]
+        if suffix.isdigit()
+    ]
+    max_n = max(numeric_suffixes, default=0)
     return f"{prefix}-{max_n + 1:04d}"
 
 

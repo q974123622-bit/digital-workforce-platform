@@ -89,6 +89,34 @@ function Start-AgentTeamsFrontendProcess {
         -PassThru
 }
 
+function Invoke-AgentTeamsLocalGet {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [int]$TimeoutSeconds = 2
+    )
+
+    # HttpWebRequest is available in both Windows PowerShell 5.1 and PowerShell
+    # 7. Setting Proxy to null keeps localhost health checks away from any
+    # machine-level HTTP proxy without relying on the newer -NoProxy switch.
+    $request = [System.Net.HttpWebRequest]::Create($Uri)
+    $request.Method = 'GET'
+    $request.Proxy = $null
+    $request.Timeout = $TimeoutSeconds * 1000
+    $response = $null
+    $reader = $null
+    try {
+        $response = $request.GetResponse()
+        $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+        return [pscustomobject]@{
+            StatusCode = [int]$response.StatusCode
+            Content = $reader.ReadToEnd()
+        }
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        if ($null -ne $response) { $response.Dispose() }
+    }
+}
+
 function Wait-AgentTeamsHttpReady {
     param(
         [Parameter(Mandatory = $true)][string]$Uri,
@@ -103,7 +131,7 @@ function Wait-AgentTeamsHttpReady {
             return $false
         }
         try {
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method Get -TimeoutSec 2 -NoProxy
+            $response = Invoke-AgentTeamsLocalGet -Uri $Uri -TimeoutSeconds 2
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
                 return $true
             }
@@ -131,7 +159,8 @@ function Wait-AgentTeamsBackendReady {
             return $false
         }
         try {
-            $health = Invoke-RestMethod -Uri $Uri -Method Get -TimeoutSec 2 -NoProxy
+            $response = Invoke-AgentTeamsLocalGet -Uri $Uri -TimeoutSeconds 2
+            $health = $response.Content | ConvertFrom-Json
             if ($health.status -eq 'ok') {
                 return $true
             }
@@ -256,7 +285,8 @@ try {
     $collaborationReason = 'Backend health check failed or collaboration health endpoint is unavailable'
     if ($backendReady) {
         try {
-            $collaborationHealth = Invoke-RestMethod -Uri $collaborationHealthUrl -Method Get -TimeoutSec 10 -NoProxy
+            $collaborationResponse = Invoke-AgentTeamsLocalGet -Uri $collaborationHealthUrl -TimeoutSeconds 10
+            $collaborationHealth = $collaborationResponse.Content | ConvertFrom-Json
             $collaborationReady = $collaborationHealth.ready_for_demo -eq $true
             $collaborationStatus = if ($collaborationReady) { 'ready' } else { 'blocked' }
             $collaborationReason = [string]$collaborationHealth.reason

@@ -683,7 +683,15 @@ def test_agentteams_run_is_materialized_by_existing_collaboration_state_machine(
             root_task_id=result.task_run_id,
         )
     }
-    assert {"task.delegate", "task.assigned", "tool.result", "task.completed", "task.summary"} <= event_types
+    assert {
+        "task.delegate",
+        "task.assigned",
+        "tool.result",
+        "task.result.submitted",
+        "task.result.accepted",
+        "task.completed",
+        "task.summary",
+    } <= event_types
 
 
 def test_database_benchmark_uses_its_seeded_team_catalog_in_global_strict_mode(db_session, monkeypatch):

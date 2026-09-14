@@ -622,8 +622,8 @@ class ClearConversationOut(BaseModel):
 
 
 class AgentCollaborationTaskCreateIn(BaseModel):
-    team_id: str
-    leader_agent_id: str
+    team_id: str | None = None
+    leader_agent_id: str | None = None
     title: str
     instruction: str
     material: dict = Field(default_factory=dict)
@@ -640,6 +640,8 @@ class AgentTaskNodeOut(BaseModel):
     title: str
     coordinator_agent_id: str
     assignee_agent_id: str
+    node_kind: str
+    revision_of_task_id: str | None
     status: str
     progress: int
     depth: int

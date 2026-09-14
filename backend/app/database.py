@@ -48,6 +48,28 @@ def ensure_schema_compatibility() -> None:
             connection.execute(
                 text("ALTER TABLE task_run ADD COLUMN owner_human_no VARCHAR NOT NULL DEFAULT ''")
             )
+    task_node_columns = {
+        column["name"] for column in inspector.get_columns("agent_task_node")
+    }
+    if task_node_columns and "node_kind" not in task_node_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE agent_task_node ADD COLUMN "
+                    "node_kind VARCHAR NOT NULL DEFAULT 'worker_task'"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE agent_task_node SET node_kind = 'mission' "
+                    "WHERE parent_task_id IS NULL"
+                )
+            )
+    if task_node_columns and "revision_of_task_id" not in task_node_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE agent_task_node ADD COLUMN revision_of_task_id VARCHAR")
+            )
 
 
 def get_db():

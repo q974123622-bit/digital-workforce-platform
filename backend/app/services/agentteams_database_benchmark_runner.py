@@ -659,20 +659,13 @@ class DatabaseBenchmarkRunEngine:
                 text=report.finding,
                 suffix=f"{role}-decision-basis",
             )
-            collaboration.apply_message(
-                self.db,
-                matrix_sender=self._matrix_sender(child.assignee_agent_id),
-                message=self._protocol_message(
-                    request=request,
-                    message_type="task.result",
-                    root_task_id=task_run.id,
-                    task_id=child.id,
-                    parent_task_id=task_run.id,
-                    sender=child.assignee_agent_id,
-                    receiver=manager_id,
-                    suffix=f"{role}-result",
-                    payload={**report_payload, "summary": report.finding},
-                ),
+            self._submit_and_accept_result(
+                collaboration=collaboration,
+                request=request,
+                node=child,
+                coordinator_agent_id=manager_id,
+                suffix=f"{role}-result",
+                payload={**report_payload, "summary": report.finding},
             )
 
         expected_child_results = len(plan.assignments)
@@ -898,20 +891,13 @@ class DatabaseBenchmarkRunEngine:
                     suffix=f"{followup_key}-decision-basis",
                     iteration=2,
                 )
-                collaboration.apply_message(
-                    self.db,
-                    matrix_sender=sender_mxid,
-                    message=self._protocol_message(
-                        request=request,
-                        message_type="task.result",
-                        root_task_id=task_run.id,
-                        task_id=followup.id,
-                        parent_task_id=task_run.id,
-                        sender=assignment.assignee_agent_id,
-                        receiver=manager_id,
-                        suffix=f"{followup_key}-result",
-                        payload={**report_payload, "summary": report.finding},
-                    ),
+                self._submit_and_accept_result(
+                    collaboration=collaboration,
+                    request=request,
+                    node=followup,
+                    coordinator_agent_id=manager_id,
+                    suffix=f"{followup_key}-result",
+                    payload={**report_payload, "summary": report.finding},
                 )
                 expected_child_results += 1
                 summary_request = (
@@ -1178,6 +1164,48 @@ class DatabaseBenchmarkRunEngine:
             timestamp=datetime.now(timezone.utc).isoformat(),
             idempotency_key=f"{root_task_id}:{suffix}",
             payload=payload,
+        )
+
+    def _submit_and_accept_result(
+        self,
+        *,
+        collaboration: AgentTeamsCollaborationService,
+        request: BenchmarkRunRequest,
+        node: models.AgentTaskNode,
+        coordinator_agent_id: str,
+        suffix: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Exercise the same worker submission and coordinator review gate as live runs."""
+        collaboration.apply_message(
+            self.db,
+            matrix_sender=self._matrix_sender(node.assignee_agent_id),
+            message=self._protocol_message(
+                request=request,
+                message_type="task.result",
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                parent_task_id=node.parent_task_id,
+                sender=node.assignee_agent_id,
+                receiver=coordinator_agent_id,
+                suffix=suffix,
+                payload=payload,
+            ),
+        )
+        collaboration.apply_message(
+            self.db,
+            matrix_sender=self._matrix_sender(coordinator_agent_id),
+            message=self._protocol_message(
+                request=request,
+                message_type="task.result.accepted",
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                parent_task_id=node.parent_task_id,
+                sender=coordinator_agent_id,
+                receiver=node.assignee_agent_id,
+                suffix=f"{suffix}-accepted",
+                payload={"feedback": "benchmark result passed coordinator review"},
+            ),
         )
 
     def _inspect(

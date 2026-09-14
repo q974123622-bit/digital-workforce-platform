@@ -5,7 +5,6 @@ import json
 
 from app import models
 from app.routers import agentteams_collaboration
-from app.services.agentteams_gateway import AgentTeamsResult
 from app.services.agentteams_agent_runtime import heartbeat_signature
 from app.services.agentteams_local_scenario import LOCAL_DEMO_INSTRUCTION, LOCAL_DEMO_TITLE
 
@@ -115,34 +114,97 @@ def test_strict_readiness_for_one_team_cannot_authorize_another_team(client, db_
     assert response.status_code == 503
 
 
-def _configure_matrix_preflight(monkeypatch) -> None:
-    values = {
-        agentteams_collaboration.config.AGENTTEAMS_MATRIX_URL: "https://matrix.test",
-        agentteams_collaboration.config.AGENTTEAMS_MATRIX_TOKEN: "test-token",
-        agentteams_collaboration.config.AGENTTEAMS_ROOM_ID: "!room:matrix.test",
-        agentteams_collaboration.config.AGENTTEAMS_MANAGER_MXID: "@manager:matrix.test",
+STRICT_HEALTH_ROLES = {
+    "manager": ("VE-0001", "agentteams-onboarding-readiness"),
+    "hr": ("VE-0002", "hr-onboarding-assistant"),
+    "it": ("VE-0003", "it-service-assistant"),
+    "audit": ("VE-0005", "audit-evidence-review"),
+    "hr_material": ("VE-HR-MATERIAL", "hr-material-specialist"),
+    "hr_training": ("VE-HR-TRAINING", "hr-training-specialist"),
+    "it_account": ("VE-IT-ACCOUNT", "it-account-specialist"),
+    "it_device": ("VE-IT-DEVICE", "it-device-specialist"),
+}
+
+
+def _install_full_strict_health_runtime(db_session, monkeypatch, tmp_path):
+    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
+    identities = {
+        agent_id: (f"@{role}:matrix.test", f"{role}-secret")
+        for role, (agent_id, _skill_id) in STRICT_HEALTH_ROLES.items()
     }
-    monkeypatch.setattr(
-        agentteams_collaboration.config, "agentteams_collaboration_enabled", lambda: True
-    )
-    monkeypatch.setattr(
-        agentteams_collaboration.config, "get", lambda key, default=None: values.get(key, default)
-    )
+    config_path = tmp_path / "runtime.json"
+    config_path.write_text(json.dumps({
+        "matrix_url": "https://matrix.test",
+        "room_id": "!room:matrix.test",
+        "team_id": "TEAM-ONBOARD",
+        "platform": {"mxid": "@platform:matrix.test", "token": "platform-secret"},
+        "agents": {
+            role: {
+                "agent_id": agent_id,
+                "mxid": identities[agent_id][0],
+                "token": identities[agent_id][1],
+                "allowed_skill_ids": [skill_id],
+                "safe_tool_catalog": [],
+            }
+            for role, (agent_id, skill_id) in STRICT_HEALTH_ROLES.items()
+        },
+        "team_catalog": {},
+        "team_relationships": {
+            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+            "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
+            "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
+            "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": []},
+            "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
+            "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
+            "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
+            "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(config_path))
+    for agent_id, (mxid, _token) in identities.items():
+        employee = db_session.get(models.DigitalEmployee, agent_id)
+        employee.runtime_type, employee.runtime_ref, employee.status = "agentteams", mxid, "active"
+    db_session.flush()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    for agent_id, (mxid, token) in identities.items():
+        heartbeat = datetime.now(timezone.utc).isoformat()
+        (state_dir / f"{agent_id}.json").write_text(json.dumps({
+            "agent_id": agent_id,
+            "mxid": mxid,
+            "heartbeat_at": heartbeat,
+            "heartbeat_signature": heartbeat_signature(agent_id, mxid, heartbeat, token),
+        }), encoding="utf-8")
+    return identities
 
 
-def test_health_rejects_whitespace_worker_runtime_refs(client, db_session, monkeypatch):
+def test_health_rejects_whitespace_worker_runtime_refs(
+    client, db_session, monkeypatch, tmp_path
+):
     """Health must resolve runtime refs with the same strictness as authorization."""
-    _configure_matrix_preflight(monkeypatch)
-    monkeypatch.setattr(
-        agentteams_collaboration.AgentTeamsGateway,
-        "health",
-        lambda _self, _room_id: AgentTeamsResult(ok=True, mode="agentteams", detail="ready"),
+    identities = _install_full_strict_health_runtime(
+        db_session, monkeypatch, tmp_path
     )
-    for worker in db_session.query(models.DigitalEmployee).filter_by(runtime_type="agentteams"):
-        worker.runtime_type = "demo"
+
+    class ReadyGateway:
+        def __init__(self, *, matrix_token, **_kwargs):
+            self.token = matrix_token
+
+        def whoami(self):
+            expected = {"platform-secret": "@platform:matrix.test"}
+            expected.update({token: mxid for mxid, token in identities.values()})
+            return expected[self.token]
+
+        def joined_members(self, _room_id):
+            return {"@platform:matrix.test", *(mxid for mxid, _token in identities.values())}
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(agentteams_collaboration, "AgentTeamsGateway", ReadyGateway)
     for worker_id, runtime_ref in (("VE-0002", "worker one"), ("VE-0003", "worker two")):
         worker = db_session.get(models.DigitalEmployee, worker_id)
-        worker.runtime_type = "agentteams"
         worker.runtime_ref = runtime_ref
     db_session.flush()
 
@@ -150,49 +212,16 @@ def test_health_rejects_whitespace_worker_runtime_refs(client, db_session, monke
 
     assert response.status_code == 200
     assert response.json()["ready_for_demo"] is False
-    assert "至少需要两名指定Worker" in response.json()["reason"]
+    assert "平台绑定与运行配置不一致" in response.json()["reason"]
 
 
 def test_health_closes_every_constructed_gateway_when_membership_check_raises(
     client, db_session, monkeypatch, tmp_path
 ):
-    """A five-account strict check closes all clients and fails closed on membership error."""
-    monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
-    monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
-    config_path = tmp_path / "runtime.json"
-    skills = {
-        "manager": "agentteams-onboarding-readiness", "hr": "hr-onboarding-assistant",
-        "it": "it-service-assistant", "audit": "audit-evidence-review",
-    }
-    config_path.write_text(json.dumps({
-        "matrix_url": "https://matrix.test", "room_id": "!room:matrix.test", "team_id": "TEAM-ONBOARD",
-        "platform": {"mxid": "@platform:matrix.test", "token": "platform-secret"},
-        "agents": {
-            "manager": {"agent_id": "VE-0001", "mxid": "@manager:matrix.test", "token": "manager-secret", "allowed_skill_ids": [skills["manager"]], "safe_tool_catalog": []},
-            "hr": {"agent_id": "VE-0002", "mxid": "@hr:matrix.test", "token": "hr-secret", "allowed_skill_ids": [skills["hr"]], "safe_tool_catalog": []},
-            "it": {"agent_id": "VE-0003", "mxid": "@it:matrix.test", "token": "it-secret", "allowed_skill_ids": [skills["it"]], "safe_tool_catalog": []},
-            "audit": {"agent_id": "VE-0005", "mxid": "@audit:matrix.test", "token": "audit-secret", "allowed_skill_ids": [skills["audit"]], "safe_tool_catalog": []},
-        }, "team_catalog": {},
-    }), encoding="utf-8")
-    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(config_path))
-    for agent_id, mxid in (("VE-0001", "@manager:matrix.test"), ("VE-0002", "@hr:matrix.test"), ("VE-0003", "@it:matrix.test"), ("VE-0005", "@audit:matrix.test")):
-        employee = db_session.get(models.DigitalEmployee, agent_id)
-        employee.runtime_type, employee.runtime_ref, employee.status = "agentteams", mxid, "active"
-    db_session.flush()
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    identities = {
-        "VE-0001": ("@manager:matrix.test", "manager-secret"),
-        "VE-0002": ("@hr:matrix.test", "hr-secret"),
-        "VE-0003": ("@it:matrix.test", "it-secret"),
-        "VE-0005": ("@audit:matrix.test", "audit-secret"),
-    }
-    for agent_id, (mxid, token) in identities.items():
-        heartbeat = datetime.now(timezone.utc).isoformat()
-        (state_dir / f"{agent_id}.json").write_text(json.dumps({
-            "agent_id": agent_id, "mxid": mxid, "heartbeat_at": heartbeat,
-            "heartbeat_signature": heartbeat_signature(agent_id, mxid, heartbeat, token),
-        }), encoding="utf-8")
+    """A nine-account strict check closes all clients and fails closed."""
+    identities = _install_full_strict_health_runtime(
+        db_session, monkeypatch, tmp_path
+    )
 
     class FailingGateway:
         constructed = []
@@ -202,10 +231,9 @@ def test_health_closes_every_constructed_gateway_when_membership_check_raises(
             self.constructed.append(self)
 
         def whoami(self):
-            return {
-                "platform-secret": "@platform:matrix.test", "manager-secret": "@manager:matrix.test",
-                "hr-secret": "@hr:matrix.test", "it-secret": "@it:matrix.test", "audit-secret": "@audit:matrix.test",
-            }[self.token]
+            expected = {"platform-secret": "@platform:matrix.test"}
+            expected.update({token: mxid for mxid, token in identities.values()})
+            return expected[self.token]
 
         def joined_members(self, _room_id):
             raise RuntimeError("membership unavailable")
@@ -220,6 +248,6 @@ def test_health_closes_every_constructed_gateway_when_membership_check_raises(
     assert response.status_code == 200
     body = response.json()
     assert body["ready_for_demo"] is False
-    assert len(FailingGateway.constructed) == 5
+    assert len(FailingGateway.constructed) == 9
     assert all(item.closed for item in FailingGateway.constructed)
     assert "secret" not in json.dumps(body).lower()

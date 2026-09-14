@@ -336,6 +336,29 @@ def test_tool_result_completes_it_account_task():
     assert messages[0].payload["audit_ids"] == ["AUD-1"]
 
 
+def test_submitted_result_is_accepted_by_the_receiving_coordinator():
+    transport = LocalDemoTransport()
+    review_request = _message(
+        "task.result.submitted",
+        task_id="AT-WORKER",
+        parent_task_id="AT-LEADER",
+        receiver="VE-0002",
+        payload={
+            "title": "核查材料",
+            "assignee_agent_id": "VE-0003",
+            "result": {"result": "材料已核查"},
+        },
+    )
+
+    _send(transport, review_request)
+    messages = _messages(transport.sync_messages(None, {ROOM_ID}))
+
+    assert [message.type for message in messages] == ["task.result.accepted"]
+    assert messages[0].sender == "VE-0002"
+    assert messages[0].receiver == "platform"
+    assert messages[0].payload["feedback"] == "本地演示结果验收通过"
+
+
 @pytest.mark.parametrize(
     ("task_id", "parent_task_id", "receiver", "expected_sender", "expected_type", "phrases"),
     [

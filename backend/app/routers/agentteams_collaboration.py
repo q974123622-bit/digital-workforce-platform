@@ -32,6 +32,11 @@ from ..services.agentteams_collaboration import (
 )
 from ..services.agentteams_gateway import AgentTeamsGateway
 from ..services.agentteams_agent_runtime import heartbeat_signature
+from ..services.agentteams_decisions import (
+    AgentDecisionEngine,
+    AgentDecisionError,
+    TeamSelectionContext,
+)
 from ..services.agentteams_database_collaboration import (
     DATABASE_TEAM_ID,
     enqueue_database_collaboration_task,
@@ -39,7 +44,9 @@ from ..services.agentteams_database_collaboration import (
 from ..services.agentteams_database_scenarios import DatabaseScenarioCatalog
 from ..services.agentteams_evaluation import AgentTeamsEvaluator
 from ..services.agentteams_runtime_config import default_runtime_config_path, load_strict_runtime_config
-from ..services.llm import DeepSeekProvider
+from ..services.agentteams_skills import ProjectSkillRegistry
+from ..services.agentteams_team_selection import build_manager_team_catalog
+from ..services.llm import DeepSeekProvider, LLMUnavailableError
 from ..services.agentteams_local_scenario import (
     LOCAL_DEMO_INSTRUCTION,
     LOCAL_DEMO_LEADER_ID,
@@ -52,7 +59,9 @@ from ..services.agentteams_local_scenario import (
 
 router = APIRouter(prefix="/agentteams-collaboration", tags=["agentteams-collaboration"])
 
-_TERMINAL_STATUSES = {"completed", "failed", "timed_out", "cancelled"}
+_TERMINAL_STATUSES = {
+    "completed", "failed", "timed_out", "cancelled", "revision_requested"
+}
 _LOCAL_DEMO_TEAM_ID = LOCAL_DEMO_TEAM_ID
 _LOCAL_DEMO_LEADER_ID = LOCAL_DEMO_LEADER_ID
 _LOCAL_DEMO_WORKER_IDS = LOCAL_DEMO_WORKER_IDS
@@ -401,6 +410,14 @@ def _service() -> AgentTeamsCollaborationService:
     )
 
 
+def _team_selection_engine() -> AgentDecisionEngine:
+    api_key = config.get("DEEPSEEK_API_KEY_MANAGER") or config.get("DEEPSEEK_API_KEY")
+    return AgentDecisionEngine(
+        DeepSeekProvider(api_key=api_key),
+        ProjectSkillRegistry.from_root(_PROJECT_ROOT),
+    )
+
+
 def _build_evaluator() -> AgentTeamsEvaluator:
     api_key = config.get("DEEPSEEK_API_KEY_MANAGER") or config.get("DEEPSEEK_API_KEY")
     return AgentTeamsEvaluator(DeepSeekProvider(api_key=api_key))
@@ -579,47 +596,98 @@ def create_task(
     db: Session = Depends(get_db),
 ):
     actor = _require_actor(db, actor_no)
-    team = db.get(models.Team, payload.team_id)
+    if (payload.team_id is None) != (payload.leader_agent_id is None):
+        raise HTTPException(status_code=422, detail="team_id和leader_agent_id必须同时提供")
+    selection_mode = "manual"
+    selection_reason = "调用方显式指定团队。"
+    team_id = payload.team_id
+    leader_agent_id = payload.leader_agent_id
+    if team_id is None:
+        catalog = build_manager_team_catalog(db)
+        if not catalog:
+            raise HTTPException(status_code=409, detail="没有可用的AgentTeams团队")
+        # The credential-free local demo has one checked-in business script.
+        # Keep it deterministic while the strict/general path uses the Manager model.
+        fixed_local_candidate = next(
+            (item for item in catalog if item["team_id"] == _LOCAL_DEMO_TEAM_ID),
+            None,
+        )
+        if (
+            config.agentteams_mode() == "local_demo"
+            and payload.title == LOCAL_DEMO_TITLE
+            and payload.instruction == LOCAL_DEMO_INSTRUCTION
+            and payload.material == LOCAL_DEMO_MATERIAL
+            and fixed_local_candidate is not None
+        ):
+            team_id = fixed_local_candidate["team_id"]
+            leader_agent_id = fixed_local_candidate["leader_agent_id"]
+            selection_reason = "本地演示任务与预置入职团队职责匹配。"
+        else:
+            try:
+                decision = _team_selection_engine().select_team(TeamSelectionContext(
+                    user_goal=f"{payload.title}\n{payload.instruction}",
+                    team_catalog=catalog,
+                ))
+            except (AgentDecisionError, LLMUnavailableError) as exc:
+                raise HTTPException(status_code=503, detail="Manager团队选择失败") from exc
+            if decision.action != "delegate":
+                raise HTTPException(status_code=409, detail=decision.reason)
+            team_id = decision.team_id
+            leader_agent_id = decision.leader_agent_id
+            selection_reason = decision.reason
+        selection_mode = "manager"
+    assert team_id is not None and leader_agent_id is not None
+    team = db.get(models.Team, team_id)
     if team is None:
         raise HTTPException(status_code=404, detail="团队不存在")
-    if payload.leader_agent_id != team.leader_employee_id:
+    if leader_agent_id != team.leader_employee_id:
         raise HTTPException(status_code=403, detail="协作任务必须使用团队指定负责人")
     database_scenario_id = ""
-    if payload.team_id == DATABASE_TEAM_ID:
+    if team_id == DATABASE_TEAM_ID:
         database_scenario_id = str(payload.material.get("scenario_id") or "").strip()
         try:
             DatabaseScenarioCatalog.from_root(_PROJECT_ROOT).get(database_scenario_id)
         except ValueError:
             raise HTTPException(status_code=422, detail="请选择有效的数据库诊断场景") from None
     _require_supported_local_scenario(
-        payload.team_id,
-        payload.leader_agent_id,
+        team_id,
+        leader_agent_id,
         payload.title,
         payload.instruction,
         payload.material,
     )
-    _require_ready(db, team_id=payload.team_id)
+    _require_ready(db, team_id=team_id)
     service = (
         AgentTeamsCollaborationService(max_children=5, capability_catalog_source="database")
-        if payload.team_id == DATABASE_TEAM_ID
+        if team_id == DATABASE_TEAM_ID
         else _service()
     )
 
     def create_for_actor() -> models.TaskRun:
         run = service.create_task(
             db,
-            team_id=payload.team_id,
-            leader_agent_id=payload.leader_agent_id,
+            team_id=team_id,
+            leader_agent_id=leader_agent_id,
             title=payload.title,
             instruction=payload.instruction,
             material=payload.material,
             owner_human_no=actor.employee_no,
             thinking_enabled=payload.thinking_enabled,
+            team_selection=(
+                {
+                    "team_id": team_id,
+                    "leader_agent_id": leader_agent_id,
+                    "reason": selection_reason,
+                    "selection_mode": selection_mode,
+                }
+                if selection_mode == "manager"
+                else None
+            ),
         )
         return run
 
     run = _commit_or_conflict(db, create_for_actor)
-    if payload.team_id == DATABASE_TEAM_ID:
+    if team_id == DATABASE_TEAM_ID:
         enqueue_database_collaboration_task(run.id, database_scenario_id)
     return _task_out(db, run)
 

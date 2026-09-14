@@ -124,7 +124,7 @@ def test_strict_runtime_accepts_a_manager_plus_five_database_workers(tmp_path):
     path.write_text(json.dumps({
         "matrix_url": "https://matrix.test",
         "room_id": "!database:matrix.test",
-        "team_id": "TEAM-DATABASE-BENCHMARK",
+        "team_id": "TEAM-DB-BENCH",
         "platform": {"mxid": "@platform:matrix.test", "token": "platform-matrix-token"},
         "agents": agents,
         "team_catalog": team_catalog,

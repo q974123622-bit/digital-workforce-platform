@@ -28,6 +28,7 @@ from .agentteams_decisions import (
     AgentDecisionEngine,
     ManagerContext,
     PlannedSubtask,
+    ResultReviewContext,
     SkillSelectionContext,
     WorkerContext,
 )
@@ -78,7 +79,11 @@ _MAX_STATE_BYTES = 16_384
 _MAX_PENDING_ENVELOPE_BYTES = 8_192
 _PENDING_VERSION = 1
 _SENSITIVE_TEXT = re.compile(r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+|\b(?:https?|wss?|file|ftp)://\S+|\b(?:api[_-]?key|password|token|authorization|credential)\s*[:=]\s*\S+|\b[a-z_][a-z0-9_]*\s*=\s*\S+|traceback\s*\(|\bfile\s+['\"]?[a-z]:[/\\])", re.I)
-_OUTBOUND_TYPES = {"agent.message", "task.accepted", "task.progress", "task.delegate", "task.summary", "task.failed", "tool.request", "task.result"}
+_OUTBOUND_TYPES = {
+    "agent.message", "task.accepted", "task.progress", "task.delegate",
+    "task.summary", "task.failed", "tool.request", "task.result",
+    "task.result.accepted", "task.result.rejected",
+}
 _SECURITY_COUNTER_NAMES = {
     "outbound_rejected", "parse_error", "pending_corrupt", "pending_empty_event_id",
     "pending_send_exception", "spoofed_sender", "state_truncated",
@@ -308,11 +313,11 @@ class AgentRuntime:
         try:
             responses = self._handle_message(message, event, state)
         except LLMUnavailableError as exc:
-            responses = [self._failure(message, self._safe_code(exc.code))]
+            responses = [self._decision_failure(message, self._safe_code(exc.code))]
         except AgentDecisionError as exc:
-            responses = [self._failure(message, self._safe_code(exc.code))]
+            responses = [self._decision_failure(message, self._safe_code(exc.code))]
         except Exception:
-            responses = [self._failure(message, "runtime_error")]
+            responses = [self._decision_failure(message, "runtime_error")]
         if not self._send_responses(responses):
             return None
         self._mark_idempotency(state, message.idempotency_key)
@@ -322,6 +327,11 @@ class AgentRuntime:
     def _handle_message(
         self, message: AgentProtocolMessage, event: MatrixEvent, state: dict[str, Any]
     ) -> list[AgentProtocolMessage]:
+        if (
+            message.type == "task.result.submitted"
+            and message.sender == "platform"
+        ):
+            return self._review_submitted_result(message)
         if self.config.role == "manager":
             if message.type == "task.submit" and message.sender == "platform":
                 return self._manager_submit(message, state)
@@ -335,6 +345,53 @@ class AgentRuntime:
         if message.type == "task.summary" and message.sender == "platform" and message.payload.get("request") == "task.summary":
             return self._worker_continue(message, state, evidence_kind="child.summary")
         return []
+
+    def _review_submitted_result(
+        self, message: AgentProtocolMessage
+    ) -> list[AgentProtocolMessage]:
+        decisions = self._decisions_for(
+            self._thinking_enabled(message.payload.get("thinking_enabled"))
+        )
+        self._visible_pause()
+        decision = decisions.review_result(
+            ResultReviewContext(
+                reviewer_agent_id=self.config.agent_id,
+                task={
+                    key: self._bounded_value(message.payload.get(key))
+                    for key in (
+                        "title", "instruction", "required_capability",
+                        "assignee_agent_id", "node_kind", "revision_of_task_id",
+                    )
+                    if key in message.payload
+                },
+                submitted_result=self._bounded_value(
+                    message.payload.get("result", {})
+                ),
+            )
+        )
+        responses = self._reasoning_trace(
+            message,
+            decision,
+            stage="result_review",
+            iteration=1,
+            sequence=0,
+            action=decision.action,
+        )
+        response_type = (
+            "task.result.accepted"
+            if decision.action == "accept"
+            else "task.result.rejected"
+        )
+        responses.append(
+            self._reply(
+                message,
+                response_type,
+                "platform",
+                {"feedback": self._text(decision.feedback)},
+                len(responses),
+            )
+        )
+        return responses
 
     def _manager_submit(self, message: AgentProtocolMessage, state: dict[str, Any]) -> list[AgentProtocolMessage]:
         goal = self._goal(message)
@@ -622,6 +679,23 @@ class AgentRuntime:
 
     def _failure(self, source: AgentProtocolMessage, code: str, *, sequence: int = 99) -> AgentProtocolMessage:
         return self._reply(source, "task.failed", "platform", {"error_code": self._safe_code(code)}, sequence)
+
+    def _decision_failure(
+        self, source: AgentProtocolMessage, code: str
+    ) -> AgentProtocolMessage:
+        safe_code = self._safe_code(code)
+        if source.type == "task.result.submitted":
+            return self._reply(
+                source,
+                "task.result.rejected",
+                "platform",
+                {
+                    "feedback": "验收未完成，请根据任务要求复核后重新提交",
+                    "reason_code": safe_code,
+                },
+                99,
+            )
+        return self._failure(source, safe_code)
 
     def _send_responses(self, messages: list[AgentProtocolMessage]) -> bool:
         if not messages:
@@ -934,11 +1008,19 @@ class AgentRuntime:
         capabilities = member.get("capabilities", []) if isinstance(member, Mapping) else []
         if subtask.assignee_agent_id not in self.config.trusted_sender_mxids or subtask.required_capability not in capabilities:
             raise AgentDecisionError("invalid_model_decision")
+        node_kind = (
+            "team_assignment"
+            if self.config.role == "manager"
+            and subtask.required_capability.endswith(".coordinate")
+            else "worker_task"
+        )
         return {
             "client_task_key": self._text(subtask.client_task_key, 96), "title": self._text(subtask.title, 256),
             "instruction": self._text(subtask.goal), "assignee_agent_id": subtask.assignee_agent_id,
             "depends_on": self._bounded_text_list(subtask.depends_on, 32), "required": bool(subtask.required),
-            "required_capability": self._text(subtask.required_capability, 128), "material": {},
+            "required_capability": self._text(subtask.required_capability, 128),
+            "node_kind": node_kind,
+            "material": {},
         }
 
     def _safe_relationship_graph(

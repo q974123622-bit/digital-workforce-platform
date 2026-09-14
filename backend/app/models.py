@@ -355,6 +355,8 @@ class AgentTaskNode(Base):
     coordinator_agent_id: Mapped[str] = mapped_column(String, index=True)
     assignee_agent_id: Mapped[str] = mapped_column(String, index=True)
     capability: Mapped[str] = mapped_column(String, default="")
+    node_kind: Mapped[str] = mapped_column(String, default="worker_task", index=True)
+    revision_of_task_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     depth: Mapped[int] = mapped_column(default=0)
     required: Mapped[bool] = mapped_column(default=True)
     status: Mapped[str] = mapped_column(String, default="submitted")

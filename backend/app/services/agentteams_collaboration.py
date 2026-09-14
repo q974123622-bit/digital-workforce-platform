@@ -65,9 +65,11 @@ ALLOWED: dict[str, set[str]] = {
     "blocked": {"assigned", "failed", "timed_out", "cancelled"},
     "assigned": {"accepted", "failed", "timed_out", "cancelled"},
     "accepted": {"running", "failed", "timed_out", "cancelled"},
-    "running": {"waiting_children", "completed", "failed", "timed_out", "cancelled"},
+    "running": {"waiting_children", "submitted", "failed", "timed_out", "cancelled"},
+    "submitted": {"reviewing", "failed", "timed_out", "cancelled"},
+    "reviewing": {"completed", "revision_requested", "failed", "timed_out", "cancelled"},
     "waiting_children": {"summarizing", "failed", "timed_out", "cancelled"},
-    "summarizing": {"waiting_children", "completed", "failed", "timed_out", "cancelled"},
+    "summarizing": {"waiting_children", "submitted", "completed", "failed", "timed_out", "cancelled"},
 }
 _INBOUND_IDEMPOTENCY_PREFIX = "in:"
 _MAX_TOOL_RESULT_DEPTH = 4
@@ -152,6 +154,7 @@ class AgentTeamsCollaborationService:
         material: dict,
         owner_human_no: str = "",
         thinking_enabled: bool = True,
+        team_selection: Mapping[str, str] | None = None,
     ) -> models.TaskRun:
         team = db.get(models.Team, team_id)
         if team is None:
@@ -191,6 +194,8 @@ class AgentTeamsCollaborationService:
             coordinator_agent_id=leader.employee_no,
             assignee_agent_id=leader.employee_no,
             capability="coordinate",
+            node_kind="mission",
+            revision_of_task_id=None,
             depth=0,
             required=True,
             status="planning",
@@ -198,10 +203,22 @@ class AgentTeamsCollaborationService:
             input_payload={
                 **dict(material),
                 "_agentteams_runtime": {"thinking_enabled": thinking_enabled},
+                **({"_agentteams_team_selection": dict(team_selection)} if team_selection else {}),
             },
             output_payload={},
         )
         db.add_all([run, root])
+        if team_selection:
+            self._append_event(
+                db,
+                root_task_id=task_id,
+                task_id=task_id,
+                event_type="team.selected",
+                actor_agent_id=leader.employee_no,
+                target_agent_id=leader.employee_no,
+                summary="Manager 已选择 Team Leader",
+                detail=dict(team_selection),
+            )
         self._append_event(
             db,
             root_task_id=task_id,
@@ -267,6 +284,12 @@ class AgentTeamsCollaborationService:
         elif message.type == "task.result":
             self._authorize(db, run, node, matrix_sender, message, roles={"assignee"})
             events = self._apply_result(db, node, message)
+        elif message.type == "task.result.accepted":
+            self._authorize(db, run, node, matrix_sender, message, roles={"coordinator"})
+            events = self._apply_result_accepted(db, node, message)
+        elif message.type == "task.result.rejected":
+            self._authorize(db, run, node, matrix_sender, message, roles={"coordinator"})
+            events = self._apply_result_rejected(db, node, message)
         elif message.type == "task.failed":
             self._authorize(db, run, node, matrix_sender, message, roles={"assignee"})
             events = self._apply_failed(db, node, message)
@@ -478,6 +501,8 @@ class AgentTeamsCollaborationService:
                 coordinator_agent_id=parent.assignee_agent_id,
                 assignee_agent_id=subtask["assignee_agent_id"],
                 capability=subtask["capability"],
+                node_kind=subtask["node_kind"],
+                revision_of_task_id=None,
                 depth=parent.depth + 1,
                 required=subtask["required"],
                 status="blocked" if subtask["depends_on"] else "assigned",
@@ -513,6 +538,9 @@ class AgentTeamsCollaborationService:
                 summary="subtasks delegated",
                 detail={
                     "client_task_keys": keys,
+                    "node_kinds": {
+                        child.client_task_key: child.node_kind for child in children
+                    },
                     **({"round": coordination["round"]} if coordination is not None else {}),
                 },
             ),
@@ -580,13 +608,227 @@ class AgentTeamsCollaborationService:
     def _apply_result(
         self, db: Session, node: models.AgentTaskNode, message: AgentProtocolMessage
     ) -> list[models.AgentTaskEvent]:
-        self._transition(node, "completed")
+        self._transition(node, "submitted")
         node.progress = 100
         node.output_payload = dict(message.payload)
+        node.finished_at = None
+        events = [
+            self._append_event(
+                db,
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                event_type="task.result.submitted",
+                actor_agent_id=message.sender,
+                target_agent_id=node.coordinator_agent_id,
+                summary="task result submitted for review",
+                detail=dict(message.payload),
+            )
+        ]
+        review_payload = {
+            "title": self._safe_cross_agent_text(node.title, _MAX_SUBTASK_TITLE_LENGTH),
+            "instruction": self._safe_cross_agent_text(
+                node.instruction, _MAX_SUBTASK_INSTRUCTION_LENGTH
+            ),
+            "required_capability": self._safe_cross_agent_text(
+                node.capability, _MAX_SUBTASK_CAPABILITY_LENGTH
+            ),
+            "assignee_agent_id": node.assignee_agent_id,
+            "node_kind": node.node_kind,
+            "revision_of_task_id": node.revision_of_task_id,
+            "thinking_enabled": self._task_thinking_enabled(
+                db.get(models.AgentTaskNode, node.root_task_id)
+            ),
+            "result": self._sanitize_tool_result_data(dict(message.payload)),
+        }
+        review_digest = hashlib.sha256(
+            message.idempotency_key.encode("utf-8", errors="ignore")
+        ).hexdigest()[:32]
+        self._queue_outbound(
+            db,
+            root_task_id=node.root_task_id,
+            task_id=node.id,
+            parent_task_id=node.parent_task_id,
+            message_type="task.result.submitted",
+            sender_agent_id="platform",
+            receiver_agent_id=node.coordinator_agent_id,
+            body="Review the submitted task result.",
+            payload=review_payload,
+            idempotency_key=f"{node.id}:task.result.review:{review_digest}",
+        )
+        self._transition(node, "reviewing")
+        events.append(
+            self._append_event(
+                db,
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                event_type="task.result.reviewing",
+                actor_agent_id="platform",
+                target_agent_id=node.coordinator_agent_id,
+                summary="task result awaiting coordinator review",
+                detail={},
+            )
+        )
+        return events
+
+    def _apply_result_accepted(
+        self, db: Session, node: models.AgentTaskNode, message: AgentProtocolMessage
+    ) -> list[models.AgentTaskEvent]:
+        feedback = message.payload.get("feedback")
+        if (
+            not isinstance(feedback, str)
+            or not feedback.strip()
+            or not self._is_safe_cross_agent_text(
+                feedback.strip(), _MAX_SUBTASK_INSTRUCTION_LENGTH
+            )
+        ):
+            raise CollaborationConflict("invalid_review_feedback")
+        feedback = feedback.strip()
+        self._transition(node, "completed")
+        node.progress = 100
         node.finished_at = datetime.now()
-        events = [self._event_for_message(db, node, message, "task.completed", "task completed")]
+        events = [
+            self._append_event(
+                db,
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                event_type="task.result.accepted",
+                actor_agent_id=message.sender,
+                target_agent_id=node.assignee_agent_id,
+                summary="task result accepted",
+                detail={"feedback": feedback},
+            ),
+            self._append_event(
+                db,
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                event_type="task.completed",
+                actor_agent_id=message.sender,
+                target_agent_id=node.assignee_agent_id,
+                summary="task completed after review",
+                detail={},
+            ),
+        ]
         events.extend(self._release_ready_dependents(db, node))
         events.extend(self._maybe_request_parent_summary(db, node, message.sender))
+        return events
+
+    def _apply_result_rejected(
+        self, db: Session, node: models.AgentTaskNode, message: AgentProtocolMessage
+    ) -> list[models.AgentTaskEvent]:
+        feedback = message.payload.get("feedback")
+        if (
+            not isinstance(feedback, str)
+            or not feedback.strip()
+            or not self._is_safe_cross_agent_text(
+                feedback.strip(), _MAX_SUBTASK_INSTRUCTION_LENGTH
+            )
+        ):
+            raise CollaborationConflict("invalid_review_feedback")
+        feedback = feedback.strip()
+        self._transition(node, "revision_requested")
+        node.error_code = "result_rejected"
+        node.error_message = feedback
+        node.finished_at = datetime.now()
+
+        incoming_dependencies = list(
+            db.scalars(
+                select(models.AgentTaskDependency).where(
+                    models.AgentTaskDependency.task_id == node.id
+                )
+            )
+        )
+        prerequisites = [
+            db.get(models.AgentTaskNode, dependency.depends_on_task_id)
+            for dependency in incoming_dependencies
+        ]
+        prior_revision_count = db.scalar(
+            select(func.count(models.AgentTaskNode.id)).where(
+                models.AgentTaskNode.parent_task_id == node.parent_task_id,
+                models.AgentTaskNode.revision_of_task_id.is_not(None),
+            )
+        ) or 0
+        suffix = f":r{prior_revision_count + 1}"
+        revision_key = f"{node.client_task_key[:64 - len(suffix)]}{suffix}"
+        revision = models.AgentTaskNode(
+            id=f"ATN-{uuid4().hex}",
+            root_task_id=node.root_task_id,
+            parent_task_id=node.parent_task_id,
+            client_task_key=revision_key,
+            trace_id=node.trace_id,
+            title=node.title,
+            instruction=node.instruction,
+            coordinator_agent_id=node.coordinator_agent_id,
+            assignee_agent_id=node.assignee_agent_id,
+            capability=node.capability,
+            node_kind=node.node_kind,
+            revision_of_task_id=node.id,
+            depth=node.depth,
+            required=node.required,
+            status=(
+                "assigned"
+                if all(item is not None and item.status == "completed" for item in prerequisites)
+                else "blocked"
+            ),
+            progress=0,
+            input_payload={
+                **dict(node.input_payload or {}),
+                "revision_of_task_id": node.id,
+                "review_feedback": feedback,
+            },
+            output_payload={},
+        )
+        db.add(revision)
+        for dependency in incoming_dependencies:
+            db.add(
+                models.AgentTaskDependency(
+                    root_task_id=node.root_task_id,
+                    task_id=revision.id,
+                    depends_on_task_id=dependency.depends_on_task_id,
+                )
+            )
+        db.flush()
+        downstream_dependencies = list(
+            db.scalars(
+                select(models.AgentTaskDependency).where(
+                    models.AgentTaskDependency.depends_on_task_id == node.id
+                )
+            )
+        )
+        for dependency in downstream_dependencies:
+            dependency.depends_on_task_id = revision.id
+
+        events = [
+            self._append_event(
+                db,
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                event_type="task.result.rejected",
+                actor_agent_id=message.sender,
+                target_agent_id=node.assignee_agent_id,
+                summary="task result rejected",
+                detail={"feedback": feedback, "revision_task_id": revision.id},
+            ),
+            self._append_event(
+                db,
+                root_task_id=node.root_task_id,
+                task_id=revision.id,
+                event_type="task.revision.created",
+                actor_agent_id=message.sender,
+                target_agent_id=revision.assignee_agent_id,
+                summary="revision task created",
+                detail={
+                    "revision_of_task_id": node.id,
+                    "revision_task_id": revision.id,
+                },
+            ),
+        ]
+        if revision.status == "assigned":
+            self._queue_assignment(
+                db,
+                revision,
+                [item.client_task_key for item in prerequisites if item is not None],
+                dependency_results=self._safe_dependency_results(db, revision.id),
+            )
         return events
 
     def _apply_failed(
@@ -937,26 +1179,15 @@ class AgentTeamsCollaborationService:
         return self._bound_result_collection([self._safe_node_result(item) for item in dependencies if item is not None])
 
     def _safe_child_results(self, db: Session, parent_id: str) -> list[dict[str, Any]]:
-        children = list(
-            db.scalars(
-                select(models.AgentTaskNode)
-                .where(models.AgentTaskNode.parent_task_id == parent_id)
-                .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
-            )
-        )
+        children = self._active_children(db, parent_id)
         return self._bound_result_collection([self._safe_node_result(child) for child in children])
 
     def _completed_direct_child_audit_ids(self, db: Session, parent_id: str) -> list[int]:
-        children = list(
-            db.scalars(
-                select(models.AgentTaskNode)
-                .where(
-                    models.AgentTaskNode.parent_task_id == parent_id,
-                    models.AgentTaskNode.status == "completed",
-                )
-                .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
-            )
-        )
+        children = [
+            child
+            for child in self._active_children(db, parent_id)
+            if child.status == "completed"
+        ]
         audit_ids: list[int] = []
         seen: set[int] = set()
         for child in children:
@@ -1045,6 +1276,12 @@ class AgentTeamsCollaborationService:
         )
         if relationship_graph:
             payload["team_relationship_graph"] = relationship_graph
+        if child.revision_of_task_id:
+            payload["revision_of_task_id"] = child.revision_of_task_id
+            payload["review_feedback"] = self._safe_cross_agent_text(
+                dict(child.input_payload or {}).get("review_feedback"),
+                _MAX_SUBTASK_INSTRUCTION_LENGTH,
+            )
         if dependency_results:
             payload["dependency_results"] = dependency_results
         self._queue_outbound(
@@ -1143,7 +1380,9 @@ class AgentTeamsCollaborationService:
             )))
             for dependent_id in dependent_ids:
                 dependent = db.get(models.AgentTaskNode, dependent_id)
-                if dependent is None or dependent.status in {"completed", "failed", "cancelled", "timed_out"}:
+                if dependent is None or dependent.status in {
+                    "completed", "failed", "cancelled", "timed_out", "revision_requested"
+                }:
                     continue
                 self._transition(dependent, "cancelled")
                 dependent.error_code = "dependency_failed"
@@ -1172,14 +1411,8 @@ class AgentTeamsCollaborationService:
             raise CollaborationConflict("invalid_parent_task")
         if parent.status != "waiting_children":
             return []
-        required_children = list(
-            db.scalars(
-                select(models.AgentTaskNode).where(
-                    models.AgentTaskNode.parent_task_id == parent.id,
-                    models.AgentTaskNode.required.is_(True),
-                )
-            )
-        )
+        active_children = self._active_children(db, parent.id)
+        required_children = [item for item in active_children if item.required]
         if not required_children or any(item.status != "completed" for item in required_children):
             return []
         self._transition(parent, "summarizing")
@@ -1194,11 +1427,9 @@ class AgentTeamsCollaborationService:
             "parent_task_id": parent.id,
             "child_results": self._safe_child_results(db, parent.id),
             "audit_ids": self._completed_direct_child_audit_ids(db, parent.id),
-            "existing_child_task_keys": list(db.scalars(
-                select(models.AgentTaskNode.client_task_key)
-                .where(models.AgentTaskNode.parent_task_id == parent.id)
-                .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
-            )),
+            "existing_child_task_keys": [
+                item.client_task_key for item in active_children
+            ],
             "current_round": coordination["round"],
             "thinking_enabled": self._task_thinking_enabled(root),
             "team_capability_catalog": catalog,
@@ -1242,6 +1473,23 @@ class AgentTeamsCollaborationService:
                 detail={},
             )
         ]
+
+    @staticmethod
+    def _active_children(db: Session, parent_id: str) -> list[models.AgentTaskNode]:
+        """Return only the newest leaf in each immutable revision chain."""
+        children = list(
+            db.scalars(
+                select(models.AgentTaskNode)
+                .where(models.AgentTaskNode.parent_task_id == parent_id)
+                .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
+            )
+        )
+        superseded_ids = {
+            child.revision_of_task_id
+            for child in children
+            if child.revision_of_task_id is not None
+        }
+        return [child for child in children if child.id not in superseded_ids]
 
     def _locked_context(
         self, db: Session, message: AgentProtocolMessage
@@ -1593,7 +1841,10 @@ class AgentTeamsCollaborationService:
         except ValueError as exc:
             raise CollaborationConflict("invalid_runtime_config") from exc
         if runtime.team_id != team_id:
-            raise CollaborationConflict("runtime_team_mismatch")
+            # A strict runtime only owns the relationship graph for its own
+            # configured team. Other independently seeded teams keep their
+            # existing flat-team behavior.
+            return {}
         relationships = runtime.team_relationships
         if not relationships:
             return {}
@@ -1658,11 +1909,17 @@ class AgentTeamsCollaborationService:
         if strict_mode and ("required_capability" not in raw or not isinstance(raw.get("required_capability"), str) or not raw.get("required_capability").strip()):
             raise CollaborationConflict("required_capability_required")
         capability = raw.get("required_capability", raw.get("capability", ""))
+        node_kind = raw.get("node_kind", "worker_task")
         if not all(isinstance(value, str) and value.strip() for value in (key, title, instruction, assignee)):
             raise CollaborationConflict("invalid_subtask")
         if not isinstance(dependencies, list) or not all(isinstance(value, str) and value for value in dependencies):
             raise CollaborationConflict("invalid_subtask")
-        if not isinstance(material, Mapping) or not isinstance(required, bool) or not isinstance(capability, str):
+        if (
+            not isinstance(material, Mapping)
+            or not isinstance(required, bool)
+            or not isinstance(capability, str)
+            or node_kind not in {"team_assignment", "worker_task"}
+        ):
             raise CollaborationConflict("invalid_subtask")
         if not _SAFE_CLIENT_TASK_KEY_PATTERN.fullmatch(key) or any(
             not _SAFE_CLIENT_TASK_KEY_PATTERN.fullmatch(value) for value in dependencies
@@ -1686,6 +1943,7 @@ class AgentTeamsCollaborationService:
             "material_hash": material_hash,
             "required": required,
             "capability": capability,
+            "node_kind": node_kind,
             "requires_capability": strict_mode or "required_capability" in raw,
         }
 
@@ -2047,6 +2305,8 @@ class AgentTeamsCollaborationService:
             "instruction": node.instruction,
             "coordinator_agent_id": node.coordinator_agent_id,
             "assignee_agent_id": node.assignee_agent_id,
+            "node_kind": node.node_kind,
+            "revision_of_task_id": node.revision_of_task_id,
             "depth": node.depth,
             "required": node.required,
             "status": node.status,

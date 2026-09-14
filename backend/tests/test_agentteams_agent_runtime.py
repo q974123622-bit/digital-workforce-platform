@@ -13,6 +13,7 @@ from app.services.agentteams_decisions import (
     FinalSummary,
     ManagerDecision,
     PlannedSubtask,
+    ResultReviewDecision,
     SkillSelection,
     WorkerDecision,
 )
@@ -52,8 +53,10 @@ class FakeEngine:
         self.selections: list[SkillSelection] = []
         self.plans: list[ManagerDecision] = []
         self.work: list[WorkerDecision] = []
+        self.reviews: list[ResultReviewDecision | Exception] = []
         self.plan_contexts = []
         self.worker_contexts = []
+        self.review_contexts = []
 
     def select_skills(self, _context):
         return self.selections.pop(0)
@@ -65,6 +68,13 @@ class FakeEngine:
     def decide_work(self, context):
         self.worker_contexts.append(context)
         return self.work.pop(0)
+
+    def review_result(self, context):
+        self.review_contexts.append(context)
+        result = self.reviews.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 TEAM = {
@@ -193,6 +203,77 @@ def manager_payload(instruction="评估新员工A", version=1):
         "instruction": instruction,
         "team_capability_catalog": [{"agent_id": key, **value} for key, value in TEAM.items()],
         "team_catalog_version": version,
+    }
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_type"),
+    [("accept", "task.result.accepted"), ("reject", "task.result.rejected")],
+)
+def test_coordinator_reviews_a_submitted_result(tmp_path, action, expected_type):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    expected_feedback = (
+        "证据完整，可以验收" if action == "accept" else "请补充审批记录"
+    )
+    engine.reviews = [
+        ResultReviewDecision(
+            action=action,
+            feedback=expected_feedback,
+        )
+    ]
+    review_request = message(
+        type="task.result.submitted",
+        sender="platform",
+        receiver="VE-0002",
+        task_id="worker-task-1",
+        parent_task_id="leader-task-1",
+        payload={
+            "title": "核查审批记录",
+            "instruction": "核对审批证据",
+            "assignee_agent_id": "VE-0003",
+            "result": {"result": "已核查", "audit_ids": [101]},
+        },
+        key=f"review-{action}",
+    )
+    gateway.events = [event(review_request)]
+
+    assert subject.run_once() == 1
+
+    sent = sent_protocols(gateway)
+    assert sent[-1].type == expected_type
+    assert sent[-1].receiver == "platform"
+    assert sent[-1].payload["feedback"] == expected_feedback
+    assert engine.review_contexts[0].task["assignee_agent_id"] == "VE-0003"
+
+
+def test_review_decision_failure_rejects_for_revision_instead_of_failing_worker_node(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.reviews = [AgentDecisionError("decision_failed")]
+    gateway.events = [
+        event(
+            message(
+                type="task.result.submitted",
+                sender="platform",
+                receiver="VE-0002",
+                task_id="worker-task-1",
+                parent_task_id="leader-task-1",
+                payload={
+                    "title": "核查审批记录",
+                    "assignee_agent_id": "VE-0003",
+                    "result": {"result": "候选结果"},
+                },
+                key="review-failed",
+            )
+        )
+    ]
+
+    assert subject.run_once() == 1
+
+    response = sent_protocols(gateway)[-1]
+    assert response.type == "task.result.rejected"
+    assert response.payload == {
+        "feedback": "验收未完成，请根据任务要求复核后重新提交",
+        "reason_code": "decision_failed",
     }
 
 
