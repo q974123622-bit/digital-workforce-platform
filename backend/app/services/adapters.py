@@ -83,6 +83,34 @@ def _mock_agentteams_onboarding_employee(_plugin: models.Plugin, params: dict) -
     }
 
 
+def _onboarding_specialist_view(params: dict, section_name: str, result_key: str) -> dict:
+    section = _onboarding_fixture_section(params, section_name)
+    evidence = _bounded_evidence(section.get(result_key))
+    return {
+        "source": "demo",
+        "employee_ref": _ONBOARDING_EMPLOYEE_REF,
+        "readiness": str(section.get("readiness", "")),
+        "evidence_ids": [item["evidence_id"] for item in evidence],
+        result_key: evidence,
+    }
+
+
+def _mock_agentteams_onboarding_materials(_plugin: models.Plugin, params: dict) -> dict:
+    return _onboarding_specialist_view(params, "hr_specialist_materials", "materials")
+
+
+def _mock_agentteams_onboarding_training(_plugin: models.Plugin, params: dict) -> dict:
+    return _onboarding_specialist_view(params, "hr_training", "training")
+
+
+def _mock_agentteams_it_accounts(_plugin: models.Plugin, params: dict) -> dict:
+    return _onboarding_specialist_view(params, "it_accounts", "accounts")
+
+
+def _mock_agentteams_it_devices(_plugin: models.Plugin, params: dict) -> dict:
+    return _onboarding_specialist_view(params, "it_devices", "devices")
+
+
 def _mock_agentteams_it_readiness(_plugin: models.Plugin, params: dict) -> dict:
     section = _onboarding_fixture_section(params, "it_readiness")
     accounts = _bounded_evidence(section.get("accounts"))
@@ -213,7 +241,11 @@ def _mock_agentteams_database_inspector(_plugin: models.Plugin, params: dict) ->
 
 _INPUT_VALIDATORS: dict[str, callable] = {
     "mock://agentteams/onboarding-employee": _validate_onboarding_input,
+    "mock://agentteams/onboarding-materials": _validate_onboarding_input,
+    "mock://agentteams/onboarding-training": _validate_onboarding_input,
     "mock://agentteams/it-readiness": _validate_onboarding_input,
+    "mock://agentteams/it-accounts": _validate_onboarding_input,
+    "mock://agentteams/it-devices": _validate_onboarding_input,
     "mock://agentteams/onboarding-evidence": _validate_onboarding_input,
     "mock://agentteams/role-change/hr": _validate_role_change_input,
     "mock://agentteams/role-change/it-plan": _validate_role_change_input,
@@ -358,7 +390,11 @@ def _mock_purchase_request(_plugin: models.Plugin, params: dict) -> dict:
 
 REGISTRY: dict[str, callable] = {
     "mock://agentteams/onboarding-employee": _mock_agentteams_onboarding_employee,
+    "mock://agentteams/onboarding-materials": _mock_agentteams_onboarding_materials,
+    "mock://agentteams/onboarding-training": _mock_agentteams_onboarding_training,
     "mock://agentteams/it-readiness": _mock_agentteams_it_readiness,
+    "mock://agentteams/it-accounts": _mock_agentteams_it_accounts,
+    "mock://agentteams/it-devices": _mock_agentteams_it_devices,
     "mock://agentteams/onboarding-evidence": _mock_agentteams_onboarding_evidence,
     "mock://agentteams/role-change/hr": _mock_agentteams_role_change_hr,
     "mock://agentteams/role-change/it-plan": _mock_agentteams_role_change_it_plan,

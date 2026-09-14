@@ -16,6 +16,8 @@ DEPLOYMENT = PROJECT_ROOT / "deploy" / "agentteams-matrix"
 COMPOSE = DEPLOYMENT / "docker-compose.yml"
 HOMESERVER = DEPLOYMENT / "homeserver.template.yaml"
 BOOTSTRAP = PROJECT_ROOT / "scripts" / "bootstrap_agentteams_matrix.py"
+RUN_AGENT = PROJECT_ROOT / "scripts" / "run_agentteams_agent.py"
+VERIFY_MATRIX = PROJECT_ROOT / "scripts" / "verify_agentteams_matrix.py"
 START = PROJECT_ROOT / "scripts" / "start_agentteams_real_demo.ps1"
 STOP = PROJECT_ROOT / "scripts" / "stop_agentteams_real_demo.ps1"
 PROCESS_HELPERS = PROJECT_ROOT / "scripts" / "agentteams_process_helpers.ps1"
@@ -30,6 +32,54 @@ def _bootstrap_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _verify_matrix_module():
+    assert VERIFY_MATRIX.is_file(), "Matrix verifier script is missing"
+    spec = importlib.util.spec_from_file_location("agentteams_matrix_verifier", VERIFY_MATRIX)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_agent_module():
+    assert RUN_AGENT.is_file(), "Agent runner script is missing"
+    spec = importlib.util.spec_from_file_location("agentteams_agent_runner", RUN_AGENT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_real_agent_primes_matrix_cursor_before_entering_the_receive_loop(monkeypatch):
+    runner = _run_agent_module()
+    calls = []
+
+    class Config:
+        matrix_token = "secret"
+
+    class Runtime:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def initialize_matrix_cursor(self):
+            calls.append("cursor")
+
+        def run_forever(self, _stop_event):
+            calls.append("loop")
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(runner, "resolve_role_api_key", lambda _role: "key")
+    monkeypatch.setattr(runner, "load_runtime_config", lambda _role, _path: (Config(), "http://matrix"))
+    monkeypatch.setattr(runner, "build_decision_engines", lambda _key: (object(), object()))
+    monkeypatch.setattr(runner, "AgentTeamsGateway", lambda **_kwargs: object())
+    monkeypatch.setattr(runner, "AgentRuntime", Runtime)
+
+    assert runner.main(["--role", "manager"]) == 0
+    assert calls == ["cursor", "loop", "close"]
 
 
 def test_compose_contract_is_private_pinned_and_persistent():
@@ -201,7 +251,83 @@ def test_strict_start_reports_only_missing_role_names_for_role_key_preflight():
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "hr,audit"
+    assert completed.stdout.strip() == "hr,audit,hr_material,hr_training,it_account,it_device"
+
+
+@pytest.mark.parametrize(
+    ("role", "skill_id", "key_name"),
+    (
+        ("hr_material", "hr-material-specialist", "DEEPSEEK_API_KEY_HR"),
+        ("hr_training", "hr-training-specialist", "DEEPSEEK_API_KEY_HR"),
+        ("it_account", "it-account-specialist", "DEEPSEEK_API_KEY_IT"),
+        ("it_device", "it-device-specialist", "DEEPSEEK_API_KEY_IT"),
+    ),
+)
+def test_specialist_runner_uses_its_single_skill_and_parent_department_key(role, skill_id, key_name):
+    runner = _run_agent_module()
+
+    assert runner.role_skill_ids(role) == {skill_id}
+    assert runner.resolve_role_api_key(role, {key_name: f"{role}-key"}) == f"{role}-key"
+    with pytest.raises(ValueError, match="deepseek_key_missing"):
+        runner.resolve_role_api_key(role, {"DEEPSEEK_API_KEY": "legacy-shared"})
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_start_lifecycle_exposes_exactly_eight_agents_and_reuses_department_key_variables():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        "$roles = @(Get-AgentRoles); "
+        "$keys = @{ manager='manager'; hr='hr'; it='it'; audit='audit'; hr_material='hm'; hr_training='ht'; it_account='ia'; it_device='id' }; "
+        "$result = [ordered]@{ roles=$roles; hr_material=(Get-AgentRoleApiKeyEnvironment 'hr_material' $keys); hr_training=(Get-AgentRoleApiKeyEnvironment 'hr_training' $keys); it_account=(Get-AgentRoleApiKeyEnvironment 'it_account' $keys); it_device=(Get-AgentRoleApiKeyEnvironment 'it_device' $keys) }; "
+        "$result | ConvertTo-Json -Compress -Depth 4"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout.strip())
+    assert result == {
+        "roles": [
+            "manager", "hr", "it", "audit",
+            "hr_material", "hr_training", "it_account", "it_device",
+        ],
+        "hr_material": {"DEEPSEEK_API_KEY_HR": "hm"},
+        "hr_training": {"DEEPSEEK_API_KEY_HR": "ht"},
+        "it_account": {"DEEPSEEK_API_KEY_IT": "ia"},
+        "it_device": {"DEEPSEEK_API_KEY_IT": "id"},
+    }
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+@pytest.mark.parametrize("role", ("hr_material", "hr_training", "it_account", "it_device"))
+def test_start_and_stop_use_the_same_exact_specialist_argv(role):
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        f"$expected = @($agentScript,'--role','{role}','--config',$runtimeConfig); "
+        f"$startMatches = Test-StringArrayEqual @(Get-ExpectedArguments '{role}') $expected; "
+        f". '{STOP.as_posix()}'; "
+        f"$stopMatches = Test-StringArrayEqual @(Get-ExpectedArguments '{role}') $expected; "
+        "[Console]::WriteLine([string]$startMatches + '|' + [string]$stopMatches)"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip().lower() == "true|true"
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
@@ -214,13 +340,14 @@ def test_process_helper_blocks_dotenv_backfill_and_injects_only_one_child_key(tm
         "DEEPSEEK_API_KEY_MANAGER=file-manager\n"
         "DEEPSEEK_API_KEY_HR=file-hr\n"
         "DEEPSEEK_API_KEY_IT=file-it\n"
-        "DEEPSEEK_API_KEY_AUDIT=file-audit\n",
+        "DEEPSEEK_API_KEY_AUDIT=file-audit\n"
+        "DEEPSEEK_API_KEY_DB_WRITE=file-db-write\n",
         encoding="utf-8",
     )
     capture.write_text(
         "import json, os, pathlib, sys\n"
         "from dotenv import load_dotenv\n"
-        "names = ('DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY_MANAGER', 'DEEPSEEK_API_KEY_HR', 'DEEPSEEK_API_KEY_IT', 'DEEPSEEK_API_KEY_AUDIT')\n"
+        "names = ('DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY_MANAGER', 'DEEPSEEK_API_KEY_HR', 'DEEPSEEK_API_KEY_IT', 'DEEPSEEK_API_KEY_AUDIT', 'DEEPSEEK_API_KEY_DB_WRITE', 'DEEPSEEK_API_KEY_DB_LOCK', 'DEEPSEEK_API_KEY_DB_VACUUM', 'DEEPSEEK_API_KEY_DB_INDEX', 'DEEPSEEK_API_KEY_DB_QUERY')\n"
         "load_dotenv(sys.argv[1])\n"
         "pathlib.Path(sys.argv[2]).write_text(json.dumps({name: os.environ[name] for name in names if name in os.environ}), encoding='utf-8')\n",
         encoding="utf-8",
@@ -232,6 +359,11 @@ def test_process_helper_blocks_dotenv_backfill_and_injects_only_one_child_key(tm
         "$env:DEEPSEEK_API_KEY_HR = 'hr-parent'; "
         "$env:DEEPSEEK_API_KEY_IT = 'it-parent'; "
         "$env:DEEPSEEK_API_KEY_AUDIT = 'audit-parent'; "
+        "$env:DEEPSEEK_API_KEY_DB_WRITE = 'db-write-parent'; "
+        "$env:DEEPSEEK_API_KEY_DB_LOCK = 'db-lock-parent'; "
+        "$env:DEEPSEEK_API_KEY_DB_VACUUM = 'db-vacuum-parent'; "
+        "$env:DEEPSEEK_API_KEY_DB_INDEX = 'db-index-parent'; "
+        "$env:DEEPSEEK_API_KEY_DB_QUERY = 'db-query-parent'; "
         f". '{PROCESS_HELPERS.as_posix()}'; "
         f"$started = Start-AgentTeamsOwnedProcess -ExecutablePath '{sys.executable}' -WorkingDirectory '{tmp_path.as_posix()}' -Arguments @('{capture.as_posix()}', '{env_file.as_posix()}', '{output.as_posix()}') -Environment @{{ DEEPSEEK_API_KEY_HR = 'hr-child' }}; "
         "$started.Process.WaitForExit(); "
@@ -253,6 +385,11 @@ def test_process_helper_blocks_dotenv_backfill_and_injects_only_one_child_key(tm
         "DEEPSEEK_API_KEY_HR": "hr-child",
         "DEEPSEEK_API_KEY_IT": "",
         "DEEPSEEK_API_KEY_AUDIT": "",
+        "DEEPSEEK_API_KEY_DB_WRITE": "",
+        "DEEPSEEK_API_KEY_DB_LOCK": "",
+        "DEEPSEEK_API_KEY_DB_VACUUM": "",
+        "DEEPSEEK_API_KEY_DB_INDEX": "",
+        "DEEPSEEK_API_KEY_DB_QUERY": "",
     }
 
 
@@ -353,11 +490,11 @@ def test_process_record_whitelists_fields_and_never_serializes_an_accidental_key
     assert '"api_key"' not in completed.stdout
 
 
-def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(tmp_path, capsys):
+def test_bootstrap_produces_expanded_onboarding_identities_and_redacts_secrets(tmp_path, capsys):
     bootstrap = _bootstrap_module()
     credentials = {
         name: {"mxid": f"@{name}:matrix.local", "token": f"secret-{name}"}
-        for name in ("platform", "manager", "hr", "it", "audit")
+        for name in bootstrap.ACCOUNT_NAMES
     }
 
     runtime = bootstrap.build_runtime_configuration(credentials, "!private:matrix.local")
@@ -365,15 +502,15 @@ def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(t
     bootstrap.write_runtime_configuration(target, runtime)
     bootstrap.print_bootstrap_success(runtime)
 
-    assert set(credentials) == {"platform", "manager", "hr", "it", "audit"}
+    assert set(credentials) == set(bootstrap.ACCOUNT_NAMES)
     assert runtime["team_id"] == "TEAM-ONBOARD"
-    assert set(runtime["agents"]) == {"manager", "hr", "it", "audit"}
+    assert set(runtime["agents"]) == set(bootstrap.ROLE_IDENTITIES)
     assert runtime["agents"]["manager"]["allowed_skill_ids"] == [
         "agentteams-onboarding-readiness",
         "agentteams-role-change-readiness",
     ]
     assert runtime["agents"]["manager"]["safe_tool_catalog"] == []
-    assert all(runtime["agents"][role]["safe_tool_catalog"] for role in ("hr", "it", "audit"))
+    assert all(runtime["agents"][role]["safe_tool_catalog"] for role in runtime["agents"] if role != "manager")
     expected_schema = {
         "type": "object",
         "required": ["employee_ref"],
@@ -384,11 +521,11 @@ def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(t
     }
     assert {
         role: runtime["agents"][role]["safe_tool_catalog"][0]["input_schema"]
-        for role in ("hr", "it", "audit")
-    } == {role: expected_schema for role in ("hr", "it", "audit")}
+        for role in ("audit", "hr_material", "hr_training", "it_account", "it_device")
+    } == {role: expected_schema for role in ("audit", "hr_material", "hr_training", "it_account", "it_device")}
     assert {
         tool["plugin_id"]
-        for role in ("hr", "it", "audit")
+        for role in runtime["agents"]
         for tool in runtime["agents"][role]["safe_tool_catalog"]
     } >= {
         "agentteams-role-change-hr",
@@ -396,14 +533,18 @@ def test_bootstrap_produces_exactly_five_strict_identities_and_redacts_secrets(t
         "agentteams-role-change-it-activate",
         "agentteams-role-change-audit",
     }
-    assert set(runtime["team_catalog"]) == {"VE-0002", "VE-0003", "VE-0005"}
+    assert set(runtime["team_catalog"]) == {
+        "VE-0002", "VE-0003", "VE-0005", "VE-HR-MATERIAL",
+        "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE",
+    }
 
     from app.services.agentteams_runtime_config import load_strict_runtime_config
 
     loaded = load_strict_runtime_config(target, environ={})
     assert loaded.team_id == "TEAM-ONBOARD"
-    assert set(loaded.agents) == {"manager", "hr", "it", "audit"}
-    assert loaded.agents["hr"].safe_tool_catalog[0]["input_schema"] == expected_schema
+    assert set(loaded.agents) == set(bootstrap.ROLE_IDENTITIES)
+    assert loaded.agents["hr_material"].safe_tool_catalog[0]["input_schema"] == expected_schema
+    assert loaded.agents["hr_training"].safe_tool_catalog[0]["input_schema"] == expected_schema
     rendered = target.read_text(encoding="utf-8")
     output = capsys.readouterr().out
     assert "secret-" not in output
@@ -452,13 +593,108 @@ def test_bootstrap_is_idempotent_and_verifies_private_membership():
     first = bootstrap.bootstrap_matrix(matrix, password_factory=lambda name: f"pw-{name}")
     second = bootstrap.bootstrap_matrix(matrix, password_factory=lambda name: f"pw-{name}")
 
-    expected = {"@platform:matrix.local", "@manager:matrix.local", "@hr:matrix.local", "@it:matrix.local", "@audit:matrix.local"}
+    expected = {f"@{name}:matrix.local" for name in bootstrap.ACCOUNT_NAMES}
     assert first["room_id"] == second["room_id"] == "!private:matrix.local"
     assert matrix.members == expected
-    assert len(matrix.register_calls) == 10
+    assert len(matrix.register_calls) == len(bootstrap.ACCOUNT_NAMES) * 2
 
 
-@pytest.mark.parametrize("role", ("manager", "hr", "it", "audit"))
+@pytest.mark.parametrize(
+    ("team_id", "roles"),
+    (
+        ("TEAM-ONBOARD", ("manager", "hr", "it", "audit", "hr_material", "hr_training", "it_account", "it_device")),
+        ("TEAM-DB-BENCH", ("manager", "db_write", "db_lock", "db_vacuum", "db_index", "db_query")),
+    ),
+    ids=("expanded-onboarding-9", "database-7"),
+)
+def test_matrix_verifier_accepts_each_supported_identity_topology(team_id, roles):
+    from app.services.agentteams_runtime_config import MatrixIdentity, StrictRuntimeConfig
+
+    verifier = _verify_matrix_module()
+    identities = {
+        "platform": MatrixIdentity("@platform:matrix.test", "platform-token"),
+        **{
+            role: MatrixIdentity(
+                f"@{role}:matrix.test", f"{role}-token", f"AGENT-{index}", (), (),
+            )
+            for index, role in enumerate(roles, start=1)
+        },
+    }
+    runtime = StrictRuntimeConfig(
+        "https://matrix.test", "!room:matrix.test", identities["platform"],
+        {role: identities[role] for role in roles}, team_id, {},
+    )
+    sent: list[str] = []
+
+    class Event:
+        def __init__(self, event_id):
+            self.event_id = event_id
+            self.room_id = runtime.room_id
+
+    class Batch:
+        def __init__(self, events, cursor):
+            self.events = events
+            self.next_cursor = cursor
+
+    class Gateway:
+        def __init__(self, name, identity):
+            self.name = name
+            self.identity = identity
+
+        def whoami(self):
+            return self.identity.mxid
+
+        def joined_members(self, _room_id):
+            return {identity.mxid for identity in identities.values()}
+
+        def send_message(self, _room_id, _body):
+            event_id = f"$verify-{self.name}"
+            sent.append(event_id)
+            return event_id
+
+        def sync_messages(self, since, _room_ids):
+            if since is None:
+                return Batch([], f"{self.name}-initial")
+            return Batch([Event(event_id) for event_id in sent], f"{self.name}-next")
+
+        def close(self):
+            return None
+
+    by_identity = {id(identity): name for name, identity in identities.items()}
+    evidence = verifier.verify_matrix_environment(
+        runtime,
+        gateway_factory=lambda _runtime, identity: Gateway(by_identity[id(identity)], identity),
+        pause=lambda _seconds: None,
+    )
+
+    assert evidence["ok"] is True
+    assert evidence["accounts"] == sorted(identities)
+    assert set(evidence["event_ids"]) == set(identities)
+
+
+def test_existing_five_account_runtime_is_reused_when_specialists_are_added(tmp_path):
+    bootstrap = _bootstrap_module()
+    target = tmp_path / "runtime.json"
+    target.write_text(json.dumps({
+        "room_id": "!existing:matrix.local",
+        "platform": {"mxid": "@platform:matrix.local", "token": "token-platform"},
+        "agents": {
+            role: {"mxid": f"@{role}:matrix.local", "token": f"token-{role}"}
+            for role in ("manager", "hr", "it", "audit")
+        },
+    }), encoding="utf-8")
+
+    accounts, room_id = bootstrap._existing_runtime(target)
+
+    assert set(accounts) == {"platform", "manager", "hr", "it", "audit"}
+    assert accounts["manager"]["token"] == "token-manager"
+    assert room_id == "!existing:matrix.local"
+
+
+@pytest.mark.parametrize("role", (
+    "manager", "hr", "it", "audit",
+    "hr_material", "hr_training", "it_account", "it_device",
+))
 def test_start_script_launches_each_named_role_with_the_single_runtime_path(role):
     assert START.is_file(), "Task 7 start script is missing"
     source = START.read_text(encoding="utf-8")
@@ -517,6 +753,34 @@ def test_stop_script_fails_closed_when_executable_arguments_or_start_time_do_not
         assert required in source
     assert "Test-RecordedWorktreeProcess" in source
     assert "return $null" in source
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_stop_rejects_a_different_role_process_even_when_the_expected_role_is_a_substring():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{STOP.as_posix()}'; "
+        "$started = [DateTime]::UtcNow.AddSeconds(-1); "
+        "$recordArgs = @(Get-ExpectedArguments 'hr'); "
+        "$actualArgs = @($agentScript,'--role','hr_material','--config',$runtimeConfig); "
+        "$record = [pscustomobject]@{ name='hr'; process_id=[int]44001; executable_path=$python; working_directory=$workspace; argv=$recordArgs; workspace=$workspace; started_at=$started.ToString('o') }; "
+        "$actualLine = ((@($python) + $actualArgs | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' '); "
+        "$global:fakeProcess = [pscustomobject]@{ ProcessId=[int]44001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$actualLine; CreationDate=$started }; "
+        "function Get-CimInstance { return $global:fakeProcess }; "
+        "$accepted = $null -ne (Test-RecordedWorktreeProcess $record); "
+        "[Console]::WriteLine([string]$accepted)"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip().lower() == "false"
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
@@ -605,8 +869,8 @@ def test_start_and_stop_accept_cim_creation_date_already_materialized_as_datetim
         "$ErrorActionPreference = 'Stop'; "
         f". '{START.as_posix()}'; "
         "$started = [DateTime]::UtcNow.AddSeconds(-1); "
-        "$record = [pscustomobject]@{ name='backend'; process_id=[int]41001; executable_path=$python; working_directory=$backend; argv=@(Get-ExpectedArguments 'backend'); workspace=$workspace; started_at=$started.ToString('o') }; "
-        "$line = ('\"' + $python + '\" ' + ((Get-ExpectedArguments 'backend') -join ' ') + ' ' + $workspace); "
+        "$args = @(Get-ExpectedArguments 'backend'); $record = [pscustomobject]@{ name='backend'; process_id=[int]41001; executable_path=$python; working_directory=$backend; argv=$args; workspace=$workspace; started_at=$started.ToString('o') }; "
+        "$line = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); "
         "$global:fakeProcess = [pscustomobject]@{ ProcessId=[int]41001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$line; CreationDate=$started }; "
         "function Get-CimInstance { return $global:fakeProcess }; "
         "$startAccepted = Test-OwnedRecordedProcess $record; "
@@ -652,15 +916,15 @@ def test_process_time_converter_accepts_both_datetime_and_dmtf_values():
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
-def test_start_captures_a_proven_direct_backend_child_that_owns_port_8000():
+def test_start_accepts_base_python_listener_with_recorded_venv_launcher_as_argv0():
     command = (
         "$ErrorActionPreference = 'Stop'; "
         f". '{START.as_posix()}'; "
         "$rootStart = [DateTime]::UtcNow.AddSeconds(-2); $childStart = $rootStart.AddMilliseconds(300); "
-        "$args = @(Get-ExpectedArguments 'backend'); $line = ('\"' + $python + '\" ' + ($args -join ' ') + ' ' + $workspace); "
+        "$args = @(Get-ExpectedArguments 'backend'); $line = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); $childLine = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); "
         "$record = @{ name='backend'; process_id=[int]42001; executable_path=$python; working_directory=$backend; argv=$args; workspace=$workspace; started_at=$rootStart.ToString('o') }; "
         "$global:rootProcess = [pscustomobject]@{ ProcessId=[int]42001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$line; CreationDate=$rootStart }; "
-        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$line; CreationDate=$childStart }; "
+        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$childLine; CreationDate=$childStart }; "
         "function Get-CimInstance { param($ClassName, $Filter); if ($Filter -match '42002') { return $global:childProcess }; return $global:rootProcess }; "
         "function Get-NetTCPConnection { return [pscustomobject]@{ OwningProcess=[int]42002; LocalPort=[int]8000; State='Listen' } }; "
         "$listener = Get-OwnedBackendListenerRecord $record; "
@@ -685,10 +949,10 @@ def test_startup_rollback_stops_the_proven_backend_listener_before_its_launcher(
         "$ErrorActionPreference = 'Stop'; "
         f". '{START.as_posix()}'; "
         "$rootStart = [DateTime]::UtcNow.AddSeconds(-2); $childStart = $rootStart.AddMilliseconds(300); "
-        "$args = @(Get-ExpectedArguments 'backend'); $line = ('\"' + $python + '\" ' + ($args -join ' ') + ' ' + $workspace); "
+        "$args = @(Get-ExpectedArguments 'backend'); $line = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); $childLine = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); "
         "$record = [pscustomobject]@{ name='backend'; process_id=[int]42001; executable_path=$python; working_directory=$backend; argv=$args; workspace=$workspace; started_at=$rootStart.ToString('o'); listener=[pscustomobject]@{ process_id=[int]42002; parent_process_id=[int]42001; executable_path='D:\\python\\python.exe'; started_at=$childStart.ToString('o'); port=[int]8000 } }; "
         "$global:rootProcess = [pscustomobject]@{ ProcessId=[int]42001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$line; CreationDate=$rootStart }; "
-        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$line; CreationDate=$childStart }; "
+        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$childLine; CreationDate=$childStart }; "
         "function Get-CimInstance { param($ClassName, $Filter); if ($Filter -match '42002') { return $global:childProcess }; return $global:rootProcess }; "
         "function Get-NetTCPConnection { return [pscustomobject]@{ OwningProcess=[int]42002; LocalPort=[int]8000; State='Listen' } }; "
         "$global:stopped = @(); function Stop-Process { param([int]$Id); $global:stopped += $Id }; "
@@ -711,10 +975,10 @@ def test_startup_rollback_stops_the_proven_backend_listener_before_its_launcher(
 def test_legacy_launcher_only_record_can_prove_its_current_backend_listener_child():
     common = (
         "$rootStart = [DateTime]::UtcNow.AddSeconds(-2); $childStart = $rootStart.AddMilliseconds(300); "
-        "$args = @(Get-ExpectedArguments 'backend'); $line = ('\"' + $python + '\" ' + ($args -join ' ') + ' ' + $workspace); "
+        "$args = @(Get-ExpectedArguments 'backend'); $line = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); $childLine = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); "
         "$record = [pscustomobject]@{ name='backend'; process_id=[int]42001; executable_path=$python; working_directory=$backend; argv=$args; workspace=$workspace; started_at=$rootStart.ToString('o') }; "
         "$global:rootProcess = [pscustomobject]@{ ProcessId=[int]42001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$line; CreationDate=$rootStart }; "
-        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$line; CreationDate=$childStart }; "
+        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$childLine; CreationDate=$childStart }; "
         "function Get-CimInstance { param($ClassName, $Filter); if ($Filter -match '42002') { return $global:childProcess }; return $global:rootProcess }; "
         "function Get-NetTCPConnection { return [pscustomobject]@{ OwningProcess=[int]42002; LocalPort=[int]8000; State='Listen' } }; "
     )
@@ -745,7 +1009,7 @@ def test_startup_rollback_still_stops_a_proven_launcher_when_listener_probe_fail
         "$ErrorActionPreference = 'Stop'; "
         f". '{START.as_posix()}'; "
         "$rootStart = [DateTime]::UtcNow.AddSeconds(-1); $args = @(Get-ExpectedArguments 'backend'); "
-        "$line = ('\"' + $python + '\" ' + ($args -join ' ') + ' ' + $workspace); "
+        "$line = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); "
         "$record = @{ name='backend'; process_id=[int]43001; executable_path=$python; working_directory=$backend; argv=$args; workspace=$workspace; started_at=$rootStart.ToString('o') }; "
         "$global:rootProcess = [pscustomobject]@{ ProcessId=[int]43001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$line; CreationDate=$rootStart }; "
         "function Get-CimInstance { return $global:rootProcess }; function Get-NetTCPConnection { return @() }; "
@@ -792,15 +1056,15 @@ def test_startup_rollback_reads_listener_metadata_from_the_real_hashtable_record
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
-def test_stop_proves_recorded_backend_listener_child_before_returning_exact_stop_order():
+def test_stop_accepts_base_python_listener_with_recorded_venv_launcher_as_argv0():
     command = (
         "$ErrorActionPreference = 'Stop'; "
         f". '{STOP.as_posix()}'; "
         "$rootStart = [DateTime]::UtcNow.AddSeconds(-2); $childStart = $rootStart.AddMilliseconds(300); "
-        "$args = @(Get-ExpectedArguments 'backend'); $line = ('\"' + $python + '\" ' + ($args -join ' ') + ' ' + $workspace); "
+        "$args = @(Get-ExpectedArguments 'backend'); $line = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); $childLine = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); "
         "$record = [pscustomobject]@{ name='backend'; process_id=[int]42001; executable_path=$python; working_directory=$backend; argv=$args; workspace=$workspace; started_at=$rootStart.ToString('o'); listener=[pscustomobject]@{ process_id=[int]42002; parent_process_id=[int]42001; executable_path='D:\\python\\python.exe'; started_at=$childStart.ToString('o'); port=[int]8000 } }; "
         "$global:rootProcess = [pscustomobject]@{ ProcessId=[int]42001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$line; CreationDate=$rootStart }; "
-        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$line; CreationDate=$childStart }; "
+        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$childLine; CreationDate=$childStart }; "
         "function Get-CimInstance { param($ClassName, $Filter); if ($Filter -match '42002') { return $global:childProcess }; return $global:rootProcess }; "
         "function Get-NetTCPConnection { return [pscustomobject]@{ OwningProcess=[int]42002; LocalPort=[int]8000; State='Listen' } }; "
         "$ids = @(Get-ProvenRecordedProcessIds $record); [Console]::WriteLine($ids -join ',')"
@@ -816,6 +1080,33 @@ def test_stop_proves_recorded_backend_listener_child_before_returning_exact_stop
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "42002,42001"
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_stop_rejects_base_python_listener_with_unrecorded_argv0_alias():
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{STOP.as_posix()}'; "
+        "$rootStart = [DateTime]::UtcNow.AddSeconds(-2); $childStart = $rootStart.AddMilliseconds(300); "
+        "$args = @(Get-ExpectedArguments 'backend'); $line = ((ConvertTo-AgentTeamsWindowsArgument $python) + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); $childLine = ((ConvertTo-AgentTeamsWindowsArgument 'D:\\unrecorded\\python.exe') + ' ' + (($args | ForEach-Object { ConvertTo-AgentTeamsWindowsArgument $_ }) -join ' ')); "
+        "$record = [pscustomobject]@{ name='backend'; process_id=[int]42001; executable_path=$python; working_directory=$backend; argv=$args; workspace=$workspace; started_at=$rootStart.ToString('o'); listener=[pscustomobject]@{ process_id=[int]42002; parent_process_id=[int]42001; executable_path='D:\\python\\python.exe'; started_at=$childStart.ToString('o'); port=[int]8000 } }; "
+        "$global:rootProcess = [pscustomobject]@{ ProcessId=[int]42001; ParentProcessId=[int]1; ExecutablePath=$python; CommandLine=$line; CreationDate=$rootStart }; "
+        "$global:childProcess = [pscustomobject]@{ ProcessId=[int]42002; ParentProcessId=[int]42001; ExecutablePath='D:\\python\\python.exe'; CommandLine=$childLine; CreationDate=$childStart }; "
+        "function Get-CimInstance { param($ClassName, $Filter); if ($Filter -match '42002') { return $global:childProcess }; return $global:rootProcess }; "
+        "function Get-NetTCPConnection { return [pscustomobject]@{ OwningProcess=[int]42002; LocalPort=[int]8000; State='Listen' } }; "
+        "$ids = @(Get-ProvenRecordedProcessIds $record); [Console]::WriteLine($ids.Count)"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "0"
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")

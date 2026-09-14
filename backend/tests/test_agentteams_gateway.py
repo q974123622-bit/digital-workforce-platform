@@ -98,3 +98,25 @@ def test_sync_rejects_a_limited_timeline_instead_of_advancing_past_missing_event
 
     with pytest.raises(AgentTeamsUnavailableError, match="limited"):
         gateway.sync_messages("s1", {"!team:test"})
+
+
+def test_initial_cursor_uses_an_empty_timeline_and_accepts_the_matrix_baseline():
+    gateway = AgentTeamsGateway(base_url="http://matrix", matrix_token="secret")
+    gateway._client = _Client([
+        _Response(200, {
+            "next_batch": "fresh-cursor",
+            "rooms": {
+                "join": {
+                    "!team:test": {
+                        "timeline": {"limited": True, "prev_batch": "history", "events": []}
+                    }
+                }
+            },
+        }),
+    ])
+
+    assert gateway.initial_sync_cursor({"!team:test"}) == "fresh-cursor"
+
+    params = gateway._client.calls[0][1]["params"]
+    matrix_filter = json.loads(params["filter"])
+    assert matrix_filter["room"]["timeline"]["limit"] == 0

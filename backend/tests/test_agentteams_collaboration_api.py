@@ -3,12 +3,81 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 
+import pytest
+
 from app import models
 from app.services.agentteams_collaboration import AgentTeamsCollaborationService
 from app.services.agentteams_local_scenario import (
     LOCAL_DEMO_INSTRUCTION,
     LOCAL_DEMO_TITLE,
 )
+
+
+ONBOARDING_ROLES = {
+    "manager": "VE-0001",
+    "hr": "VE-0002",
+    "it": "VE-0003",
+    "audit": "VE-0005",
+    "hr_material": "VE-HR-MATERIAL",
+    "hr_training": "VE-HR-TRAINING",
+    "it_account": "VE-IT-ACCOUNT",
+    "it_device": "VE-IT-DEVICE",
+}
+DATABASE_ROLES = {
+    "manager": "VE-0001",
+    "db_write": "DB-WRITE-01",
+    "db_lock": "DB-LOCK-01",
+    "db_vacuum": "DB-VACUUM-01",
+    "db_index": "DB-INDEX-01",
+    "db_query": "DB-QUERY-01",
+}
+
+
+def _strict_runtime_document(team_id="TEAM-ONBOARD") -> dict:
+    roles = ONBOARDING_ROLES if team_id == "TEAM-ONBOARD" else DATABASE_ROLES
+    document = {
+        "matrix_url": "http://matrix.test",
+        "room_id": "!team:test",
+        "team_id": team_id,
+        "platform": {"mxid": "@platform:test", "token": "platform-token"},
+        "agents": {
+            role: {
+                "agent_id": agent_id,
+                "mxid": f"@{role}:test",
+                "token": f"{role}-token",
+                "allowed_skill_ids": [f"{role}-skill"],
+                "safe_tool_catalog": [],
+            }
+            for role, agent_id in roles.items()
+        },
+        "team_catalog": {},
+    }
+    if team_id == "TEAM-ONBOARD":
+        document["team_relationships"] = {
+            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+            "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
+            "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
+            "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": []},
+            "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
+            "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
+            "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
+            "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+        }
+    return document
+
+
+def _install_strict_runtime(monkeypatch, tmp_path, *, team_id="TEAM-ONBOARD") -> dict:
+    document = _strict_runtime_document(team_id)
+    runtime_path = tmp_path / f"{team_id.lower()}-runtime.json"
+    runtime_path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(runtime_path))
+    return document
+
+
+@pytest.fixture(autouse=True)
+def _isolated_strict_runtime(monkeypatch, tmp_path):
+    """Never let API tests inherit a developer's credential-bearing runtime file."""
+    return _install_strict_runtime(monkeypatch, tmp_path)
 
 
 READY_HEALTH = {
@@ -22,26 +91,8 @@ READY_HEALTH = {
     "ready_for_demo": True,
     "reason": "",
     "workers": [
-        {
-            "agent_id": "VE-0001",
-            "matrix_user_id": "@ve-0001:test",
-            "status": "ready",
-        },
-        {
-            "agent_id": "VE-0002",
-            "matrix_user_id": "@ve-0002:test",
-            "status": "ready",
-        },
-        {
-            "agent_id": "VE-0003",
-            "matrix_user_id": "@ve-0003:test",
-            "status": "ready",
-        },
-        {
-            "agent_id": "VE-0005",
-            "matrix_user_id": "@ve-0005:test",
-            "status": "ready",
-        },
+        {"agent_id": agent_id, "matrix_user_id": f"@{role}:test", "status": "ready"}
+        for role, agent_id in ONBOARDING_ROLES.items()
     ],
 }
 
@@ -199,29 +250,16 @@ def test_strict_health_still_blocks_without_matrix(client, monkeypatch, tmp_path
     assert body["matrix"] == "not_configured"
 
 
-def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbeats(
-    client, db_session, monkeypatch, tmp_path
+def test_strict_health_requires_nine_verified_identities_and_eight_fresh_agent_heartbeats(
+    client, db_session, monkeypatch, tmp_path, _isolated_strict_runtime
 ):
     monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
     monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
-    skills = {
-        "manager": "agentteams-onboarding-readiness", "hr": "hr-onboarding-assistant",
-        "it": "it-service-assistant", "audit": "audit-evidence-review",
-    }
-    config_path = tmp_path / "runtime.json"
-    config_path.write_text(json.dumps({
-        "matrix_url": "http://matrix.test", "room_id": "!team:test", "team_id": "TEAM-ONBOARD",
-        "platform": {"mxid": "@platform:test", "token": "platform-token"},
-        "agents": {
-            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token", "allowed_skill_ids": [skills["manager"]], "safe_tool_catalog": []},
-            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token", "allowed_skill_ids": [skills["hr"]], "safe_tool_catalog": []},
-            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token", "allowed_skill_ids": [skills["it"]], "safe_tool_catalog": []},
-            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token", "allowed_skill_ids": [skills["audit"]], "safe_tool_catalog": []},
-        }, "team_catalog": {},
-    }), encoding="utf-8")
-    monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(config_path))
-    for agent_id, mxid in (("VE-0001", "@manager:test"), ("VE-0002", "@hr:test"), ("VE-0003", "@it:test"), ("VE-0005", "@audit:test")):
+    agents = _isolated_strict_runtime["agents"]
+    for identity in agents.values():
+        agent_id, mxid = identity["agent_id"], identity["mxid"]
         employee = db_session.get(models.DigitalEmployee, agent_id)
+        assert employee is not None
         employee.runtime_ref = mxid
         employee.runtime_type = "agentteams"
         employee.status = "active"
@@ -229,8 +267,8 @@ def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbe
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     from app.services.agentteams_agent_runtime import heartbeat_signature
-    tokens = {"VE-0001": "manager-token", "VE-0002": "hr-token", "VE-0003": "it-token", "VE-0005": "audit-token"}
-    mxids = {"VE-0001": "@manager:test", "VE-0002": "@hr:test", "VE-0003": "@it:test", "VE-0005": "@audit:test"}
+    tokens = {identity["agent_id"]: identity["token"] for identity in agents.values()}
+    mxids = {identity["agent_id"]: identity["mxid"] for identity in agents.values()}
     for agent_id in tokens:
         heartbeat_at = datetime.now(timezone.utc).isoformat()
         (state_dir / f"{agent_id}.json").write_text(json.dumps({"agent_id": agent_id, "mxid": mxids[agent_id], "heartbeat_at": heartbeat_at, "heartbeat_signature": heartbeat_signature(agent_id, mxids[agent_id], heartbeat_at, tokens[agent_id])}), encoding="utf-8")
@@ -239,12 +277,13 @@ def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbe
         def __init__(self, *, matrix_token, **_kwargs):
             self.matrix_token = matrix_token
         def whoami(self):
-            return {
-                "platform-token": "@platform:test", "manager-token": "@manager:test",
-                "hr-token": "@hr:test", "it-token": "@it:test", "audit-token": "@audit:test",
-            }[self.matrix_token]
+            identities = [_isolated_strict_runtime["platform"], *agents.values()]
+            return {identity["token"]: identity["mxid"] for identity in identities}[self.matrix_token]
         def joined_members(self, _room_id):
-            return {"@platform:test", "@manager:test", "@hr:test", "@it:test", "@audit:test"}
+            return {
+                _isolated_strict_runtime["platform"]["mxid"],
+                *(identity["mxid"] for identity in agents.values()),
+            }
         def close(self):
             pass
 
@@ -254,7 +293,7 @@ def test_strict_health_requires_five_verified_identities_and_fresh_agent_heartbe
     body = client.get("/api/v1/agentteams-collaboration/health").json()
 
     assert body["ready_for_demo"] is True
-    assert {item["agent_id"] for item in body["workers"]} == {"VE-0001", "VE-0002", "VE-0003", "VE-0005"}
+    assert {item["agent_id"] for item in body["workers"]} == set(ONBOARDING_ROLES.values())
     assert all(item["status"] == "ready" for item in body["workers"])
     assert "token" not in json.dumps(body).lower()
 
@@ -294,6 +333,7 @@ def test_submit_returns_created_agentteams_task(client, db_session, monkeypatch)
             "title": "入职协作",
             "instruction": "完成制度和账号核查",
             "material": {},
+            "thinking_enabled": False,
         },
     )
 
@@ -302,6 +342,10 @@ def test_submit_returns_created_agentteams_task(client, db_session, monkeypatch)
     assert body["source"] == "agentteams"
     assert body["status"] == "planning"
     assert body["nodes"][0]["id"] == body["id"]
+    submit = db_session.query(models.AgentMessage).filter_by(
+        task_id=body["id"], message_type="task.submit"
+    ).one()
+    assert submit.payload["thinking_enabled"] is False
 
 
 def test_submit_returns_503_when_environment_is_not_ready_without_creating_task(
@@ -442,13 +486,14 @@ def test_local_demo_and_strict_reject_incompatible_team(
 
 
 def test_strict_generic_entry_accepts_database_team_and_enqueues_real_scenario(
-    client, db_session, monkeypatch
+    client, db_session, monkeypatch, tmp_path
 ):
     from app.routers import agentteams_collaboration
 
     monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
     monkeypatch.setenv("DWP_AGENTTEAMS_MODE", "agentteams_strict")
-    _stub_health(monkeypatch, READY_HEALTH)
+    _install_strict_runtime(monkeypatch, tmp_path, team_id="TEAM-DB-BENCH")
+    _stub_health(monkeypatch, {**READY_HEALTH, "configured_team_id": "TEAM-DB-BENCH"})
     queued: list[tuple[str, str]] = []
     monkeypatch.setattr(
         agentteams_collaboration,

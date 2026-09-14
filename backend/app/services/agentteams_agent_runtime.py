@@ -39,16 +39,22 @@ from .llm import LLMUnavailableError
 
 Role = Literal[
     "manager", "hr", "it", "audit",
+    "hr_material", "hr_training", "it_account", "it_device",
     "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 ]
 _ROLES = {
     "manager", "hr", "it", "audit",
+    "hr_material", "hr_training", "it_account", "it_device",
     "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 }
 _ROLE_PROFESSIONAL_SKILLS = {
     "hr": {"hr-onboarding-assistant", "hr-role-change-assistant"},
     "it": {"it-service-assistant", "it-role-change-assistant"},
     "audit": {"audit-evidence-review", "audit-role-change-review"},
+    "hr_material": {"hr-material-specialist"},
+    "hr_training": {"hr-training-specialist"},
+    "it_account": {"it-account-specialist"},
+    "it_device": {"it-device-specialist"},
     "db_write": {"db-write-investigation"},
     "db_lock": {"db-lock-investigation"},
     "db_vacuum": {"db-vacuum-investigation"},
@@ -58,7 +64,8 @@ _ROLE_PROFESSIONAL_SKILLS = {
 _SAFE_ERROR_CODES = {
     "skill_selection_failed", "planning_failed", "decision_failed", "summary_failed",
     "completion_without_tool_evidence", "invalid_model_decision", "invalid_team_catalog",
-    "invalid_parent_chain", "llm_unavailable", "network_error", "http_error",
+    "invalid_parent_chain", "invalid_team_relationship_graph", "invalid_thinking_mode",
+    "llm_unavailable", "network_error", "http_error",
     "rate_limited", "client_error", "server_error",
     "invalid_response_json", "invalid_structured_json", "runtime_error",
 }
@@ -85,6 +92,8 @@ def heartbeat_signature(agent_id: str, mxid: str, heartbeat_at: str, token: str)
 
 
 class MatrixProtocolTransport(Protocol):
+    def initial_sync_cursor(self, room_ids: set[str]) -> str: ...
+
     def sync_messages(self, since: str | None, room_ids: set[str]): ...
 
     def send_protocol_message(self, room_id: str, text: str, protocol_line: str) -> str: ...
@@ -143,11 +152,13 @@ class AgentRuntime:
         gateway: MatrixProtocolTransport,
         decisions: AgentDecisionEngine,
         *,
+        non_thinking_decisions: AgentDecisionEngine | None = None,
         pause: Callable[[float], None] = time.sleep,
     ) -> None:
         self.config = config
         self.gateway = gateway
         self.decisions = decisions
+        self.non_thinking_decisions = non_thinking_decisions or decisions
         self.pause = pause
         self._state_path = config.state_dir / f"{config.agent_id}.json"
         self._state = self._load_state()
@@ -250,6 +261,18 @@ class AgentRuntime:
     def close(self) -> None:
         self.gateway.close()
 
+    def initialize_matrix_cursor(self) -> bool:
+        """Prime a new Matrix identity before its first readiness heartbeat."""
+        current = self._state.get("cursor")
+        if isinstance(current, str) and current:
+            return False
+        cursor = self.gateway.initial_sync_cursor({self.config.room_id})
+        if not isinstance(cursor, str) or not cursor:
+            raise ValueError("invalid_initial_matrix_cursor")
+        self._state["cursor"] = cursor
+        self._save_state()
+        return True
+
     def _process_event(self, event: MatrixEvent, state: dict[str, Any]) -> int | bool | None:
         if event.sender == self.config.matrix_mxid:
             return False
@@ -316,8 +339,13 @@ class AgentRuntime:
     def _manager_submit(self, message: AgentProtocolMessage, state: dict[str, Any]) -> list[AgentProtocolMessage]:
         goal = self._goal(message)
         catalog, catalog_version = self._fresh_team_catalog(message.payload)
+        relationship_graph = self._safe_relationship_graph(
+            message.payload.get("team_relationship_graph", {}), catalog,
+        )
+        thinking_enabled = self._thinking_enabled(message.payload.get("thinking_enabled"))
+        decisions = self._decisions_for(thinking_enabled)
         self._visible_pause()
-        selection = self.decisions.select_skills(SkillSelectionContext(
+        selection = decisions.select_skills(SkillSelectionContext(
             user_goal=goal,
             runtime_skill_id="agentteams-manager-coordination",
             allowed_skill_ids=set(self.config.scenario_skill_ids).intersection(self.config.allowed_skill_ids),
@@ -327,14 +355,21 @@ class AgentRuntime:
             "kind": "skill.selected", "selected_skill_ids": selected,
         }, 0)
         self._visible_pause()
-        decision = self.decisions.plan(self._manager_context(
-            goal=goal, selected=selected, catalog=catalog, child_results=[], existing_child_task_keys=[], current_round=1, limits={}
+        decision = decisions.plan(self._manager_context(
+            goal=goal, selected=selected, catalog=catalog, child_results=[], existing_child_task_keys=[],
+            current_round=1, limits={}, relationship_graph=relationship_graph,
         ))
-        self._remember_manager(state, message, goal, selected, catalog_version, decision_iteration=1)
+        self._remember_manager(
+            state, message, goal, selected, catalog_version,
+            thinking_enabled=thinking_enabled, decision_iteration=1,
+        )
         responses = [skill_message]
         responses.extend(self._reasoning_trace(message, selection, stage="skill_selection", iteration=1, sequence=len(responses)))
         responses.extend(self._reasoning_trace(message, decision, stage="decision", iteration=1, sequence=len(responses), action=decision.action))
-        responses.extend(self._manager_decision(message, decision, catalog, 1, sequence=len(responses)))
+        responses.extend(self._manager_decision(
+            message, decision, catalog, 1,
+            relationship_graph=relationship_graph, sequence=len(responses),
+        ))
         return responses
 
     def _manager_review(self, message: AgentProtocolMessage, state: dict[str, Any]) -> list[AgentProtocolMessage]:
@@ -342,28 +377,39 @@ class AgentRuntime:
         selected = self._safe_selected(stored.get("selected_skill_ids", []), self.config.scenario_skill_ids)
         if not selected:
             raise AgentDecisionError("planning_failed")
+        thinking_enabled = self._thinking_enabled(
+            message.payload.get("thinking_enabled"),
+            fallback=stored.get("thinking_enabled", True),
+        )
+        decisions = self._decisions_for(thinking_enabled)
         catalog, catalog_version = self._fresh_team_catalog(
             message.payload, previous_version=stored.get("team_catalog_version")
         )
+        relationship_graph = self._safe_relationship_graph(
+            message.payload.get("team_relationship_graph", {}), catalog,
+        )
         current_round = self._positive_int(message.payload.get("current_round"), 1)
         self._visible_pause()
-        decision = self.decisions.plan(self._manager_context(
+        decision = decisions.plan(self._manager_context(
             goal=self._goal(message, stored.get("goal")), selected=selected, catalog=catalog,
             child_results=self._bounded_collection(message.payload.get("child_results")),
             existing_child_task_keys=message.payload.get("existing_child_task_keys"),
             current_round=current_round, limits=message.payload.get("remaining_limits", {}),
+            relationship_graph=relationship_graph,
         ))
         decision_iteration = self._positive_int(stored.get("decision_iteration"), 1) + 1
         self._remember_manager(
             state, message, self._goal(message, stored.get("goal")), selected,
-            catalog_version, decision_iteration=decision_iteration,
+            catalog_version, thinking_enabled=thinking_enabled,
+            decision_iteration=decision_iteration,
         )
         responses = self._reasoning_trace(
             message, decision, stage="decision", iteration=decision_iteration,
             sequence=0, action=decision.action,
         )
         responses.extend(self._manager_decision(
-            message, decision, catalog, current_round, sequence=len(responses),
+            message, decision, catalog, current_round + 1,
+            relationship_graph=relationship_graph, sequence=len(responses),
         ))
         return responses
 
@@ -374,11 +420,19 @@ class AgentRuntime:
         catalog: Mapping[str, Any],
         round_no: int,
         *,
+        relationship_graph: Mapping[str, Any] | None = None,
         sequence: int = 1,
     ) -> list[AgentProtocolMessage]:
         selected = self._safe_selected(decision.selected_skill_ids, self.config.scenario_skill_ids)
         if decision.action == "delegate":
-            subtasks = [self._safe_subtask(item, catalog) for item in decision.subtasks]
+            subtasks = [
+                self._safe_subtask(
+                    item,
+                    catalog,
+                    direct_report_ids=self._direct_report_ids(relationship_graph),
+                )
+                for item in decision.subtasks
+            ]
             if not subtasks:
                 raise AgentDecisionError("planning_failed")
             return [self._reply(message, "task.delegate", "platform", {
@@ -397,6 +451,8 @@ class AgentRuntime:
         return [self._failure(message, "planning_failed", sequence=sequence)]
 
     def _worker_assign(self, message: AgentProtocolMessage, state: dict[str, Any]) -> list[AgentProtocolMessage]:
+        thinking_enabled = self._thinking_enabled(message.payload.get("thinking_enabled"))
+        decisions = self._decisions_for(thinking_enabled)
         self._visible_pause()
         accepted = self._reply(message, "task.accepted", "platform", {}, 0)
         self._visible_pause()
@@ -405,11 +461,11 @@ class AgentRuntime:
         if not allowed:
             raise AgentDecisionError("skill_selection_failed")
         self._visible_pause()
-        selection = self.decisions.select_skills(SkillSelectionContext(
+        selection = decisions.select_skills(SkillSelectionContext(
             user_goal=self._goal(message), runtime_skill_id="employee-collaboration", allowed_skill_ids=allowed,
         ))
         selected = self._safe_selected(selection.selected_skill_ids, allowed)
-        context = self._new_worker_context(message, selected)
+        context = self._new_worker_context(message, selected, thinking_enabled=thinking_enabled)
         state["tasks"][message.task_id] = context
         self._trim_tasks(state)
         selected_message = self._reply(message, "agent.message", "platform", {
@@ -432,6 +488,10 @@ class AgentRuntime:
             catalog, version = self._fresh_team_catalog(message.payload, previous_version=context.get("team_catalog_version"))
             context["team_catalog"] = catalog
             context["team_catalog_version"] = version
+            if "team_relationship_graph" in message.payload:
+                context["team_relationship_graph"] = self._safe_relationship_graph(
+                    message.payload.get("team_relationship_graph"), catalog,
+                )
         evidence = {"kind": evidence_kind, "value": self._bounded_value(message.payload)}
         context["evidence"] = self._append_evidence(context.get("evidence", []), evidence)
         self._visible_pause()
@@ -440,7 +500,8 @@ class AgentRuntime:
     def _worker_decide(self, message: AgentProtocolMessage, state: dict[str, Any], context: dict[str, Any], sequence: int) -> list[AgentProtocolMessage]:
         iteration = self._positive_int(context.get("decision_iteration"), 0) + 1
         context["decision_iteration"] = iteration
-        decision = self.decisions.decide_work(WorkerContext(
+        decisions = self._decisions_for(self._thinking_enabled(context.get("thinking_enabled")))
+        decision = decisions.decide_work(WorkerContext(
             current_agent_id=self.config.agent_id,
             task=dict(context["task"]), professional_skill_ids=["employee-collaboration", *context["selected_skill_ids"]],
             safe_tool_catalog=[self._bounded_value(item) for item in self.config.safe_tool_catalog],
@@ -450,6 +511,7 @@ class AgentRuntime:
             dependency_results=self._bounded_collection(context["task"].get("dependency_results")),
             parent_chain_agent_ids=self._bounded_text_list(context["parent_chain_agent_ids"]),
             previous_results=self._bounded_collection(context.get("evidence", [])),
+            team_relationship_graph=self._bounded_value(context.get("team_relationship_graph", {})),
         ))
         responses = self._reasoning_trace(
             message, decision, stage="decision", iteration=iteration,
@@ -471,8 +533,21 @@ class AgentRuntime:
                 raise AgentDecisionError("decision_failed")
             return [*responses, self._reply(message, "agent.message", recipient, {"kind": "peer.ask", "text": self._text(decision.message)}, action_sequence)]
         if decision.action == "delegate":
-            subtask = self._safe_subtask(decision.subtask, context.get("team_catalog", {}), parent_chain=context["parent_chain_agent_ids"])
-            return [*responses, self._reply(message, "task.delegate", "platform", {"subtasks": [subtask]}, action_sequence)]
+            candidates = decision.subtasks or ([decision.subtask] if decision.subtask is not None else [])
+            subtasks = [
+                self._safe_subtask(
+                    candidate,
+                    context.get("team_catalog", {}),
+                    parent_chain=context["parent_chain_agent_ids"],
+                    direct_report_ids=self._direct_report_ids(context.get("team_relationship_graph")),
+                )
+                for candidate in candidates
+            ]
+            if not subtasks:
+                raise AgentDecisionError("decision_failed")
+            return [*responses, self._reply(
+                message, "task.delegate", "platform", {"subtasks": subtasks}, action_sequence,
+            )]
         if decision.action == "complete":
             audit_ids = self._successful_audit_ids(context.get("evidence", []))
             if audit_ids:
@@ -723,7 +798,10 @@ class AgentRuntime:
             for key, count in security.items()
         )
 
-    def _manager_context(self, *, goal, selected, catalog, child_results, existing_child_task_keys, current_round, limits) -> ManagerContext:
+    def _manager_context(
+        self, *, goal, selected, catalog, child_results, existing_child_task_keys,
+        current_round, limits, relationship_graph=None,
+    ) -> ManagerContext:
         safe_limits = limits if isinstance(limits, Mapping) else {}
         return ManagerContext(
             user_goal=goal, manager_skill_id="agentteams-manager-coordination", selected_skill_ids=selected,
@@ -734,21 +812,28 @@ class AgentRuntime:
             max_rounds=self._positive_int(safe_limits.get("rounds"), 3),
             max_children=self._positive_int(safe_limits.get("children"), 5),
             max_nodes=self._positive_int(safe_limits.get("nodes"), 20),
+            team_relationship_graph=self._bounded_value(relationship_graph or {}),
         )
 
     def _remember_manager(
-        self, state, message, goal, selected, catalog_version, *, decision_iteration: int,
+        self, state, message, goal, selected, catalog_version, *,
+        thinking_enabled: bool, decision_iteration: int,
     ) -> None:
         # Catalog entries are a per-message authority snapshot.  Persist only
         # its monotonic version; a later planning round must supply a fresh one.
         state["tasks"][message.task_id] = {
             "kind": "manager", "goal": goal, "selected_skill_ids": selected,
             "team_catalog_version": catalog_version,
+            "thinking_enabled": thinking_enabled,
             "decision_iteration": decision_iteration,
         }
         self._trim_tasks(state)
 
-    def _new_worker_context(self, message, selected) -> dict[str, Any]:
+    def _new_worker_context(
+        self, message, selected, *, thinking_enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        if thinking_enabled is None:
+            thinking_enabled = self._thinking_enabled(message.payload.get("thinking_enabled"))
         parent_chain = message.payload.get("parent_chain_agent_ids")
         if not isinstance(parent_chain, list) or not parent_chain or any(not isinstance(item, str) or not item for item in parent_chain):
             raise AgentDecisionError("invalid_parent_chain")
@@ -763,10 +848,15 @@ class AgentRuntime:
         ):
             raise AgentDecisionError("invalid_parent_chain")
         catalog, version = self._fresh_team_catalog(message.payload)
+        relationship_graph = self._safe_relationship_graph(
+            message.payload.get("team_relationship_graph", {}), catalog,
+        )
         return {
             "kind": "worker", "selected_skill_ids": selected, "completion_corrected": False, "evidence": [],
             "decision_iteration": 0,
+            "thinking_enabled": thinking_enabled,
             "parent_chain_agent_ids": self._bounded_text_list(parent_chain, 8),
+            "team_relationship_graph": relationship_graph,
             "team_catalog": catalog, "team_catalog_version": version,
             "task": {"title": self._text(message.payload.get("title", "task")), "goal": self._goal(message),
                      "client_task_key": self._text(message.payload.get("client_task_key", "task")),
@@ -798,8 +888,17 @@ class AgentRuntime:
             payload["action"] = action
         return [self._reply(source, "agent.message", "platform", payload, sequence)]
 
-    def _safe_subtask(self, subtask: PlannedSubtask | None, catalog: Mapping[str, Any], *, parent_chain: list[str] | None = None) -> dict[str, Any]:
+    def _safe_subtask(
+        self,
+        subtask: PlannedSubtask | None,
+        catalog: Mapping[str, Any],
+        *,
+        parent_chain: list[str] | None = None,
+        direct_report_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
         if subtask is None or not subtask.required_capability or subtask.assignee_agent_id == self.config.agent_id or subtask.assignee_agent_id in set(parent_chain or []):
+            raise AgentDecisionError("invalid_model_decision")
+        if direct_report_ids is not None and subtask.assignee_agent_id not in direct_report_ids:
             raise AgentDecisionError("invalid_model_decision")
         member = catalog.get(subtask.assignee_agent_id)
         capabilities = member.get("capabilities", []) if isinstance(member, Mapping) else []
@@ -810,6 +909,85 @@ class AgentRuntime:
             "instruction": self._text(subtask.goal), "assignee_agent_id": subtask.assignee_agent_id,
             "depends_on": self._bounded_text_list(subtask.depends_on, 32), "required": bool(subtask.required),
             "required_capability": self._text(subtask.required_capability, 128), "material": {},
+        }
+
+    def _safe_relationship_graph(
+        self, raw: Any, catalog: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if raw in ({}, None):
+            return {}
+        if not isinstance(raw, Mapping) or set(raw) != {"self", "reports_to", "direct_reports"}:
+            raise AgentDecisionError("invalid_team_relationship_graph")
+        identity = raw.get("self")
+        reports_to = raw.get("reports_to")
+        direct_reports = raw.get("direct_reports")
+        if (
+            not isinstance(identity, Mapping)
+            or set(identity) != {"agent_id", "role"}
+            or identity.get("agent_id") != self.config.agent_id
+            or not isinstance(identity.get("role"), str)
+            or not identity.get("role").strip()
+            or not isinstance(reports_to, list)
+            or not isinstance(direct_reports, list)
+            or len(reports_to) > 8
+            or len(direct_reports) > 8
+        ):
+            raise AgentDecisionError("invalid_team_relationship_graph")
+        if any(
+            not isinstance(agent_id, str)
+            or agent_id not in self.config.trusted_sender_mxids
+            or agent_id == self.config.agent_id
+            for agent_id in reports_to
+        ):
+            raise AgentDecisionError("invalid_team_relationship_graph")
+        normalized_reports: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in direct_reports:
+            if not isinstance(item, Mapping) or set(item) != {"agent_id", "role", "capabilities"}:
+                raise AgentDecisionError("invalid_team_relationship_graph")
+            agent_id = item.get("agent_id")
+            role = item.get("role")
+            capabilities = item.get("capabilities")
+            catalog_entry = catalog.get(agent_id) if isinstance(agent_id, str) else None
+            catalog_capabilities = catalog_entry.get("capabilities") if isinstance(catalog_entry, Mapping) else None
+            if (
+                not isinstance(agent_id, str)
+                or agent_id in seen
+                or agent_id == self.config.agent_id
+                or agent_id not in self.config.trusted_sender_mxids
+                or not isinstance(role, str)
+                or not role.strip()
+                or not isinstance(capabilities, list)
+                or not isinstance(catalog_capabilities, list)
+                or any(not isinstance(value, str) or value not in catalog_capabilities for value in capabilities)
+            ):
+                raise AgentDecisionError("invalid_team_relationship_graph")
+            seen.add(agent_id)
+            normalized_reports.append({
+                "agent_id": self._text(agent_id, 128),
+                "role": self._text(role, 128),
+                "capabilities": self._bounded_text_list(capabilities, 32),
+            })
+        return {
+            "self": {
+                "agent_id": self.config.agent_id,
+                "role": self._text(identity["role"], 128),
+            },
+            "reports_to": self._bounded_text_list(reports_to, 8),
+            "direct_reports": normalized_reports,
+        }
+
+    @staticmethod
+    def _direct_report_ids(raw: Any) -> set[str] | None:
+        if not isinstance(raw, Mapping) or not raw:
+            return None
+        direct_reports = raw.get("direct_reports")
+        if not isinstance(direct_reports, list):
+            return None
+        return {
+            item["agent_id"]
+            for item in direct_reports
+            if isinstance(item, Mapping) and isinstance(item.get("agent_id"), str)
         }
 
     def _fresh_team_catalog(self, payload: Mapping[str, Any], previous_version: Any = None) -> tuple[dict[str, dict[str, Any]], int]:
@@ -853,14 +1031,32 @@ class AgentRuntime:
         if not isinstance(evidence, list):
             return []
         for item in reversed(evidence):
-            value = item.get("value") if isinstance(item, Mapping) and item.get("kind") == "tool.result" else None
-            if isinstance(value, Mapping) and value.get("ok") is True:
-                ids = value.get("audit_ids")
+            kind = item.get("kind") if isinstance(item, Mapping) else None
+            value = item.get("value") if isinstance(item, Mapping) else None
+            if not isinstance(value, Mapping):
+                continue
+            ids = value.get("audit_ids")
+            if kind == "tool.result" and value.get("ok") is True:
                 if isinstance(ids, list) and ids and all(
-                    isinstance(item, int) and not isinstance(item, bool) and 0 < item < 2 ** 63
-                    for item in ids
+                    isinstance(audit_id, int)
+                    and not isinstance(audit_id, bool)
+                    and 0 < audit_id < 2 ** 63
+                    for audit_id in ids
                 ):
                     return ids[:16]
+            if kind == "child.summary":
+                if (
+                    isinstance(ids, list)
+                    and 0 < len(ids) <= 16
+                    and all(
+                        isinstance(audit_id, int)
+                        and not isinstance(audit_id, bool)
+                        and 0 < audit_id < 2 ** 63
+                        for audit_id in ids
+                    )
+                    and len(ids) == len(set(ids))
+                ):
+                    return list(ids)
         return []
 
     def _successful_evidence_references(self, evidence: Any) -> dict[str, str]:
@@ -1014,6 +1210,16 @@ class AgentRuntime:
     def _goal(self, message: AgentProtocolMessage, fallback: Any = None) -> str:
         value = message.payload.get("instruction", message.payload.get("goal", fallback if fallback is not None else message.payload.get("title", "task")))
         return self._text(value)
+
+    def _decisions_for(self, thinking_enabled: bool) -> AgentDecisionEngine:
+        return self.decisions if thinking_enabled else self.non_thinking_decisions
+
+    @staticmethod
+    def _thinking_enabled(value: Any, *, fallback: Any = True) -> bool:
+        selected = fallback if value is None else value
+        if not isinstance(selected, bool):
+            raise AgentDecisionError("invalid_thinking_mode")
+        return selected
 
     @staticmethod
     def _positive_int(value: Any, default: int) -> int:

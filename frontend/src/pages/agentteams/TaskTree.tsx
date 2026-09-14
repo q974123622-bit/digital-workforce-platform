@@ -111,7 +111,10 @@ export function TaskTree({ nodes, graph, messages = [], selectedId, onSelect }: 
     const requests = nodeToolMessages.filter((message) => message.message_type === 'tool.request');
     const results = nodeToolMessages.filter((message) => message.message_type === 'tool.result');
     return (
-      <li key={node.id} className={`at-chart-node ${isRoot ? 'at-chart-root' : ''}`}>
+      <li
+        key={node.id}
+        className={`at-chart-node ${isRoot ? 'at-chart-root' : ''} ${nested.length > 0 ? 'at-chart-branch' : ''}`}
+      >
         <button
           type="button"
           className={`at-chart-node-card ${selectedId === node.id ? 'selected' : ''}`}

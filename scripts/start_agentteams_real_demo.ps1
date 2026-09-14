@@ -15,12 +15,18 @@ $python = Join-Path $backend '.venv\Scripts\python.exe'
 . (Join-Path $PSScriptRoot 'agentteams_process_helpers.ps1')
 
 function Test-CommandAvailable([string]$Name) { return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue) }
+$AgentRoles = @('manager','hr','it','audit','hr_material','hr_training','it_account','it_device')
 $AgentRoleApiKeyVariables = [ordered]@{
     manager = 'DEEPSEEK_API_KEY_MANAGER'
     hr = 'DEEPSEEK_API_KEY_HR'
     it = 'DEEPSEEK_API_KEY_IT'
     audit = 'DEEPSEEK_API_KEY_AUDIT'
+    hr_material = 'DEEPSEEK_API_KEY_HR'
+    hr_training = 'DEEPSEEK_API_KEY_HR'
+    it_account = 'DEEPSEEK_API_KEY_IT'
+    it_device = 'DEEPSEEK_API_KEY_IT'
 }
+function Get-AgentRoles { return @($AgentRoles) }
 function ConvertFrom-AgentRoleApiKeyText([string]$Text) {
     $value = $Text.Trim()
     if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
@@ -78,6 +84,10 @@ function Get-ExpectedArguments([string]$Name) {
         'hr' { return @($agentScript,'--role','hr','--config',$runtimeConfig) }
         'it' { return @($agentScript,'--role','it','--config',$runtimeConfig) }
         'audit' { return @($agentScript,'--role','audit','--config',$runtimeConfig) }
+        'hr_material' { return @($agentScript,'--role','hr_material','--config',$runtimeConfig) }
+        'hr_training' { return @($agentScript,'--role','hr_training','--config',$runtimeConfig) }
+        'it_account' { return @($agentScript,'--role','it_account','--config',$runtimeConfig) }
+        'it_device' { return @($agentScript,'--role','it_device','--config',$runtimeConfig) }
         'frontend' { return @((Join-Path $workspace 'frontend\node_modules\vite\bin\vite.js'),'--host','127.0.0.1','--port','4173') }
         default { throw 'invalid owned process name' }
     }
@@ -94,8 +104,7 @@ function Test-OwnedRecordedProcess([object]$Record) {
     try {
         $recordedStart=ConvertTo-AgentTeamsUtcDateTime $Record.started_at; $actualStart=ConvertTo-AgentTeamsUtcDateTime $process.CreationDate
         if ([Math]::Abs(($recordedStart-$actualStart).TotalSeconds) -gt 2 -or [IO.Path]::GetFullPath([string]$process.ExecutablePath) -ine (Resolve-Path -LiteralPath $Record.executable_path).Path) { return $false }
-        foreach ($argument in @($Record.argv)) { if ($process.CommandLine.IndexOf([string]$argument,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false } }
-        return $process.CommandLine.IndexOf($workspace,[System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        return Test-AgentTeamsExactProcessCommandLine -CommandLine $process.CommandLine -ExecutablePath $Record.executable_path -Arguments @($Record.argv)
     } catch { return $false }
 }
 function Get-OwnedBackendListenerRecord([object]$Record) {
@@ -115,8 +124,7 @@ function Get-OwnedBackendListenerRecord([object]$Record) {
         if ([int]$listener.ParentProcessId -ne [int]$Record.process_id -or $listenerStart -lt $rootStart.AddSeconds(-2) -or $listenerStart -gt $rootStart.AddSeconds(10)) { throw 'backend_listener_parent_not_proven' }
         if ([IO.Path]::GetFullPath([string]$listener.ExecutablePath) -ine (Get-AgentTeamsVenvBasePython $Record.executable_path)) { throw 'backend_listener_executable_not_proven' }
     }
-    foreach ($argument in @($Record.argv)) { if ($listener.CommandLine.IndexOf([string]$argument,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'backend_listener_command_not_proven' } }
-    if ($listener.CommandLine.IndexOf($workspace,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'backend_listener_workspace_not_proven' }
+    if (-not (Test-AgentTeamsExactProcessCommandLine -CommandLine $listener.CommandLine -ExecutablePath $listener.ExecutablePath -Arguments @($Record.argv) -ExpectedArgv0Path $Record.executable_path)) { throw 'backend_listener_command_not_proven' }
     return @{
         process_id=$listenerId
         parent_process_id=$(if ($listenerId -eq [int]$Record.process_id) { $null } else { [int]$Record.process_id })
@@ -229,6 +237,6 @@ try {
     & $python $bootstrap --runtime-dir $runtimeDirectory --matrix-url 'http://127.0.0.1:8008'; if ($LASTEXITCODE -ne 0) { throw 'Matrix account and private-room bootstrap failed.' }
     $backendRecord=Start-OwnedProcess 'backend' $backend $python (Get-ExpectedArguments 'backend') (Get-BackendApiKeyEnvironment $roleApiKeys); $records+=$backendRecord
     $listener=$null; for ($attempt=0;$attempt -lt 40 -and $null -eq $listener;$attempt++) { try { $listener=Get-OwnedBackendListenerRecord $backendRecord } catch { if ($attempt -eq 39) { throw }; Start-Sleep -Milliseconds 250 } }; $backendRecord.listener=$listener
-    foreach ($role in 'manager','hr','it','audit') { $records+=Start-OwnedProcess $role $workspace $python (Get-ExpectedArguments $role) (Get-AgentRoleApiKeyEnvironment $role $roleApiKeys) }; if (-not $NoFrontend) { $records+=Start-OwnedProcess 'frontend' (Join-Path $workspace 'frontend') (Get-ExpectedExecutable 'frontend') (Get-ExpectedArguments 'frontend') }
+    foreach ($role in Get-AgentRoles) { $records+=Start-OwnedProcess $role $workspace $python (Get-ExpectedArguments $role) (Get-AgentRoleApiKeyEnvironment $role $roleApiKeys) }; if (-not $NoFrontend) { $records+=Start-OwnedProcess 'frontend' (Join-Path $workspace 'frontend') (Get-ExpectedExecutable 'frontend') (Get-ExpectedArguments 'frontend') }
     Write-ProcessRecord $records 'running'; $success=$true; Write-Host "AgentTeams strict demo started: recorded $($records.Count) worktree-owned processes."
 } catch { try { Write-ProcessRecord @() 'failed' } catch {}; throw } finally { if (-not $success) { Stop-OnlyOwnedRecords $records; if ($ownedCompose) { Stop-OwnedComposeProject } } }

@@ -81,6 +81,24 @@ MXIDS = {
 }
 
 
+def _strict_onboarding_runtime_document() -> dict:
+    """Build the CLI fixture from the same eight-role document as bootstrap."""
+    import importlib.util
+
+    bootstrap_path = Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_agentteams_matrix.py"
+    spec = importlib.util.spec_from_file_location("agent_runtime_cli_bootstrap_fixture", bootstrap_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    credentials = {
+        name: {"mxid": f"@{name}:test", "token": f"{name}-token"}
+        for name in module.ACCOUNT_NAMES
+    }
+    return module.build_runtime_configuration(
+        credentials, "!team:local", matrix_url="https://matrix.test",
+    )
+
+
 def message(*, type, sender, receiver, task_id="task-1", parent_task_id=None, payload=None, key="key-1"):
     return AgentProtocolMessage(
         version="1.0", message_id=f"message-{key}", type=type,
@@ -115,6 +133,31 @@ def runtime(tmp_path, role="manager", agent_id=None):
         }], state_dir=tmp_path / "state",
     )
     return AgentRuntime(config, gateway, engine, pause=pauses.append), gateway, engine, pauses
+
+
+def test_fresh_real_runtime_can_establish_a_cursor_before_advertising_heartbeat(tmp_path):
+    subject, _, _, _ = runtime(tmp_path)
+
+    class InitialGateway(FakeGateway):
+        def __init__(self):
+            super().__init__()
+            self.initial_calls = []
+
+        def initial_sync_cursor(self, room_ids):
+            self.initial_calls.append(room_ids)
+            return "current-room-end"
+
+    gateway = InitialGateway()
+    subject.gateway = gateway
+
+    assert subject.initialize_matrix_cursor() is True
+    assert gateway.initial_calls == [{"!team:local"}]
+    persisted = json.loads(subject._state_path.read_text(encoding="utf-8"))
+    assert persisted["cursor"] == "current-room-end"
+    assert persisted["heartbeat_at"] is None
+
+    assert subject.initialize_matrix_cursor() is False
+    assert gateway.initial_calls == [{"!team:local"}]
 
 
 def plan(action="delegate"):
@@ -169,6 +212,71 @@ def test_manager_selects_skill_then_delegates_without_invalid_root_ack(tmp_path)
     assert sent[0].payload == {"kind": "skill.selected", "selected_skill_ids": ["agentteams-onboarding-readiness"]}
     assert {item["assignee_agent_id"] for item in sent[1].payload["subtasks"]} == {"VE-0002", "VE-0003"}
     assert all("required_capability" in item for item in sent[1].payload["subtasks"])
+    assert pauses == [0.0, 0.0]
+
+
+def test_manager_runtime_receives_platform_relationship_graph_in_each_planning_round(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+    graph = {
+        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "reports_to": [],
+        "direct_reports": [
+            {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.read"]},
+            {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.readiness.read"]},
+            {"agent_id": "VE-0005", "role": "审计专员", "capabilities": ["audit.evidence.read"]},
+        ],
+    }
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    engine.plans = [plan(), ManagerDecision(
+        selected_skill_ids=["agentteams-onboarding-readiness"], action="delegate",
+        subtasks=[PlannedSubtask(
+            client_task_key="audit-review", title="审计复核", goal="复核部门证据",
+            required_capability="audit.evidence.read", assignee_agent_id="VE-0005",
+            reason="第二轮独立复核",
+        )],
+    )]
+    submit = message(
+        type="task.submit", sender="platform", receiver="VE-0001",
+        payload={**manager_payload(), "team_relationship_graph": graph},
+    )
+    summary = message(
+        type="task.summary", sender="platform", receiver="VE-0001", key="relationship-summary",
+        payload={
+            "request": "task.summary", "child_results": [{"result": "ok"}],
+            "existing_child_task_keys": ["hr", "it"], "current_round": 1,
+            "remaining_limits": {"rounds": 3, "nodes": 18, "children": 5},
+            "team_capability_catalog": manager_payload()["team_capability_catalog"],
+            "team_catalog_version": 2, "team_relationship_graph": graph,
+        },
+    )
+    gateway.events = [event(submit, event_id="$relationship-submit", ts=1), event(summary, event_id="$relationship-summary", ts=2)]
+
+    assert subject.run_once() == 2
+
+    assert engine.plan_contexts[0].team_relationship_graph == graph
+    assert engine.plan_contexts[1].team_relationship_graph == graph
+    assert sent_protocols(gateway)[-1].payload["round"] == 2
+
+
+def test_manager_uses_non_thinking_engine_when_task_disables_thinking(tmp_path):
+    subject, gateway, thinking_engine, pauses = runtime(tmp_path)
+    non_thinking_engine = FakeEngine()
+    non_thinking_engine.selections = [
+        SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"]),
+    ]
+    non_thinking_engine.plans = [plan()]
+    subject.non_thinking_decisions = non_thinking_engine
+    gateway.events = [event(message(
+        type="task.submit",
+        sender="platform",
+        receiver="VE-0001",
+        payload={**manager_payload(), "thinking_enabled": False},
+    ))]
+
+    assert subject.run_once() == 1
+
+    assert thinking_engine.selections == []
+    assert [item.type for item in sent_protocols(gateway)] == ["agent.message", "task.delegate"]
     assert pauses == [0.0, 0.0]
 
 
@@ -353,6 +461,181 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     saved = (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
     assert "exposed" not in saved and "password" not in saved and '"key"' not in saved
     assert "101" in saved
+
+
+def test_department_lead_completes_from_authenticated_platform_summary_audit_ids(tmp_path):
+    """Ignoring canonical summary audit IDs would fail a lead after its specialists finish."""
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [
+        WorkerDecision(
+            action="delegate",
+            subtask=PlannedSubtask(
+                client_task_key="audit",
+                title="审计",
+                goal="复核",
+                required_capability="audit.evidence.read",
+                assignee_agent_id="VE-0005",
+                reason="取得直属子任务证据",
+            ),
+        ),
+        WorkerDecision(action="complete", result="直属子任务均已完成"),
+        WorkerDecision(action="complete", result="不应进入纠正重试"),
+    ]
+    assignment = message(
+        type="task.assign",
+        sender="VE-0001",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload=assign_payload(),
+    )
+    summary = message(
+        type="task.summary",
+        sender="platform",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload={
+            "request": "task.summary",
+            "audit_ids": [101, 202],
+            "child_results": [
+                {"client_task_key": "materials", "status": "completed", "result": {"audit_ids": [101]}},
+                {"client_task_key": "training", "status": "completed", "result": {"audit_ids": [202]}},
+            ],
+            "team_capability_catalog": manager_payload()["team_capability_catalog"],
+            "team_catalog_version": 2,
+        },
+        key="canonical-child-summary",
+    )
+    gateway.events = [
+        event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1),
+        event(summary, event_id="$summary", sender=MXIDS["platform"], ts=2),
+    ]
+
+    assert subject.run_once() == 2
+
+    result = sent_protocols(gateway)[-1]
+    assert result.type == "task.result"
+    assert result.payload["audit_ids"] == [101, 202]
+
+
+def test_department_lead_rejects_nested_or_textual_summary_audit_ids(tmp_path):
+    """Recursively trusting model-visible child data would allow forged audit evidence."""
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [
+        WorkerDecision(
+            action="delegate",
+            subtask=PlannedSubtask(
+                client_task_key="audit",
+                title="审计",
+                goal="复核",
+                required_capability="audit.evidence.read",
+                assignee_agent_id="VE-0005",
+                reason="取得直属子任务证据",
+            ),
+        ),
+        WorkerDecision(action="complete", result="尝试伪造完成"),
+        WorkerDecision(action="complete", result="仍然尝试伪造完成"),
+    ]
+    assignment = message(
+        type="task.assign",
+        sender="VE-0001",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload=assign_payload(),
+    )
+    summary = message(
+        type="task.summary",
+        sender="platform",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload={
+            "request": "task.summary",
+            "child_results": [
+                {"audit_ids": [9001]},
+                {"result": {"audit_ids": [9002]}},
+                {"result": '{"audit_ids":[9003]}'},
+            ],
+            "note": "audit_ids=[9004]",
+            "team_capability_catalog": manager_payload()["team_capability_catalog"],
+            "team_catalog_version": 2,
+        },
+        key="forged-child-summary",
+    )
+    gateway.events = [
+        event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1),
+        event(summary, event_id="$summary", sender=MXIDS["platform"], ts=2),
+    ]
+
+    assert subject.run_once() == 2
+
+    failure = sent_protocols(gateway)[-1]
+    assert failure.type == "task.failed"
+    assert failure.payload["error_code"] == "completion_without_tool_evidence"
+
+
+@pytest.mark.parametrize(
+    "audit_ids",
+    [
+        pytest.param([{}], id="unhashable-object"),
+        pytest.param([101, 101], id="duplicate"),
+        pytest.param([True], id="boolean"),
+        pytest.param([-1], id="negative"),
+        pytest.param([2 ** 63], id="out-of-range"),
+    ],
+)
+def test_department_lead_treats_malformed_summary_audit_ids_as_missing_evidence(
+    tmp_path, audit_ids,
+):
+    """Malformed top-level audit IDs must use the fixed missing-evidence failure path."""
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [
+        WorkerDecision(
+            action="delegate",
+            subtask=PlannedSubtask(
+                client_task_key="audit",
+                title="审计",
+                goal="复核",
+                required_capability="audit.evidence.read",
+                assignee_agent_id="VE-0005",
+                reason="取得直属子任务证据",
+            ),
+        ),
+        WorkerDecision(action="complete", result="尝试使用非法证据完成"),
+        WorkerDecision(action="complete", result="纠正后仍无有效证据"),
+    ]
+    assignment = message(
+        type="task.assign",
+        sender="VE-0001",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload=assign_payload(),
+    )
+    summary = message(
+        type="task.summary",
+        sender="platform",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload={
+            "request": "task.summary",
+            "audit_ids": audit_ids,
+            "child_results": [],
+            "team_capability_catalog": manager_payload()["team_capability_catalog"],
+            "team_catalog_version": 2,
+        },
+        key=f"malformed-summary-{audit_ids!r}",
+    )
+    gateway.events = [
+        event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1),
+        event(summary, event_id="$summary", sender=MXIDS["platform"], ts=2),
+    ]
+
+    assert subject.run_once() == 2
+
+    failure = sent_protocols(gateway)[-1]
+    assert failure.type == "task.failed"
+    assert failure.payload["error_code"] == "completion_without_tool_evidence"
 
 
 def test_worker_persists_each_reasoning_iteration_around_tool_evidence(tmp_path):
@@ -565,35 +848,50 @@ def test_cli_loaded_tool_catalog_controls_runtime_tool_requests(tmp_path):
         },
         "additionalProperties": False,
     }
-    agents = {}
-    for role, agent_id, mxid, skill in (("manager", "VE-0001", MXIDS["VE-0001"], "agentteams-onboarding-readiness"), ("hr", "VE-0002", MXIDS["VE-0002"], "hr-onboarding-assistant"), ("it", "VE-0003", MXIDS["VE-0003"], "it-service-assistant"), ("audit", "VE-0005", MXIDS["VE-0005"], "audit-evidence-review")):
-        agents[role] = {"agent_id": agent_id, "mxid": mxid, "token": role + "-token", "allowed_skill_ids": [skill], "safe_tool_catalog": ([{"name": "agentteams.hr.lookup_onboarding", "plugin_id": "hr-employee-mcp", "action": "read", "required_capability": "hr.onboarding.read", "input_schema": input_schema}] if role == "hr" else [])}
+    document = _strict_onboarding_runtime_document()
+    document["agents"]["hr"]["safe_tool_catalog"] = [{
+        "name": "agentteams.hr.lookup_onboarding",
+        "plugin_id": "hr-employee-mcp",
+        "action": "read",
+        "required_capability": "hr.onboarding.read",
+        "input_schema": input_schema,
+    }]
     path = tmp_path / "runtime.json"
-    path.write_text(json.dumps({"matrix_url": "https://matrix.test", "room_id": "!team:local", "team_id": "TEAM-X", "platform": {"mxid": MXIDS["platform"], "token": "platform-token"}, "agents": agents, "team_catalog": TEAM}), encoding="utf-8")
+    path.write_text(json.dumps(document), encoding="utf-8")
     config, _ = load_runtime_config("hr", path, env={"DEEPSEEK_API_KEY_HR": "x", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
     gateway, engine = FakeGateway(), FakeEngine(); engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
     engine.work = [WorkerDecision(action="tool", tool_name="agentteams.hr.lookup_onboarding", tool_arguments={})]
-    gateway.events = [event(message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload()), sender=MXIDS["VE-0001"])]
+    gateway.events = [event(
+        message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload()),
+        sender=config.trusted_sender_mxids["VE-0001"],
+    )]
     AgentRuntime(config, gateway, engine, pause=lambda _: None).run_once()
     request = [item for item in sent_protocols(gateway) if item.type == "tool.request"][-1]
     assert request.payload["tool_name"] == "agentteams.hr.lookup_onboarding"
     assert request.payload["required_capability"] == "hr.onboarding.read"
     gateway, engine = FakeGateway(), FakeEngine(); engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
     engine.work = [WorkerDecision(action="tool", tool_name="not-listed", tool_arguments={})]
-    gateway.events = [event(message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload()), sender=MXIDS["VE-0001"])]
+    gateway.events = [event(
+        message(type="task.assign", sender="VE-0001", receiver="VE-0002", parent_task_id="root-1", payload=assign_payload()),
+        sender=config.trusted_sender_mxids["VE-0001"],
+    )]
     AgentRuntime(config, gateway, engine, pause=lambda _: None).run_once()
     assert all(item.type != "tool.request" for item in sent_protocols(gateway))
 
 
-def test_agentteams_cli_builds_a_thinking_provider_with_the_configured_model(monkeypatch):
-    from scripts.run_agentteams_agent import build_decision_engine
+def test_agentteams_cli_builds_thinking_and_non_thinking_providers_with_the_configured_model(monkeypatch):
+    from scripts.run_agentteams_agent import build_decision_engines
 
     monkeypatch.setenv("AGENTTEAMS_WORKER_MODEL", "deepseek-v4-flash")
 
-    engine = build_decision_engine("role-key", Path(__file__).resolve().parents[2])
+    thinking_engine, non_thinking_engine = build_decision_engines(
+        "role-key", Path(__file__).resolve().parents[2]
+    )
 
-    assert engine.provider.model == "deepseek-v4-flash"
-    assert engine.provider.thinking is True
+    assert thinking_engine.provider.model == "deepseek-v4-flash"
+    assert non_thinking_engine.provider.model == "deepseek-v4-flash"
+    assert thinking_engine.provider.thinking is True
+    assert non_thinking_engine.provider.thinking is False
 
 
 @pytest.mark.parametrize("decision, expected", [
@@ -613,6 +911,65 @@ def test_worker_maps_ask_and_delegate_to_protocol(tmp_path, decision, expected):
     assert sent[-1].receiver == ("VE-0003" if expected == "agent.message" else "platform")
     if expected == "task.delegate":
         assert sent[-1].payload["subtasks"][0]["required_capability"] == "audit.evidence.read"
+
+
+def test_department_lead_runtime_emits_parallel_batch_from_platform_relationship_context(tmp_path):
+    gateway, engine = FakeGateway(), FakeEngine()
+    trusted = {
+        **MXIDS,
+        "VE-HR-MATERIAL": "@hr-material:local",
+        "VE-HR-TRAINING": "@hr-training:local",
+    }
+    subject = AgentRuntime(AgentRuntimeConfig(
+        agent_id="VE-0002", role="hr", matrix_mxid=MXIDS["VE-0002"],
+        matrix_token="never-persist", room_id="!team:local",
+        trusted_sender_mxids=trusted,
+        allowed_skill_ids={"hr-onboarding-assistant"},
+        team_catalog={}, safe_tool_catalog=[], state_dir=tmp_path / "state",
+    ), gateway, engine, pause=lambda _: None)
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [WorkerDecision(
+        action="delegate",
+        subtasks=[
+            PlannedSubtask(
+                client_task_key="hr-materials", title="核查入职材料",
+                goal="核查新员工A的入职材料。", required_capability="hr.materials.read",
+                assignee_agent_id="VE-HR-MATERIAL", reason="由材料专员取得一手证据。",
+            ),
+            PlannedSubtask(
+                client_task_key="hr-training", title="核查入职培训",
+                goal="核查新员工A的培训安排。", required_capability="hr.training.read",
+                assignee_agent_id="VE-HR-TRAINING", reason="由培训专员取得一手证据。",
+            ),
+        ],
+    )]
+    payload = assign_payload()
+    payload["required_capability"] = "hr.onboarding.coordinate"
+    payload["team_capability_catalog"] = [
+        {"agent_id": "VE-HR-MATERIAL", "capabilities": ["hr.materials.read"]},
+        {"agent_id": "VE-HR-TRAINING", "capabilities": ["hr.training.read"]},
+    ]
+    payload["team_relationship_graph"] = {
+        "self": {"agent_id": "VE-0002", "role": "HR负责人"},
+        "reports_to": ["VE-0001"],
+        "direct_reports": [
+            {"agent_id": "VE-HR-MATERIAL", "role": "HR材料专员", "capabilities": ["hr.materials.read"]},
+            {"agent_id": "VE-HR-TRAINING", "role": "HR培训专员", "capabilities": ["hr.training.read"]},
+        ],
+    }
+    gateway.events = [event(message(
+        type="task.assign", sender="VE-0001", receiver="VE-0002",
+        parent_task_id="root-1", payload=payload,
+    ), sender=MXIDS["VE-0001"])]
+
+    assert subject.run_once() == 1
+
+    delegate = sent_protocols(gateway)[-1]
+    assert delegate.type == "task.delegate"
+    assert {item["assignee_agent_id"] for item in delegate.payload["subtasks"]} == {
+        "VE-HR-MATERIAL", "VE-HR-TRAINING",
+    }
+    assert engine.worker_contexts[0].team_relationship_graph == payload["team_relationship_graph"]
 
 
 def test_spoof_not_for_me_and_parse_errors_are_safely_ignored(tmp_path):
@@ -706,21 +1063,16 @@ def test_cli_config_is_fail_closed_without_real_network(tmp_path):
 def test_cli_accepts_a_role_specific_token_environment_reference(tmp_path):
     from scripts.run_agentteams_agent import load_runtime_config
 
+    document = _strict_onboarding_runtime_document()
+    document["agents"]["manager"].pop("token")
+    document["agents"]["manager"]["token_env"] = "MANAGER_MATRIX_TOKEN"
     path = tmp_path / "runtime.json"
-    path.write_text(json.dumps({
-        "matrix_url": "http://matrix", "room_id": "!room", "team_id": "TEAM-ONBOARD", "platform": {"mxid": "@platform:matrix", "token": "platform-only"}, "team_catalog": TEAM,
-        "agents": {
-                "manager": {"agent_id": "VE-0001", "mxid": "@manager:matrix", "token_env": "MANAGER_MATRIX_TOKEN", "allowed_skill_ids": ["agentteams-onboarding-readiness"], "safe_tool_catalog": []},
-                "hr": {"agent_id": "VE-0002", "mxid": "@hr:matrix", "token": "hr-only", "allowed_skill_ids": ["hr-onboarding-assistant"], "safe_tool_catalog": []},
-                "it": {"agent_id": "VE-0003", "mxid": "@it:matrix", "token": "it-only", "allowed_skill_ids": ["it-service-assistant"], "safe_tool_catalog": []},
-                "audit": {"agent_id": "VE-0005", "mxid": "@audit:matrix", "token": "audit-only", "allowed_skill_ids": ["audit-evidence-review"], "safe_tool_catalog": []},
-        },
-    }), encoding="utf-8")
+    path.write_text(json.dumps(document), encoding="utf-8")
 
     config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY_MANAGER": "key", "MANAGER_MATRIX_TOKEN": "manager-only", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
 
     assert config.matrix_token == "manager-only"
-    assert config.matrix_mxid == "@manager:matrix"
+    assert config.matrix_mxid == "@manager:test"
 
 
 def test_role_is_behavior_only_and_two_team_identity_sets_are_valid(tmp_path):
@@ -733,7 +1085,7 @@ def test_role_is_behavior_only_and_two_team_identity_sets_are_valid(tmp_path):
         assert config.agent_id == agent_id
 
 
-def test_cli_accepts_non_demo_team_identity_for_a_manager(tmp_path):
+def test_cli_rejects_non_contract_team_identity_for_a_manager(tmp_path):
     from scripts.run_agentteams_agent import load_runtime_config
 
     agents = {
@@ -745,9 +1097,8 @@ def test_cli_accepts_non_demo_team_identity_for_a_manager(tmp_path):
     path = tmp_path / "custom-runtime.json"
     path.write_text(json.dumps({"matrix_url": "http://matrix", "room_id": "!room", "team_id": "TEAM-CUSTOM", "platform": {"mxid": "@platform:matrix", "token": "platform-only"}, "team_catalog": {}, "agents": agents}), encoding="utf-8")
 
-    config, _ = load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY_MANAGER": "key", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
-
-    assert config.agent_id == "COORD-99"
+    with pytest.raises(ValueError, match="invalid_runtime_config"):
+        load_runtime_config("manager", path, env={"DEEPSEEK_API_KEY_MANAGER": "key", "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path)})
 
 
 def test_state_redactor_removes_sensitive_keys_values_and_stack_text(tmp_path):
@@ -1118,6 +1469,34 @@ def test_runtime_config_rejects_agent_id_that_can_escape_the_state_directory(tmp
             trusted_sender_mxids={"platform": "@platform:local", "../outside": "@manager:local"},
             allowed_skill_ids={"agentteams-onboarding-readiness"}, state_dir=tmp_path / "state",
         )
+
+
+@pytest.mark.parametrize(
+    ("role", "agent_id", "skill_id"),
+    [
+        ("hr_material", "VE-HR-MATERIAL", "hr-material-specialist"),
+        ("hr_training", "VE-HR-TRAINING", "hr-training-specialist"),
+        ("it_account", "VE-IT-ACCOUNT", "it-account-specialist"),
+        ("it_device", "VE-IT-DEVICE", "it-device-specialist"),
+    ],
+)
+def test_runtime_config_assigns_each_specialist_its_own_professional_skill(
+    tmp_path, role, agent_id, skill_id,
+):
+    mxid = f"@{role}:local"
+
+    configured = AgentRuntimeConfig(
+        agent_id=agent_id,
+        role=role,
+        matrix_mxid=mxid,
+        matrix_token="specialist-token",
+        room_id="!team:local",
+        trusted_sender_mxids={"platform": "@platform:local", agent_id: mxid},
+        allowed_skill_ids={skill_id},
+        state_dir=tmp_path / role,
+    )
+
+    assert configured.professional_skill_ids == {skill_id}
 
 
 def test_pending_replay_resumes_same_batch_without_skipping_later_events(tmp_path):

@@ -13,6 +13,24 @@
       ]
     }
   },
+  "hr_specialist_materials": {
+    "新员工A": {
+      "readiness": "ready",
+      "materials": [
+        {"evidence_id": "HR-MAT-A-001", "item": "身份证明材料核验", "status": "complete"},
+        {"evidence_id": "HR-MAT-A-002", "item": "劳动合同签署确认", "status": "complete"}
+      ]
+    }
+  },
+  "hr_training": {
+    "新员工A": {
+      "readiness": "scheduled",
+      "training": [
+        {"evidence_id": "HR-TRN-A-001", "item": "入职制度培训", "status": "scheduled"},
+        {"evidence_id": "HR-TRN-A-002", "item": "信息安全培训", "status": "scheduled"}
+      ]
+    }
+  },
   "it_readiness": {
     "新员工A": {
       "readiness": "at_risk",
@@ -22,6 +40,24 @@
       ],
       "pending_items": [
         {"evidence_id": "IT-A-003", "item": "多因素认证注册确认", "status": "missing"}
+      ]
+    }
+  },
+  "it_accounts": {
+    "新员工A": {
+      "readiness": "at_risk",
+      "accounts": [
+        {"evidence_id": "IT-ACC-A-001", "item": "企业邮箱账号", "status": "ready"},
+        {"evidence_id": "IT-ACC-A-002", "item": "多因素认证注册", "status": "missing"}
+      ]
+    }
+  },
+  "it_devices": {
+    "新员工A": {
+      "readiness": "ready",
+      "devices": [
+        {"evidence_id": "IT-DEV-A-001", "item": "笔记本电脑资产", "status": "ready"},
+        {"evidence_id": "IT-DEV-A-002", "item": "办公设备交接单", "status": "ready"}
       ]
     }
   },

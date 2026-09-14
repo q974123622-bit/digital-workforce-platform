@@ -25,6 +25,7 @@ from app.services.llm import DeepSeekProvider
 
 _ROLES = {
     "manager", "hr", "it", "audit",
+    "hr_material", "hr_training", "it_account", "it_device",
     "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 }
 _ROLE_SKILLS = {
@@ -36,6 +37,10 @@ _ROLE_SKILLS = {
     "hr": {"hr-onboarding-assistant", "hr-role-change-assistant"},
     "it": {"it-service-assistant", "it-role-change-assistant"},
     "audit": {"audit-evidence-review", "audit-role-change-review"},
+    "hr_material": {"hr-material-specialist"},
+    "hr_training": {"hr-training-specialist"},
+    "it_account": {"it-account-specialist"},
+    "it_device": {"it-device-specialist"},
     "db_write": {"db-write-investigation"},
     "db_lock": {"db-lock-investigation"},
     "db_vacuum": {"db-vacuum-investigation"},
@@ -47,6 +52,10 @@ _ROLE_KEY_ENVIRONMENTS = {
     "hr": "DEEPSEEK_API_KEY_HR",
     "it": "DEEPSEEK_API_KEY_IT",
     "audit": "DEEPSEEK_API_KEY_AUDIT",
+    "hr_material": "DEEPSEEK_API_KEY_HR",
+    "hr_training": "DEEPSEEK_API_KEY_HR",
+    "it_account": "DEEPSEEK_API_KEY_IT",
+    "it_device": "DEEPSEEK_API_KEY_IT",
     "db_write": "DEEPSEEK_API_KEY_DB_WRITE",
     "db_lock": "DEEPSEEK_API_KEY_DB_LOCK",
     "db_vacuum": "DEEPSEEK_API_KEY_DB_VACUUM",
@@ -95,14 +104,29 @@ def load_runtime_config(role: str, path: Path | None = None, *, env: dict[str, s
 
 def build_decision_engine(api_key: str, root: Path = ROOT) -> AgentDecisionEngine:
     """Build the strict AgentTeams decision engine with trace-capable thinking enabled."""
-    return AgentDecisionEngine(
+    return build_decision_engines(api_key, root)[0]
+
+
+def build_decision_engines(
+    api_key: str, root: Path = ROOT
+) -> tuple[AgentDecisionEngine, AgentDecisionEngine]:
+    """Build isolated engines so each task can choose its model thinking mode."""
+    model = service_config.agentteams_worker_model()
+    skills = ProjectSkillRegistry.from_root(root)
+    thinking_engine = AgentDecisionEngine(
+        DeepSeekProvider(api_key=api_key, model=model, thinking=True),
+        skills,
+    )
+    non_thinking_engine = AgentDecisionEngine(
         DeepSeekProvider(
             api_key=api_key,
-            model=service_config.agentteams_worker_model(),
-            thinking=True,
+            model=model,
+            thinking=False,
+            reasoning_effort="low",
         ),
-        ProjectSkillRegistry.from_root(root),
+        skills,
     )
+    return thinking_engine, non_thinking_engine
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,14 +138,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         api_key = resolve_role_api_key(args.role)
         config, matrix_url = load_runtime_config(args.role, args.config)
+        thinking_engine, non_thinking_engine = build_decision_engines(api_key)
         runtime = AgentRuntime(
             config, AgentTeamsGateway(base_url=matrix_url, matrix_token=config.matrix_token),
-            build_decision_engine(api_key),
+            thinking_engine,
+            non_thinking_decisions=non_thinking_engine,
         )
     except ValueError as exc:
         print(str(exc) if str(exc) in {"invalid_runtime_config", "deepseek_key_missing"} else "invalid_runtime_config", file=sys.stderr)
         return 2
     try:
+        runtime.initialize_matrix_cursor()
         if args.once:
             runtime.run_once()
         else:

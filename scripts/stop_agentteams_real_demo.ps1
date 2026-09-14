@@ -20,6 +20,10 @@ function Get-ExpectedArguments([string]$Name) {
         'hr' { return @($agentScript,'--role','hr','--config',$runtimeConfig) }
         'it' { return @($agentScript,'--role','it','--config',$runtimeConfig) }
         'audit' { return @($agentScript,'--role','audit','--config',$runtimeConfig) }
+        'hr_material' { return @($agentScript,'--role','hr_material','--config',$runtimeConfig) }
+        'hr_training' { return @($agentScript,'--role','hr_training','--config',$runtimeConfig) }
+        'it_account' { return @($agentScript,'--role','it_account','--config',$runtimeConfig) }
+        'it_device' { return @($agentScript,'--role','it_device','--config',$runtimeConfig) }
         'frontend' { return @((Join-Path $workspace 'frontend\node_modules\vite\bin\vite.js'),'--host','127.0.0.1','--port','4173') }
         default { throw 'invalid record name' }
     }
@@ -35,8 +39,7 @@ function Test-RecordedWorktreeProcess([object]$Record) {
         if ($null -eq $process -or [string]::IsNullOrWhiteSpace($process.ExecutablePath) -or [string]::IsNullOrWhiteSpace($process.CommandLine) -or [string]::IsNullOrWhiteSpace($process.CreationDate)) { return $null }
         $recordedStart=ConvertTo-AgentTeamsUtcDateTime $Record.started_at; $actualStart=ConvertTo-AgentTeamsUtcDateTime $process.CreationDate
         if ([Math]::Abs(($recordedStart-$actualStart).TotalSeconds) -gt 2 -or [IO.Path]::GetFullPath([string]$process.ExecutablePath) -ine $expectedExecutable) { return $null }
-        foreach ($argument in @($Record.argv)) { if ($process.CommandLine.IndexOf([string]$argument,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $null } }
-        if ($process.CommandLine.IndexOf($workspace,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $null }
+        if (-not (Test-AgentTeamsExactProcessCommandLine -CommandLine $process.CommandLine -ExecutablePath $expectedExecutable -Arguments @($Record.argv))) { return $null }
         return $process
     } catch { return $null }
 }
@@ -56,8 +59,7 @@ function Get-CurrentOwnedBackendListenerRecord([object]$Record) {
         if ([int]$listener.ParentProcessId -ne [int]$Record.process_id -or $listenerStart -lt $rootStart.AddSeconds(-2) -or $listenerStart -gt $rootStart.AddSeconds(10)) { throw 'backend_listener_parent_not_proven' }
         if ([IO.Path]::GetFullPath([string]$listener.ExecutablePath) -ine (Get-AgentTeamsVenvBasePython $Record.executable_path)) { throw 'backend_listener_executable_not_proven' }
     }
-    foreach ($argument in @($Record.argv)) { if ($listener.CommandLine.IndexOf([string]$argument,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'backend_listener_command_not_proven' } }
-    if ($listener.CommandLine.IndexOf($workspace,[System.StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'backend_listener_workspace_not_proven' }
+    if (-not (Test-AgentTeamsExactProcessCommandLine -CommandLine $listener.CommandLine -ExecutablePath $listener.ExecutablePath -Arguments @($Record.argv) -ExpectedArgv0Path $Record.executable_path)) { throw 'backend_listener_command_not_proven' }
     return @{
         process_id=$listenerId
         parent_process_id=$(if ($listenerId -eq [int]$Record.process_id) { $null } else { [int]$Record.process_id })

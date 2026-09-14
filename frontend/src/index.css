@@ -562,6 +562,27 @@ body {
   margin-top: -2px;
 }
 
+.at-thinking-mode {
+  padding: 10px 12px;
+  border: 1px solid #d9e2f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.at-thinking-mode-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.at-thinking-mode-control > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .at-task-list {
   display: flex;
   max-height: 306px;
@@ -618,7 +639,10 @@ body {
 }
 
 .at-task-tree {
+  box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  overflow: hidden;
   padding: 14px;
   border: 1px solid #e5edf8;
   border-radius: 12px;
@@ -1185,12 +1209,14 @@ button.at-tree-manager:hover {
 .at-side-stack {
   display: flex;
   width: 100%;
+  min-width: 0;
   flex-direction: column;
   gap: 16px;
 }
 
 .at-workspace-row > .ant-col {
   display: flex;
+  min-width: 0;
 }
 
 .at-workspace-row > .ant-col > .at-task-tree,
@@ -2182,6 +2208,8 @@ button.at-tree-manager:hover {
 /* AgentTeams: horizontal delegation chart.  Lines use persisted parent or
    dependency edges; tool calls stay as leaves inside their owning task card. */
 .at-task-chart-scroll {
+  width: 100%;
+  min-width: 0;
   overflow-x: auto;
   padding: 6px 2px 14px;
 }
@@ -2205,11 +2233,15 @@ button.at-tree-manager:hover {
   position: relative;
   display: flex;
   min-width: 300px;
-  max-width: 320px;
   flex: 0 0 300px;
   flex-direction: column;
   align-items: center;
   padding: 22px 8px 0;
+}
+
+.at-chart-node.at-chart-branch {
+  width: max-content;
+  flex-basis: auto;
 }
 
 .at-task-chart > .at-chart-node {
@@ -2218,7 +2250,8 @@ button.at-tree-manager:hover {
 
 .at-chart-node-card {
   display: flex;
-  width: 100%;
+  width: 300px;
+  max-width: 100%;
   min-height: 114px;
   flex-direction: column;
   gap: 6px;
@@ -2369,5 +2402,9 @@ button.at-tree-manager:hover {
   .at-chart-node {
     min-width: 280px;
     flex-basis: 280px;
+  }
+
+  .at-chart-node-card {
+    width: 280px;
   }
 }

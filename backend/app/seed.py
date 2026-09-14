@@ -18,6 +18,10 @@ _STRICT_DEMO_ROLE_PLUGINS = {
     "hr": ("VE-0002", ("agentteams-onboarding-employee", "agentteams-role-change-hr")),
     "it": ("VE-0003", ("agentteams-it-readiness", "agentteams-role-change-it-plan", "agentteams-role-change-it-activate")),
     "audit": ("VE-0005", ("agentteams-onboarding-evidence", "agentteams-role-change-audit")),
+    "hr_material": ("VE-HR-MATERIAL", ("agentteams-onboarding-materials",)),
+    "hr_training": ("VE-HR-TRAINING", ("agentteams-onboarding-training",)),
+    "it_account": ("VE-IT-ACCOUNT", ("agentteams-it-accounts",)),
+    "it_device": ("VE-IT-DEVICE", ("agentteams-it-devices",)),
 }
 _STRICT_DATABASE_ROLE_PLUGINS = {
     "manager": ("VE-0001", ("agentteams-database-inspector",)),
@@ -464,10 +468,27 @@ def sync_strict_runtime_bindings(db, runtime, *, commit: bool = True) -> None:
 
 
 def sync_strict_runtime_state(db, runtime) -> None:
-    """Atomically synchronize strict demo Tools, grants, employees, and Team bindings."""
+    """Atomically synchronize strict Tools, identities, and all permission layers."""
     try:
         sync_strict_runtime_demo_tools(db, runtime, commit=False)
         sync_strict_runtime_bindings(db, runtime, commit=False)
+        if frozenset(runtime.agents) == frozenset(_STRICT_DEMO_ROLE_PLUGINS):
+            twin = db.get(models.DigitalEmployee, "DT-E10281")
+            if twin is None:
+                twin_template = next(
+                    (
+                        row for row in load_seed().get("digital_employees", [])
+                        if isinstance(row, dict) and row.get("employee_no") == "DT-E10281"
+                    ),
+                    None,
+                )
+                if twin_template is None:
+                    raise ValueError("missing_strict_seed_employee")
+                db.add(models.DigitalEmployee(**deepcopy(twin_template)))
+        db.flush()
+        sync_team_plugin_grants(db, commit=False)
+        db.flush()
+        sync_collaboration_twin_plugin_grants(db, commit=False)
         db.commit()
     except Exception:
         db.rollback()

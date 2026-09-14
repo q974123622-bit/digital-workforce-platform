@@ -123,6 +123,280 @@ def test_manager_decision_keeps_provider_reasoning_for_runtime_trace(registry, m
     assert decision.reasoning_content == "现有信息不足，需要先向 HR 派发证据核查任务。"
 
 
+def test_department_lead_receives_relationship_graph_and_delegates_one_batch_to_direct_reports(
+    fake_llm, registry,
+):
+    graph = {
+        "self": {"agent_id": "VE-0002", "role": "HR负责人"},
+        "reports_to": ["VE-0001"],
+        "direct_reports": [
+            {
+                "agent_id": "VE-HR-MATERIAL",
+                "role": "HR材料专员",
+                "capabilities": ["hr.materials.read"],
+            },
+            {
+                "agent_id": "VE-HR-TRAINING",
+                "role": "HR培训专员",
+                "capabilities": ["hr.training.read"],
+            },
+        ],
+    }
+    fake_llm.outputs = [
+        {
+            "action": "delegate",
+            "subtasks": [
+                {
+                    "client_task_key": "hr-materials",
+                    "title": "核查入职材料",
+                    "goal": "核查新员工A的入职材料。",
+                    "required_capability": "hr.materials.read",
+                    "assignee_agent_id": "VE-HR-MATERIAL",
+                    "depends_on": [],
+                    "required": True,
+                    "reason": "由材料专员取得一手证据。",
+                },
+                {
+                    "client_task_key": "hr-training",
+                    "title": "核查入职培训",
+                    "goal": "核查新员工A的培训安排。",
+                    "required_capability": "hr.training.read",
+                    "assignee_agent_id": "VE-HR-TRAINING",
+                    "depends_on": [],
+                    "required": True,
+                    "reason": "由培训专员取得一手证据。",
+                },
+            ],
+        }
+    ]
+    context = WorkerContext(
+        current_agent_id="VE-0002",
+        task={"title": "HR入职核查", "goal": "汇总HR入职条件", "required_capability": "hr.onboarding.coordinate"},
+        professional_skill_ids=["hr-onboarding-assistant"],
+        current_team_capability_catalog=[
+            {"agent_id": "VE-HR-MATERIAL", "capabilities": ["hr.materials.read"]},
+            {"agent_id": "VE-HR-TRAINING", "capabilities": ["hr.training.read"]},
+            {"agent_id": "VE-0005", "capabilities": ["audit.evidence.read"]},
+        ],
+        parent_chain_agent_ids=["VE-0001"],
+        team_relationship_graph=graph,
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).decide_work(context)
+
+    assert {task.assignee_agent_id for task in decision.subtasks} == {
+        "VE-HR-MATERIAL", "VE-HR-TRAINING",
+    }
+    prompt = fake_llm.calls[0][1]["content"]
+    assert "team_relationship_graph" in prompt
+    assert "VE-HR-MATERIAL" in prompt
+
+
+def test_department_lead_retries_delegate_outside_direct_reports(fake_llm, registry):
+    valid = {
+        "action": "delegate",
+        "subtasks": [{
+            "client_task_key": "hr-materials",
+            "title": "核查入职材料",
+            "goal": "核查新员工A的入职材料。",
+            "required_capability": "hr.materials.read",
+            "assignee_agent_id": "VE-HR-MATERIAL",
+            "depends_on": [],
+            "required": True,
+            "reason": "由直属材料专员核查。",
+        }],
+    }
+    fake_llm.outputs = [
+        {
+            "action": "delegate",
+            "subtasks": [{
+                "client_task_key": "audit",
+                "title": "越权派发",
+                "goal": "错误地派给其他部门。",
+                "required_capability": "audit.evidence.read",
+                "assignee_agent_id": "VE-0005",
+                "depends_on": [],
+                "required": True,
+                "reason": "错误目标。",
+            }],
+        },
+        valid,
+    ]
+    context = WorkerContext(
+        current_agent_id="VE-0002",
+        task={"title": "HR入职核查", "goal": "汇总HR入职条件", "required_capability": "hr.onboarding.coordinate"},
+        professional_skill_ids=["hr-onboarding-assistant"],
+        current_team_capability_catalog=[
+            {"agent_id": "VE-HR-MATERIAL", "capabilities": ["hr.materials.read"]},
+            {"agent_id": "VE-0005", "capabilities": ["audit.evidence.read"]},
+        ],
+        parent_chain_agent_ids=["VE-0001"],
+        team_relationship_graph={
+            "self": {"agent_id": "VE-0002", "role": "HR负责人"},
+            "reports_to": ["VE-0001"],
+            "direct_reports": [{
+                "agent_id": "VE-HR-MATERIAL",
+                "role": "HR材料专员",
+                "capabilities": ["hr.materials.read"],
+            }],
+        },
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).decide_work(context)
+
+    assert decision.subtasks[0].assignee_agent_id == "VE-HR-MATERIAL"
+    assert len(fake_llm.calls) == 2
+
+
+def test_onboarding_manager_uses_department_round_then_real_audit_round(
+    fake_llm, registry,
+):
+    graph = {
+        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "reports_to": [],
+        "direct_reports": [
+            {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
+            {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
+            {"agent_id": "VE-0005", "role": "审计专员", "capabilities": ["audit.evidence.read"]},
+        ],
+    }
+    catalog = [
+        {"agent_id": item["agent_id"], "capabilities": item["capabilities"]}
+        for item in graph["direct_reports"]
+    ]
+    first_round = {
+        "selected_skill_ids": ["agentteams-onboarding-readiness"],
+        "action": "delegate",
+        "subtasks": [
+            {
+                "client_task_key": "hr-department", "title": "HR部门统筹", "goal": "组织HR专员核查入职材料与培训。",
+                "required_capability": "hr.onboarding.coordinate", "assignee_agent_id": "VE-0002",
+                "depends_on": [], "required": True, "reason": "由HR负责人组织直属专员。",
+            },
+            {
+                "client_task_key": "it-department", "title": "IT部门统筹", "goal": "组织IT专员核查账号与设备。",
+                "required_capability": "it.onboarding.coordinate", "assignee_agent_id": "VE-0003",
+                "depends_on": [], "required": True, "reason": "由IT负责人组织直属专员。",
+            },
+        ],
+    }
+    audit_round = {
+        "selected_skill_ids": ["agentteams-onboarding-readiness"],
+        "action": "delegate",
+        "subtasks": [{
+            "client_task_key": "audit-review", "title": "审计复核", "goal": "复核HR和IT部门汇总证据。",
+            "required_capability": "audit.evidence.read", "assignee_agent_id": "VE-0005",
+            "depends_on": [], "required": True, "reason": "第二轮独立复核部门证据。",
+        }],
+    }
+    fake_llm.outputs = [first_round, audit_round]
+    engine = AgentDecisionEngine(fake_llm, registry)
+    first_context = ManagerContext(
+        user_goal="评估新员工A的入职就绪情况。",
+        manager_skill_id="agentteams-manager-coordination",
+        selected_skill_ids=["agentteams-onboarding-readiness"],
+        team_capability_catalog=catalog,
+        child_results=[],
+        current_round=1,
+        max_rounds=3,
+        max_children=5,
+        max_nodes=20,
+        team_relationship_graph=graph,
+    )
+
+    first = engine.plan(first_context)
+    second = engine.plan(first_context.model_copy(update={
+        "child_results": [{"client_task_key": "hr-department", "status": "completed"}, {"client_task_key": "it-department", "status": "completed"}],
+        "existing_child_task_keys": ["hr-department", "it-department"],
+    }))
+
+    assert {item.required_capability for item in first.subtasks} == {
+        "hr.onboarding.coordinate", "it.onboarding.coordinate",
+    }
+    assert [item.required_capability for item in second.subtasks] == ["audit.evidence.read"]
+    assert second.subtasks[0].assignee_agent_id == "VE-0005"
+
+
+def test_onboarding_manager_summarizes_only_after_audit_round(fake_llm, registry):
+    graph = {
+        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "reports_to": [],
+        "direct_reports": [
+            {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
+            {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
+            {"agent_id": "VE-0005", "role": "审计专员", "capabilities": ["audit.evidence.read"]},
+        ],
+    }
+    fake_llm.outputs = [{
+        "selected_skill_ids": ["agentteams-onboarding-readiness"],
+        "action": "summarize",
+        "summary": {
+            "summary": "HR、IT 与审计证据均已完成，新员工可以按计划入职。",
+            "readiness_decision": "ready",
+            "completed_items": ["材料、培训、账号、设备和审计复核均已完成"],
+            "risks": [], "unknowns": [], "next_actions": [],
+        },
+    }]
+    context = ManagerContext(
+        user_goal="评估新员工A的入职就绪情况。",
+        manager_skill_id="agentteams-manager-coordination",
+        selected_skill_ids=["agentteams-onboarding-readiness"],
+        team_capability_catalog=[
+            {"agent_id": item["agent_id"], "capabilities": item["capabilities"]}
+            for item in graph["direct_reports"]
+        ],
+        child_results=[{"client_task_key": "audit-review", "status": "completed"}],
+        existing_child_task_keys=["hr-department", "it-department", "audit-review"],
+        current_round=2,
+        max_rounds=3,
+        max_children=5,
+        max_nodes=17,
+        team_relationship_graph=graph,
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).plan(context)
+
+    assert decision.action == "summarize"
+    assert decision.summary.readiness_decision == "ready"
+
+
+def test_department_lead_completes_after_direct_reports_return(
+    fake_llm, registry,
+):
+    graph = {
+        "self": {"agent_id": "VE-0002", "role": "HR负责人"},
+        "reports_to": ["VE-0001"],
+        "direct_reports": [{
+            "agent_id": "VE-HR-MATERIAL", "role": "HR材料专员", "capabilities": ["hr.materials.read"],
+        }],
+    }
+    fake_llm.outputs = [
+        {
+            "action": "delegate",
+            "subtasks": [{
+                "client_task_key": "repeat-material", "title": "重复核查", "goal": "再次核查材料。",
+                "required_capability": "hr.materials.read", "assignee_agent_id": "VE-HR-MATERIAL",
+                "depends_on": [], "required": True, "reason": "重复派发。",
+            }],
+        },
+        {"action": "complete", "result": "HR材料专员已返回证据，部门核查完成。"},
+    ]
+    context = WorkerContext(
+        current_agent_id="VE-0002",
+        task={"title": "HR部门统筹", "goal": "汇总HR证据", "required_capability": "hr.onboarding.coordinate"},
+        professional_skill_ids=["hr-onboarding-assistant"],
+        current_team_capability_catalog=[{"agent_id": "VE-HR-MATERIAL", "capabilities": ["hr.materials.read"]}],
+        parent_chain_agent_ids=["VE-0001"],
+        previous_results=[{"kind": "child.summary", "value": {"child_results": [{"status": "completed"}]}}],
+        team_relationship_graph=graph,
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).decide_work(context)
+
+    assert decision.action == "complete"
+    assert len(fake_llm.calls) == 2
+
+
 def test_role_change_manager_is_corrected_into_parallel_then_serial_two_round_plan(
     fake_llm, registry,
 ):
@@ -752,11 +1026,11 @@ def test_worker_prompt_explicitly_requires_action_payload_field_exclusivity(
     instruction = fake_llm.calls[0][0]["content"]
     assert "tool: action, tool_name, and optional tool_arguments" in instruction
     assert (
-        "for tool, omit recipient_agent_id, message, subtask, result, and failure_reason"
+        "for tool, omit recipient_agent_id, message, subtask, subtasks, result, and failure_reason"
         in instruction
     )
     assert "ask: action, recipient_agent_id, and message" in instruction
-    assert "delegate: action and subtask" in instruction
+    assert "delegate: action and exactly one of subtask or subtasks" in instruction
     assert "complete: action and result" in instruction
     assert "fail: action and failure_reason" in instruction
     assert "all other action-specific fields must be omitted" in instruction

@@ -89,13 +89,27 @@ def test_strict_runner_factory_uses_validated_runtime_identity_and_room(monkeypa
         "team_id": "TEAM-ONBOARD",
         "platform": {"mxid": "@platform:test", "token": "runtime-platform-token"},
         "agents": {
-            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token", "allowed_skill_ids": ["manager-skill"], "safe_tool_catalog": []},
-            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token", "allowed_skill_ids": ["hr-skill"], "safe_tool_catalog": []},
-            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token", "allowed_skill_ids": ["it-skill"], "safe_tool_catalog": []},
-            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token", "allowed_skill_ids": ["audit-skill"], "safe_tool_catalog": []},
-        },
-        "team_catalog": {},
-    }), encoding="utf-8")
+                "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token", "allowed_skill_ids": ["manager-skill"], "safe_tool_catalog": []},
+                "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token", "allowed_skill_ids": ["hr-skill"], "safe_tool_catalog": []},
+                "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token", "allowed_skill_ids": ["it-skill"], "safe_tool_catalog": []},
+                "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token", "allowed_skill_ids": ["audit-skill"], "safe_tool_catalog": []},
+                "hr_material": {"agent_id": "VE-HR-MATERIAL", "mxid": "@hr-material:test", "token": "hr-material-token", "allowed_skill_ids": ["hr-material-skill"], "safe_tool_catalog": []},
+                "hr_training": {"agent_id": "VE-HR-TRAINING", "mxid": "@hr-training:test", "token": "hr-training-token", "allowed_skill_ids": ["hr-training-skill"], "safe_tool_catalog": []},
+                "it_account": {"agent_id": "VE-IT-ACCOUNT", "mxid": "@it-account:test", "token": "it-account-token", "allowed_skill_ids": ["it-account-skill"], "safe_tool_catalog": []},
+                "it_device": {"agent_id": "VE-IT-DEVICE", "mxid": "@it-device:test", "token": "it-device-token", "allowed_skill_ids": ["it-device-skill"], "safe_tool_catalog": []},
+            },
+            "team_catalog": {},
+            "team_relationships": {
+                "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+                "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
+                "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
+                "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": []},
+                "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
+                "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
+                "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
+                "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+            },
+        }), encoding="utf-8")
     calls = []
 
     class StrictTransport(FakeGateway):

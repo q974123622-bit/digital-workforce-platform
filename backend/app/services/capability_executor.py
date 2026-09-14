@@ -1,4 +1,4 @@
-"""Harness-first 能力执行：Harness 驱动数字员工，Adapter 是受控工具调用。"""
+"""按能力契约分流执行：满足 Harness 路径条件时先运行 Harness，已授权 Adapter 只调用一次。"""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def execute_capability(
     context: HarnessExecutionContext,
     runtime: RuntimeAdapter | None = None,
 ) -> CapabilityExecution:
-    """先运行员工 Harness，再由平台调用一次已授权 Adapter 工具。"""
+    """按 contract.executor.primary 分流；满足启用条件时运行 Harness，Adapter 只调用一次。"""
     contract = plugin_contract(plugin)
     if not contract.ready:
         raise RuntimeError("；".join(contract.issues or ["能力契约未就绪"]))
@@ -62,7 +62,10 @@ def execute_capability(
     # Harness invocation. Legacy adapters intentionally have no pre-validator.
     validate_adapter_input(plugin, params)
 
-    harness_enabled = runtime is not None or config.get("DWP_HARNESS_ENABLED") == "1"
+    harness_enabled = (
+        contract.executor.get("primary") == "harness"
+        and (runtime is not None or config.get("DWP_HARNESS_ENABLED") == "1")
+    )
     runtime_summary = ""
     runtime_mode = "demo_adapter"
     if harness_enabled:

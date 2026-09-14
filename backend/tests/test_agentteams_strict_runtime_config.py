@@ -28,6 +28,43 @@ def test_strict_runtime_accepts_the_bounded_database_inspector_schema():
     assert _tool_input_schema(schema) == schema
 
 
+def test_onboarding_runtime_configuration_contains_department_relationship_graph(tmp_path):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_agentteams_matrix.py"
+    spec = importlib.util.spec_from_file_location("onboarding_relationship_bootstrap", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    credentials = {
+        name: {"mxid": f"@{name}:matrix.test", "token": f"token-{name}"}
+        for name in module.ACCOUNT_NAMES
+    }
+
+    document = module.build_runtime_configuration(credentials, "!room:matrix.test")
+
+    assert set(document["agents"]) == {
+        "manager", "hr", "it", "audit",
+        "hr_material", "hr_training", "it_account", "it_device",
+    }
+    assert document["team_relationships"]["VE-0002"] == {
+        "role": "HR负责人",
+        "reports_to": ["VE-0001"],
+        "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"],
+    }
+    runtime_path = tmp_path / "runtime.json"
+    runtime_path.write_text(json.dumps(document), encoding="utf-8")
+
+    from app.services.agentteams_runtime_config import load_strict_runtime_config
+
+    runtime = load_strict_runtime_config(runtime_path, environ={})
+    assert runtime.team_relationships["VE-0003"]["direct_reports"] == (
+        "VE-IT-ACCOUNT", "VE-IT-DEVICE",
+    )
+
+
 def test_database_runtime_shape_syncs_seeded_team_tools_and_bindings(db_session, tmp_path):
     from app import models
     from app.seed import sync_strict_runtime_state
@@ -94,10 +131,8 @@ def test_sync_strict_runtime_creates_team_and_exact_matrix_bindings_from_seed(db
         for member in db_session.query(models.TeamMember).filter_by(team_id=runtime.team_id)
     }
     assert members == {
-        runtime.agents["manager"].agent_id: "leader",
-        runtime.agents["hr"].agent_id: "worker",
-        runtime.agents["it"].agent_id: "worker",
-        runtime.agents["audit"].agent_id: "worker",
+        identity.agent_id: "leader" if role == "manager" else "worker"
+        for role, identity in runtime.agents.items()
     }
     for identity in runtime.agents.values():
         employee = db_session.get(models.DigitalEmployee, identity.agent_id)
@@ -117,13 +152,9 @@ def test_strict_tool_sync_repairs_only_referenced_demo_plugins_and_grants(db_ses
     path.write_text(json.dumps(_runtime_config()), encoding="utf-8")
     runtime = load_strict_runtime_config(path, environ={})
     demo_plugin_ids = {
-        "agentteams-onboarding-employee",
-        "agentteams-it-readiness",
-        "agentteams-onboarding-evidence",
-        "agentteams-role-change-hr",
-        "agentteams-role-change-it-plan",
-        "agentteams-role-change-it-activate",
-        "agentteams-role-change-audit",
+        tool["plugin_id"]
+        for identity in runtime.agents.values()
+        for tool in identity.safe_tool_catalog
     }
     db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
@@ -179,6 +210,8 @@ def test_strict_tool_sync_repairs_only_referenced_demo_plugins_and_grants(db_ses
         plugins[plugin_id].runtime_meta["input_schema"] == _employee_ref_schema()
         for plugin_id in {
             "agentteams-onboarding-employee", "agentteams-it-readiness", "agentteams-onboarding-evidence",
+            "agentteams-onboarding-materials", "agentteams-onboarding-training",
+            "agentteams-it-accounts", "agentteams-it-devices",
         }
     )
     assert all(
@@ -191,18 +224,15 @@ def test_strict_tool_sync_repairs_only_referenced_demo_plugins_and_grants(db_ses
     grants = db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
     ).all()
+    expected_grants = {
+        (identity.agent_id, tool["plugin_id"], tool["action"], "allow")
+        for identity in runtime.agents.values()
+        for tool in identity.safe_tool_catalog
+    }
     assert {
         (grant.employee_id, grant.plugin_id, grant.action, grant.decision_mode)
         for grant in grants
-    } == {
-        ("VE-0002", "agentteams-onboarding-employee", "execute", "allow"),
-        ("VE-0003", "agentteams-it-readiness", "execute", "allow"),
-        ("VE-0005", "agentteams-onboarding-evidence", "execute", "allow"),
-        ("VE-0002", "agentteams-role-change-hr", "execute", "allow"),
-        ("VE-0003", "agentteams-role-change-it-plan", "execute", "allow"),
-        ("VE-0003", "agentteams-role-change-it-activate", "execute", "allow"),
-        ("VE-0005", "agentteams-role-change-audit", "execute", "allow"),
-    }
+    } == expected_grants
     assert db_session.get(models.Plugin, "unrelated-preserved-plugin") is not None
     assert db_session.query(models.EmployeePluginGrant).filter_by(
         plugin_id="unrelated-preserved-plugin"
@@ -238,13 +268,9 @@ def test_strict_runtime_sync_rolls_back_tools_when_binding_phase_fails(
     path.write_text(json.dumps(_runtime_config()), encoding="utf-8")
     runtime = load_strict_runtime_config(path, environ={})
     demo_plugin_ids = {
-        "agentteams-onboarding-employee",
-        "agentteams-it-readiness",
-        "agentteams-onboarding-evidence",
-        "agentteams-role-change-hr",
-        "agentteams-role-change-it-plan",
-        "agentteams-role-change-it-activate",
-        "agentteams-role-change-audit",
+        tool["plugin_id"]
+        for identity in runtime.agents.values()
+        for tool in identity.safe_tool_catalog
     }
     db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
@@ -280,22 +306,24 @@ def test_strict_enabled_lifespan_syncs_bindings_before_starting_runner(db_sessio
     """The real startup path, rather than an operator, performs the sync."""
     from app import main, models
 
+    value = _runtime_config()
     path = tmp_path / "runtime.json"
-    path.write_text(json.dumps(_runtime_config()), encoding="utf-8")
-    for agent_id in ("VE-0001", "VE-0002", "VE-0003", "VE-0005"):
+    path.write_text(json.dumps(value), encoding="utf-8")
+    agent_ids = {identity["agent_id"] for identity in value["agents"].values()}
+    for agent_id in agent_ids:
         db_session.query(models.TeamMember).filter_by(employee_id=agent_id).delete()
         db_session.query(models.DigitalEmployee).filter_by(employee_no=agent_id).delete()
     db_session.query(models.TeamMember).filter_by(team_id="TEAM-ONBOARD").delete()
     db_session.query(models.Team).filter_by(id="TEAM-ONBOARD").delete()
     demo_plugin_ids = {
-        "agentteams-onboarding-employee",
-        "agentteams-it-readiness",
-        "agentteams-onboarding-evidence",
-        "agentteams-role-change-hr",
-        "agentteams-role-change-it-plan",
-        "agentteams-role-change-it-activate",
-        "agentteams-role-change-audit",
+        tool["plugin_id"]
+        for identity in value["agents"].values()
+        for tool in identity["safe_tool_catalog"]
     }
+    expected_grant_count = sum(
+        len(identity["safe_tool_catalog"])
+        for identity in value["agents"].values()
+    )
     db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids)
     ).delete(synchronize_session=False)
@@ -315,9 +343,9 @@ def test_strict_enabled_lifespan_syncs_bindings_before_starting_runner(db_sessio
             for plugin in db_session.query(models.Plugin).filter(models.Plugin.id.in_(demo_plugin_ids))
         } == demo_plugin_ids
         assert db_session.query(models.EmployeePluginGrant).filter(
-            models.EmployeePluginGrant.employee_id.in_(("VE-0001", "VE-0002", "VE-0003", "VE-0005")),
+            models.EmployeePluginGrant.employee_id.in_(agent_ids),
             models.EmployeePluginGrant.plugin_id.in_(demo_plugin_ids),
-            ).count() == 7
+            ).count() == expected_grant_count
         return NoopRunner()
 
     monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")
@@ -333,40 +361,30 @@ def test_strict_enabled_lifespan_syncs_bindings_before_starting_runner(db_sessio
         assert {
             employee.employee_no: employee.runtime_ref
             for employee in db_session.query(models.DigitalEmployee).filter(
-                models.DigitalEmployee.employee_no.in_(("VE-0001", "VE-0002", "VE-0003", "VE-0005"))
+                models.DigitalEmployee.employee_no.in_(agent_ids)
             )
         } == {
-            "VE-0001": "@manager:test",
-            "VE-0002": "@hr:test",
-            "VE-0003": "@it:test",
-            "VE-0005": "@audit:test",
+            identity["agent_id"]: identity["mxid"]
+            for identity in value["agents"].values()
         }
 
 
 def _runtime_config() -> dict:
-    return {
-        "matrix_url": "http://matrix.test",
-        "room_id": "!team:test",
-        "team_id": "TEAM-ONBOARD",
-        "platform": {"mxid": "@platform:test", "token": "platform-token"},
-        "agents": {
-            "manager": {"agent_id": "VE-0001", "mxid": "@manager:test", "token": "manager-token", "allowed_skill_ids": ["agentteams-onboarding-readiness", "agentteams-role-change-readiness"], "safe_tool_catalog": []},
-            "hr": {"agent_id": "VE-0002", "mxid": "@hr:test", "token": "hr-token", "allowed_skill_ids": ["hr-onboarding-assistant", "hr-role-change-assistant"], "safe_tool_catalog": [
-                {"name": "agentteams.hr.lookup_onboarding", "plugin_id": "agentteams-onboarding-employee", "action": "execute", "required_capability": "hr.onboarding.read", "input_schema": _employee_ref_schema()},
-                {"name": "agentteams.hr.lookup_role_change", "plugin_id": "agentteams-role-change-hr", "action": "execute", "required_capability": "hr.role_change.read", "input_schema": _role_change_schema()},
-            ]},
-            "it": {"agent_id": "VE-0003", "mxid": "@it:test", "token": "it-token", "allowed_skill_ids": ["it-service-assistant", "it-role-change-assistant"], "safe_tool_catalog": [
-                {"name": "agentteams.it.lookup_readiness", "plugin_id": "agentteams-it-readiness", "action": "execute", "required_capability": "it.readiness.read", "input_schema": _employee_ref_schema()},
-                {"name": "agentteams.it.lookup_permission_plan", "plugin_id": "agentteams-role-change-it-plan", "action": "execute", "required_capability": "it.permission.plan", "input_schema": _role_change_schema()},
-                {"name": "agentteams.it.activate_role_change", "plugin_id": "agentteams-role-change-it-activate", "action": "execute", "required_capability": "it.permission.activate", "input_schema": _role_change_activation_schema()},
-            ]},
-            "audit": {"agent_id": "VE-0005", "mxid": "@audit:test", "token": "audit-token", "allowed_skill_ids": ["audit-evidence-review", "audit-role-change-review"], "safe_tool_catalog": [
-                {"name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "audit.evidence.read", "input_schema": _employee_ref_schema()},
-                {"name": "agentteams.audit.review_role_change", "plugin_id": "agentteams-role-change-audit", "action": "execute", "required_capability": "audit.permission.review", "input_schema": _role_change_schema()},
-            ]},
-        },
-        "team_catalog": {},
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_agentteams_matrix.py"
+    spec = importlib.util.spec_from_file_location("strict_runtime_bootstrap_fixture", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    credentials = {
+        name: {"mxid": f"@{name}:test", "token": f"{name}-token"}
+        for name in module.ACCOUNT_NAMES
     }
+    return module.build_runtime_configuration(
+        credentials, "!team:test", matrix_url="http://matrix.test",
+    )
 
 
 def _database_runtime_config() -> dict:
@@ -445,7 +463,7 @@ def _role_change_activation_schema() -> dict:
     }
 
 
-def test_runtime_config_has_five_unique_identities_and_a_secret_free_public_view(tmp_path):
+def test_runtime_config_has_nine_unique_identities_and_a_secret_free_public_view(tmp_path):
     from app.services.agentteams_runtime_config import load_strict_runtime_config
 
     path = tmp_path / "runtime.json"
@@ -454,7 +472,10 @@ def test_runtime_config_has_five_unique_identities_and_a_secret_free_public_view
     runtime = load_strict_runtime_config(path, environ={})
 
     assert runtime.platform.mxid == "@platform:test"
-    assert set(runtime.agents) == {"manager", "hr", "it", "audit"}
+    assert set(runtime.agents) == {
+        "manager", "hr", "it", "audit",
+        "hr_material", "hr_training", "it_account", "it_device",
+    }
     public = runtime.public_view()
     assert "token" not in json.dumps(public)
     assert public["platform_mxid"] == "@platform:test"

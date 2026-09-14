@@ -167,6 +167,42 @@ class AgentTeamsGateway:
     def send_protocol_message(self, room_id: str, text: str, protocol_line: str) -> str:
         return self.send_message(room_id, f"{text.rstrip()}\n\n{protocol_line}")
 
+    def initial_sync_cursor(self, room_ids: set[str]) -> str:
+        """Establish a fresh account baseline without replaying room history.
+
+        Strict health is advertised only after the caller persists this cursor.
+        Normal incremental syncs keep rejecting ``limited`` timelines.
+        """
+        token = self.login()
+        response = self._client.get(
+            f"{self.base_url}/_matrix/client/v3/sync",
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "timeout": "0",
+                "filter": json.dumps(
+                    {"room": {"timeline": {"limit": 0}}},
+                    separators=(",", ":"),
+                ),
+            },
+        )
+        if response.status_code != 200:
+            raise AgentTeamsUnavailableError(
+                f"initial sync失败：HTTP {response.status_code}"
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise AgentTeamsUnavailableError("initial sync响应无效") from exc
+        next_cursor = data.get("next_batch") if isinstance(data, dict) else None
+        if not isinstance(next_cursor, str) or not next_cursor:
+            raise AgentTeamsUnavailableError("initial sync游标无效")
+        joined = data.get("rooms", {}).get("join", {})
+        for room_id in room_ids:
+            timeline = joined.get(room_id, {}).get("timeline", {})
+            if timeline.get("events"):
+                raise AgentTeamsUnavailableError("initial sync返回了非空时间线")
+        return next_cursor
+
     def sync_messages(
         self, since: str | None, room_ids: set[str], timeout_ms: int = 0
     ) -> MatrixSyncBatch:

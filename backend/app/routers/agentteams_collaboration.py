@@ -614,6 +614,7 @@ def create_task(
             instruction=payload.instruction,
             material=payload.material,
             owner_human_no=actor.employee_no,
+            thinking_enabled=payload.thinking_enabled,
         )
         return run
 

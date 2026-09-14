@@ -143,37 +143,39 @@ def test_registry_requires_each_frontmatter_field(tmp_path):
         ProjectSkillRegistry.from_root(tmp_path)
 
 
-def test_it_skills_define_one_audit_delegate_for_missing_mfa_evidence(repo_root):
-    """IT must delegate a proven MFA evidence gap once, then use the child result terminally."""
+def test_department_coordinators_delegate_once_to_two_direct_specialists(repo_root):
+    """A coordinate task fans out once to the two specialists in the relationship graph."""
     registry = ProjectSkillRegistry.from_root(repo_root)
-    collaboration, it_service = registry.load([
-        "employee-collaboration",
+    hr, it = registry.load([
+        "hr-onboarding-assistant",
         "it-service-assistant",
     ])
 
-    assert "自己的 Tool 证据" in collaboration.content
-    assert "特定证据缺口" in collaboration.content
-    assert "独立复核能力" in collaboration.content
-    assert "不得重复委派" in collaboration.content
-    assert "Complete 或 Fail" in collaboration.content
-    assert "MFA确认缺失" in it_service.content
-    assert "audit.evidence.read" in it_service.content
-    assert "Delegate" in it_service.content
-    assert "仅复核该证据缺口" in it_service.content
-    assert "不得重复委派" in it_service.content
-    assert "Complete 或 Fail" in it_service.content
-    assert "VE-" not in collaboration.content
-    assert "VE-" not in it_service.content
+    for skill in (hr, it):
+        assert "coordinate" in skill.content
+        assert "team_relationship_graph" in skill.content
+        assert "direct_reports" in skill.content
+        assert "同一批次" in skill.content
+        assert "无依赖" in skill.content
+        assert "两名直属专员" in skill.content
+        assert "仅委派一次" in skill.content
+        assert "child_results" in skill.content
+        assert "部门汇总" in skill.content
+        assert "audit.evidence.read" not in skill.content
+        assert "VE-" not in skill.content
+    assert "hr.materials.read" in hr.content
+    assert "hr.training.read" in hr.content
+    assert "it.accounts.read" in it.content
+    assert "it.devices.read" in it.content
 
 
 def test_onboarding_skills_keep_first_round_parallel_and_audit_evidence_independent(
     repo_root,
 ):
-    """First-round HR/IT work must stay parallel; audit verifies evidence with its own Tool."""
+    """The Manager waits for both departments, then requests independent audit evidence."""
     registry = ProjectSkillRegistry.from_root(repo_root)
-    readiness, hr, audit = registry.load([
+    readiness, audit = registry.load([
         "agentteams-onboarding-readiness",
-        "hr-onboarding-assistant",
         "audit-evidence-review",
     ])
 
@@ -183,28 +185,58 @@ def test_onboarding_skills_keep_first_round_parallel_and_audit_evidence_independ
     assert "HR" in readiness.content and "IT" in readiness.content
     assert "无依赖" in readiness.content
     assert "首轮不得派发 Audit" in readiness.content
-    assert "不得将 HR→Audit 作为默认演示路径" in hr.content
+    assert "hr.onboarding.coordinate" in readiness.content
+    assert "it.onboarding.coordinate" in readiness.content
+    assert "两个部门汇总" in readiness.content
+    assert "第二轮" in readiness.content
+    assert "audit.evidence.read" in readiness.content
+    assert "审计返回后" in readiness.content
+    assert "总结" in readiness.content
     assert "获授权的 Audit Tool" in audit.content
     assert "MFA 证据" in audit.content
     assert "不能只采信 IT 的文字" in audit.content
     assert "VE-" not in readiness.content
-    assert "VE-" not in hr.content
     assert "VE-" not in audit.content
 
 
-def test_readiness_skill_stops_repeating_a_direct_workers_covered_audit_gap(repo_root):
-    """A confirmed missing fact with integrated audit evidence is terminal, not a new IT round."""
+def test_readiness_skill_uses_a_single_manager_owned_audit_round(repo_root):
+    """Audit is one Manager-owned second round, not a department-owned nested delegation."""
     readiness = ProjectSkillRegistry.from_root(repo_root).load([
         "agentteams-onboarding-readiness",
     ])[0]
 
-    assert "直接 Worker 已整合的嵌套审计结论" in readiness.content
-    assert "足够的最终证据" in readiness.content
-    assert "证据确认缺失" in readiness.content
-    assert "not ready/incomplete" in readiness.content
-    assert "不得为了让缺失项变成 ready 再重复派发" in readiness.content
-    assert "尚未调查" in readiness.content
-    assert "新独立事实问题" in readiness.content
+    assert "Manager 大模型" in readiness.content
+    assert "只派发一个" in readiness.content
+    assert "不得由 HR 或 IT 负责人嵌套派发" in readiness.content
+    assert "不得重复派发审计" in readiness.content
+    assert "审计子任务完成" in readiness.content
+    assert "ready、not ready 或 incomplete" in readiness.content
+
+
+@pytest.mark.parametrize(
+    ("skill_id", "capability", "tool_name"),
+    [
+        ("hr-material-specialist", "hr.materials.read", "agentteams.hr.lookup_materials"),
+        ("hr-training-specialist", "hr.training.read", "agentteams.hr.lookup_training"),
+        ("it-account-specialist", "it.accounts.read", "agentteams.it.lookup_accounts"),
+        ("it-device-specialist", "it.devices.read", "agentteams.it.lookup_devices"),
+    ],
+)
+def test_leaf_specialists_call_their_own_tool_before_completing(
+    repo_root, skill_id, capability, tool_name,
+):
+    """Each leaf specialist obtains role-owned Tool evidence before a terminal result."""
+    skill = ProjectSkillRegistry.from_root(repo_root).load([skill_id])[0]
+
+    assert skill.description.startswith("Use when")
+    assert capability in skill.content
+    assert tool_name in skill.content
+    assert "先调用" in skill.content
+    assert "Tool 证据" in skill.content
+    assert "未知" in skill.content
+    assert "Complete" in skill.content
+    assert "不得 Delegate" in skill.content
+    assert "VE-" not in skill.content
 
 
 @pytest.mark.parametrize(
@@ -227,13 +259,13 @@ def test_readiness_skill_stops_repeating_a_direct_workers_covered_audit_gap(repo
         ),
         (
             "hr-onboarding-assistant",
-            ("Tool", "证据", "未知", "先", "Delegate", "审计能力", "子任务结果"),
+            ("coordinate", "team_relationship_graph", "direct_reports", "Delegate", "child_results", "部门汇总"),
             ("VE-",),
         ),
         (
             "it-service-assistant",
-            ("Tool", "证据", "未知"),
-            (),
+            ("coordinate", "team_relationship_graph", "direct_reports", "Delegate", "child_results", "部门汇总"),
+            ("VE-",),
         ),
         (
             "audit-evidence-review",

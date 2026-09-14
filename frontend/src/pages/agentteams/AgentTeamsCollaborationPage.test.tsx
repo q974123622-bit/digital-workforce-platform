@@ -622,6 +622,7 @@ describe('AgentTeams collaboration API client', () => {
       title: '入职协作分析',
       instruction: '请拆解并完成分析',
       material: { policy_version: '2026.08' },
+      thinking_enabled: false,
     });
 
     expect(String(fetchMock.mock.calls[0][0])).toBe('/api/v1/agentteams-collaboration/tasks?actor_no=E10281');
@@ -632,6 +633,7 @@ describe('AgentTeams collaboration API client', () => {
       title: '入职协作分析',
       instruction: '请拆解并完成分析',
       material: { policy_version: '2026.08' },
+      thinking_enabled: false,
     });
   });
 
@@ -706,6 +708,31 @@ describe('AgentTeams collaboration page', () => {
     expect(screen.getByText('岗位调整HR记录查询Tool · Gateway通过 · 审计#89')).toBeInTheDocument();
     expect(screen.queryByText('第1轮')).not.toBeInTheDocument();
     expect(screen.queryByText('第2轮')).not.toBeInTheDocument();
+  });
+
+  it('sizes department branches from their direct reports so every specialist remains in the chart flow', () => {
+    const manager = { ...rootNode, id: 'AT-EXPANDED', root_task_id: 'AT-EXPANDED', assignee_agent_id: 'VE-0001' };
+    const hr = { ...workerNode, id: 'AT-HR', root_task_id: 'AT-EXPANDED', parent_task_id: 'AT-EXPANDED', title: 'HR 部门负责人', assignee_agent_id: 'VE-0002' };
+    const it = { ...workerNode, id: 'AT-IT', root_task_id: 'AT-EXPANDED', parent_task_id: 'AT-EXPANDED', title: 'IT 部门负责人', assignee_agent_id: 'VE-0003' };
+    const audit = { ...workerNode, id: 'AT-AUDIT', root_task_id: 'AT-EXPANDED', parent_task_id: 'AT-EXPANDED', title: '审计复核', assignee_agent_id: 'VE-0005' };
+    const nodes = [
+      manager,
+      hr,
+      it,
+      audit,
+      { ...workerNode, id: 'AT-HR-MATERIAL', root_task_id: 'AT-EXPANDED', parent_task_id: 'AT-HR', title: 'HR 材料专员', assignee_agent_id: 'VE-HR-MATERIAL' },
+      { ...workerNode, id: 'AT-HR-TRAINING', root_task_id: 'AT-EXPANDED', parent_task_id: 'AT-HR', title: 'HR 培训专员', assignee_agent_id: 'VE-HR-TRAINING' },
+      { ...workerNode, id: 'AT-IT-ACCOUNT', root_task_id: 'AT-EXPANDED', parent_task_id: 'AT-IT', title: 'IT 账号专员', assignee_agent_id: 'VE-IT-ACCOUNT' },
+      { ...workerNode, id: 'AT-IT-DEVICE', root_task_id: 'AT-EXPANDED', parent_task_id: 'AT-IT', title: 'IT 设备专员', assignee_agent_id: 'VE-IT-DEVICE' },
+    ];
+
+    render(<TaskTree nodes={nodes} messages={[]} selectedId="AT-EXPANDED" onSelect={() => undefined} />);
+
+    expect(screen.getByTestId('agentteams-task-chart').querySelectorAll('.at-chart-node-card')).toHaveLength(8);
+    expect(screen.getByRole('button', { name: /选择任务 入职协作分析/ }).closest('li')).toHaveClass('at-chart-branch');
+    expect(screen.getByRole('button', { name: /选择任务 HR 部门负责人/ }).closest('li')).toHaveClass('at-chart-branch');
+    expect(screen.getByRole('button', { name: /选择任务 IT 部门负责人/ }).closest('li')).toHaveClass('at-chart-branch');
+    expect(screen.getByRole('button', { name: /选择任务 HR 材料专员/ }).closest('li')).not.toHaveClass('at-chart-branch');
   });
 
   it('renders a persisted serial dependency below its predecessor even when nodes arrive out of order', () => {
@@ -945,8 +972,57 @@ describe('AgentTeams collaboration page', () => {
         title: '入职协作分析',
         instruction: '完成制度和账号核查',
         material: {},
+        thinking_enabled: true,
       });
     });
+  });
+
+  it('lets the user disable thinking mode for an ordinary collaboration task', async () => {
+    const submittedTask: AgentCollaborationTask = {
+      ...completedTask,
+      id: 'AT-NON-THINKING',
+      trace_id: 'AT-NON-THINKING',
+      status: 'planning',
+      latest_event_id: 0,
+      nodes: [{ ...rootNode, id: 'AT-NON-THINKING', root_task_id: 'AT-NON-THINKING', status: 'planning', progress: 0 }],
+      summary: '',
+    };
+    const fetchMock = mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': readyHealth,
+      'GET /api/v1/teams': teams,
+      'GET /api/v1/agentteams-collaboration/tasks': [],
+      'POST /api/v1/agentteams-collaboration/tasks': submittedTask,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-NON-THINKING': submittedTask,
+      'GET /api/v1/agentteams-collaboration/tasks/AT-NON-THINKING/graph': {
+        nodes: submittedTask.nodes,
+        parent_edges: [],
+        dependency_edges: [],
+        communication_edges: [],
+      },
+      'GET /api/v1/agentteams-collaboration/tasks/AT-NON-THINKING/events': [],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-NON-THINKING/messages': [],
+      'GET /api/v1/agentteams-collaboration/tasks/AT-NON-THINKING/result': {
+        task_id: 'AT-NON-THINKING', status: 'planning', summary: '', node_results: submittedTask.nodes,
+      },
+    });
+    renderPage();
+
+    const thinkingSwitch = await screen.findByRole('switch', { name: '使用大模型思考模式' });
+    expect(thinkingSwitch).toBeChecked();
+    fireEvent.click(thinkingSwitch);
+    expect(thinkingSwitch).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: '提交协作任务' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([input, init]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks') && init?.method === 'POST',
+      );
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
+        team_id: 'TEAM-ONBOARD',
+        thinking_enabled: false,
+      });
+    });
+    expect(screen.getByText('响应更快，但不会展示模型返回的决策依据。')).toBeInTheDocument();
   });
 
   it('switches to and launches an allowlisted database team in local demo mode', async () => {
@@ -989,6 +1065,7 @@ describe('AgentTeams collaboration page', () => {
         team_id: 'TEAM-DB-BENCH',
         leader_agent_id: 'VE-0001',
         material: { scenario_id: 'lock_contention' },
+        thinking_enabled: false,
       });
     });
   });
@@ -1411,88 +1488,16 @@ describe('AgentTeams collaboration page', () => {
     expect(sideStack).toHaveTextContent('当前节点状态');
   });
 
-  it('places the legacy task evaluation below the collaboration tree instead of in the side column', async () => {
-    mockPageApi(completedTaskRoutes());
-    renderPage();
-
-    const workspace = await screen.findByTestId('agentteams-workspace');
-    const mainStack = within(workspace).getByTestId('agentteams-main-stack');
-    const sideStack = within(workspace).getByTestId('agentteams-side-stack');
-    expect(mainStack).toHaveTextContent('协作调用树');
-    expect(mainStack).toHaveTextContent('旧版单任务协作评分');
-    expect(within(mainStack).getByTestId('agentteams-evaluation-panel')).toHaveAttribute('data-layout', 'horizontal');
-    expect(sideStack).toHaveTextContent('当前节点状态');
-    expect(within(sideStack).queryByTestId('agentteams-evaluation-panel')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('agentteams-workspace-bottom-row')).not.toBeInTheDocument();
-  });
-
-  it('places the database benchmark panel after the collaboration workspace at the bottom of the page', async () => {
-    mockPageApi(completedTaskRoutes());
-    renderPage();
-
-    const overviewRow = await screen.findByTestId('agentteams-overview-row');
-    const workspace = await screen.findByTestId('agentteams-workspace');
-    const benchmarkPanel = await screen.findByTestId('database-benchmark-panel');
-    expect(overviewRow.compareDocumentPosition(benchmarkPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(workspace.compareDocumentPosition(benchmarkPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-  it('shows persisted rule and model scores for a completed task', async () => {
+  it('keeps evaluation panels and evaluation requests out of the collaboration page', async () => {
     const fetchMock = mockPageApi(completedTaskRoutes());
     renderPage();
 
-    const panel = await screen.findByTestId('agentteams-evaluation-panel');
-    await waitFor(() => expect(panel).toHaveTextContent('92/100'));
-    expect(panel).toHaveTextContent('规则评测 58/60');
-    expect(panel).toHaveTextContent('大模型评测 34/40');
-    expect(panel).toHaveTextContent('一条消息发生过重试。');
-    expect(panel).toHaveTextContent('协作过程完整，结果可信。');
-    expect(fetchMock.mock.calls.some(([url, init]) => (
-      String(url).includes('/tasks/AT-ROOT/evaluation') && init?.method === 'POST'
-    ))).toBe(true);
-  });
-
-  it('routes a database benchmark task to A/B evaluation without calling the legacy evaluator', async () => {
-    const databaseTask = {
-      ...completedTask,
-      title: '数据库异常诊断：锁等待链导致请求堆积',
-    };
-    const routes = completedTaskRoutes(databaseTask);
-    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/graph'] = {
-      ...completedGraph,
-      selected_skill_ids: ['agentteams-database-diagnosis'],
-    };
-    routes['GET /api/v1/agentteams-benchmarks/database/experiments/latest'] = null;
-    const fetchMock = mockPageApi(routes);
-
-    renderPage();
-
-    const routingNotice = await screen.findByTestId('database-task-evaluation-routing');
-    expect(routingNotice).toHaveTextContent('该任务使用数据库 A/B 基准评测');
-    expect(routingNotice).toHaveTextContent('不调用旧版 100 分任务评测');
+    expect(await screen.findByText('协作调用树')).toBeInTheDocument();
     expect(screen.queryByTestId('agentteams-evaluation-panel')).not.toBeInTheDocument();
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => (
-      String(url).includes('/tasks/AT-ROOT/evaluation') && init?.method === 'POST'
+    expect(screen.queryByTestId('database-benchmark-panel')).not.toBeInTheDocument();
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => (
+      String(url).includes('/evaluation') || String(url).includes('/agentteams-benchmarks/database')
     ))).toBe(false));
-  });
-
-  it('allows a failed evaluation request to be retried from the panel', async () => {
-    let calls = 0;
-    const routes = completedTaskRoutes();
-    routes['POST /api/v1/agentteams-collaboration/tasks/AT-ROOT/evaluation'] = () => {
-      calls += 1;
-      if (calls === 1) throw new Error('DeepSeek临时不可用');
-      return completedEvaluation;
-    };
-    mockPageApi(routes);
-    renderPage();
-
-    expect(await screen.findByText(/评测暂不可用/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '重新评测' }));
-
-    const panel = await screen.findByTestId('agentteams-evaluation-panel');
-    await waitFor(() => expect(panel).toHaveTextContent('92/100'));
-    expect(calls).toBe(2);
   });
 
   it('shows a compact node execution chain and renders the final result above the workspace', async () => {
@@ -1605,16 +1610,14 @@ describe('AgentTeams collaboration page', () => {
       },
       'GET /api/v1/teams': teams,
       'GET /api/v1/agentteams-collaboration/tasks': [],
-      'GET /api/v1/agentteams-benchmarks/database/experiments/latest': null,
     });
     renderPage();
 
     expect(await screen.findByText('Matrix 登录失败：连接被拒绝')).toBeInTheDocument();
-    const benchmarkPanel = await screen.findByTestId('database-benchmark-panel');
     const healthAlert = screen.getByText('协作环境未就绪').closest('.ant-alert');
     expect(healthAlert).not.toBeNull();
-    expect(healthAlert!.compareDocumentPosition(benchmarkPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(healthAlert).toHaveTextContent('TEAM-DB-BENCH 场景和数据库诊断 A/B 基准独立运行，不受此状态影响');
+    expect(healthAlert).toHaveTextContent('TEAM-DB-BENCH 数据库诊断场景独立运行，不受此状态影响');
+    expect(screen.queryByTestId('database-benchmark-panel')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '提交协作任务' })).toBeDisabled();
   });
 

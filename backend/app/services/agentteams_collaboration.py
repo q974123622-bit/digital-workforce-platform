@@ -76,6 +76,7 @@ _MAX_TOOL_RESULT_STRING_LENGTH = 512
 _MAX_TOOL_RESULT_BYTES = 4096
 _MAX_SAFE_NODE_RESULT_BYTES = 1024
 _MAX_SAFE_RESULT_COLLECTION_BYTES = 4096
+_MAX_SUMMARY_AUDIT_IDS = 16
 _MAX_SUBTASK_TITLE_LENGTH = 256
 _MAX_SUBTASK_INSTRUCTION_LENGTH = 512
 _MAX_SUBTASK_CAPABILITY_LENGTH = 128
@@ -150,6 +151,7 @@ class AgentTeamsCollaborationService:
         instruction: str,
         material: dict,
         owner_human_no: str = "",
+        thinking_enabled: bool = True,
     ) -> models.TaskRun:
         team = db.get(models.Team, team_id)
         if team is None:
@@ -163,6 +165,8 @@ class AgentTeamsCollaborationService:
             raise CollaborationConflict("missing_runtime_ref")
         if not isinstance(material, dict):
             raise CollaborationConflict("invalid_material")
+        if not isinstance(thinking_enabled, bool):
+            raise CollaborationConflict("invalid_thinking_mode")
 
         task_id = f"AT-{uuid4().hex}"
         run = models.TaskRun(
@@ -191,7 +195,10 @@ class AgentTeamsCollaborationService:
             required=True,
             status="planning",
             progress=0,
-            input_payload=dict(material),
+            input_payload={
+                **dict(material),
+                "_agentteams_runtime": {"thinking_enabled": thinking_enabled},
+            },
             output_payload={},
         )
         db.add_all([run, root])
@@ -206,6 +213,19 @@ class AgentTeamsCollaborationService:
             detail={"title": title},
         )
         catalog, catalog_version = self._next_catalog_snapshot(db, root, team.id)
+        submit_payload = {
+            "title": title,
+            "instruction": instruction,
+            "material": dict(material),
+            "thinking_enabled": thinking_enabled,
+            "team_capability_catalog": catalog,
+            "team_catalog_version": catalog_version,
+        }
+        relationship_graph = self._team_relationship_graph(
+            db, team.id, leader.employee_no, catalog=catalog
+        )
+        if relationship_graph:
+            submit_payload["team_relationship_graph"] = relationship_graph
         self._queue_outbound(
             db,
             root_task_id=task_id,
@@ -215,13 +235,7 @@ class AgentTeamsCollaborationService:
             sender_agent_id="platform",
             receiver_agent_id=leader.employee_no,
             body=instruction,
-            payload={
-                "title": title,
-                "instruction": instruction,
-                "material": dict(material),
-                "team_capability_catalog": catalog,
-                "team_catalog_version": catalog_version,
-            },
+            payload=submit_payload,
             idempotency_key=f"{task_id}:task.submit",
         )
         # Do not commit: callers own the transaction and their test rollback policy.
@@ -417,12 +431,25 @@ class AgentTeamsCollaborationService:
             raise CollaborationConflict("max_nodes_exceeded")
         coordination = self._validated_next_coordination(parent, message.payload)
         ancestor_assignees = self._parent_chain_assignees(db, parent)
+        catalog = self._team_capability_catalog(
+            db, run.team_id, owner_human_no=run.owner_human_no
+        )
         capability_catalog = {
             item["agent_id"]: set(item["capabilities"])
-            for item in self._team_capability_catalog(
-                db, run.team_id, owner_human_no=run.owner_human_no
-            )
+            for item in catalog
         }
+        relationship_graph = self._team_relationship_graph(
+            db, run.team_id, parent.assignee_agent_id, catalog=catalog
+        )
+        if relationship_graph:
+            direct_report_ids = {
+                item["agent_id"] for item in relationship_graph["direct_reports"]
+            }
+            if any(
+                subtask["assignee_agent_id"] not in direct_report_ids
+                for subtask in subtasks
+            ):
+                raise CollaborationConflict("delegate_target_not_direct_report")
         for subtask in subtasks:
             assignee = db.get(models.DigitalEmployee, subtask["assignee_agent_id"])
             if assignee is None or not self._is_team_member(db, run.team_id, subtask["assignee_agent_id"]):
@@ -919,6 +946,38 @@ class AgentTeamsCollaborationService:
         )
         return self._bound_result_collection([self._safe_node_result(child) for child in children])
 
+    def _completed_direct_child_audit_ids(self, db: Session, parent_id: str) -> list[int]:
+        children = list(
+            db.scalars(
+                select(models.AgentTaskNode)
+                .where(
+                    models.AgentTaskNode.parent_task_id == parent_id,
+                    models.AgentTaskNode.status == "completed",
+                )
+                .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
+            )
+        )
+        audit_ids: list[int] = []
+        seen: set[int] = set()
+        for child in children:
+            payload = child.output_payload if isinstance(child.output_payload, Mapping) else {}
+            values = payload.get("audit_ids")
+            if not isinstance(values, list):
+                continue
+            for audit_id in values:
+                if (
+                    not isinstance(audit_id, int)
+                    or isinstance(audit_id, bool)
+                    or not 0 < audit_id < 2 ** 63
+                    or audit_id in seen
+                ):
+                    continue
+                seen.add(audit_id)
+                audit_ids.append(audit_id)
+                if len(audit_ids) >= _MAX_SUMMARY_AUDIT_IDS:
+                    return audit_ids
+        return audit_ids
+
     def _safe_node_result(self, node: models.AgentTaskNode) -> dict[str, Any]:
         result: dict[str, Any] = {
             "client_task_key": self._safe_client_task_key(node.client_task_key),
@@ -977,9 +1036,15 @@ class AgentTeamsCollaborationService:
             ),
             "depends_on": [self._safe_client_task_key(key) for key in dependency_keys],
             "parent_chain_agent_ids": self._assignment_parent_chain(db, child),
+            "thinking_enabled": self._task_thinking_enabled(root),
             "team_capability_catalog": catalog,
             "team_catalog_version": catalog_version,
         }
+        relationship_graph = self._team_relationship_graph(
+            db, run.team_id, child.assignee_agent_id, catalog=catalog
+        )
+        if relationship_graph:
+            payload["team_relationship_graph"] = relationship_graph
         if dependency_results:
             payload["dependency_results"] = dependency_results
         self._queue_outbound(
@@ -1124,6 +1189,32 @@ class AgentTeamsCollaborationService:
             raise CollaborationConflict("unknown_root_task")
         coordination = self._coordination(root) if root is not None else {"round": 0, "selected_skill_ids": []}
         catalog, catalog_version = self._next_catalog_snapshot(db, root, run.team_id)
+        summary_payload: dict[str, Any] = {
+            "request": "task.summary",
+            "parent_task_id": parent.id,
+            "child_results": self._safe_child_results(db, parent.id),
+            "audit_ids": self._completed_direct_child_audit_ids(db, parent.id),
+            "existing_child_task_keys": list(db.scalars(
+                select(models.AgentTaskNode.client_task_key)
+                .where(models.AgentTaskNode.parent_task_id == parent.id)
+                .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
+            )),
+            "current_round": coordination["round"],
+            "thinking_enabled": self._task_thinking_enabled(root),
+            "team_capability_catalog": catalog,
+            "team_catalog_version": catalog_version,
+            "remaining_limits": {
+                "rounds": max(0, 1 + self.max_rounds - coordination["round"]),
+                "nodes": max(0, self.max_nodes - self._root_node_count(db, parent.root_task_id)),
+                "children": self.max_children,
+                "depth": max(0, self.max_depth - parent.depth),
+            },
+        }
+        relationship_graph = self._team_relationship_graph(
+            db, run.team_id, parent.assignee_agent_id, catalog=catalog
+        )
+        if relationship_graph:
+            summary_payload["team_relationship_graph"] = relationship_graph
         self._queue_outbound(
             db,
             root_task_id=parent.root_task_id,
@@ -1136,25 +1227,7 @@ class AgentTeamsCollaborationService:
             # For the root node assignee and coordinator are the same Manager.
             receiver_agent_id=parent.assignee_agent_id,
             body="All required child tasks are complete; submit a task.summary.",
-            payload={
-                "request": "task.summary",
-                "parent_task_id": parent.id,
-                "child_results": self._safe_child_results(db, parent.id),
-                "existing_child_task_keys": list(db.scalars(
-                    select(models.AgentTaskNode.client_task_key)
-                    .where(models.AgentTaskNode.parent_task_id == parent.id)
-                    .order_by(models.AgentTaskNode.created_at, models.AgentTaskNode.id)
-                )),
-                "current_round": coordination["round"],
-                "team_capability_catalog": catalog,
-                "team_catalog_version": catalog_version,
-                "remaining_limits": {
-                    "rounds": max(0, 1 + self.max_rounds - coordination["round"]),
-                    "nodes": max(0, self.max_nodes - self._root_node_count(db, parent.root_task_id)),
-                    "children": self.max_children,
-                    "depth": max(0, self.max_depth - parent.depth),
-                },
-            },
+            payload=summary_payload,
             idempotency_key=f"{parent.id}:task.summary.request:round-{coordination['round']}",
         )
         return [
@@ -1269,6 +1342,18 @@ class AgentTeamsCollaborationService:
         if isinstance(catalog_version, bool) or not isinstance(catalog_version, int) or catalog_version < 0:
             catalog_version = 0
         return {"round": round_number, "selected_skill_ids": list(selected), "team_catalog_version": catalog_version}
+
+    @staticmethod
+    def _task_thinking_enabled(root: models.AgentTaskNode | None) -> bool:
+        runtime_options = (
+            dict(root.input_payload or {}).get("_agentteams_runtime")
+            if root is not None
+            else None
+        )
+        if not isinstance(runtime_options, Mapping):
+            return True
+        value = runtime_options.get("thinking_enabled", True)
+        return value if isinstance(value, bool) else True
 
     @staticmethod
     def _root_node_count(db: Session, root_task_id: str) -> int:
@@ -1486,6 +1571,77 @@ class AgentTeamsCollaborationService:
                 "tool_summaries": capabilities,
             })
         return catalog
+
+    def _team_relationship_graph(
+        self,
+        db: Session,
+        team_id: str,
+        agent_id: str,
+        *,
+        catalog: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Project one platform-owned relationship view for the receiving Agent.
+
+        Legacy onboarding and database runtimes intentionally have no graph and
+        keep their existing flat-team behavior.  Callers never get to supply or
+        widen this authority document themselves.
+        """
+        if config.agentteams_mode() != "agentteams_strict":
+            return {}
+        try:
+            runtime = load_strict_runtime_config()
+        except ValueError as exc:
+            raise CollaborationConflict("invalid_runtime_config") from exc
+        if runtime.team_id != team_id:
+            raise CollaborationConflict("runtime_team_mismatch")
+        relationships = runtime.team_relationships
+        if not relationships:
+            return {}
+        relationship = relationships.get(agent_id)
+        if not isinstance(relationship, Mapping):
+            raise CollaborationConflict("invalid_runtime_config")
+        role = relationship.get("role")
+        reports_to = relationship.get("reports_to")
+        direct_reports = relationship.get("direct_reports")
+        if (
+            not isinstance(role, str)
+            or not isinstance(reports_to, (list, tuple))
+            or not isinstance(direct_reports, (list, tuple))
+        ):
+            raise CollaborationConflict("invalid_runtime_config")
+
+        current_catalog = catalog
+        if current_catalog is None:
+            current_catalog = self._team_capability_catalog(db, team_id)
+        capabilities_by_agent = {
+            item.get("agent_id"): sorted({
+                capability
+                for capability in item.get("capabilities", [])
+                if isinstance(capability, str)
+            })
+            for item in current_catalog
+            if isinstance(item, Mapping)
+            and isinstance(item.get("agent_id"), str)
+            and isinstance(item.get("capabilities"), list)
+        }
+        projected_reports: list[dict[str, Any]] = []
+        for report_id in direct_reports:
+            report_relationship = relationships.get(report_id)
+            if not isinstance(report_id, str) or not isinstance(report_relationship, Mapping):
+                raise CollaborationConflict("invalid_runtime_config")
+            report_role = report_relationship.get("role")
+            if not isinstance(report_role, str):
+                raise CollaborationConflict("invalid_runtime_config")
+            projected_reports.append({
+                "agent_id": report_id,
+                "role": report_role,
+                "capabilities": capabilities_by_agent.get(report_id, []),
+            })
+        return {
+            "self": {"agent_id": agent_id, "role": role},
+            "reports_to": list(reports_to),
+            "direct_reports": projected_reports,
+        }
 
     @staticmethod
     def _validate_subtask(raw: Any) -> dict[str, Any]:

@@ -121,6 +121,7 @@ class WorkerDecision(_StrictModel):
     recipient_agent_id: str | None = Field(default=None, min_length=1)
     message: str | None = Field(default=None, min_length=1)
     subtask: PlannedSubtask | None = None
+    subtasks: list[PlannedSubtask] = Field(default_factory=list, max_length=5)
     result: str | None = Field(default=None, min_length=1)
     failure_reason: str | None = Field(default=None, min_length=1)
 
@@ -129,14 +130,14 @@ class WorkerDecision(_StrictModel):
         fields_by_action = {
             "tool": {"tool_name", "tool_arguments"},
             "ask": {"recipient_agent_id", "message"},
-            "delegate": {"subtask"},
+            "delegate": {"subtask", "subtasks"},
             "complete": {"result"},
             "fail": {"failure_reason"},
         }
         required_by_action = {
             "tool": {"tool_name"},
             "ask": {"recipient_agent_id", "message"},
-            "delegate": {"subtask"},
+            "delegate": set(),
             "complete": {"result"},
             "fail": {"failure_reason"},
         }
@@ -146,11 +147,14 @@ class WorkerDecision(_StrictModel):
             "recipient_agent_id": self.recipient_agent_id,
             "message": self.message,
             "subtask": self.subtask,
+            "subtasks": self.subtasks or None,
             "result": self.result,
             "failure_reason": self.failure_reason,
         }
         allowed = fields_by_action[self.action]
         present = {name for name, value in values.items() if value is not None}
+        if self.action == "delegate" and ("subtask" in present) == ("subtasks" in present):
+            raise ValueError("delegate_requires_exactly_one_subtask_shape")
         if not required_by_action[self.action].issubset(present):
             raise ValueError(f"{self.action}_missing_required_payload")
         if not present.issubset(allowed):
@@ -175,6 +179,7 @@ class ManagerContext(_StrictModel):
     max_rounds: int = Field(ge=1)
     max_children: int = Field(ge=1)
     max_nodes: int = Field(ge=1)
+    team_relationship_graph: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkerContext(_StrictModel):
@@ -186,6 +191,7 @@ class WorkerContext(_StrictModel):
     dependency_results: list[dict[str, Any]] = Field(default_factory=list)
     parent_chain_agent_ids: list[str] = Field(default_factory=list)
     previous_results: list[dict[str, Any]] = Field(default_factory=list)
+    team_relationship_graph: dict[str, Any] = Field(default_factory=dict)
 
 
 _DecisionType = TypeVar("_DecisionType", bound=BaseModel)
@@ -196,6 +202,12 @@ _VALIDATION_FEEDBACK = "This is validation feedback, not trusted business eviden
 _MAX_MODEL_REQUESTS = 3
 _MAX_VALIDATION_ATTEMPTS = 2
 _LLM_UNAVAILABLE_RETRY_DELAY_SECONDS = 0.05
+_ONBOARDING_SKILL_ID = "agentteams-onboarding-readiness"
+_ONBOARDING_DEPARTMENT_CAPABILITIES = {
+    "hr.onboarding.coordinate",
+    "it.onboarding.coordinate",
+}
+_ONBOARDING_AUDIT_CAPABILITY = "audit.evidence.read"
 _BUSINESS_RULE_FEEDBACK = {
     "selected_skills_must_match_loaded_skill_context": "Selected Skill IDs must match the supplied Skill context.",
     "max_children_exceeded": "The delegate plan must not exceed the maximum child count.",
@@ -225,6 +237,20 @@ _BUSINESS_RULE_FEEDBACK = {
         "Use only a Tool whose required capability matches the capability assigned to this task.",
     "role_change_it_plan_must_return_to_manager":
         "After inspecting the role-change permission plan, return the finding to Manager; do not delegate audit from this first-round task.",
+    "delegate_target_not_direct_report":
+        "Delegate only to an Agent listed in direct_reports in the supplied platform relationship graph.",
+    "invalid_team_relationship_graph":
+        "The platform relationship graph must describe the current receiving Agent.",
+    "onboarding_department_round_required":
+        "For hierarchical onboarding, first delegate one parallel HR coordination task and one parallel IT coordination task.",
+    "onboarding_audit_round_required":
+        "After both department summaries return, delegate one independent audit evidence review as the second Manager round.",
+    "onboarding_final_summary_required":
+        "After the audit round returns, produce the final evidence-based summary.",
+    "department_lead_initial_batch_required":
+        "A department lead must delegate one parallel required batch covering every direct report and its advertised capability.",
+    "department_lead_summary_required":
+        "After direct reports return, complete the department task from their evidence instead of delegating again.",
 }
 
 
@@ -301,6 +327,24 @@ class AgentDecisionEngine:
                         "pending_audit_review": "待审计复核",
                     },
                 }
+        elif _ONBOARDING_SKILL_ID in context.selected_skill_ids and context.team_relationship_graph:
+            if not context.child_results:
+                scenario_execution_contract = {
+                    "required_action": "delegate",
+                    "parallel_capabilities": sorted(_ONBOARDING_DEPARTMENT_CAPABILITIES),
+                    "delegation_level": "department_leads",
+                }
+            elif context.current_round == 1:
+                scenario_execution_contract = {
+                    "required_action": "delegate",
+                    "parallel_capabilities": [_ONBOARDING_AUDIT_CAPABILITY],
+                    "delegation_level": "manager_follow_up",
+                }
+            else:
+                scenario_execution_contract = {
+                    "required_action": "summarize",
+                    "evidence_scope": "department_summaries_and_audit_review",
+                }
         messages = _messages(
             "You are an AgentTeams manager. Make a bounded, evidence-oriented decision for "
             "the current round. Return only JSON matching the supplied schema. Choose assignees "
@@ -321,6 +365,7 @@ class AgentDecisionEngine:
                 "selected_scenario_skills": [_skill_payload(skill) for skill in selected_skills],
                 "required_selected_skill_ids": context.selected_skill_ids,
                 "current_team_capability_catalog": context.team_capability_catalog,
+                "team_relationship_graph": context.team_relationship_graph,
                 "completed_direct_child_results": context.child_results,
                 "existing_child_task_keys": context.existing_child_task_keys,
                 "current_round": context.current_round,
@@ -342,6 +387,7 @@ class AgentDecisionEngine:
             if decision.action == "delegate":
                 _validate_manager_delegate_plan(context, decision.subtasks)
             _validate_role_change_manager_decision(context, decision)
+            _validate_onboarding_manager_decision(context, decision)
             return decision
 
         return self._structured_with_retry(
@@ -353,18 +399,35 @@ class AgentDecisionEngine:
 
     def decide_work(self, context: WorkerContext) -> WorkerDecision:
         professional_skills = self.skills.load(context.professional_skill_ids)
+        department_execution_contract: dict[str, Any] = {}
+        if (
+            context.team_relationship_graph
+            and context.task.get("required_capability") in _ONBOARDING_DEPARTMENT_CAPABILITIES
+        ):
+            if context.previous_results:
+                department_execution_contract = {
+                    "required_action": "complete",
+                    "evidence_scope": "completed_direct_reports",
+                }
+            else:
+                department_execution_contract = {
+                    "required_action": "delegate",
+                    "parallel_direct_reports": context.team_relationship_graph.get("direct_reports", []),
+                }
         messages = _messages(
             "You are an AgentTeams worker. Select exactly one action permitted by the supplied "
             "schema. Action payload contract: all other action-specific fields must be omitted. "
             "tool: action, tool_name, and optional tool_arguments; for tool, omit recipient_agent_id, "
-            "message, subtask, result, and failure_reason. ask: action, recipient_agent_id, and message; "
-            "omit tool_name, tool_arguments, subtask, result, and failure_reason. delegate: action and "
-            "subtask; omit tool_name, tool_arguments, recipient_agent_id, message, result, and "
+            "message, subtask, subtasks, result, and failure_reason. ask: action, recipient_agent_id, and message; "
+            "omit tool_name, tool_arguments, subtask, subtasks, result, and failure_reason. delegate: action and "
+            "exactly one of subtask or subtasks; use subtasks for one parallel department batch; omit tool_name, "
+            "tool_arguments, recipient_agent_id, message, result, and "
             "failure_reason. complete: action and result; omit tool_name, tool_arguments, "
-            "recipient_agent_id, message, subtask, and failure_reason. fail: action and failure_reason; "
-            "omit tool_name, tool_arguments, recipient_agent_id, message, subtask, and result. "
+            "recipient_agent_id, message, subtask, subtasks, and failure_reason. fail: action and failure_reason; "
+            "omit tool_name, tool_arguments, recipient_agent_id, message, subtask, subtasks, and result. "
             "Do not invent facts, tools, agents, or Tool results. Delegate only bounded "
-            "work and never delegate to yourself or an agent in the parent chain. Choose Ask and "
+            "work and never delegate to yourself or an agent in the parent chain. When a team relationship "
+            "graph is supplied, delegate only to direct_reports from that graph. Choose Ask and "
             "Delegate recipients by capability from the supplied current-team catalog. Write task "
             "results as concise Chinese prose; do not use key=value syntax because it resembles "
             "secret configuration and will be safely redacted.",
@@ -376,6 +439,8 @@ class AgentDecisionEngine:
                 "current_team_capability_catalog": context.current_team_capability_catalog,
                 "dependency_results": context.dependency_results,
                 "parent_chain_agent_ids": context.parent_chain_agent_ids,
+                "team_relationship_graph": context.team_relationship_graph,
+                "department_execution_contract": department_execution_contract,
                 "previous_tool_or_message_results": context.previous_results,
             },
         )
@@ -560,6 +625,18 @@ def _validate_manager_delegate_plan(context: ManagerContext, subtasks: list[Plan
         if subtask.required_capability not in permitted:
             raise _DecisionValidationError("capability_not_available")
 
+    if context.team_relationship_graph:
+        identity = context.team_relationship_graph.get("self")
+        if not isinstance(identity, dict):
+            raise _DecisionValidationError("invalid_team_relationship_graph")
+        direct_reports = {
+            item.get("agent_id")
+            for item in context.team_relationship_graph.get("direct_reports", [])
+            if isinstance(item, dict) and isinstance(item.get("agent_id"), str)
+        }
+        if any(subtask.assignee_agent_id not in direct_reports for subtask in subtasks):
+            raise _DecisionValidationError("delegate_target_not_direct_report")
+
     visiting: set[str] = set()
     visited: set[str] = set()
 
@@ -625,8 +702,55 @@ def _validate_role_change_manager_decision(
         raise _DecisionValidationError("role_change_final_has_unsubstantiated_gaps")
 
 
+def _validate_onboarding_manager_decision(
+    context: ManagerContext,
+    decision: ManagerDecision,
+) -> None:
+    """Apply the hierarchical onboarding rounds only to the expanded graph."""
+    if (
+        _ONBOARDING_SKILL_ID not in context.selected_skill_ids
+        or not context.team_relationship_graph
+    ):
+        return
+    by_capability = {
+        subtask.required_capability: subtask
+        for subtask in decision.subtasks
+    }
+    if not context.child_results:
+        if (
+            decision.action != "delegate"
+            or set(by_capability) != _ONBOARDING_DEPARTMENT_CAPABILITIES
+            or any(subtask.depends_on for subtask in decision.subtasks)
+            or any(not subtask.required for subtask in decision.subtasks)
+        ):
+            raise _DecisionValidationError("onboarding_department_round_required")
+        return
+    if context.current_round == 1:
+        audit = by_capability.get(_ONBOARDING_AUDIT_CAPABILITY)
+        if (
+            decision.action != "delegate"
+            or set(by_capability) != {_ONBOARDING_AUDIT_CAPABILITY}
+            or audit is None
+            or audit.depends_on
+            or not audit.required
+        ):
+            raise _DecisionValidationError("onboarding_audit_round_required")
+        return
+    if decision.action != "summarize" or decision.summary is None:
+        raise _DecisionValidationError("onboarding_final_summary_required")
+
+
 def _validate_worker_decision(context: WorkerContext, decision: WorkerDecision) -> None:
     """Reject invented worker targets before the runtime performs an action."""
+    is_onboarding_department_lead = (
+        context.task.get("required_capability") in _ONBOARDING_DEPARTMENT_CAPABILITIES
+        and bool(context.team_relationship_graph)
+    )
+    if is_onboarding_department_lead:
+        if context.previous_results and decision.action != "complete":
+            raise _DecisionValidationError("department_lead_summary_required")
+        if not context.previous_results and decision.action != "delegate":
+            raise _DecisionValidationError("department_lead_initial_batch_required")
     tools_by_name = {
         item.get("name"): item
         for item in context.safe_tool_catalog
@@ -668,19 +792,58 @@ def _validate_worker_decision(context: WorkerContext, decision: WorkerDecision) 
             and context.task.get("required_capability") == "it.permission.plan"
         ):
             raise _DecisionValidationError("role_change_it_plan_must_return_to_manager")
-        subtask = decision.subtask
-        if subtask is None:
+        subtasks = decision.subtasks or ([decision.subtask] if decision.subtask is not None else [])
+        if not subtasks:
             raise _DecisionValidationError("delegate_missing_subtask")
-        if (
-            subtask.assignee_agent_id == context.current_agent_id
-            or subtask.assignee_agent_id in context.parent_chain_agent_ids
-        ):
-            raise _DecisionValidationError("delegate_target_in_parent_chain")
-        permitted = capabilities_by_agent.get(subtask.assignee_agent_id)
-        if permitted is None:
-            raise _DecisionValidationError("delegate_assignee_not_available")
-        if subtask.required_capability not in permitted:
-            raise _DecisionValidationError("delegate_capability_not_available")
+        direct_reports = {
+            item.get("agent_id")
+            for item in context.team_relationship_graph.get("direct_reports", [])
+            if isinstance(item, dict) and isinstance(item.get("agent_id"), str)
+        }
+        if context.team_relationship_graph:
+            identity = context.team_relationship_graph.get("self")
+            if not isinstance(identity, dict) or identity.get("agent_id") != context.current_agent_id:
+                raise _DecisionValidationError("invalid_team_relationship_graph")
+        keys = {subtask.client_task_key for subtask in subtasks}
+        if len(keys) != len(subtasks):
+            raise _DecisionValidationError("duplicate_client_task_key")
+        for subtask in subtasks:
+            if (
+                subtask.assignee_agent_id == context.current_agent_id
+                or subtask.assignee_agent_id in context.parent_chain_agent_ids
+            ):
+                raise _DecisionValidationError("delegate_target_in_parent_chain")
+            if context.team_relationship_graph and subtask.assignee_agent_id not in direct_reports:
+                raise _DecisionValidationError("delegate_target_not_direct_report")
+            permitted = capabilities_by_agent.get(subtask.assignee_agent_id)
+            if permitted is None:
+                raise _DecisionValidationError("delegate_assignee_not_available")
+            if subtask.required_capability not in permitted:
+                raise _DecisionValidationError("delegate_capability_not_available")
+        if context.task.get("required_capability") in _ONBOARDING_DEPARTMENT_CAPABILITIES:
+            expected = {
+                (item.get("agent_id"), capability)
+                for item in context.team_relationship_graph.get("direct_reports", [])
+                if isinstance(item, dict)
+                for capability in item.get("capabilities", [])
+                if isinstance(item.get("agent_id"), str) and isinstance(capability, str)
+            }
+            actual = {
+                (subtask.assignee_agent_id, subtask.required_capability)
+                for subtask in subtasks
+            }
+            if (
+                context.previous_results
+                or actual != expected
+                or any(subtask.depends_on for subtask in subtasks)
+                or any(not subtask.required for subtask in subtasks)
+            ):
+                raise _DecisionValidationError(
+                    "department_lead_summary_required"
+                    if context.previous_results
+                    else "department_lead_initial_batch_required"
+                )
+        return
 
 
 def _validation_error_details(error: Exception) -> list[dict[str, Any]]:

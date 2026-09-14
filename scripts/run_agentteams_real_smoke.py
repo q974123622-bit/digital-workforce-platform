@@ -1,8 +1,8 @@
 """Run one real strict-Matrix AgentTeams task and print safe persisted evidence.
 
 The Matrix transport, DeepSeek decisions, platform database and Gateway calls
-are real only when the already-running API reports strict readiness.  Employee
-facts returned by the three onboarding Tools remain project demo data.
+are real only when the already-running API reports strict readiness.  Business
+facts returned by the onboarding Tools remain project demo data.
 """
 
 from __future__ import annotations
@@ -32,6 +32,17 @@ FIXED_GOAL = "评估新员工A是否可以按期入职。"
 TERMINAL = {"completed", "failed", "timed_out", "cancelled"}
 DEMO_DATA_BOUNDARY = "业务事实来自项目内演示数据；Matrix、DeepSeek、平台状态与审计需由本次严格验收确认。"
 FIXED_GAP_READINESS_DECISIONS = {"not_ready", "incomplete"}
+ONBOARDING_AGENT_IDS_BY_ROLE = {
+    "manager": "VE-0001",
+    "hr": "VE-0002",
+    "it": "VE-0003",
+    "audit": "VE-0005",
+    "hr_material": "VE-HR-MATERIAL",
+    "hr_training": "VE-HR-TRAINING",
+    "it_account": "VE-IT-ACCOUNT",
+    "it_device": "VE-IT-DEVICE",
+}
+ONBOARDING_AGENT_IDS = frozenset(ONBOARDING_AGENT_IDS_BY_ROLE.values())
 
 
 def _items(value: Any) -> list[dict[str, Any]]:
@@ -68,6 +79,37 @@ def _message_content(message: dict[str, Any]) -> dict[str, Any] | None:
     if payload.get("type") == message.get("message_type") and isinstance(nested, dict):
         return nested
     return payload
+
+
+def _strict_matrix_base_ready(health: object) -> bool:
+    return bool(
+        isinstance(health, dict)
+        and health.get("ready_for_demo") is True
+        and health.get("mode") == "agentteams_strict"
+        and health.get("transport") == "matrix"
+        and health.get("configured_team_id") == LOCAL_DEMO_TEAM_ID
+        and health.get("matrix") == "ready"
+        and health.get("room") == "ready"
+        and health.get("manager") == "ready"
+        and health.get("platform_team") == "ready"
+    )
+
+
+def _all_onboarding_workers_ready(health: object) -> bool:
+    if not isinstance(health, dict) or not isinstance(health.get("workers"), list):
+        return False
+    workers = _items(health["workers"])
+    if len(workers) != len(health["workers"]) or len(workers) != len(ONBOARDING_AGENT_IDS):
+        return False
+    agent_ids = [worker.get("agent_id") for worker in workers]
+    return set(agent_ids) == ONBOARDING_AGENT_IDS and len(set(agent_ids)) == len(agent_ids) and all(
+        worker.get("status") == "ready" for worker in workers
+    )
+
+
+def _strict_onboarding_health_ready(health: object) -> bool:
+    """Require the exact TEAM-ONBOARD infrastructure and eight live runtimes."""
+    return _strict_matrix_base_ready(health) and _all_onboarding_workers_ready(health)
 
 
 def _has_fixed_gap_readiness_decision(
@@ -148,7 +190,31 @@ def _has_exact_first_round_plan(
     if len(roots) != 1:
         return False
     root_id = roots[0].get("id")
-    direct = [node for node in nodes if node.get("parent_task_id") == root_id]
+    root_delegations = [
+        event for event in events
+        if event.get("event_type") == "task.delegate"
+        and event.get("task_id") == root_id
+        and event.get("actor_agent_id") == "VE-0001"
+        and isinstance(event.get("detail"), dict)
+        and event["detail"].get("round") == 1
+    ]
+    if len(root_delegations) != 1:
+        return False
+    detail = root_delegations[0].get("detail")
+    client_task_keys = detail.get("client_task_keys") if isinstance(detail, dict) else None
+    if (
+        not isinstance(detail, dict)
+        or not isinstance(client_task_keys, list)
+        or len(client_task_keys) != 2
+        or any(not isinstance(key, str) or not key for key in client_task_keys)
+        or len(set(client_task_keys)) != 2
+    ):
+        return False
+    direct = [
+        node for node in nodes
+        if node.get("parent_task_id") == root_id
+        and node.get("client_task_key") in client_task_keys
+    ]
     if (
         not isinstance(root_id, str) or not root_id
         or len(direct) != 2
@@ -160,31 +226,10 @@ def _has_exact_first_round_plan(
     direct_client_task_keys = [node.get("client_task_key") for node in direct]
     if (
         any(not isinstance(node_id, str) or not node_id for node_id in direct_ids)
-        or any(not isinstance(key, str) or not key for key in direct_client_task_keys)
-        or len(set(direct_client_task_keys)) != len(direct_client_task_keys)
+        or set(direct_client_task_keys) != set(client_task_keys)
         or not isinstance(dependency_edges, list)
         or any(not isinstance(edge, dict) for edge in dependency_edges)
         or any(edge.get("task_id") in direct_ids for edge in dependency_edges)
-    ):
-        return False
-    root_delegations = [
-        event for event in events
-        if event.get("event_type") == "task.delegate"
-        and event.get("task_id") == root_id
-        and event.get("actor_agent_id") == "VE-0001"
-    ]
-    if len(root_delegations) != 1:
-        return False
-    detail = root_delegations[0].get("detail")
-    client_task_keys = detail.get("client_task_keys") if isinstance(detail, dict) else None
-    if (
-        not isinstance(detail, dict)
-        or detail.get("round") != 1
-        or not isinstance(client_task_keys, list)
-        or len(client_task_keys) != 2
-        or any(not isinstance(key, str) or not key for key in client_task_keys)
-        or len(set(client_task_keys)) != 2
-        or set(client_task_keys) != set(direct_client_task_keys)
     ):
         return False
     delegate_messages = [
@@ -194,6 +239,8 @@ def _has_exact_first_round_plan(
         and message.get("sender_agent_id") == "VE-0001"
         and message.get("receiver_agent_id") == "platform"
         and message.get("direction") == "inbound"
+        and isinstance(_message_content(message), dict)
+        and _message_content(message).get("round") == 1
     ]
     if len(delegate_messages) != 1:
         return False
@@ -213,8 +260,8 @@ def _has_exact_first_round_plan(
             return False
         observed[key] = (subtask.get("assignee_agent_id"), subtask.get("required_capability"))
     return set(observed) == set(client_task_keys) and set(observed.values()) == {
-        ("VE-0002", "hr.onboarding.read"),
-        ("VE-0003", "it.readiness.read"),
+        ("VE-0002", "hr.onboarding.coordinate"),
+        ("VE-0003", "it.onboarding.coordinate"),
     }
 
 
@@ -228,17 +275,25 @@ def _positive_audit_ids(value: Any) -> set[int] | None:
     return ids if len(ids) == len(value) else None
 
 
-def _has_expected_it_audit_tool_evidence(
+def _has_expected_onboarding_tool_evidence(
     nodes: list[dict[str, Any]], events: list[dict[str, Any]], messages: list[dict[str, Any]]
 ) -> bool:
     by_agent = {node.get("assignee_agent_id"): node for node in nodes}
-    it, audit = by_agent.get("VE-0003"), by_agent.get("VE-0005")
-    if not isinstance(it, dict) or not isinstance(audit, dict):
+    expected_by_agent = {
+        "VE-HR-MATERIAL": ("agentteams.hr.lookup_materials", "agentteams-onboarding-materials", "hr.materials.read"),
+        "VE-HR-TRAINING": ("agentteams.hr.lookup_training", "agentteams-onboarding-training", "hr.training.read"),
+        "VE-IT-ACCOUNT": ("agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read"),
+        "VE-IT-DEVICE": ("agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read"),
+        "VE-0005": ("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read"),
+    }
+    if any(not isinstance(by_agent.get(agent_id), dict) for agent_id in expected_by_agent):
         return False
     expected_requests = {
-        it.get("id"): ("VE-0003", "agentteams.it.lookup_readiness", "agentteams-it-readiness", "it.readiness.read"),
-        audit.get("id"): ("VE-0005", "agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read"),
+        by_agent[agent_id].get("id"): (agent_id, *tool_contract)
+        for agent_id, tool_contract in expected_by_agent.items()
     }
+    if any(not isinstance(task_id, str) or not task_id for task_id in expected_requests):
+        return False
     for task_id, (sender, tool_name, plugin_id, capability) in expected_requests.items():
         requests = [
             message for message in messages
@@ -260,7 +315,7 @@ def _has_expected_it_audit_tool_evidence(
         ):
             return False
     event_evidence: dict[str, tuple[int, set[int]]] = {}
-    for task_id, actor in ((it.get("id"), "VE-0003"), (audit.get("id"), "VE-0005")):
+    for task_id, (actor, *_contract) in expected_requests.items():
         successful = [
             event for event in events
             if event.get("event_type") == "tool.result"
@@ -276,11 +331,11 @@ def _has_expected_it_audit_tool_evidence(
         if ids is None:
             return False
         event_evidence[task_id] = (_event_seq(successful[0]), ids)
-    it_ids, audit_ids = event_evidence[it.get("id")][1], event_evidence[audit.get("id")][1]
-    if not it_ids.isdisjoint(audit_ids):
+    evidence_sets = [value[1] for value in event_evidence.values()]
+    if len(set().union(*evidence_sets)) != sum(len(value) for value in evidence_sets):
         return False
     result_payloads: dict[str, dict[str, Any]] = {}
-    for task_id, receiver in ((it.get("id"), "VE-0003"), (audit.get("id"), "VE-0005")):
+    for task_id, (receiver, *_contract) in expected_requests.items():
         results = [
             message for message in messages
             if message.get("message_type") == "tool.result"
@@ -289,21 +344,27 @@ def _has_expected_it_audit_tool_evidence(
             and message.get("receiver_agent_id") == receiver
             and message.get("direction") == "outbound"
         ]
-        if len(results) != 1 or not isinstance(results[0].get("payload"), dict):
+        if len(results) != 1:
             return False
-        payload = results[0]["payload"]
+        payload = _message_content(results[0])
+        if payload is None:
+            return False
         if payload.get("ok") is not True or payload.get("decision") != "allow":
             return False
         if _positive_audit_ids(payload.get("audit_ids")) != event_evidence[task_id][1]:
             return False
         result_payloads[task_id] = payload
-    data = result_payloads[it.get("id")].get("data")
-    pending = data.get("pending_items") if isinstance(data, dict) else None
-    if not isinstance(pending, list) or not any(
-        isinstance(item, dict) and item.get("evidence_id") == "IT-A-003" and item.get("status") == "missing"
-        for item in pending
+    account_task_id = by_agent["VE-IT-ACCOUNT"].get("id")
+    data = result_payloads[account_task_id].get("data")
+    accounts = data.get("accounts") if isinstance(data, dict) else None
+    if not isinstance(accounts, list) or not any(
+        isinstance(item, dict)
+        and item.get("evidence_id") == "IT-ACC-A-002"
+        and item.get("status") == "missing"
+        for item in accounts
     ):
         return False
+    audit = by_agent["VE-0005"]
     audit_completed = [
         seq for event in events
         if event.get("event_type") == "task.completed" and event.get("task_id") == audit.get("id")
@@ -313,109 +374,142 @@ def _has_expected_it_audit_tool_evidence(
 
 
 def _has_expected_onboarding_topology(
-    nodes: list[dict[str, Any]], events: list[dict[str, Any]]
+    nodes: list[dict[str, Any]], events: list[dict[str, Any]], messages: list[dict[str, Any]]
 ) -> bool:
-    roots = [node for node in nodes if node.get("depth") == 0 and node.get("parent_task_id") is None]
-    if (
-        len(roots) != 1
-        or roots[0].get("assignee_agent_id") != "VE-0001"
-        or roots[0].get("coordinator_agent_id") != "VE-0001"
-    ):
+    if len(nodes) != len(ONBOARDING_AGENT_IDS):
         return False
-    root_id = roots[0].get("id")
+    by_agent: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        agent_id = node.get("assignee_agent_id")
+        if agent_id not in ONBOARDING_AGENT_IDS or agent_id in by_agent:
+            return False
+        by_agent[agent_id] = node
+    if set(by_agent) != ONBOARDING_AGENT_IDS:
+        return False
+
+    root = by_agent["VE-0001"]
+    if root.get("parent_task_id") is not None or root.get("depth") != 0 or root.get("coordinator_agent_id") != "VE-0001":
+        return False
+    root_id = root.get("id")
     if not isinstance(root_id, str) or not root_id:
         return False
-    direct = [node for node in nodes if node.get("parent_task_id") == root_id]
-    if (
-        len(direct) != 2
-        or {node.get("assignee_agent_id") for node in direct} != {"VE-0002", "VE-0003"}
-        or any(node.get("depth") != 1 or node.get("coordinator_agent_id") != "VE-0001" for node in direct)
-    ):
-        return False
-    hr = next(node for node in direct if node.get("assignee_agent_id") == "VE-0002")
-    it = next(node for node in direct if node.get("assignee_agent_id") == "VE-0003")
-    audit_nodes = [node for node in nodes if node.get("assignee_agent_id") == "VE-0005"]
-    depth_two = [node for node in nodes if node.get("depth") == 2]
-    if len(audit_nodes) != 1 or len(depth_two) != 1 or depth_two[0].get("id") != audit_nodes[0].get("id"):
-        return False
-    audit = audit_nodes[0]
-    if not (
-        audit.get("parent_task_id") == it.get("id")
-        and audit.get("depth") == 2
-        and audit.get("coordinator_agent_id") == "VE-0003"
-    ):
-        return False
-    root_delegations = [
-        event for event in events
-        if event.get("event_type") == "task.delegate"
-        and event.get("task_id") == root_id
-        and event.get("actor_agent_id") == "VE-0001"
-        and isinstance(event.get("detail"), dict)
-        and event["detail"].get("round") == 1
-        and _event_seq(event) is not None
-    ]
-    it_delegate_seqs = [
-        seq for event in events
-        if event.get("event_type") == "task.delegate"
-        and event.get("task_id") == it.get("id")
-        and event.get("actor_agent_id") == "VE-0003"
-        for seq in [_event_seq(event)] if seq is not None
-    ]
-    if not root_delegations or not it_delegate_seqs:
-        return False
-    it_delegate_seq = min(it_delegate_seqs)
-    successful_it_tool_seqs = [
-        seq for event in events
-        if event.get("event_type") == "tool.result"
-        and event.get("task_id") == it.get("id")
-        and event.get("actor_agent_id") == "VE-0003"
-        and isinstance(event.get("detail"), dict)
-        and event["detail"].get("decision") == "allow"
-        and isinstance(event["detail"].get("audit_ids"), list)
-        and any(isinstance(audit_id, int) and not isinstance(audit_id, bool) and audit_id > 0 for audit_id in event["detail"].get("audit_ids", []))
-        for seq in [_event_seq(event)] if seq is not None
-    ]
-    audit_completed = [
-        seq for event in events
-        if event.get("event_type") == "task.completed" and event.get("task_id") == audit.get("id")
-        for seq in [_event_seq(event)] if seq is not None
-    ]
-    hr_completed = [
-        seq for event in events
-        if event.get("event_type") == "task.completed" and event.get("task_id") == hr.get("id")
-        for seq in [_event_seq(event)] if seq is not None
-    ]
-    it_completed = [
-        seq for event in events
-        if event.get("event_type") == "task.completed" and event.get("task_id") == it.get("id")
-        for seq in [_event_seq(event)] if seq is not None
-    ]
-    manager_summaries = [
+
+    ownership = {
+        "VE-0002": ("VE-0001", 1),
+        "VE-0003": ("VE-0001", 1),
+        "VE-0005": ("VE-0001", 1),
+        "VE-HR-MATERIAL": ("VE-0002", 2),
+        "VE-HR-TRAINING": ("VE-0002", 2),
+        "VE-IT-ACCOUNT": ("VE-0003", 2),
+        "VE-IT-DEVICE": ("VE-0003", 2),
+    }
+    for agent_id, (coordinator_id, depth) in ownership.items():
+        node = by_agent[agent_id]
+        parent_id = by_agent[coordinator_id].get("id")
+        if (
+            not isinstance(node.get("id"), str)
+            or not node.get("id")
+            or node.get("parent_task_id") != parent_id
+            or node.get("coordinator_agent_id") != coordinator_id
+            or node.get("depth") != depth
+            or node.get("required") is not True
+        ):
+            return False
+
+    delegate_specs = (
+        ("VE-0001", 1, {"VE-0002": "hr.onboarding.coordinate", "VE-0003": "it.onboarding.coordinate"}),
+        ("VE-0002", None, {"VE-HR-MATERIAL": "hr.materials.read", "VE-HR-TRAINING": "hr.training.read"}),
+        ("VE-0003", None, {"VE-IT-ACCOUNT": "it.accounts.read", "VE-IT-DEVICE": "it.devices.read"}),
+        ("VE-0001", 2, {"VE-0005": "audit.evidence.read"}),
+    )
+    delegate_seqs: dict[tuple[str, int | None], int] = {}
+    for sender_id, round_number, expected in delegate_specs:
+        parent_task_id = by_agent[sender_id].get("id")
+        matching_events = [
+            event for event in events
+            if event.get("event_type") == "task.delegate"
+            and event.get("task_id") == parent_task_id
+            and event.get("actor_agent_id") == sender_id
+            and isinstance(event.get("detail"), dict)
+            and event["detail"].get("round") == round_number
+            and _event_seq(event) is not None
+        ]
+        matching_messages = [
+            message for message in messages
+            if message.get("message_type") == "task.delegate"
+            and message.get("task_id") == parent_task_id
+            and message.get("sender_agent_id") == sender_id
+            and message.get("receiver_agent_id") == "platform"
+            and message.get("direction") == "inbound"
+            and isinstance(_message_content(message), dict)
+            and _message_content(message).get("round") == round_number
+        ]
+        if len(matching_events) != 1 or len(matching_messages) != 1:
+            return False
+        payload = _message_content(matching_messages[0])
+        subtasks = payload.get("subtasks") if payload is not None else None
+        if not isinstance(subtasks, list) or len(subtasks) != len(expected):
+            return False
+        observed: dict[str, str] = {}
+        for subtask in subtasks:
+            if (
+                not isinstance(subtask, dict)
+                or subtask.get("assignee_agent_id") not in expected
+                or subtask.get("required") is not True
+                or subtask.get("depends_on") != []
+                or subtask.get("required_capability") != expected[subtask.get("assignee_agent_id")]
+            ):
+                return False
+            agent_id = subtask["assignee_agent_id"]
+            key = subtask.get("client_task_key")
+            if agent_id in observed or not isinstance(key, str) or by_agent[agent_id].get("client_task_key") != key:
+                return False
+            observed[agent_id] = key
+        if set(observed) != set(expected):
+            return False
+        event_keys = matching_events[0]["detail"].get("client_task_keys")
+        if event_keys is not None and set(event_keys) != set(observed.values()):
+            return False
+        delegate_seqs[(sender_id, round_number)] = _event_seq(matching_events[0])
+
+    completed: dict[str, int] = {}
+    for agent_id in ownership:
+        task_id = by_agent[agent_id].get("id")
+        sequences = [
+            seq for event in events
+            if event.get("event_type") == "task.completed"
+            and event.get("task_id") == task_id
+            and event.get("actor_agent_id") == agent_id
+            for seq in [_event_seq(event)] if seq is not None
+        ]
+        if len(sequences) != 1:
+            return False
+        completed[agent_id] = sequences[0]
+    summaries = [
         seq for event in events
         if event.get("event_type") == "task.summary"
         and event.get("task_id") == root_id
         and event.get("actor_agent_id") == "VE-0001"
         for seq in [_event_seq(event)] if seq is not None
     ]
-    if not all((successful_it_tool_seqs, audit_completed, hr_completed, it_completed, manager_summaries)):
+    if len(summaries) != 1:
         return False
-    ordered_worker_evidence = (
-        min(successful_it_tool_seqs) < it_delegate_seq < min(audit_completed) < min(it_completed)
-        and max(min(hr_completed), min(it_completed)) < min(manager_summaries)
+    return (
+        delegate_seqs[("VE-0001", 1)]
+        < min(delegate_seqs[("VE-0002", None)], delegate_seqs[("VE-0003", None)])
+        and delegate_seqs[("VE-0002", None)]
+        < min(completed["VE-HR-MATERIAL"], completed["VE-HR-TRAINING"])
+        and max(completed["VE-HR-MATERIAL"], completed["VE-HR-TRAINING"])
+        < completed["VE-0002"]
+        and delegate_seqs[("VE-0003", None)]
+        < min(completed["VE-IT-ACCOUNT"], completed["VE-IT-DEVICE"])
+        and max(completed["VE-IT-ACCOUNT"], completed["VE-IT-DEVICE"])
+        < completed["VE-0003"]
+        and max(completed["VE-0002"], completed["VE-0003"])
+        < delegate_seqs[("VE-0001", 2)]
+        < completed["VE-0005"]
+        < summaries[0]
     )
-    it_delegated_audit = any(
-        event.get("event_type") == "task.delegate"
-        and event.get("task_id") == it.get("id")
-        and event.get("actor_agent_id") == "VE-0003"
-        for event in events
-    )
-    manager_reviewed = any(
-        event.get("event_type") == "task.summary"
-        and event.get("task_id") == root_id
-        and event.get("actor_agent_id") == "VE-0001"
-        for event in events
-    )
-    return it_delegated_audit and manager_reviewed and ordered_worker_evidence
 
 
 def build_evidence(
@@ -443,10 +537,9 @@ def build_evidence(
         if isinstance(round_number, int) and not isinstance(round_number, bool) and round_number > 0
     ]
     missing: list[str] = []
-    if not (health.get("ready_for_demo") is True and health.get("mode") == "agentteams_strict" and health.get("transport") == "matrix"):
+    if not _strict_matrix_base_ready(health):
         missing.append("strict_matrix_health")
-    workers = health.get("workers")
-    if not isinstance(workers, list) or len(workers) < 4 or any(item.get("status") != "ready" for item in _items(workers)):
+    if not _all_onboarding_workers_ready(health):
         missing.append("agent_heartbeats")
     if result.get("status") != "completed":
         missing.append("completed_result")
@@ -454,25 +547,25 @@ def build_evidence(
         missing.append("final_summary")
     if not _has_fixed_gap_readiness_decision(nodes, events, result):
         missing.append("fixed_gap_readiness_decision")
-    if not {"VE-0001", "VE-0002", "VE-0003", "VE-0005"}.issubset(set(participants)):
-        missing.append("manager_hr_it_audit_participants")
+    if set(participants) != ONBOARDING_AGENT_IDS:
+        missing.append("expanded_onboarding_participants")
     if not any(depth >= 2 for depth in depths):
         missing.append("depth_two_delegation")
-    if not _has_expected_onboarding_topology(nodes, events):
+    if not _has_expected_onboarding_topology(nodes, events, messages):
         missing.append("onboarding_collaboration_topology")
     if not _has_exact_first_round_plan(nodes, dependency_edges, events, messages):
         missing.append("first_round_parallel_plan")
     if not _has_parallel_root_worker_release(nodes, events):
         missing.append("parallel_root_worker_release")
-    if not _has_expected_it_audit_tool_evidence(nodes, events, messages):
-        missing.append("it_audit_tool_evidence")
+    if not _has_expected_onboarding_tool_evidence(nodes, events, messages):
+        missing.append("onboarding_tool_evidence")
     if not skill_ids or "agentteams-onboarding-readiness" not in skill_ids:
         missing.append("selected_skills")
-    if not rounds:
+    if sorted(set(rounds)) != [1, 2]:
         missing.append("delegation_round")
-    if len(audit_ids) < 3:
+    if len(audit_ids) < 5:
         missing.append("governed_tool_audits")
-    if len(event_ids) < 4:
+    if len(event_ids) < 8:
         missing.append("real_matrix_event_ids")
     if not any(
         event.get("event_type") == "task.summary"
@@ -514,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
     with httpx.Client(timeout=20.0, trust_env=not loopback) as client:
         try:
             health = _get(client, "/agentteams-collaboration/health")
-            if not isinstance(health, dict) or not (health.get("ready_for_demo") is True and health.get("mode") == "agentteams_strict" and health.get("transport") == "matrix"):
+            if not _strict_onboarding_health_ready(health):
                 print(json.dumps(_safe_empty("strict_matrix_not_ready"), ensure_ascii=False))
                 return 2
             task = _post(client, "/agentteams-collaboration/tasks", {"team_id": LOCAL_DEMO_TEAM_ID, "leader_agent_id": LOCAL_DEMO_LEADER_ID, "title": "新员工A按期入职评估", "instruction": FIXED_GOAL, "material": {}})

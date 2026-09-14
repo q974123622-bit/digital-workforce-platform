@@ -1,4 +1,4 @@
-"""Independently verify the five-account private Matrix runtime contract.
+"""Independently verify a supported private Matrix runtime contract.
 
 This operator tool only reads the strict runtime file and talks to the
 already-running Matrix server.  It deliberately never starts Synapse, creates
@@ -28,6 +28,18 @@ from app.services.agentteams_runtime_config import (  # noqa: E402
 )
 
 
+_SUPPORTED_IDENTITIES_BY_TEAM = {
+    "TEAM-ONBOARD": frozenset({
+        "platform", "manager", "hr", "it", "audit",
+        "hr_material", "hr_training", "it_account", "it_device",
+    }),
+    "TEAM-DB-BENCH": frozenset({
+        "platform", "manager", "db_write", "db_lock", "db_vacuum",
+        "db_index", "db_query",
+    }),
+}
+
+
 def _gateway(runtime: StrictRuntimeConfig, identity: MatrixIdentity) -> AgentTeamsGateway:
     return AgentTeamsGateway(base_url=runtime.matrix_url, matrix_token=identity.token)
 
@@ -43,15 +55,18 @@ def verify_matrix_environment(
     pause: Callable[[float], None] = time.sleep,
     sync_attempts: int = 5,
 ) -> dict[str, Any]:
-    """Prove all five credentials identify distinct joined room members.
+    """Prove every supported credential identifies a distinct joined member.
 
     Each account sends a unique harmless ping, then independently syncs until
-    all five resulting Matrix event IDs are visible.  The return value contains
+    all resulting Matrix event IDs are visible.  The return value contains
     no access tokens, passwords, request bodies, or Matrix response payloads.
     """
     identities = {"platform": runtime.platform, **dict(runtime.agents)}
     expected_mxids = {identity.mxid for identity in identities.values()}
-    if len(identities) != 5 or len(expected_mxids) != 5:
+    if (
+        frozenset(identities) != _SUPPORTED_IDENTITIES_BY_TEAM.get(runtime.team_id)
+        or len(expected_mxids) != len(identities)
+    ):
         return _safe_failure("invalid_runtime_identities")
 
     clients: dict[str, Any] = {}
@@ -122,7 +137,7 @@ def verify_matrix_environment(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verify the strict five-account AgentTeams Matrix room")
+    parser = argparse.ArgumentParser(description="Verify a supported strict AgentTeams Matrix room")
     parser.add_argument("--runtime-config", type=Path, default=None)
     args = parser.parse_args(argv)
     try:

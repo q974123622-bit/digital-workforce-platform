@@ -27,8 +27,15 @@ def test_capability_catalog_unifies_plugins_and_skills(client):
     resp = client.get("/api/v1/capabilities?actor_no=E10281")
     assert resp.status_code == 200
     rows = resp.json()
-    assert len(rows) == 24  # 20 plugins (including the database inspector) + 4 user skills
-    assert any(row["id"] == "agentteams-database-inspector" for row in rows)
+    assert len(rows) == 28  # 24 plugins (including four specialists) + 4 user skills
+    plugin_ids = {row["id"] for row in rows if row["source_type"] == "plugin"}
+    assert "agentteams-database-inspector" in plugin_ids
+    assert {
+        "agentteams-onboarding-materials",
+        "agentteams-onboarding-training",
+        "agentteams-it-accounts",
+        "agentteams-it-devices",
+    }.issubset(plugin_ids)
     skill = next(row for row in rows if row["id"] == "SK-0001")
     workflow = next(row for row in rows if row["id"] == "expense-claim")
     assert skill["kind"] == "instruction" and skill["executable"] is False
@@ -93,6 +100,48 @@ def test_harness_failure_falls_back_to_adapter_once(db_session, monkeypatch):
     assert calls == ["expense-claim"]
 
 
+@pytest.mark.parametrize("enable_mode", ["injected_runtime", "environment_flag"])
+def test_adapter_primary_uses_adapter_once_despite_runtime_enablement(
+    db_session,
+    monkeypatch,
+    enable_mode,
+):
+    harness = SuccessHarness()
+    adapter_calls = []
+    original_run_adapter = adapters.run_adapter
+
+    def adapter_once(plugin, params):
+        adapter_calls.append((plugin.id, dict(params)))
+        return original_run_adapter(plugin, params)
+
+    monkeypatch.setattr("app.services.capability_executor.run_adapter", adapter_once)
+    monkeypatch.setenv("DWP_HARNESS_ENABLED", "0")
+    runtime = harness if enable_mode == "injected_runtime" else None
+    if enable_mode == "environment_flag":
+        monkeypatch.setenv("DWP_HARNESS_ENABLED", "1")
+        monkeypatch.setattr(
+            "app.services.capability_executor.DockerHarnessRuntimeAdapter",
+            lambda: harness,
+        )
+
+    result = invoke_plugin(
+        db_session,
+        employee_id="VE-0002",
+        plugin_id="agentteams-onboarding-employee",
+        action="execute",
+        params={"employee_ref": "新员工A"},
+        trace_id=f"CAP-ADAPTER-{enable_mode}",
+        runtime=runtime,
+    )
+
+    assert result["runtime_mode"] == "demo_adapter"
+    assert result["data"]["employee_ref"] == "新员工A"
+    assert harness.calls == []
+    assert adapter_calls == [
+        ("agentteams-onboarding-employee", {"employee_ref": "新员工A"})
+    ]
+
+
 def test_harness_summary_is_not_truncated(db_session):
     long_summary = "计划开始：" + ("完整执行细节。" * 200) + "：计划结束"
     result = invoke_plugin(
@@ -147,8 +196,19 @@ def test_invalid_agentteams_input_is_denied_before_harness_or_adapter(
     assert audit.reason == "工具参数不合法"
 
 
-def test_valid_agentteams_input_runs_harness_then_adapter_once(db_session, monkeypatch):
+def test_valid_primary_harness_input_runs_harness_then_adapter_once(
+    db_session, monkeypatch,
+):
     order = []
+    plugin = db_session.get(models.Plugin, "agentteams-onboarding-employee")
+    plugin.runtime_meta = {
+        **dict(plugin.runtime_meta or {}),
+        "executor": {
+            **dict((plugin.runtime_meta or {}).get("executor") or {}),
+            "primary": "harness",
+        },
+    }
+    db_session.flush()
 
     class OrderedHarness(SuccessHarness):
         def run(self, **kwargs):
@@ -157,7 +217,11 @@ def test_valid_agentteams_input_runs_harness_then_adapter_once(db_session, monke
 
     def adapter_once(plugin, params):
         order.append("adapter")
-        return {"source": "demo", "employee_ref": params["employee_ref"], "evidence_ids": ["HR-A-001"]}
+        return {
+            "source": "demo",
+            "employee_ref": params["employee_ref"],
+            "evidence_ids": ["HR-A-001"],
+        }
 
     monkeypatch.setattr("app.services.capability_executor.run_adapter", adapter_once)
     harness = OrderedHarness()

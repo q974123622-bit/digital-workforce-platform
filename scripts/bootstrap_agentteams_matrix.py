@@ -35,7 +35,10 @@ from app.services.agentteams_runtime_config import (
 )
 DEFAULT_MATRIX_URL = "http://127.0.0.1:8008"
 TEAM_ID = "TEAM-ONBOARD"
-ACCOUNT_NAMES = ("platform", "manager", "hr", "it", "audit")
+ACCOUNT_NAMES = (
+    "platform", "manager", "hr", "it", "audit",
+    "hr_material", "hr_training", "it_account", "it_device",
+)
 
 
 def _demo_tool(
@@ -64,7 +67,7 @@ ROLE_IDENTITIES = {
         "agent_id": "VE-0002",
         "skills": ["hr-onboarding-assistant", "hr-role-change-assistant"],
         "tools": [
-            _demo_tool("agentteams.hr.lookup_onboarding", "agentteams-onboarding-employee", "hr.onboarding.read"),
+            _demo_tool("agentteams.hr.coordinate_onboarding", "agentteams-onboarding-employee", "hr.onboarding.coordinate"),
             _demo_tool("agentteams.hr.lookup_role_change", "agentteams-role-change-hr", "hr.role_change.read", input_schema=role_change_employee_ref_input_schema()),
         ],
     },
@@ -72,7 +75,7 @@ ROLE_IDENTITIES = {
         "agent_id": "VE-0003",
         "skills": ["it-service-assistant", "it-role-change-assistant"],
         "tools": [
-            _demo_tool("agentteams.it.lookup_readiness", "agentteams-it-readiness", "it.readiness.read"),
+            _demo_tool("agentteams.it.coordinate_onboarding", "agentteams-it-readiness", "it.onboarding.coordinate"),
             _demo_tool("agentteams.it.lookup_permission_plan", "agentteams-role-change-it-plan", "it.permission.plan", input_schema=role_change_employee_ref_input_schema()),
             _demo_tool("agentteams.it.activate_role_change", "agentteams-role-change-it-activate", "it.permission.activate", input_schema=role_change_activation_input_schema()),
         ],
@@ -85,11 +88,62 @@ ROLE_IDENTITIES = {
             _demo_tool("agentteams.audit.review_role_change", "agentteams-role-change-audit", "audit.permission.review", input_schema=role_change_employee_ref_input_schema()),
         ],
     },
+    "hr_material": {
+        "agent_id": "VE-HR-MATERIAL",
+        "skills": ["hr-material-specialist"],
+        "tools": [
+            _demo_tool("agentteams.hr.lookup_materials", "agentteams-onboarding-materials", "hr.materials.read"),
+        ],
+    },
+    "hr_training": {
+        "agent_id": "VE-HR-TRAINING",
+        "skills": ["hr-training-specialist"],
+        "tools": [
+            _demo_tool("agentteams.hr.lookup_training", "agentteams-onboarding-training", "hr.training.read"),
+        ],
+    },
+    "it_account": {
+        "agent_id": "VE-IT-ACCOUNT",
+        "skills": ["it-account-specialist"],
+        "tools": [
+            _demo_tool("agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read"),
+        ],
+    },
+    "it_device": {
+        "agent_id": "VE-IT-DEVICE",
+        "skills": ["it-device-specialist"],
+        "tools": [
+            _demo_tool("agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read"),
+        ],
+    },
 }
 TEAM_CATALOG = {
-    "VE-0002": {"capabilities": ["hr.onboarding.read", "hr.role_change.read"]},
-    "VE-0003": {"capabilities": ["it.readiness.read", "it.permission.plan", "it.permission.activate"]},
+    "VE-0002": {"capabilities": ["hr.onboarding.coordinate", "hr.role_change.read"]},
+    "VE-0003": {"capabilities": ["it.onboarding.coordinate", "it.permission.plan", "it.permission.activate"]},
     "VE-0005": {"capabilities": ["audit.evidence.read", "audit.permission.review"]},
+    "VE-HR-MATERIAL": {"capabilities": ["hr.materials.read"]},
+    "VE-HR-TRAINING": {"capabilities": ["hr.training.read"]},
+    "VE-IT-ACCOUNT": {"capabilities": ["it.accounts.read"]},
+    "VE-IT-DEVICE": {"capabilities": ["it.devices.read"]},
+}
+TEAM_RELATIONSHIPS = {
+    "VE-0001": {
+        "role": "Manager", "reports_to": [],
+        "direct_reports": ["VE-0002", "VE-0003", "VE-0005"],
+    },
+    "VE-0002": {
+        "role": "HR负责人", "reports_to": ["VE-0001"],
+        "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"],
+    },
+    "VE-0003": {
+        "role": "IT负责人", "reports_to": ["VE-0001"],
+        "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"],
+    },
+    "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": []},
+    "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
+    "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
+    "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
+    "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
 }
 
 
@@ -207,7 +261,7 @@ def write_runtime_configuration(path: Path, runtime: Mapping[str, Any]) -> None:
 
 
 def build_runtime_configuration(credentials: Mapping[str, Mapping[str, str]], room_id: str, *, matrix_url: str = DEFAULT_MATRIX_URL) -> dict[str, Any]:
-    """Build exactly the Task 6 strict runtime schema from five Matrix accounts."""
+    """Build the strict onboarding runtime schema from isolated Matrix accounts."""
     if set(credentials) != set(ACCOUNT_NAMES) or not isinstance(room_id, str) or not room_id:
         raise BootstrapError("invalid_matrix_bootstrap")
     platform = credentials["platform"]
@@ -226,6 +280,7 @@ def build_runtime_configuration(credentials: Mapping[str, Mapping[str, str]], ro
         "matrix_url": matrix_url.rstrip("/"), "room_id": room_id, "team_id": TEAM_ID,
         "platform": {"mxid": platform["mxid"], "token": platform["token"]},
         "agents": agents, "team_catalog": TEAM_CATALOG,
+        "team_relationships": TEAM_RELATIONSHIPS,
     }
 
 
@@ -321,7 +376,7 @@ class SynapseAdminClient:
 
 
 def bootstrap_matrix(matrix: Any, *, password_factory: Callable[[str], str] | None = None) -> dict[str, Any]:
-    """Ensure five accounts share one private room and verify the membership set."""
+    """Ensure all configured accounts share one private room and verify membership."""
     make_password = password_factory or (lambda _name: secrets.token_urlsafe(32))
     accounts = {name: matrix.ensure_account(name, make_password(name)) for name in ACCOUNT_NAMES}
     room_id = matrix.ensure_private_room(accounts["platform"], ["agentteams-onboard"])
@@ -337,11 +392,24 @@ def _existing_runtime(path: Path) -> tuple[dict[str, dict[str, str]], str | None
     try:
         _require_runtime_path(path)
         raw = json.loads(path.read_text(encoding="utf-8"))
-        accounts = {"platform": raw["platform"]}
+        if not isinstance(raw, dict) or not isinstance(raw.get("agents"), dict):
+            raise ValueError
+        accounts = {"platform": raw.get("platform")}
         accounts.update(raw["agents"])
-        selected = {name: {"mxid": accounts[name]["mxid"], "token": accounts[name]["token"]} for name in ACCOUNT_NAMES}
-        return selected, raw.get("room_id") if isinstance(raw.get("room_id"), str) else None
-    except (OSError, KeyError, TypeError, ValueError):
+        selected: dict[str, dict[str, str]] = {}
+        for name in ACCOUNT_NAMES:
+            value = accounts.get(name)
+            if (
+                isinstance(value, dict)
+                and isinstance(value.get("mxid"), str)
+                and value["mxid"].startswith("@")
+                and isinstance(value.get("token"), str)
+                and value["token"]
+            ):
+                selected[name] = {"mxid": value["mxid"], "token": value["token"]}
+        room_id = raw.get("room_id")
+        return selected, room_id if isinstance(room_id, str) and room_id else None
+    except (OSError, TypeError, ValueError):
         return {}, None
 
 

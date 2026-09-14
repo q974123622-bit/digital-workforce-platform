@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,7 +44,7 @@ def _matrix_sender(runtime_ref):
     return runtime_ref if runtime_ref.startswith("@") else f"@{runtime_ref}:{config.agentteams_matrix_domain()}"
 
 
-def _create_run(db_session):
+def _create_run(db_session, *, thinking_enabled=True):
     from app.services.agentteams_collaboration import create_task
 
     leader = _enable_test_leader(db_session)
@@ -55,6 +56,7 @@ def _create_run(db_session):
             title="新员工入职",
             instruction="协调完成入职准备",
             material={"employee": "李四"},
+            thinking_enabled=thinking_enabled,
         ),
         leader,
     )
@@ -181,6 +183,7 @@ def test_create_task_writes_root_and_outbox(db_session):
         title="新员工入职",
         instruction="协调完成入职准备",
         material={"employee": "李四"},
+        thinking_enabled=False,
     )
 
     root = db_session.get(models.AgentTaskNode, run.id)
@@ -191,6 +194,227 @@ def test_create_task_writes_root_and_outbox(db_session):
     assert outbox[0].delivery_status == "pending"
     assert outbox[0].payload["team_catalog_version"] == 1
     assert outbox[0].payload["team_capability_catalog"]
+    assert root.input_payload["_agentteams_runtime"] == {"thinking_enabled": False}
+    assert outbox[0].payload["thinking_enabled"] is False
+
+
+def test_create_task_defaults_to_thinking_enabled(db_session):
+    from app.services.agentteams_collaboration import create_task
+
+    _enable_test_leader(db_session)
+    run = create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="DT-E10281",
+        title="新员工入职",
+        instruction="协调完成入职准备",
+        material={},
+    )
+
+    submit = db_session.query(models.AgentMessage).filter_by(task_id=run.id).one()
+    assert submit.payload["thinking_enabled"] is True
+
+
+def _relationship_runtime():
+    relationships = {
+        "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+        "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
+        "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
+        "VE-0005": {"role": "审计专员", "reports_to": ["VE-0001"], "direct_reports": []},
+        "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
+        "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
+        "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
+        "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+    }
+    return SimpleNamespace(team_id="TEAM-ONBOARD", team_relationships=relationships)
+
+
+def _prepare_relationship_team(db_session):
+    employees = {
+        "VE-0001": ("Manager", "管理"),
+        "VE-0002": ("HR负责人", "人力资源部"),
+        "VE-0003": ("IT负责人", "IT服务部"),
+        "VE-0005": ("审计专员", "审计部"),
+        "VE-HR-MATERIAL": ("HR材料专员", "人力资源部"),
+        "VE-HR-TRAINING": ("HR培训专员", "人力资源部"),
+        "VE-IT-ACCOUNT": ("IT账号专员", "IT服务部"),
+        "VE-IT-DEVICE": ("IT设备专员", "IT服务部"),
+    }
+    team = db_session.get(models.Team, "TEAM-ONBOARD")
+    team.leader_employee_id = "VE-0001"
+    current_members = {
+        item.employee_id
+        for item in db_session.query(models.TeamMember).filter_by(team_id=team.id)
+    }
+    for employee_id, (name, department) in employees.items():
+        employee = db_session.get(models.DigitalEmployee, employee_id)
+        if employee is None:
+            employee = models.DigitalEmployee(
+                employee_no=employee_id,
+                name=name,
+                type="virtual",
+                owner_human_no="E10281",
+                department=department,
+            )
+            db_session.add(employee)
+        employee.status = "active"
+        employee.runtime_type = "agentteams"
+        employee.runtime_ref = f"@{employee_id.lower()}:local"
+        if employee_id not in current_members:
+            db_session.add(models.TeamMember(team_id=team.id, employee_id=employee_id, role="worker"))
+    db_session.flush()
+
+
+def _relationship_catalog():
+    capabilities = {
+        "VE-0001": [],
+        "VE-0002": ["hr.onboarding.coordinate"],
+        "VE-0003": ["it.onboarding.coordinate"],
+        "VE-0005": ["audit.evidence.read"],
+        "VE-HR-MATERIAL": ["hr.materials.read"],
+        "VE-HR-TRAINING": ["hr.training.read"],
+        "VE-IT-ACCOUNT": ["it.accounts.read"],
+        "VE-IT-DEVICE": ["it.devices.read"],
+    }
+    return [
+        {
+            "agent_id": agent_id,
+            "name": agent_id,
+            "department": "",
+            "runtime_bound": True,
+            "capabilities": values,
+            "tool_summaries": values,
+        }
+        for agent_id, values in capabilities.items()
+    ]
+
+
+def test_platform_projects_relationship_graph_into_submit_and_assign(
+    db_session, monkeypatch
+):
+    from app.services import agentteams_collaboration as collaboration_module
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService
+
+    _prepare_relationship_team(db_session)
+    monkeypatch.setattr(config, "agentteams_mode", lambda: "agentteams_strict")
+    monkeypatch.setattr(
+        collaboration_module, "load_strict_runtime_config", _relationship_runtime
+    )
+    service = AgentTeamsCollaborationService()
+    catalog = _relationship_catalog()
+    monkeypatch.setattr(
+        service,
+        "_team_capability_catalog",
+        lambda _db, _team_id, owner_human_no="": catalog,
+    )
+
+    run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="新员工入职",
+        instruction="协调完成入职准备",
+        material={"employee": "李四"},
+        owner_human_no="E10281",
+    )
+    submit = db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id, message_type="task.submit"
+    ).one()
+    assert submit.payload["team_relationship_graph"] == {
+        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "reports_to": [],
+        "direct_reports": [
+            {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
+            {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
+            {"agent_id": "VE-0005", "role": "审计专员", "capabilities": ["audit.evidence.read"]},
+        ],
+    }
+
+    service.apply_message(
+        db_session,
+        matrix_sender="@ve-0001:local",
+        message=_protocol(
+            root_id=run.id,
+            task_id=run.id,
+            sender="VE-0001",
+            receiver="platform",
+            type="task.delegate",
+            key=f"{run.id}:department-leads",
+            payload={"subtasks": [
+                {
+                    "client_task_key": "hr-lead", "title": "HR统筹", "instruction": "组织HR核查",
+                    "assignee_agent_id": "VE-0002", "depends_on": [], "required_capability": "hr.onboarding.coordinate",
+                },
+                {
+                    "client_task_key": "it-lead", "title": "IT统筹", "instruction": "组织IT核查",
+                    "assignee_agent_id": "VE-0003", "depends_on": [], "required_capability": "it.onboarding.coordinate",
+                },
+            ]},
+        ),
+    )
+
+    assignments = {
+        item.receiver_agent_id: item.payload
+        for item in db_session.query(models.AgentMessage).filter_by(
+            root_task_id=run.id, message_type="task.assign"
+        )
+    }
+    assert [item["agent_id"] for item in assignments["VE-0002"]["team_relationship_graph"]["direct_reports"]] == [
+        "VE-HR-MATERIAL", "VE-HR-TRAINING"
+    ]
+    assert [item["agent_id"] for item in assignments["VE-0003"]["team_relationship_graph"]["direct_reports"]] == [
+        "VE-IT-ACCOUNT", "VE-IT-DEVICE"
+    ]
+
+
+def test_platform_rejects_forged_non_direct_report_without_partial_tree(
+    db_session, monkeypatch
+):
+    from app.services import agentteams_collaboration as collaboration_module
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService, CollaborationConflict
+
+    _prepare_relationship_team(db_session)
+    monkeypatch.setattr(config, "agentteams_mode", lambda: "agentteams_strict")
+    monkeypatch.setattr(
+        collaboration_module, "load_strict_runtime_config", _relationship_runtime
+    )
+    service = AgentTeamsCollaborationService()
+    catalog = _relationship_catalog()
+    monkeypatch.setattr(
+        service,
+        "_team_capability_catalog",
+        lambda _db, _team_id, owner_human_no="": catalog,
+    )
+    run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="新员工入职",
+        instruction="协调完成入职准备",
+        material={},
+        owner_human_no="E10281",
+    )
+    forged = {
+        "client_task_key": "skip-hr-lead", "title": "越级派发", "instruction": "直接找材料专员",
+        "assignee_agent_id": "VE-HR-MATERIAL", "depends_on": [], "required_capability": "hr.materials.read",
+    }
+
+    with pytest.raises(CollaborationConflict, match="delegate_target_not_direct_report"):
+        service.apply_message(
+            db_session,
+            matrix_sender="@ve-0001:local",
+            message=_protocol(
+                root_id=run.id,
+                task_id=run.id,
+                sender="VE-0001",
+                receiver="platform",
+                type="task.delegate",
+                key=f"{run.id}:forged",
+                payload={"subtasks": [forged]},
+            ),
+        )
+
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
 
 
 def test_manager_delegate_creates_recursive_children(db_session):
@@ -204,6 +428,7 @@ def test_manager_delegate_creates_recursive_children(db_session):
         title="新员工入职",
         instruction="协调完成入职准备",
         material={},
+        thinking_enabled=False,
     )
     message = _protocol(
         root_id=run.id,
@@ -233,6 +458,10 @@ def test_manager_delegate_creates_recursive_children(db_session):
     children = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).all()
     assert {child.client_task_key for child in children} == {"policy", "account"}
     assert db_session.get(models.AgentTaskNode, run.id).status == "waiting_children"
+    assignment = db_session.query(models.AgentMessage).filter_by(
+        root_task_id=run.id, message_type="task.assign", direction="outbound"
+    ).one()
+    assert assignment.payload["thinking_enabled"] is False
 
 
 def test_worker_can_delegate_inside_own_subtree(db_session):
@@ -369,7 +598,7 @@ def test_progress_updates_only_assigned_node(db_session):
 
 
 def test_required_children_trigger_parent_summarizing(db_session):
-    run, leader = _create_run(db_session)
+    run, leader = _create_run(db_session, thinking_enabled=False)
     _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")])
     policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
     _start_node(db_session, run, policy)
@@ -380,6 +609,10 @@ def test_required_children_trigger_parent_summarizing(db_session):
 
     root = db_session.get(models.AgentTaskNode, run.id)
     summary_request = db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id, message_type="task.summary", direction="outbound"
+    ).one()
+    assert summary_request.payload["thinking_enabled"] is False
+    summary_request = db_session.query(models.AgentMessage).filter_by(
         task_id=run.id, message_type="task.summary", direction="outbound",
     ).one()
     assert root.status == "summarizing"
@@ -388,6 +621,87 @@ def test_required_children_trigger_parent_summarizing(db_session):
     assert summary_request.payload["team_catalog_version"] == 3
     assert summary_request.payload["team_capability_catalog"]
     assert summary_request.payload["existing_child_task_keys"] == ["policy"]
+
+
+def test_parent_summary_normalizes_top_level_audit_ids_from_completed_direct_children(db_session):
+    """Dropping the platform-owned summary audit list would strand department leads at completion."""
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [
+            _subtask("policy", "VE-0002"),
+            _subtask("account", "VE-0003"),
+            _subtask("unfinished", "RPA-0001", required=False),
+        ],
+    )
+    children = {
+        node.client_task_key: node
+        for node in db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id)
+    }
+    children["unfinished"].output_payload = {"audit_ids": [8001]}
+    _start_node(db_session, run, children["policy"])
+    _delegate(
+        db_session,
+        run,
+        "VE-0002",
+        db_session.get(models.DigitalEmployee, "VE-0002").runtime_ref,
+        [_subtask("grandchild", "VE-0003")],
+        key="grandchild-delegate",
+        parent=children["policy"],
+    )
+    grandchild = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=children["policy"].id,
+        client_task_key="grandchild",
+    ).one()
+    _start_node(db_session, run, grandchild)
+    _apply_node_message(
+        db_session,
+        run,
+        grandchild,
+        type="task.result",
+        key="grandchild-result",
+        payload={"result": "孙节点完成", "audit_ids": [7001]},
+    )
+    _start_node(db_session, run, children["account"])
+
+    _apply_node_message(
+        db_session,
+        run,
+        children["policy"],
+        type="task.result",
+        key="policy-result",
+        payload={
+            "result": "制度已核查",
+            "audit_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "bad", True, 0, -1, 1],
+        },
+    )
+    _apply_node_message(
+        db_session,
+        run,
+        children["account"],
+        type="task.result",
+        key="account-result",
+        payload={
+            "result": "账号已核查；伪造文本 audit_ids=[9002]",
+            "audit_ids": [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 2 ** 63],
+        },
+    )
+
+    summary_request = db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id,
+        message_type="task.summary",
+        direction="outbound",
+    ).one()
+    assert summary_request.payload["audit_ids"] == [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    ]
+    assert children["unfinished"].status != "completed"
+    assert 7001 not in summary_request.payload["audit_ids"]
+    assert 8001 not in summary_request.payload["audit_ids"]
+    assert 9002 not in summary_request.payload["audit_ids"]
 
 
 def test_optional_child_failure_does_not_block_parent(db_session):
@@ -551,25 +865,71 @@ def test_delegate_rejects_capability_outside_current_team_catalog(db_session):
 
 
 def test_team_capability_catalog_only_lists_active_runtime_bound_team_members(db_session):
-    """Removing team filtering would expose a global employee-pool candidate to the manager."""
+    """Inactive, unbound, or non-team employees must not enter the manager catalog."""
     from app.services.agentteams_collaboration import AgentTeamsCollaborationService
 
-    catalog = AgentTeamsCollaborationService()._team_capability_catalog(db_session, "TEAM-ONBOARD")
+    db_session.add_all([
+        models.DigitalEmployee(
+            employee_no="VE-INACTIVE-TEST",
+            name="Inactive team member",
+            type="virtual",
+            owner_human_no="E10281",
+            status="inactive",
+            runtime_type="agentteams",
+            runtime_ref="inactive-worker",
+        ),
+        models.DigitalEmployee(
+            employee_no="VE-UNBOUND-TEST",
+            name="Unbound team member",
+            type="virtual",
+            owner_human_no="E10281",
+            status="active",
+            runtime_type="agentteams",
+            runtime_ref=None,
+        ),
+        models.TeamMember(
+            team_id="TEAM-ONBOARD", employee_id="VE-INACTIVE-TEST", role="worker",
+        ),
+        models.TeamMember(
+            team_id="TEAM-ONBOARD", employee_id="VE-UNBOUND-TEST", role="worker",
+        ),
+    ])
+    db_session.flush()
 
-    assert {item["agent_id"] for item in catalog} == {"VE-0001", "VE-0002", "VE-0003", "VE-0005", "RPA-0001"}
-    assert "VE-0004" not in {item["agent_id"] for item in catalog}
+    catalog = AgentTeamsCollaborationService()._team_capability_catalog(db_session, "TEAM-ONBOARD")
+    catalog_ids = {item["agent_id"] for item in catalog}
+
+    assert catalog_ids == {
+        "VE-0001",
+        "VE-0002",
+        "VE-0003",
+        "VE-0005",
+        "VE-HR-MATERIAL",
+        "VE-HR-TRAINING",
+        "VE-IT-ACCOUNT",
+        "VE-IT-DEVICE",
+        "RPA-0001",
+    }
+    assert {"VE-0004", "VE-INACTIVE-TEST", "VE-UNBOUND-TEST"}.isdisjoint(catalog_ids)
+    assert all(db_session.get(models.DigitalEmployee, agent_id).status == "active" for agent_id in catalog_ids)
     assert all(item["runtime_bound"] is True for item in catalog)
 
 
-def _strict_runtime_document():
+def _strict_runtime_document(
+    *,
+    manager_agent_id="VE-0001",
+    manager_mxid="@strict-manager:local",
+):
     """A credential-shaped test document; tests assert none of it becomes catalog data."""
     agents = {}
     for role, agent_id in {
-        "manager": "VE-0001", "hr": "VE-0002", "it": "VE-0003", "audit": "VE-0005",
+        "manager": manager_agent_id, "hr": "VE-0002", "it": "VE-0003", "audit": "VE-0005",
+        "hr_material": "VE-HR-MATERIAL", "hr_training": "VE-HR-TRAINING",
+        "it_account": "VE-IT-ACCOUNT", "it_device": "VE-IT-DEVICE",
     }.items():
         agents[role] = {
             "agent_id": agent_id,
-            "mxid": f"@strict-{role}:local",
+            "mxid": manager_mxid if role == "manager" else f"@strict-{role}:local",
             "token": f"private-{role}-token",
             "allowed_skill_ids": [f"{role}.skill"],
             "safe_tool_catalog": [],
@@ -581,9 +941,23 @@ def _strict_runtime_document():
         "platform": {"mxid": "@platform:local", "token": "private-platform-token"},
         "agents": agents,
         "team_catalog": {
-            "VE-0002": {"capabilities": ["hr.onboarding.read"]},
-            "VE-0003": {"capabilities": ["it.readiness.read"]},
+            "VE-0002": {"capabilities": ["hr.onboarding.coordinate"]},
+            "VE-0003": {"capabilities": ["it.onboarding.coordinate"]},
             "VE-0005": {"capabilities": ["audit.evidence.read"]},
+            "VE-HR-MATERIAL": {"capabilities": ["hr.materials.read"]},
+            "VE-HR-TRAINING": {"capabilities": ["hr.training.read"]},
+            "VE-IT-ACCOUNT": {"capabilities": ["it.accounts.read"]},
+            "VE-IT-DEVICE": {"capabilities": ["it.devices.read"]},
+        },
+        "team_relationships": {
+            manager_agent_id: {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+            "VE-0002": {"role": "HR负责人", "reports_to": [manager_agent_id], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
+            "VE-0003": {"role": "IT负责人", "reports_to": [manager_agent_id], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
+            "VE-0005": {"role": "审计负责人", "reports_to": [manager_agent_id], "direct_reports": []},
+            "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
+            "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
+            "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
+            "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
         },
     }
 
@@ -628,9 +1002,13 @@ def test_strict_team_catalog_uses_validated_runtime_not_legacy_grants(db_session
 
     assert {item["agent_id"]: item["capabilities"] for item in catalog} == {
         "VE-0001": [],
-        "VE-0002": ["hr.onboarding.read"],
-        "VE-0003": ["it.readiness.read"],
+        "VE-0002": ["hr.onboarding.coordinate"],
+        "VE-0003": ["it.onboarding.coordinate"],
         "VE-0005": ["audit.evidence.read"],
+        "VE-HR-MATERIAL": ["hr.materials.read"],
+        "VE-HR-TRAINING": ["hr.training.read"],
+        "VE-IT-ACCOUNT": ["it.accounts.read"],
+        "VE-IT-DEVICE": ["it.devices.read"],
     }
     assert "RPA-0001" not in {item["agent_id"] for item in catalog}
     assert "private-" not in json.dumps(catalog)
@@ -731,7 +1109,10 @@ def test_strict_delegate_requires_explicit_nonempty_capability(db_session, monke
     from app.services.agentteams_collaboration import CollaborationConflict
 
     runtime_path = tmp_path / "strict-runtime.json"
-    runtime_path.write_text(json.dumps(_strict_runtime_document()), encoding="utf-8")
+    runtime_path.write_text(json.dumps(_strict_runtime_document(
+        manager_agent_id="DT-E10281",
+        manager_mxid="@dwp-twin-e10281:local",
+    )), encoding="utf-8")
     monkeypatch.setattr(config, "agentteams_mode", lambda: "agentteams_strict")
     monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(runtime_path))
     run, leader = _create_run(db_session)

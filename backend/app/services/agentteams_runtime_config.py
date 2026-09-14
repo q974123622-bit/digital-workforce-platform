@@ -1,4 +1,4 @@
-"""Fail-closed local contract for the five strict Matrix identities.
+"""Fail-closed local contract for supported strict Matrix team identities.
 
 The document belongs under the gitignored ``.agentteams-runtime`` directory.
 This module intentionally keeps credential-bearing values private: callers that
@@ -8,7 +8,7 @@ need observability use :meth:`StrictRuntimeConfig.public_view` instead.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -17,11 +17,17 @@ import stat
 from typing import Any, Mapping
 
 
-_LEGACY_ROLES = ("manager", "hr", "it", "audit")
+_ONBOARDING_ROLES = (
+    "manager", "hr", "it", "audit",
+    "hr_material", "hr_training", "it_account", "it_device",
+)
 _DATABASE_ROLES = (
     "manager", "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 )
-_ROLE_SETS = {frozenset(_LEGACY_ROLES), frozenset(_DATABASE_ROLES)}
+_TEAM_ROLE_ORDERS = {
+    "TEAM-ONBOARD": _ONBOARDING_ROLES,
+    "TEAM-DB-BENCH": _DATABASE_ROLES,
+}
 _MAX_RUNTIME_CONFIG_BYTES = 65_536
 _MAX_TOOL_INPUT_SCHEMA_BYTES = 2_048
 _MAX_TOOL_SCHEMA_PROPERTIES = 8
@@ -95,6 +101,7 @@ class StrictRuntimeConfig:
     agents: Mapping[str, MatrixIdentity]
     team_id: str
     team_catalog: Mapping[str, object]
+    team_relationships: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
     def public_view(self) -> dict:
         return {
@@ -143,15 +150,17 @@ def load_strict_runtime_config(
 
     matrix_url = _text(document.get("matrix_url"))
     room_id = _text(document.get("room_id"))
+    team_id = _text(document.get("team_id"))
+    roles = _TEAM_ROLE_ORDERS.get(team_id)
     agents_raw = document.get("agents")
     if (
         not matrix_url
         or not room_id
+        or roles is None
         or not isinstance(agents_raw, dict)
-        or frozenset(agents_raw) not in _ROLE_SETS
+        or frozenset(agents_raw) != frozenset(roles)
     ):
         raise ValueError("invalid_runtime_config")
-    roles = _LEGACY_ROLES if frozenset(agents_raw) == frozenset(_LEGACY_ROLES) else _DATABASE_ROLES
     platform = _identity(document.get("platform"), env, require_agent_id=False)
     agents = {role: _identity(agents_raw.get(role), env, require_agent_id=True) for role in roles}
     all_identities = [platform, *agents.values()]
@@ -161,11 +170,56 @@ def load_strict_runtime_config(
         raise ValueError("invalid_runtime_config")
     if len({identity.agent_id for identity in agents.values()}) != len(agents):
         raise ValueError("invalid_runtime_config")
-    team_id = _text(document.get("team_id"))
     team_catalog = document.get("team_catalog")
-    if not team_id or not isinstance(team_catalog, dict):
+    if not isinstance(team_catalog, dict):
         raise ValueError("invalid_runtime_config")
-    return StrictRuntimeConfig(matrix_url, room_id, platform, agents, team_id, team_catalog)
+    team_relationships = _relationship_map(
+        document.get("team_relationships", {}),
+        {identity.agent_id for identity in agents.values() if identity.agent_id},
+        required=roles == _ONBOARDING_ROLES,
+    )
+    return StrictRuntimeConfig(
+        matrix_url, room_id, platform, agents, team_id, team_catalog,
+        team_relationships,
+    )
+
+
+def _relationship_map(
+    raw: object, agent_ids: set[str], *, required: bool,
+) -> dict[str, dict[str, object]]:
+    if raw == {} and not required:
+        return {}
+    if not isinstance(raw, dict) or set(raw) != agent_ids:
+        raise ValueError("invalid_runtime_config")
+    result: dict[str, dict[str, object]] = {}
+    for agent_id, value in raw.items():
+        if not isinstance(value, dict) or set(value) != {"role", "reports_to", "direct_reports"}:
+            raise ValueError("invalid_runtime_config")
+        role = _text(value.get("role"))
+        reports_to = _string_list(value.get("reports_to"), maximum=8, required=False)
+        direct_reports = _string_list(value.get("direct_reports"), maximum=8, required=False)
+        if (
+            not role
+            or len(role) > 128
+            or agent_id in reports_to
+            or agent_id in direct_reports
+            or not set(reports_to).issubset(agent_ids)
+            or not set(direct_reports).issubset(agent_ids)
+        ):
+            raise ValueError("invalid_runtime_config")
+        result[agent_id] = {
+            "role": role,
+            "reports_to": reports_to,
+            "direct_reports": direct_reports,
+        }
+    for supervisor_id, value in result.items():
+        for subordinate_id in value["direct_reports"]:
+            if supervisor_id not in result[subordinate_id]["reports_to"]:
+                raise ValueError("invalid_runtime_config")
+        for manager_id in value["reports_to"]:
+            if supervisor_id not in result[manager_id]["direct_reports"]:
+                raise ValueError("invalid_runtime_config")
+    return result
 
 
 def _identity(raw: object, environ: Mapping[str, str], *, require_agent_id: bool) -> MatrixIdentity:

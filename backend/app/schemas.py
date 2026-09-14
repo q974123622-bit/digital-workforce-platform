@@ -627,6 +627,7 @@ class AgentCollaborationTaskCreateIn(BaseModel):
     title: str
     instruction: str
     material: dict = Field(default_factory=dict)
+    thinking_enabled: bool = True
 
 
 class AgentTaskNodeOut(BaseModel):

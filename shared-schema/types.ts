@@ -497,6 +497,7 @@ export interface AgentCollaborationTaskCreate {
   title: string;
   instruction: string;
   material?: Record<string, unknown>;
+  thinking_enabled?: boolean;
 }
 
 export interface DatabaseBenchmarkCreate {

@@ -5,14 +5,13 @@ import {
   RobotOutlined,
   SendOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Card, Col, Empty, Input, Progress, Row, Select, Space, Spin, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Empty, Input, Progress, Row, Select, Space, Spin, Switch, Tag, Typography } from 'antd';
 import type {
   AgentCollaborationHealth,
   AgentCollaborationTask,
   AgentFinalResult,
   AgentMessage,
   AgentTaskEvent,
-  AgentTaskEvaluation,
   AgentTaskGraph,
   AgentTaskNode,
   Team,
@@ -20,8 +19,6 @@ import type {
 import { api } from '../../api/client';
 import { useCurrentUser } from '../../context/CurrentUserContext';
 import { TaskTree, AGENT_TASK_STATUS_META } from './TaskTree';
-import { EvaluationPanel } from './EvaluationPanel';
-import { DatabaseBenchmarkPanel } from './DatabaseBenchmarkPanel';
 import { NodeProcessDetails } from './NodeProcessDetails';
 import { TimelinePanel } from './TimelinePanel';
 
@@ -137,14 +134,12 @@ export default function AgentTeamsCollaborationPage() {
   const [newEventIds, setNewEventIds] = useState<Set<number>>(() => new Set());
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [result, setResult] = useState<AgentFinalResult | null>(null);
-  const [evaluation, setEvaluation] = useState<AgentTaskEvaluation | null>(null);
-  const [evaluationLoading, setEvaluationLoading] = useState(false);
-  const [evaluationError, setEvaluationError] = useState<string>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [teamId, setTeamId] = useState<string | undefined>();
   const [title, setTitle] = useState('');
   const [instruction, setInstruction] = useState('');
   const [material, setMaterial] = useState('');
+  const [thinkingEnabled, setThinkingEnabled] = useState(true);
   const [databaseScenarioId, setDatabaseScenarioId] = useState('lock_contention');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -155,7 +150,6 @@ export default function AgentTeamsCollaborationPage() {
   const taskSelectionVersionRef = useRef(0);
   const actorVersionRef = useRef(0);
   const selectedTaskActorRef = useRef(actorNo);
-  const evaluationRequestRef = useRef(0);
   const selectTask = useCallback((taskId: string | null) => {
     if (taskId === selectedTaskId) return;
     taskSelectionVersionRef.current += 1;
@@ -178,10 +172,6 @@ export default function AgentTeamsCollaborationPage() {
     { title: '后续操作', items: payloadTextList(finalPayload, 'next_actions') },
   ].filter((section) => section.items.length > 0), [finalPayload]);
   const isRoleChangeScenario = (graph.selected_skill_ids ?? []).includes('agentteams-role-change-readiness');
-  const isDatabaseBenchmarkScenario = (
-    selectedTask?.id === selectedTaskId
-    && (graph.selected_skill_ids ?? []).includes('agentteams-database-diagnosis')
-  );
 
   const loadInitial = useCallback(async () => {
     const actorVersion = actorVersionRef.current;
@@ -253,27 +243,6 @@ export default function AgentTeamsCollaborationPage() {
     }
   }, [actorNo]);
 
-  const loadEvaluation = useCallback(async (taskId: string, selectionVersion: number) => {
-    const requestVersion = ++evaluationRequestRef.current;
-    const isCurrent = () => (
-      evaluationRequestRef.current === requestVersion
-      && taskSelectionVersionRef.current === selectionVersion
-    );
-    setEvaluationLoading(true);
-    setEvaluationError(undefined);
-    try {
-      const nextEvaluation = await api.evaluateAgentTeamsTask(actorNo, taskId);
-      if (!isCurrent()) return;
-      setEvaluation(nextEvaluation);
-    } catch (error) {
-      if (!isCurrent()) return;
-      setEvaluation(null);
-      setEvaluationError(`评测暂不可用：${errorText(error)}`);
-    } finally {
-      if (isCurrent()) setEvaluationLoading(false);
-    }
-  }, [actorNo]);
-
   useEffect(() => {
     actorVersionRef.current += 1;
     taskSelectionVersionRef.current += 1;
@@ -285,10 +254,6 @@ export default function AgentTeamsCollaborationPage() {
     setNewEventIds(new Set());
     setMessages([]);
     setResult(null);
-    evaluationRequestRef.current += 1;
-    setEvaluation(null);
-    setEvaluationLoading(false);
-    setEvaluationError(undefined);
     setSelectedNodeId(null);
     setSubmitting(false);
     setActingTaskIds(new Set());
@@ -311,20 +276,9 @@ export default function AgentTeamsCollaborationPage() {
     setEvents([]);
     setMessages([]);
     setResult(null);
-    evaluationRequestRef.current += 1;
-    setEvaluation(null);
-    setEvaluationLoading(false);
-    setEvaluationError(undefined);
     setSelectedNodeId(selectedTaskId);
     void loadTask(selectedTaskId, requestVersion);
   }, [actorNo, loadTask, selectedTaskId]);
-
-  useEffect(() => {
-    if (!selectedTaskId || selectedTask?.id !== selectedTaskId || selectedTask.status !== 'completed') return;
-    if (isDatabaseBenchmarkScenario) return;
-    if (evaluation || evaluationLoading || evaluationError) return;
-    void loadEvaluation(selectedTaskId, taskSelectionVersionRef.current);
-  }, [evaluation, evaluationError, evaluationLoading, isDatabaseBenchmarkScenario, loadEvaluation, selectedTask, selectedTaskId]);
 
   useEffect(() => {
     if (!selectedTaskId || selectedTask?.id !== selectedTaskId || isTerminal(selectedTask.status)) return;
@@ -371,6 +325,7 @@ export default function AgentTeamsCollaborationPage() {
           : health?.mode === 'local_demo'
             ? {}
             : parsedMaterial,
+        thinking_enabled: isDatabaseTeam ? false : thinkingEnabled,
       });
       if (actorVersionRef.current !== actorVersion) return;
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
@@ -380,10 +335,6 @@ export default function AgentTeamsCollaborationPage() {
       setNewEventIds(new Set());
       setMessages([]);
       setResult(null);
-      evaluationRequestRef.current += 1;
-      setEvaluation(null);
-      setEvaluationLoading(false);
-      setEvaluationError(undefined);
       setSelectedNodeId(task.id);
       selectTask(task.id);
       setTitle(DEFAULT_TASK_TITLE);
@@ -394,12 +345,6 @@ export default function AgentTeamsCollaborationPage() {
     } finally {
       if (actorVersionRef.current === actorVersion) setSubmitting(false);
     }
-  };
-
-  const handleEvaluationRetry = () => {
-    if (!selectedTaskId || evaluationLoading || isDatabaseBenchmarkScenario) return;
-    setEvaluationError(undefined);
-    void loadEvaluation(selectedTaskId, taskSelectionVersionRef.current);
   };
 
   const handleCancel = async () => {
@@ -416,10 +361,6 @@ export default function AgentTeamsCollaborationPage() {
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
       setGraph((current) => ({ ...current, nodes: task.nodes }));
       setResult(null);
-      evaluationRequestRef.current += 1;
-      setEvaluation(null);
-      setEvaluationLoading(false);
-      setEvaluationError(undefined);
     } catch (error) {
       if (isCurrentTask()) setActionError(`取消任务失败：${errorText(error)}`);
     } finally {
@@ -450,10 +391,6 @@ export default function AgentTeamsCollaborationPage() {
       setNewEventIds(new Set());
       setMessages([]);
       setResult(null);
-      evaluationRequestRef.current += 1;
-      setEvaluation(null);
-      setEvaluationLoading(false);
-      setEvaluationError(undefined);
       setSelectedNodeId(task.id);
       selectTask(task.id);
     } catch (error) {
@@ -532,7 +469,7 @@ export default function AgentTeamsCollaborationPage() {
                   </Space>
                   {!health.ready_for_demo && (
                     <Typography.Text type="secondary">
-                      此状态只控制 TEAM-ONBOARD；TEAM-DB-BENCH 场景和数据库诊断 A/B 基准独立运行，不受此状态影响。
+                      此状态只控制 TEAM-ONBOARD；TEAM-DB-BENCH 数据库诊断场景独立运行，不受此状态影响。
                     </Typography.Text>
                   )}
                 </Space>
@@ -602,6 +539,26 @@ export default function AgentTeamsCollaborationPage() {
                       />
                     </>
                   )}
+                  <div className="at-thinking-mode">
+                    <div className="at-thinking-mode-control">
+                      <div>
+                        <Typography.Text strong>使用大模型思考模式</Typography.Text>
+                        <Typography.Text type="secondary">
+                          {isDatabaseTeam
+                            ? '数据库诊断场景使用固定配置：思考模式关闭。'
+                            : thinkingEnabled
+                              ? '会保留模型返回的决策依据，响应时间可能更长。'
+                              : '响应更快，但不会展示模型返回的决策依据。'}
+                        </Typography.Text>
+                      </div>
+                      <Switch
+                        aria-label="使用大模型思考模式"
+                        checked={isDatabaseTeam ? false : thinkingEnabled}
+                        disabled={isDatabaseTeam}
+                        onChange={setThinkingEnabled}
+                      />
+                    </div>
+                  </div>
                   {formError && <Alert type="error" showIcon message={formError} />}
                   <Button
                     type="primary"
@@ -719,23 +676,6 @@ export default function AgentTeamsCollaborationPage() {
                   <Col xs={24} lg={16}>
                     <div className="at-main-stack" data-testid="agentteams-main-stack">
                       <TaskTree nodes={nodes} graph={graph} events={events} messages={messages} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
-                      {selectedTask.status === 'completed' && isDatabaseBenchmarkScenario && (
-                        <Alert
-                          type="info"
-                          showIcon
-                          data-testid="database-task-evaluation-routing"
-                          message="该任务使用数据库 A/B 基准评测"
-                          description="当前协作树来自页面下方的数据库诊断对照实验；量化结果请在下方 A/B 指标和运行明细中核对，不调用旧版 100 分任务评测。"
-                        />
-                      )}
-                      {selectedTask.status === 'completed' && !isDatabaseBenchmarkScenario && (
-                        <EvaluationPanel
-                          evaluation={evaluation}
-                          loading={evaluationLoading}
-                          error={evaluationError}
-                          onRetry={handleEvaluationRetry}
-                        />
-                      )}
                     </div>
                   </Col>
                   <Col xs={24} lg={8}>
@@ -779,7 +719,6 @@ export default function AgentTeamsCollaborationPage() {
 
             </div>
           )}
-          <DatabaseBenchmarkPanel actorNo={actorNo} onSelectTask={(taskId) => selectTask(taskId)} />
         </>
       )}
     </div>
