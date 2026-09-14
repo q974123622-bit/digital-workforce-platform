@@ -992,7 +992,7 @@ class AgentTeamsCollaborationService:
             return result
         payload = node.output_payload or {}
         minimal_result = {
-            "summary": self._safe_tool_text(str(payload.get("summary", ""))),
+            "summary": self._safe_tool_text(self._message_text(payload)),
             "audit_ids": self._safe_audit_ids(payload.get("audit_ids", [])),
         }
         approval_ref = payload.get("approval_ref")

@@ -176,7 +176,7 @@ class ManagerContext(_StrictModel):
     child_results: list[dict[str, Any]] = Field(default_factory=list)
     existing_child_task_keys: list[str] = Field(default_factory=list)
     current_round: int = Field(ge=1)
-    max_rounds: int = Field(ge=1)
+    remaining_rounds: int = Field(ge=0)
     max_children: int = Field(ge=1)
     max_nodes: int = Field(ge=1)
     team_relationship_graph: dict[str, Any] = Field(default_factory=dict)
@@ -208,6 +208,7 @@ _ONBOARDING_DEPARTMENT_CAPABILITIES = {
     "it.onboarding.coordinate",
 }
 _ONBOARDING_AUDIT_CAPABILITY = "audit.evidence.read"
+_ONBOARDING_FOLLOW_UP_CAPABILITIES = _ONBOARDING_DEPARTMENT_CAPABILITIES
 _BUSINESS_RULE_FEEDBACK = {
     "selected_skills_must_match_loaded_skill_context": "Selected Skill IDs must match the supplied Skill context.",
     "max_children_exceeded": "The delegate plan must not exceed the maximum child count.",
@@ -245,8 +246,10 @@ _BUSINESS_RULE_FEEDBACK = {
         "For hierarchical onboarding, first delegate one parallel HR coordination task and one parallel IT coordination task.",
     "onboarding_audit_round_required":
         "After both department summaries return, delegate one independent audit evidence review as the second Manager round.",
+    "onboarding_targeted_follow_up_required":
+        "After the audit returns and round budget remains, delegate one required targeted follow-up to the HR or IT department lead for an observed evidence gap.",
     "onboarding_final_summary_required":
-        "After the audit round returns, produce the final evidence-based summary.",
+        "After the targeted follow-up round returns, produce the final evidence-based summary.",
     "department_lead_initial_batch_required":
         "A department lead must delegate one parallel required batch covering every direct report and its advertised capability.",
     "department_lead_summary_required":
@@ -340,6 +343,14 @@ class AgentDecisionEngine:
                     "parallel_capabilities": [_ONBOARDING_AUDIT_CAPABILITY],
                     "delegation_level": "manager_follow_up",
                 }
+            elif context.current_round == 2 and context.remaining_rounds > 0:
+                scenario_execution_contract = {
+                    "required_action": "delegate",
+                    "allowed_capabilities": sorted(_ONBOARDING_FOLLOW_UP_CAPABILITIES),
+                    "minimum_required_subtasks": 1,
+                    "delegation_level": "targeted_evidence_reconciliation",
+                    "instruction": "Choose only department leads needed to resolve gaps or contradictions observed in returned evidence.",
+                }
             else:
                 scenario_execution_contract = {
                     "required_action": "summarize",
@@ -371,7 +382,7 @@ class AgentDecisionEngine:
                 "current_round": context.current_round,
                 "scenario_execution_contract": scenario_execution_contract,
                 "limits": {
-                    "max_rounds": context.max_rounds,
+                    "remaining_rounds": context.remaining_rounds,
                     "max_children": context.max_children,
                     "max_nodes": context.max_nodes,
                 },
@@ -475,7 +486,7 @@ class AgentDecisionEngine:
                 "completed_direct_child_results": context.child_results,
                 "current_round": context.current_round,
                 "limits": {
-                    "max_rounds": context.max_rounds,
+                    "remaining_rounds": context.remaining_rounds,
                     "max_children": context.max_children,
                     "max_nodes": context.max_nodes,
                 },
@@ -735,6 +746,18 @@ def _validate_onboarding_manager_decision(
             or not audit.required
         ):
             raise _DecisionValidationError("onboarding_audit_round_required")
+        return
+    if context.current_round == 2 and context.remaining_rounds > 0:
+        capabilities = set(by_capability)
+        if (
+            decision.action != "delegate"
+            or not capabilities
+            or not capabilities.issubset(_ONBOARDING_FOLLOW_UP_CAPABILITIES)
+            or len(capabilities) != len(decision.subtasks)
+            or any(subtask.depends_on for subtask in decision.subtasks)
+            or any(not subtask.required for subtask in decision.subtasks)
+        ):
+            raise _DecisionValidationError("onboarding_targeted_follow_up_required")
         return
     if decision.action != "summarize" or decision.summary is None:
         raise _DecisionValidationError("onboarding_final_summary_required")

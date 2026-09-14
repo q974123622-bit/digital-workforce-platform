@@ -199,8 +199,8 @@ def test_onboarding_skills_keep_first_round_parallel_and_audit_evidence_independ
     assert "VE-" not in audit.content
 
 
-def test_readiness_skill_uses_a_single_manager_owned_audit_round(repo_root):
-    """Audit is one Manager-owned second round, not a department-owned nested delegation."""
+def test_readiness_skill_uses_audit_then_targeted_department_follow_up(repo_root):
+    """Audit stays Manager-owned and is followed by one gap-driven department recheck."""
     readiness = ProjectSkillRegistry.from_root(repo_root).load([
         "agentteams-onboarding-readiness",
     ])[0]
@@ -210,6 +210,10 @@ def test_readiness_skill_uses_a_single_manager_owned_audit_round(repo_root):
     assert "不得由 HR 或 IT 负责人嵌套派发" in readiness.content
     assert "不得重复派发审计" in readiness.content
     assert "审计子任务完成" in readiness.content
+    assert "第三轮" in readiness.content
+    assert "定向补查" in readiness.content
+    assert "只选择确有证据缺口" in readiness.content
+    assert "第四轮" in readiness.content
     assert "ready、not ready 或 incomplete" in readiness.content
 
 

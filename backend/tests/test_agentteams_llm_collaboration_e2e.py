@@ -195,6 +195,9 @@ def _valid_real_smoke_evidence_inputs():
         {"id": "it-account", "client_task_key": "it-account", "parent_task_id": "it", "assignee_agent_id": "VE-IT-ACCOUNT", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
         {"id": "it-device", "client_task_key": "it-device", "parent_task_id": "it", "assignee_agent_id": "VE-IT-DEVICE", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
         {"id": "audit", "client_task_key": "audit-check", "parent_task_id": "root", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
+        {"id": "it-follow-up", "client_task_key": "it-gap-follow-up", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
+        {"id": "it-account-follow-up", "client_task_key": "it-account-follow-up", "parent_task_id": "it-follow-up", "assignee_agent_id": "VE-IT-ACCOUNT", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
+        {"id": "it-device-follow-up", "client_task_key": "it-device-follow-up", "parent_task_id": "it-follow-up", "assignee_agent_id": "VE-IT-DEVICE", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
     ], "dependency_edges": []}
     events = [
         {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0001", "detail": {"round": 1, "client_task_keys": ["hr-check", "it-check"], "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
@@ -215,7 +218,14 @@ def _valid_real_smoke_evidence_inputs():
         {"event_seq": 16, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 2, "client_task_keys": ["audit-check"], "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
         {"event_seq": 17, "event_type": "tool.result", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {"decision": "allow", "audit_ids": [15]}},
         {"event_seq": 18, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {}},
-        {"event_seq": 19, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"readiness_decision": "incomplete"}},
+        {"event_seq": 19, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 3, "client_task_keys": ["it-gap-follow-up"], "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
+        {"event_seq": 20, "event_type": "task.delegate", "task_id": "it-follow-up", "actor_agent_id": "VE-0003", "detail": {"client_task_keys": ["it-account-follow-up", "it-device-follow-up"]}},
+        {"event_seq": 21, "event_type": "tool.result", "task_id": "it-account-follow-up", "actor_agent_id": "VE-IT-ACCOUNT", "detail": {"decision": "allow", "audit_ids": [16]}},
+        {"event_seq": 22, "event_type": "task.completed", "task_id": "it-account-follow-up", "actor_agent_id": "VE-IT-ACCOUNT", "detail": {}},
+        {"event_seq": 23, "event_type": "tool.result", "task_id": "it-device-follow-up", "actor_agent_id": "VE-IT-DEVICE", "detail": {"decision": "allow", "audit_ids": [17]}},
+        {"event_seq": 24, "event_type": "task.completed", "task_id": "it-device-follow-up", "actor_agent_id": "VE-IT-DEVICE", "detail": {}},
+        {"event_seq": 25, "event_type": "task.completed", "task_id": "it-follow-up", "actor_agent_id": "VE-0003", "detail": {}},
+        {"event_seq": 26, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"readiness_decision": "incomplete"}},
     ]
     messages = [
         {"matrix_event_id": "$delegate-root-1", "message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"round": 1, "subtasks": [
@@ -233,6 +243,13 @@ def _valid_real_smoke_evidence_inputs():
         {"matrix_event_id": "$delegate-root-2", "message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"round": 2, "subtasks": [
             {"client_task_key": "audit-check", "assignee_agent_id": "VE-0005", "required_capability": "audit.evidence.read", "depends_on": [], "required": True},
         ]}},
+        {"matrix_event_id": "$delegate-root-3", "message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"round": 3, "subtasks": [
+            {"client_task_key": "it-gap-follow-up", "assignee_agent_id": "VE-0003", "required_capability": "it.onboarding.coordinate", "depends_on": [], "required": True},
+        ]}},
+        {"matrix_event_id": "$delegate-it-follow-up", "message_type": "task.delegate", "task_id": "it-follow-up", "sender_agent_id": "VE-0003", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"subtasks": [
+            {"client_task_key": "it-account-follow-up", "assignee_agent_id": "VE-IT-ACCOUNT", "required_capability": "it.accounts.read", "depends_on": [], "required": True},
+            {"client_task_key": "it-device-follow-up", "assignee_agent_id": "VE-IT-DEVICE", "required_capability": "it.devices.read", "depends_on": [], "required": True},
+        ]}},
     ]
     tools = {
         "hr-material": ("VE-HR-MATERIAL", "agentteams.hr.lookup_materials", "agentteams-onboarding-materials", "hr.materials.read", 11, {}),
@@ -240,6 +257,8 @@ def _valid_real_smoke_evidence_inputs():
         "it-account": ("VE-IT-ACCOUNT", "agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read", 13, {"accounts": [{"evidence_id": "IT-ACC-A-002", "status": "missing"}]}),
         "it-device": ("VE-IT-DEVICE", "agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read", 14, {}),
         "audit": ("VE-0005", "agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read", 15, {}),
+        "it-account-follow-up": ("VE-IT-ACCOUNT", "agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read", 16, {"accounts": [{"evidence_id": "IT-ACC-A-002", "status": "missing"}]}),
+        "it-device-follow-up": ("VE-IT-DEVICE", "agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read", 17, {}),
     }
     for task_id, (agent_id, tool_name, plugin_id, capability, audit_id, data) in tools.items():
         messages.extend([
@@ -335,12 +354,17 @@ def test_real_smoke_rejects_false_positive_tool_evidence(case):
     smoke = _load_script("run_agentteams_real_smoke.py")
     health, detail, events, messages, result = deepcopy(_valid_real_smoke_evidence_inputs())
     account_request = next(message for message in messages if message.get("task_id") == "it-account" and message.get("message_type") == "tool.request")
-    account_result = next(message for message in messages if message.get("task_id") == "it-account" and message.get("message_type") == "tool.result")
+    account_results = [
+        message for message in messages
+        if message.get("task_id") in {"it-account", "it-account-follow-up"}
+        and message.get("message_type") == "tool.result"
+    ]
     audit_request = next(message for message in messages if message.get("task_id") == "audit" and message.get("message_type") == "tool.request")
     if case == "wrong-account-tool":
         account_request["payload"]["plugin_id"] = "agentteams-onboarding-employee"
     elif case == "account-gap-absent":
-        account_result["payload"]["data"]["accounts"][0]["status"] = "ready"
+        for account_result in account_results:
+            account_result["payload"]["data"]["accounts"][0]["status"] = "ready"
     else:
         audit_request["payload"]["tool_name"] = "agentteams.it.lookup_devices"
 
@@ -745,6 +769,9 @@ def _decision_outputs():
         {"selected_skill_ids": ["agentteams-onboarding-readiness"], "action": "delegate", "subtasks": [
             {"client_task_key": "audit-check", "title": "独立审计核查", "goal": "复核HR和IT返回的入职证据。", "required_capability": "audit.evidence.read", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "部门核查完成后需要独立审计。"},
         ]},
+        {"selected_skill_ids": ["agentteams-onboarding-readiness"], "action": "delegate", "subtasks": [
+            {"client_task_key": "it-gap-recheck", "title": "IT缺口补查", "goal": "针对审计发现的MFA证据缺口重新核查账号和设备状态。", "required_capability": "it.onboarding.coordinate", "assignee_agent_id": "VE-0003", "depends_on": [], "required": True, "reason": "审计发现MFA证据缺口，需要IT负责人组织定向补查。"},
+        ]},
         {"selected_skill_ids": ["agentteams-onboarding-readiness"], "action": "summarize", "summary": {"summary": "当前不能确认按期入职，IT账号证据缺失仍需跟进。", "readiness_decision": "incomplete", "completed_items": ["HR、IT、审计均已核查"], "risks": ["多因素认证证据缺失"], "unknowns": [], "next_actions": ["补齐IT账号证据"]}},
     ]
     hr = [
@@ -762,6 +789,12 @@ def _decision_outputs():
             {"client_task_key": "it-device", "title": "IT设备核查", "goal": "核查新员工A的设备。", "required_capability": "it.devices.read", "assignee_agent_id": "VE-IT-DEVICE", "depends_on": [], "required": True, "reason": "由设备专员核查。"},
         ]},
         {"action": "complete", "result": "IT账号与设备已完成专业核查。"},
+        {"selected_skill_ids": ["it-service-assistant"]},
+        {"action": "delegate", "subtasks": [
+            {"client_task_key": "it-account-recheck", "title": "IT账号缺口复核", "goal": "重新核查新员工A的MFA与账号状态。", "required_capability": "it.accounts.read", "assignee_agent_id": "VE-IT-ACCOUNT", "depends_on": [], "required": True, "reason": "定向补查MFA证据。"},
+            {"client_task_key": "it-device-recheck", "title": "IT设备关联复核", "goal": "重新核查新员工A的设备状态与账号证据是否一致。", "required_capability": "it.devices.read", "assignee_agent_id": "VE-IT-DEVICE", "depends_on": [], "required": True, "reason": "核对设备与账号证据的一致性。"},
+        ]},
+        {"action": "complete", "result": "IT账号与设备缺口已完成定向补查。"},
     ]
     audit = [
         {"selected_skill_ids": ["audit-evidence-review"]},
@@ -783,11 +816,17 @@ def _decision_outputs():
             {"selected_skill_ids": ["it-account-specialist"]},
             {"action": "tool", "tool_name": "agentteams.it.lookup_accounts", "tool_arguments": {"employee_ref": "新员工A"}},
             {"action": "complete", "result": "IT账号已核查，存在认证缺口。"},
+            {"selected_skill_ids": ["it-account-specialist"]},
+            {"action": "tool", "tool_name": "agentteams.it.lookup_accounts", "tool_arguments": {"employee_ref": "新员工A"}},
+            {"action": "complete", "result": "IT账号与MFA状态已重新核查。"},
         ],
         "it_device": [
             {"selected_skill_ids": ["it-device-specialist"]},
             {"action": "tool", "tool_name": "agentteams.it.lookup_devices", "tool_arguments": {"employee_ref": "新员工A"}},
             {"action": "complete", "result": "IT设备已核查。"},
+            {"selected_skill_ids": ["it-device-specialist"]},
+            {"action": "tool", "tool_name": "agentteams.it.lookup_devices", "tool_arguments": {"employee_ref": "新员工A"}},
+            {"action": "complete", "result": "IT设备状态已重新核查。"},
         ],
     }
     return {"manager": manager, "hr": hr, "it": it, "audit": audit, **specialists}
@@ -933,12 +972,14 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     assert by_key["it-check"].parent_task_id == run.id
     root_children = [node for node in nodes if node.parent_task_id == run.id]
     assert {node.assignee_agent_id for node in root_children} == {"VE-0002", "VE-0003", "VE-0005"}
-    assert len(root_children) == 3
+    assert len(root_children) == 4
     assert {node.assignee_agent_id for node in nodes if node.parent_task_id == by_key["hr-check"].id} == {"VE-HR-MATERIAL", "VE-HR-TRAINING"}
     assert {node.assignee_agent_id for node in nodes if node.parent_task_id == by_key["it-check"].id} == {"VE-IT-ACCOUNT", "VE-IT-DEVICE"}
     assert by_key["audit-check"].parent_task_id == run.id
     assert by_key["audit-check"].depth == 1
     assert by_key["audit-check"].coordinator_agent_id == "VE-0001"
+    assert by_key["it-gap-recheck"].parent_task_id == run.id
+    assert {node.assignee_agent_id for node in nodes if node.parent_task_id == by_key["it-gap-recheck"].id} == {"VE-IT-ACCOUNT", "VE-IT-DEVICE"}
     # Both independent first-round assignments were persisted before either
     # root Worker completed, proving neither was dependency-blocked.
     assignments = [event for event in db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id).all() if event.event_type == "task.assigned"]
@@ -970,7 +1011,7 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
         "it-account-specialist", "it-device-specialist",
     }.issubset({skill for event in events for skill in (event.detail.get("selected_skill_ids", []) if isinstance(event.detail, dict) else [])})
     tool_events = [event for event in events if event.event_type == "tool.result"]
-    assert len(tool_events) == 5
+    assert len(tool_events) == 7
     audit_ids = [audit for event in tool_events for audit in event.detail["audit_ids"]]
     assert all(isinstance(audit, int) and audit > 0 for audit in audit_ids)
     assert db_session.query(models.AuditEvent).filter(models.AuditEvent.id.in_(audit_ids)).count() == len(audit_ids)
@@ -1019,9 +1060,9 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
             },
         )
     assert evidence["ok"] is True, evidence["missing_criteria"]
-    assert evidence["rounds"] == [1, 2]
-    worker_delegates = [event for event in events if event.event_type == "task.delegate" and event.task_id in {by_key["hr-check"].id, by_key["it-check"].id}]
-    assert len(worker_delegates) == 2
+    assert evidence["rounds"] == [1, 2, 3]
+    worker_delegates = [event for event in events if event.event_type == "task.delegate" and event.task_id in {by_key["hr-check"].id, by_key["it-check"].id, by_key["it-gap-recheck"].id}]
+    assert len(worker_delegates) == 3
     assert all("round" not in event.detail for event in worker_delegates)
 
     # Replay does not reapply already-recorded Matrix protocol effects.

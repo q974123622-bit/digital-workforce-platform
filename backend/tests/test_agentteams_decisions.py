@@ -87,7 +87,7 @@ def manager_context() -> ManagerContext:
         ],
         child_results=[],
         current_round=1,
-        max_rounds=3,
+        remaining_rounds=3,
         max_children=5,
         max_nodes=20,
     )
@@ -101,6 +101,9 @@ def test_manager_plan_is_validated_and_retried_once(fake_llm, registry, manager_
 
     assert decision.subtasks[0].required_capability == "hr.onboarding.read"
     assert len(fake_llm.calls) == 2
+    request_payload = json.loads(fake_llm.calls[0][1]["content"])
+    assert request_payload["limits"]["remaining_rounds"] == 3
+    assert "max_rounds" not in request_payload["limits"]
     retry = fake_llm.calls[1][-1]
     assert retry["source"] == "demo"
     assert "validation_errors" in retry["content"]
@@ -298,7 +301,7 @@ def test_onboarding_manager_uses_department_round_then_real_audit_round(
         team_capability_catalog=catalog,
         child_results=[],
         current_round=1,
-        max_rounds=3,
+        remaining_rounds=3,
         max_children=5,
         max_nodes=20,
         team_relationship_graph=graph,
@@ -317,7 +320,57 @@ def test_onboarding_manager_uses_department_round_then_real_audit_round(
     assert second.subtasks[0].assignee_agent_id == "VE-0005"
 
 
-def test_onboarding_manager_summarizes_only_after_audit_round(fake_llm, registry):
+def test_onboarding_manager_requires_targeted_follow_up_after_audit_round(fake_llm, registry):
+    graph = {
+        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "reports_to": [],
+        "direct_reports": [
+            {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
+            {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
+            {"agent_id": "VE-0005", "role": "审计专员", "capabilities": ["audit.evidence.read"]},
+        ],
+    }
+    fake_llm.outputs = [{
+        "selected_skill_ids": ["agentteams-onboarding-readiness"],
+        "action": "delegate",
+        "subtasks": [{
+            "client_task_key": "it-gap-recheck",
+            "title": "IT 缺口补查",
+            "goal": "针对审计发现的 MFA 证据缺口重新核查账号与设备状态。",
+            "required_capability": "it.onboarding.coordinate",
+            "assignee_agent_id": "VE-0003",
+            "depends_on": [],
+            "required": True,
+            "reason": "审计发现 MFA 证据缺口，需要 IT 负责人定向补查。",
+        }],
+    }]
+    context = ManagerContext(
+        user_goal="评估新员工A的入职就绪情况。",
+        manager_skill_id="agentteams-manager-coordination",
+        selected_skill_ids=["agentteams-onboarding-readiness"],
+        team_capability_catalog=[
+            {"agent_id": item["agent_id"], "capabilities": item["capabilities"]}
+            for item in graph["direct_reports"]
+        ],
+        child_results=[{
+            "client_task_key": "audit-review", "status": "completed",
+            "result": {"summary": "审计发现 MFA 证据缺口。", "audit_ids": [1244]},
+        }],
+        existing_child_task_keys=["hr-department", "it-department", "audit-review"],
+        current_round=2,
+        remaining_rounds=2,
+        max_children=5,
+        max_nodes=17,
+        team_relationship_graph=graph,
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).plan(context)
+
+    assert decision.action == "delegate"
+    assert [item.required_capability for item in decision.subtasks] == ["it.onboarding.coordinate"]
+
+
+def test_onboarding_manager_summarizes_after_targeted_follow_up_round(fake_llm, registry):
     graph = {
         "self": {"agent_id": "VE-0001", "role": "Manager"},
         "reports_to": [],
@@ -345,10 +398,13 @@ def test_onboarding_manager_summarizes_only_after_audit_round(fake_llm, registry
             {"agent_id": item["agent_id"], "capabilities": item["capabilities"]}
             for item in graph["direct_reports"]
         ],
-        child_results=[{"client_task_key": "audit-review", "status": "completed"}],
-        existing_child_task_keys=["hr-department", "it-department", "audit-review"],
-        current_round=2,
-        max_rounds=3,
+        child_results=[{
+            "client_task_key": "it-gap-recheck", "status": "completed",
+            "result": {"summary": "MFA 缺口已完成补查。", "audit_ids": [1245]},
+        }],
+        existing_child_task_keys=["hr-department", "it-department", "audit-review", "it-gap-recheck"],
+        current_round=3,
+        remaining_rounds=1,
         max_children=5,
         max_nodes=17,
         team_relationship_graph=graph,
@@ -426,7 +482,7 @@ def test_role_change_manager_is_corrected_into_parallel_then_serial_two_round_pl
         manager_skill_id="agentteams-manager-coordination",
         selected_skill_ids=["agentteams-role-change-readiness"],
         team_capability_catalog=catalog,
-        max_rounds=3,
+        remaining_rounds=3,
         max_children=5,
         max_nodes=20,
     )

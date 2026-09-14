@@ -127,6 +127,9 @@ def _expanded_tree():
         {"id": "it-account", "client_task_key": "it-account", "parent_task_id": "it", "assignee_agent_id": "VE-IT-ACCOUNT", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
         {"id": "it-device", "client_task_key": "it-device", "parent_task_id": "it", "assignee_agent_id": "VE-IT-DEVICE", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
         {"id": "audit", "client_task_key": "audit", "parent_task_id": "root", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
+        {"id": "it-gap", "client_task_key": "it-gap", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
+        {"id": "it-account-recheck", "client_task_key": "it-account-recheck", "parent_task_id": "it-gap", "assignee_agent_id": "VE-IT-ACCOUNT", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
+        {"id": "it-device-recheck", "client_task_key": "it-device-recheck", "parent_task_id": "it-gap", "assignee_agent_id": "VE-IT-DEVICE", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
     ]
     events = [
         {"event_seq": 1, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 1, "client_task_keys": ["hr", "it"]}},
@@ -143,7 +146,13 @@ def _expanded_tree():
         {"event_seq": 12, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 2, "client_task_keys": ["audit"]}},
         {"event_seq": 13, "event_type": "task.assigned", "task_id": "audit", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0005"},
         {"event_seq": 14, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005"},
-        {"event_seq": 15, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001"},
+        {"event_seq": 15, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 3, "client_task_keys": ["it-gap"]}},
+        {"event_seq": 16, "event_type": "task.assigned", "task_id": "it-gap", "actor_agent_id": "VE-0001", "target_agent_id": "VE-0003"},
+        {"event_seq": 17, "event_type": "task.delegate", "task_id": "it-gap", "actor_agent_id": "VE-0003", "detail": {}},
+        {"event_seq": 18, "event_type": "task.completed", "task_id": "it-account-recheck", "actor_agent_id": "VE-IT-ACCOUNT"},
+        {"event_seq": 19, "event_type": "task.completed", "task_id": "it-device-recheck", "actor_agent_id": "VE-IT-DEVICE"},
+        {"event_seq": 20, "event_type": "task.completed", "task_id": "it-gap", "actor_agent_id": "VE-0003"},
+        {"event_seq": 21, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001"},
     ]
     messages = [
         {"message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"round": 1, "subtasks": [
@@ -161,11 +170,18 @@ def _expanded_tree():
         {"message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"round": 2, "subtasks": [
             {"client_task_key": "audit", "assignee_agent_id": "VE-0005", "required_capability": "audit.evidence.read", "depends_on": [], "required": True},
         ]}},
+        {"message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"round": 3, "subtasks": [
+            {"client_task_key": "it-gap", "assignee_agent_id": "VE-0003", "required_capability": "it.onboarding.coordinate", "depends_on": [], "required": True},
+        ]}},
+        {"message_type": "task.delegate", "task_id": "it-gap", "sender_agent_id": "VE-0003", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"subtasks": [
+            {"client_task_key": "it-account-recheck", "assignee_agent_id": "VE-IT-ACCOUNT", "required_capability": "it.accounts.read", "depends_on": [], "required": True},
+            {"client_task_key": "it-device-recheck", "assignee_agent_id": "VE-IT-DEVICE", "required_capability": "it.devices.read", "depends_on": [], "required": True},
+        ]}},
     ]
     return nodes, events, messages
 
 
-def test_real_smoke_accepts_exact_expanded_tree_and_ordered_second_round_audit():
+def test_real_smoke_accepts_expanded_tree_with_audit_and_targeted_third_round():
     smoke = _load_script("run_agentteams_real_smoke.py")
     nodes, events, messages = _expanded_tree()
 

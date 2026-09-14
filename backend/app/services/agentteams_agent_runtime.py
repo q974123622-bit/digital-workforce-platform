@@ -522,6 +522,34 @@ class AgentRuntime:
             tool = self._tool(decision.tool_name)
             if tool is None:
                 raise AgentDecisionError("decision_failed")
+            fingerprint = self._tool_request_fingerprint(
+                decision.tool_name, decision.tool_arguments or {},
+            )
+            requested = context.get("tool_request_fingerprints", [])
+            if fingerprint in requested:
+                if not context.get("duplicate_tool_corrected"):
+                    context["duplicate_tool_corrected"] = True
+                    context["evidence"] = self._append_evidence(
+                        context.get("evidence", []),
+                        {
+                            "kind": "runtime.rejected",
+                            "reason": "duplicate_tool_request",
+                            "tool_name": decision.tool_name,
+                        },
+                    )
+                    return [
+                        *responses,
+                        *self._worker_decide(
+                            message, state, context, action_sequence + 1,
+                        ),
+                    ]
+                return [
+                    *responses,
+                    self._failure(
+                        message, "duplicate_tool_request", sequence=action_sequence,
+                    ),
+                ]
+            context["tool_request_fingerprints"] = [*requested[-15:], fingerprint]
             return [*responses, self._reply(message, "tool.request", "platform", {
                 "tool_name": decision.tool_name, "plugin_id": tool["plugin_id"], "action": tool["action"],
                 **({"required_capability": tool["required_capability"]} if tool.get("required_capability") else {}),
@@ -809,7 +837,7 @@ class AgentRuntime:
             child_results=child_results,
             existing_child_task_keys=self._bounded_text_list(existing_child_task_keys, limit=20),
             current_round=current_round,
-            max_rounds=self._positive_int(safe_limits.get("rounds"), 3),
+            remaining_rounds=self._nonnegative_int(safe_limits.get("rounds"), 3),
             max_children=self._positive_int(safe_limits.get("children"), 5),
             max_nodes=self._positive_int(safe_limits.get("nodes"), 20),
             team_relationship_graph=self._bounded_value(relationship_graph or {}),
@@ -852,7 +880,9 @@ class AgentRuntime:
             message.payload.get("team_relationship_graph", {}), catalog,
         )
         return {
-            "kind": "worker", "selected_skill_ids": selected, "completion_corrected": False, "evidence": [],
+            "kind": "worker", "selected_skill_ids": selected,
+            "completion_corrected": False, "duplicate_tool_corrected": False,
+            "tool_request_fingerprints": [], "evidence": [],
             "decision_iteration": 0,
             "thinking_enabled": thinking_enabled,
             "parent_chain_agent_ids": self._bounded_text_list(parent_chain, 8),
@@ -1224,6 +1254,22 @@ class AgentRuntime:
     @staticmethod
     def _positive_int(value: Any, default: int) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default
+
+    @staticmethod
+    def _nonnegative_int(value: Any, default: int) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
+
+    def _tool_request_fingerprint(self, tool_name: Any, arguments: Any) -> str:
+        canonical = json.dumps(
+            {
+                "tool_name": self._text(tool_name, 256),
+                "tool_arguments": self._bounded_value(arguments),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _text(value: Any, limit: int = _MAX_TEXT) -> str:

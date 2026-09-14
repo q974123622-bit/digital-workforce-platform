@@ -151,9 +151,22 @@ def _has_parallel_root_worker_release(
     if len(roots) != 1:
         return False
     root_id = roots[0].get("id")
+    first_round_keys = {
+        key
+        for event in events
+        if event.get("event_type") == "task.delegate"
+        and event.get("task_id") == root_id
+        and event.get("actor_agent_id") == "VE-0001"
+        and isinstance(event.get("detail"), dict)
+        and event["detail"].get("round") == 1
+        for key in event["detail"].get("client_task_keys", [])
+        if isinstance(key, str)
+    }
     direct = [
         node for node in nodes
-        if node.get("parent_task_id") == root_id and node.get("assignee_agent_id") in {"VE-0002", "VE-0003"}
+        if node.get("parent_task_id") == root_id
+        and node.get("client_task_key") in first_round_keys
+        and node.get("assignee_agent_id") in {"VE-0002", "VE-0003"}
     ]
     if len(direct) != 2 or {node.get("assignee_agent_id") for node in direct} != {"VE-0002", "VE-0003"}:
         return False
@@ -278,7 +291,6 @@ def _positive_audit_ids(value: Any) -> set[int] | None:
 def _has_expected_onboarding_tool_evidence(
     nodes: list[dict[str, Any]], events: list[dict[str, Any]], messages: list[dict[str, Any]]
 ) -> bool:
-    by_agent = {node.get("assignee_agent_id"): node for node in nodes}
     expected_by_agent = {
         "VE-HR-MATERIAL": ("agentteams.hr.lookup_materials", "agentteams-onboarding-materials", "hr.materials.read"),
         "VE-HR-TRAINING": ("agentteams.hr.lookup_training", "agentteams-onboarding-training", "hr.training.read"),
@@ -286,13 +298,23 @@ def _has_expected_onboarding_tool_evidence(
         "VE-IT-DEVICE": ("agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read"),
         "VE-0005": ("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read"),
     }
-    if any(not isinstance(by_agent.get(agent_id), dict) for agent_id in expected_by_agent):
+    tool_nodes = [
+        node for node in nodes
+        if node.get("assignee_agent_id") in expected_by_agent
+    ]
+    if {node.get("assignee_agent_id") for node in tool_nodes} != set(expected_by_agent):
         return False
     expected_requests = {
-        by_agent[agent_id].get("id"): (agent_id, *tool_contract)
-        for agent_id, tool_contract in expected_by_agent.items()
+        node.get("id"): (
+            node.get("assignee_agent_id"),
+            *expected_by_agent[node.get("assignee_agent_id")],
+        )
+        for node in tool_nodes
     }
-    if any(not isinstance(task_id, str) or not task_id for task_id in expected_requests):
+    if (
+        len(expected_requests) != len(tool_nodes)
+        or any(not isinstance(task_id, str) or not task_id for task_id in expected_requests)
+    ):
         return False
     for task_id, (sender, tool_name, plugin_id, capability) in expected_requests.items():
         requests = [
@@ -354,17 +376,26 @@ def _has_expected_onboarding_tool_evidence(
         if _positive_audit_ids(payload.get("audit_ids")) != event_evidence[task_id][1]:
             return False
         result_payloads[task_id] = payload
-    account_task_id = by_agent["VE-IT-ACCOUNT"].get("id")
-    data = result_payloads[account_task_id].get("data")
-    accounts = data.get("accounts") if isinstance(data, dict) else None
-    if not isinstance(accounts, list) or not any(
-        isinstance(item, dict)
-        and item.get("evidence_id") == "IT-ACC-A-002"
-        and item.get("status") == "missing"
-        for item in accounts
+    account_task_ids = [
+        task_id for task_id, (agent_id, *_contract) in expected_requests.items()
+        if agent_id == "VE-IT-ACCOUNT"
+    ]
+    if not any(
+        isinstance(data := result_payloads[task_id].get("data"), dict)
+        and isinstance(accounts := data.get("accounts"), list)
+        and any(
+            isinstance(item, dict)
+            and item.get("evidence_id") == "IT-ACC-A-002"
+            and item.get("status") == "missing"
+            for item in accounts
+        )
+        for task_id in account_task_ids
     ):
         return False
-    audit = by_agent["VE-0005"]
+    audit_nodes = [node for node in tool_nodes if node.get("assignee_agent_id") == "VE-0005"]
+    if len(audit_nodes) != 1:
+        return False
+    audit = audit_nodes[0]
     audit_completed = [
         seq for event in events
         if event.get("event_type") == "task.completed" and event.get("task_id") == audit.get("id")
@@ -376,14 +407,14 @@ def _has_expected_onboarding_tool_evidence(
 def _has_expected_onboarding_topology(
     nodes: list[dict[str, Any]], events: list[dict[str, Any]], messages: list[dict[str, Any]]
 ) -> bool:
-    if len(nodes) != len(ONBOARDING_AGENT_IDS):
+    if len(nodes) < len(ONBOARDING_AGENT_IDS):
         return False
     by_agent: dict[str, dict[str, Any]] = {}
     for node in nodes:
         agent_id = node.get("assignee_agent_id")
-        if agent_id not in ONBOARDING_AGENT_IDS or agent_id in by_agent:
+        if agent_id not in ONBOARDING_AGENT_IDS:
             return False
-        by_agent[agent_id] = node
+        by_agent.setdefault(agent_id, node)
     if set(by_agent) != ONBOARDING_AGENT_IDS:
         return False
 
@@ -494,6 +525,114 @@ def _has_expected_onboarding_topology(
     ]
     if len(summaries) != 1:
         return False
+    third_round_events = [
+        event for event in events
+        if event.get("event_type") == "task.delegate"
+        and event.get("task_id") == root_id
+        and event.get("actor_agent_id") == "VE-0001"
+        and isinstance(event.get("detail"), dict)
+        and event["detail"].get("round") == 3
+        and _event_seq(event) is not None
+    ]
+    third_round_messages = [
+        message for message in messages
+        if message.get("message_type") == "task.delegate"
+        and message.get("task_id") == root_id
+        and message.get("sender_agent_id") == "VE-0001"
+        and message.get("receiver_agent_id") == "platform"
+        and message.get("direction") == "inbound"
+        and isinstance(_message_content(message), dict)
+        and _message_content(message).get("round") == 3
+    ]
+    if len(third_round_events) != 1 or len(third_round_messages) != 1:
+        return False
+    third_payload = _message_content(third_round_messages[0])
+    third_subtasks = third_payload.get("subtasks") if third_payload is not None else None
+    if not isinstance(third_subtasks, list) or not third_subtasks:
+        return False
+    follow_up_keys = {
+        item.get("client_task_key") for item in third_subtasks
+        if isinstance(item, dict)
+    }
+    follow_up_leads = {
+        node.get("client_task_key"): node
+        for node in nodes
+        if node.get("parent_task_id") == root_id
+        and node.get("client_task_key") in follow_up_keys
+    }
+    if len(follow_up_leads) != len(third_subtasks) or len(follow_up_keys) != len(third_subtasks):
+        return False
+    follow_up_completion_seqs: list[int] = []
+    follow_up_delegate_seqs: list[int] = []
+    expected_specialists = {
+        "VE-0002": {"VE-HR-MATERIAL": "hr.materials.read", "VE-HR-TRAINING": "hr.training.read"},
+        "VE-0003": {"VE-IT-ACCOUNT": "it.accounts.read", "VE-IT-DEVICE": "it.devices.read"},
+    }
+    expected_lead_capabilities = {
+        "VE-0002": "hr.onboarding.coordinate",
+        "VE-0003": "it.onboarding.coordinate",
+    }
+    for subtask in third_subtasks:
+        lead = follow_up_leads.get(subtask.get("client_task_key"))
+        if not isinstance(lead, dict):
+            return False
+        lead_id = lead.get("assignee_agent_id")
+        if (
+            lead_id not in expected_specialists
+            or subtask.get("assignee_agent_id") != lead_id
+            or subtask.get("required_capability") != expected_lead_capabilities[lead_id]
+            or subtask.get("depends_on") != []
+            or subtask.get("required") is not True
+            or lead.get("coordinator_agent_id") != "VE-0001"
+            or lead.get("depth") != 1
+            or lead.get("required") is not True
+        ):
+            return False
+        lead_task_id = lead.get("id")
+        lead_delegates = [
+            seq for event in events
+            if event.get("event_type") == "task.delegate"
+            and event.get("task_id") == lead_task_id
+            and event.get("actor_agent_id") == lead_id
+            for seq in [_event_seq(event)] if seq is not None
+        ]
+        lead_delegate_messages = [
+            message for message in messages
+            if message.get("message_type") == "task.delegate"
+            and message.get("task_id") == lead_task_id
+            and message.get("sender_agent_id") == lead_id
+            and message.get("receiver_agent_id") == "platform"
+            and message.get("direction") == "inbound"
+            and isinstance(_message_content(message), dict)
+        ]
+        children = [node for node in nodes if node.get("parent_task_id") == lead_task_id]
+        lead_payload = _message_content(lead_delegate_messages[0]) if len(lead_delegate_messages) == 1 else None
+        lead_subtasks = lead_payload.get("subtasks") if lead_payload is not None else None
+        if (
+            len(lead_delegates) != 1
+            or not isinstance(lead_subtasks, list)
+            or {item.get("assignee_agent_id"): item.get("required_capability") for item in lead_subtasks if isinstance(item, dict)}
+               != expected_specialists[lead_id]
+            or len(children) != 2
+            or {node.get("assignee_agent_id") for node in children} != set(expected_specialists[lead_id])
+            or any(node.get("coordinator_agent_id") != lead_id or node.get("depth") != 2 or node.get("required") is not True for node in children)
+        ):
+            return False
+        child_completions = [
+            seq for child in children
+            for event in events
+            if event.get("event_type") == "task.completed" and event.get("task_id") == child.get("id")
+            for seq in [_event_seq(event)] if seq is not None
+        ]
+        lead_completions = [
+            seq for event in events
+            if event.get("event_type") == "task.completed" and event.get("task_id") == lead_task_id
+            for seq in [_event_seq(event)] if seq is not None
+        ]
+        if len(child_completions) != 2 or len(lead_completions) != 1 or max(child_completions) >= lead_completions[0]:
+            return False
+        follow_up_delegate_seqs.extend(lead_delegates)
+        follow_up_completion_seqs.extend(lead_completions)
     return (
         delegate_seqs[("VE-0001", 1)]
         < min(delegate_seqs[("VE-0002", None)], delegate_seqs[("VE-0003", None)])
@@ -508,6 +647,9 @@ def _has_expected_onboarding_topology(
         and max(completed["VE-0002"], completed["VE-0003"])
         < delegate_seqs[("VE-0001", 2)]
         < completed["VE-0005"]
+        < _event_seq(third_round_events[0])
+        < min(follow_up_delegate_seqs)
+        < max(follow_up_completion_seqs)
         < summaries[0]
     )
 
@@ -561,7 +703,7 @@ def build_evidence(
         missing.append("onboarding_tool_evidence")
     if not skill_ids or "agentteams-onboarding-readiness" not in skill_ids:
         missing.append("selected_skills")
-    if sorted(set(rounds)) != [1, 2]:
+    if sorted(set(rounds)) != [1, 2, 3]:
         missing.append("delegation_round")
     if len(audit_ids) < 5:
         missing.append("governed_tool_audits")

@@ -1147,6 +1147,26 @@ def test_safe_child_results_are_bounded_and_redacted(db_session):
     assert "token" not in str(safe)
 
 
+def test_safe_child_results_keep_a_bounded_summary_from_result_payload(db_session):
+    """Oversized worker results must not become an empty summary for the parent Agent."""
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService
+
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("one", "VE-0002")])
+    node = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    node.output_payload = {
+        "result": "HR材料与培训证据已经返回。" + ("有效证据" * 400),
+        "audit_ids": [17, 18],
+    }
+
+    safe = AgentTeamsCollaborationService()._safe_child_results(db_session, run.id)
+
+    assert safe[0]["truncated"] is True
+    assert safe[0]["result"]["summary"].startswith("HR材料与培训证据已经返回。")
+    assert len(safe[0]["result"]["summary"]) <= 512
+    assert safe[0]["result"]["audit_ids"] == [17, 18]
+
+
 def test_semantic_duplicate_follow_up_is_rejected_with_a_new_client_key(db_session):
     from app.services.agentteams_collaboration import CollaborationConflict
     run, leader = _create_run(db_session)

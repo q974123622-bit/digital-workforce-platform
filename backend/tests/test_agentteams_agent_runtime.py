@@ -426,6 +426,29 @@ def test_manager_summary_can_follow_up_or_finish(tmp_path):
     assert engine.plan_contexts[-1].existing_child_task_keys == ["hr-check", "it-check"]
 
 
+def test_manager_context_preserves_zero_remaining_rounds(tmp_path):
+    """A zero remaining-round budget must reach Manager as zero, not become a new default budget."""
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.plans = [plan(), plan("summarize")]
+    engine.selections = [SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])]
+    submit = message(type="task.submit", sender="platform", receiver="VE-0001", payload=manager_payload())
+    summary = message(
+        type="task.summary", sender="platform", receiver="VE-0001", key="zero-rounds",
+        payload={
+            "request": "task.summary", "child_results": [{"result": "ok"}],
+            "existing_child_task_keys": ["hr-check", "it-check"], "current_round": 3,
+            "remaining_limits": {"rounds": 0, "nodes": 18, "children": 5},
+            "team_capability_catalog": manager_payload()["team_capability_catalog"],
+            "team_catalog_version": 2,
+        },
+    )
+    gateway.events = [event(submit, event_id="$zero-submit", ts=1), event(summary, event_id="$zero-summary", ts=2)]
+
+    subject.run_once()
+
+    assert engine.plan_contexts[-1].remaining_rounds == 0
+
+
 def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tmp_path):
     subject, gateway, engine, _ = runtime(tmp_path, role="hr")
     engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
@@ -461,6 +484,51 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     saved = (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
     assert "exposed" not in saved and "password" not in saved and '"key"' not in saved
     assert "101" in saved
+
+
+def test_worker_rejects_an_identical_tool_request_after_successful_evidence(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    duplicate = WorkerDecision(
+        action="tool",
+        tool_name="query_onboarding_employee",
+        tool_arguments={"employee_ref": "新员工A"},
+    )
+    engine.work = [
+        duplicate,
+        duplicate.model_copy(deep=True),
+        WorkerDecision(action="complete", result="已使用首次工具证据完成核查"),
+    ]
+    assignment = message(
+        type="task.assign", sender="VE-0001", receiver="VE-0002",
+        parent_task_id="root-1", payload=assign_payload(),
+    )
+    tool_result = message(
+        type="tool.result", sender="platform", receiver="VE-0002",
+        parent_task_id="root-1",
+        payload={
+            "ok": True,
+            "audit_ids": [101],
+            "team_capability_catalog": manager_payload()["team_capability_catalog"],
+            "team_catalog_version": 2,
+        },
+        key="tool-result-after-first-request",
+    )
+    gateway.events = [
+        event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1),
+        event(tool_result, event_id="$tool-result", ts=2),
+    ]
+
+    subject.run_once()
+
+    sent = sent_protocols(gateway)
+    assert [item.type for item in sent].count("tool.request") == 1
+    assert sent[-1].type == "task.result"
+    assert any(
+        item.get("kind") == "runtime.rejected"
+        and item.get("reason") == "duplicate_tool_request"
+        for item in engine.worker_contexts[-1].previous_results
+    )
 
 
 def test_department_lead_completes_from_authenticated_platform_summary_audit_ids(tmp_path):
