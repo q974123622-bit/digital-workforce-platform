@@ -162,6 +162,45 @@ class WorkerDecision(_StrictModel):
         return self
 
 
+class ResultReviewDecision(_StrictModel):
+    action: Literal["accept", "reject"]
+    feedback: str = Field(min_length=1, max_length=512)
+
+
+class TeamSelectionCandidate(_StrictModel):
+    """One Team visible to the Manager before task creation."""
+
+    team_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = ""
+    leader_agent_id: str = Field(min_length=1)
+    leader_name: str = Field(min_length=1)
+    workers: list[dict[str, Any]] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class TeamSelectionContext(_StrictModel):
+    user_goal: str = Field(min_length=1)
+    team_catalog: list[TeamSelectionCandidate] = Field(min_length=1)
+    manager_skill_id: str = "agentteams-manager-coordination"
+
+
+class TeamSelectionDecision(_StrictModel):
+    action: Literal["delegate", "no_match"]
+    team_id: str | None = Field(default=None, min_length=1)
+    leader_agent_id: str | None = Field(default=None, min_length=1)
+    reason: str = Field(min_length=1, max_length=512)
+
+    @model_validator(mode="after")
+    def action_payload_is_unambiguous(self) -> "TeamSelectionDecision":
+        if self.action == "delegate":
+            if self.team_id is None or self.leader_agent_id is None:
+                raise ValueError("delegate_requires_team_and_leader")
+        elif self.team_id is not None or self.leader_agent_id is not None:
+            raise ValueError("no_match_must_not_select_team")
+        return self
+
+
 class SkillSelectionContext(_StrictModel):
     user_goal: str = Field(min_length=1)
     runtime_skill_id: str = Field(min_length=1)
@@ -192,6 +231,12 @@ class WorkerContext(_StrictModel):
     parent_chain_agent_ids: list[str] = Field(default_factory=list)
     previous_results: list[dict[str, Any]] = Field(default_factory=list)
     team_relationship_graph: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResultReviewContext(_StrictModel):
+    reviewer_agent_id: str = Field(min_length=1)
+    task: dict[str, Any]
+    submitted_result: dict[str, Any]
 
 
 _DecisionType = TypeVar("_DecisionType", bound=BaseModel)
@@ -295,6 +340,49 @@ class AgentDecisionEngine:
             SkillSelection,
             validate,
             error_code="skill_selection_failed",
+        )
+
+    def select_team(self, context: TeamSelectionContext) -> TeamSelectionDecision:
+        """Match a goal to a Team and address only its registered Leader.
+
+        The rule follows AgentScope AgentTeams: check matching Teams first and
+        delegate to the Team Leader instead of reaching into the Team roster.
+        """
+        manager_skill = self.skills.load([context.manager_skill_id])[0]
+        messages = _messages(
+            "You are the existing AgentTeams Manager. Match the user goal against the supplied "
+            "Team catalog using Team name, description, capabilities, Team Leader and Worker roster. "
+            "Prefer a Team for complex or multi-skill work. If one Team matches, return action "
+            "delegate with exactly that team_id and its registered leader_agent_id. Never delegate "
+            "to a Team Worker. If no Team matches, return action no_match and omit both IDs. Return "
+            "only JSON matching the supplied schema, do not invent IDs, and write reason in concise "
+            "Simplified Chinese.",
+            {
+                "user_goal": context.user_goal,
+                "manager_runtime_skill": _skill_payload(manager_skill),
+                "team_catalog": [item.model_dump() for item in context.team_catalog],
+            },
+        )
+
+        def validate(raw: dict[str, Any]) -> TeamSelectionDecision:
+            decision = TeamSelectionDecision.model_validate(raw)
+            if not _contains_chinese(decision.reason):
+                raise _DecisionValidationError("team_selection_reason_must_contain_chinese")
+            if decision.action == "no_match":
+                return decision
+            candidates = {item.team_id: item for item in context.team_catalog}
+            candidate = candidates.get(str(decision.team_id))
+            if candidate is None:
+                raise _DecisionValidationError("unknown_team")
+            if decision.leader_agent_id != candidate.leader_agent_id:
+                raise _DecisionValidationError("invalid_team_leader")
+            return decision
+
+        return self._structured_with_retry(
+            messages,
+            TeamSelectionDecision,
+            validate,
+            error_code="team_selection_failed",
         )
 
     def plan(self, context: ManagerContext) -> ManagerDecision:
@@ -453,6 +541,34 @@ class AgentDecisionEngine:
         return self._structured_with_retry(
             messages,
             WorkerDecision,
+            validate,
+            error_code="decision_failed",
+        )
+
+    def review_result(self, context: ResultReviewContext) -> ResultReviewDecision:
+        messages = _messages(
+            "You are the coordinator responsible for accepting a subordinate task result. "
+            "Compare the submitted result only with the supplied task instruction. Accept only "
+            "when the result is relevant, internally consistent, and contains the evidence it "
+            "claims to rely on. Otherwise reject it with a specific revision request. Return only "
+            "JSON matching the supplied schema. Write feedback in concise Simplified Chinese and "
+            "do not invent facts, evidence, URLs, credentials, or hidden system state.",
+            {
+                "reviewer_agent_id": context.reviewer_agent_id,
+                "task": context.task,
+                "submitted_result": context.submitted_result,
+            },
+        )
+
+        def validate(raw: dict[str, Any]) -> ResultReviewDecision:
+            decision = ResultReviewDecision.model_validate(raw)
+            if not decision.feedback.strip() or not _contains_chinese(decision.feedback):
+                raise _DecisionValidationError("review_feedback_must_contain_chinese")
+            return decision
+
+        return self._structured_with_retry(
+            messages,
+            ResultReviewDecision,
             validate,
             error_code="decision_failed",
         )

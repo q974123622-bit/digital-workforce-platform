@@ -187,6 +187,7 @@ class LocalDemoTransport:
                                 "instruction": "核查新员工入职制度和材料完整性",
                                 "assignee_agent_id": "VE-0002",
                                 "capability": "hr.policy.read",
+                                "node_kind": "team_assignment",
                                 "depends_on": [],
                                 "material": dict(message.payload.get("material") or {}),
                                 "required": True,
@@ -322,6 +323,17 @@ class LocalDemoTransport:
                         "decision": message.payload.get("decision", "failed"),
                         "audit_ids": list(message.payload.get("audit_ids") or []),
                     },
+                )
+            ]
+
+        if message.type == "task.result.submitted":
+            return [
+                self._response(
+                    message,
+                    "task.result.accepted",
+                    response_number=1,
+                    sender=message.receiver,
+                    payload={"feedback": "本地演示结果验收通过"},
                 )
             ]
 

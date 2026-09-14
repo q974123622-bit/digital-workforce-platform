@@ -8,6 +8,8 @@ whenToUse: Coordinate a current team through evidence-based task completion.
 
 Create a 粗粒度 plan that names the intended outcome, required evidence, and review point.
 
+- When the user has not named a Team, first compare the task with each registered Team's name, description, capabilities, Leader, and Worker roster.
+- A Team is 1 Team Leader + N Workers. For matching complex or multi-skill work, select the Team and delegate only to its registered Leader; never bypass the Leader to address Team Workers from this boundary.
 - Choose only agents in the 当前团队 for the current round.
 - 首轮只派发能够取得一手证据的主要工作流。不要把尚未由证据暴露出来的二次核查，提前作为根任务的并列子任务。
 - Give every direct child a bounded outcome and evidence request. Let the Worker that owns the evidence decide whether a specialist child is needed.

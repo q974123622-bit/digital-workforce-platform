@@ -354,7 +354,12 @@ export interface AccessRequest {
 
 // ---- AgentTeams 独立协作 ----
 
-export type AgentTaskTerminalStatus = 'completed' | 'failed' | 'timed_out' | 'cancelled';
+export type AgentTaskTerminalStatus =
+  | 'completed'
+  | 'failed'
+  | 'timed_out'
+  | 'cancelled'
+  | 'revision_requested';
 
 export type AgentTaskStatus =
   | 'planning'
@@ -362,6 +367,8 @@ export type AgentTaskStatus =
   | 'assigned'
   | 'accepted'
   | 'running'
+  | 'submitted'
+  | 'reviewing'
   | 'waiting_children'
   | 'summarizing'
   | AgentTaskTerminalStatus;
@@ -374,6 +381,8 @@ export interface AgentTaskNode {
   title: string;
   coordinator_agent_id: string;
   assignee_agent_id: string;
+  node_kind: 'mission' | 'team_assignment' | 'worker_task';
+  revision_of_task_id: string | null;
   status: AgentTaskStatus;
   progress: number;
   depth: number;
@@ -492,8 +501,8 @@ export interface AgentTaskEvaluation {
 }
 
 export interface AgentCollaborationTaskCreate {
-  team_id: string;
-  leader_agent_id: string;
+  team_id?: string;
+  leader_agent_id?: string;
   title: string;
   instruction: string;
   material?: Record<string, unknown>;

@@ -473,16 +473,28 @@ def _has_expected_onboarding_topology(
         delegate_seqs[(sender_id, round_number)] = _event_seq(matching_events[0])
 
     completed: dict[str, int] = {}
-    for agent_id in ownership:
+    for agent_id, (coordinator_id, _depth) in ownership.items():
         task_id = by_agent[agent_id].get("id")
+        accepted_sequences = [
+            seq for event in events
+            if event.get("event_type") == "task.result.accepted"
+            and event.get("task_id") == task_id
+            and event.get("actor_agent_id") == coordinator_id
+            and event.get("target_agent_id") == agent_id
+            for seq in [_event_seq(event)] if seq is not None
+        ]
         sequences = [
             seq for event in events
             if event.get("event_type") == "task.completed"
             and event.get("task_id") == task_id
-            and event.get("actor_agent_id") == agent_id
+            and event.get("actor_agent_id") == coordinator_id
             for seq in [_event_seq(event)] if seq is not None
         ]
-        if len(sequences) != 1:
+        if (
+            len(accepted_sequences) != 1
+            or len(sequences) != 1
+            or accepted_sequences[0] >= sequences[0]
+        ):
             return False
         completed[agent_id] = sequences[0]
     summaries = [

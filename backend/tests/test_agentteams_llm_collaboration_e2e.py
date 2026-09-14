@@ -217,6 +217,32 @@ def _valid_real_smoke_evidence_inputs():
         {"event_seq": 18, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {}},
         {"event_seq": 19, "event_type": "task.summary", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"readiness_decision": "incomplete"}},
     ]
+    reviewers = {
+        "hr": ("VE-0001", "VE-0002"),
+        "it": ("VE-0001", "VE-0003"),
+        "hr-material": ("VE-0002", "VE-HR-MATERIAL"),
+        "hr-training": ("VE-0002", "VE-HR-TRAINING"),
+        "it-account": ("VE-0003", "VE-IT-ACCOUNT"),
+        "it-device": ("VE-0003", "VE-IT-DEVICE"),
+        "audit": ("VE-0001", "VE-0005"),
+    }
+    reviewed_events = []
+    for event in events:
+        if event.get("event_type") == "task.completed" and event.get("task_id") in reviewers:
+            reviewer, assignee = reviewers[event["task_id"]]
+            reviewed_events.append({
+                "event_type": "task.result.accepted",
+                "task_id": event["task_id"],
+                "actor_agent_id": reviewer,
+                "target_agent_id": assignee,
+                "detail": {"feedback": "验收通过"},
+            })
+            event["actor_agent_id"] = reviewer
+            event["target_agent_id"] = assignee
+        reviewed_events.append(event)
+    events = reviewed_events
+    for event_seq, event in enumerate(events, start=1):
+        event["event_seq"] = event_seq
     messages = [
         {"matrix_event_id": "$delegate-root-1", "message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"round": 1, "subtasks": [
             {"client_task_key": "hr-check", "assignee_agent_id": "VE-0002", "required_capability": "hr.onboarding.coordinate", "depends_on": [], "required": True},
@@ -353,7 +379,17 @@ def test_real_smoke_rejects_false_positive_tool_evidence(case):
 def test_real_smoke_rejects_root_workers_released_after_one_already_completed():
     smoke = _load_script("run_agentteams_real_smoke.py")
     health, detail, events, messages, result = deepcopy(_valid_real_smoke_evidence_inputs())
-    next(event for event in events if event.get("event_type") == "task.assigned" and event.get("task_id") == "it")["event_seq"] = 15
+    first_root_completion = min(
+        event["event_seq"]
+        for event in events
+        if event.get("event_type") == "task.completed"
+        and event.get("task_id") in {"hr", "it"}
+    )
+    next(
+        event for event in events
+        if event.get("event_type") == "task.assigned"
+        and event.get("task_id") == "it"
+    )["event_seq"] = first_root_completion + 1
 
     evidence = smoke.build_evidence(
         "AT-serial-release", health, detail, events, messages, result,
@@ -370,7 +406,12 @@ def test_real_smoke_rejects_out_of_order_expanded_tree(case):
     if case == "specialist-before-lead-delegate":
         next(event for event in events if event.get("task_id") == "hr-material" and event.get("event_type") == "task.completed")["event_seq"] = 3
     elif case == "specialist-after-lead":
-        next(event for event in events if event.get("task_id") == "hr-training" and event.get("event_type") == "task.completed")["event_seq"] = 15
+        hr_completion = next(
+            event["event_seq"] for event in events
+            if event.get("task_id") == "hr"
+            and event.get("event_type") == "task.completed"
+        )
+        next(event for event in events if event.get("task_id") == "hr-training" and event.get("event_type") == "task.completed")["event_seq"] = hr_completion + 1
     elif case == "audit-round-before-leads":
         next(event for event in events if event.get("task_id") == "root" and event.get("detail", {}).get("round") == 2)["event_seq"] = 13
     else:
@@ -742,9 +783,12 @@ def _decision_outputs():
             {"client_task_key": "hr-check", "title": "HR协调核查", "goal": "协调核查新员工A的材料与培训。", "required_capability": "hr.onboarding.coordinate", "assignee_agent_id": "VE-0002", "depends_on": [], "required": True, "reason": "需要HR负责人协调专业核查。"},
             {"client_task_key": "it-check", "title": "IT协调核查", "goal": "协调核查新员工A的账号和设备。", "required_capability": "it.onboarding.coordinate", "assignee_agent_id": "VE-0003", "depends_on": [], "required": True, "reason": "需要IT负责人协调专业核查。"},
         ]},
+        {"action": "accept", "feedback": "HR负责人结果证据完整，验收通过。"},
+        {"action": "accept", "feedback": "IT负责人结果证据完整，验收通过。"},
         {"selected_skill_ids": ["agentteams-onboarding-readiness"], "action": "delegate", "subtasks": [
             {"client_task_key": "audit-check", "title": "独立审计核查", "goal": "复核HR和IT返回的入职证据。", "required_capability": "audit.evidence.read", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "部门核查完成后需要独立审计。"},
         ]},
+        {"action": "accept", "feedback": "独立审计结果可追溯，验收通过。"},
         {"selected_skill_ids": ["agentteams-onboarding-readiness"], "action": "summarize", "summary": {"summary": "当前不能确认按期入职，IT账号证据缺失仍需跟进。", "readiness_decision": "incomplete", "completed_items": ["HR、IT、审计均已核查"], "risks": ["多因素认证证据缺失"], "unknowns": [], "next_actions": ["补齐IT账号证据"]}},
     ]
     hr = [
@@ -753,6 +797,8 @@ def _decision_outputs():
             {"client_task_key": "hr-material", "title": "HR材料核查", "goal": "核查新员工A的入职材料。", "required_capability": "hr.materials.read", "assignee_agent_id": "VE-HR-MATERIAL", "depends_on": [], "required": True, "reason": "由材料专员核查。"},
             {"client_task_key": "hr-training", "title": "HR培训核查", "goal": "核查新员工A的培训安排。", "required_capability": "hr.training.read", "assignee_agent_id": "VE-HR-TRAINING", "depends_on": [], "required": True, "reason": "由培训专员核查。"},
         ]},
+        {"action": "accept", "feedback": "材料核查结果完整，验收通过。"},
+        {"action": "accept", "feedback": "培训核查结果完整，验收通过。"},
         {"action": "complete", "result": "HR材料与培训已完成专业核查。"},
     ]
     it = [
@@ -761,6 +807,8 @@ def _decision_outputs():
             {"client_task_key": "it-account", "title": "IT账号核查", "goal": "核查新员工A的账号。", "required_capability": "it.accounts.read", "assignee_agent_id": "VE-IT-ACCOUNT", "depends_on": [], "required": True, "reason": "由账号专员核查。"},
             {"client_task_key": "it-device", "title": "IT设备核查", "goal": "核查新员工A的设备。", "required_capability": "it.devices.read", "assignee_agent_id": "VE-IT-DEVICE", "depends_on": [], "required": True, "reason": "由设备专员核查。"},
         ]},
+        {"action": "accept", "feedback": "账号核查结果完整，验收通过。"},
+        {"action": "accept", "feedback": "设备核查结果完整，验收通过。"},
         {"action": "complete", "result": "IT账号与设备已完成专业核查。"},
     ]
     audit = [
@@ -923,11 +971,24 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     nodes = db_session.query(models.AgentTaskNode).filter_by(root_task_id=run.id).all()
     by_key = {node.client_task_key: node for node in nodes}
     assert run.status == "completed", (
-        [(event.event_type, event.actor_agent_id, event.summary, event.detail.get("error") if isinstance(event.detail, dict) else event.detail)
+        [(event.event_type, event.actor_agent_id, event.summary, event.detail)
          for event in db_session.query(models.AgentTaskEvent).filter_by(root_task_id=run.id).all()
          if event.event_type in {"task.failed", "protocol.rejected", "tool.failed", "tool.denied"}],
         handled_by_agent,
         [(node.client_task_key, node.status) for node in nodes],
+        [
+            (
+                item.task_id,
+                item.message_type,
+                item.sender_agent_id,
+                item.receiver_agent_id,
+                item.payload,
+            )
+            for item in db_session.query(models.AgentMessage).filter_by(
+                root_task_id=run.id
+            ).all()
+            if item.message_type.startswith("task.result")
+        ],
     )
     assert by_key["hr-check"].parent_task_id == run.id
     assert by_key["it-check"].parent_task_id == run.id

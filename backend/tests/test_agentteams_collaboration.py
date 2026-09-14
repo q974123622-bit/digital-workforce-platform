@@ -114,6 +114,48 @@ def _apply_node_message(db_session, run, node, *, type, key, payload):
     )
 
 
+def _review_node_message(db_session, run, node, *, type, key, payload=None, reviewer_id=None):
+    from app.services.agentteams_collaboration import apply_message
+
+    reviewer = db_session.get(
+        models.DigitalEmployee,
+        reviewer_id or node.coordinator_agent_id,
+    )
+    return apply_message(
+        db_session,
+        matrix_sender=_matrix_sender(reviewer.runtime_ref),
+        message=_protocol(
+            root_id=run.id,
+            task_id=node.id,
+            parent_id=node.parent_task_id,
+            sender=reviewer.employee_no,
+            receiver="platform",
+            type=type,
+            key=f"{run.id}:{node.id}:{key}",
+            payload=payload or {},
+        ),
+    )
+
+
+def _submit_and_accept(db_session, run, node, *, key, payload):
+    _apply_node_message(
+        db_session,
+        run,
+        node,
+        type="task.result",
+        key=key,
+        payload=payload,
+    )
+    return _review_node_message(
+        db_session,
+        run,
+        node,
+        type="task.result.accepted",
+        key=f"{key}-accepted",
+        payload={"feedback": "测试验收通过"},
+    )
+
+
 def _start_node(db_session, run, node):
     _apply_node_message(db_session, run, node, type="task.accepted", key="accepted", payload={})
     _apply_node_message(db_session, run, node, type="task.progress", key="progress", payload={"progress": 10})
@@ -608,6 +650,29 @@ def test_required_children_trigger_parent_summarizing(db_session):
     )
 
     root = db_session.get(models.AgentTaskNode, run.id)
+    assert policy.status == "reviewing"
+    assert root.status == "waiting_children"
+    assert db_session.query(models.AgentMessage).filter_by(
+        task_id=run.id, message_type="task.summary", direction="outbound"
+    ).count() == 0
+
+    review_request = db_session.query(models.AgentMessage).filter_by(
+        task_id=policy.id,
+        message_type="task.result.submitted",
+        direction="outbound",
+    ).one()
+    assert review_request.receiver_agent_id == policy.coordinator_agent_id
+    assert review_request.payload["result"] == {"result": "制度已核查"}
+
+    _review_node_message(
+        db_session,
+        run,
+        policy,
+        type="task.result.accepted",
+        key="accepted-result",
+        payload={"feedback": "证据完整，可以验收"},
+    )
+
     summary_request = db_session.query(models.AgentMessage).filter_by(
         task_id=run.id, message_type="task.summary", direction="outbound"
     ).one()
@@ -657,32 +722,29 @@ def test_parent_summary_normalizes_top_level_audit_ids_from_completed_direct_chi
         client_task_key="grandchild",
     ).one()
     _start_node(db_session, run, grandchild)
-    _apply_node_message(
+    _submit_and_accept(
         db_session,
         run,
         grandchild,
-        type="task.result",
         key="grandchild-result",
         payload={"result": "孙节点完成", "audit_ids": [7001]},
     )
     _start_node(db_session, run, children["account"])
 
-    _apply_node_message(
+    _submit_and_accept(
         db_session,
         run,
         children["policy"],
-        type="task.result",
         key="policy-result",
         payload={
             "result": "制度已核查",
             "audit_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "bad", True, 0, -1, 1],
         },
     )
-    _apply_node_message(
+    _submit_and_accept(
         db_session,
         run,
         children["account"],
-        type="task.result",
         key="account-result",
         payload={
             "result": "账号已核查；伪造文本 audit_ids=[9002]",
@@ -718,7 +780,7 @@ def test_optional_child_failure_does_not_block_parent(db_session):
     )
     _start_node(db_session, run, policy)
 
-    _apply_node_message(db_session, run, policy, type="task.result", key="result", payload={"result": "done"})
+    _submit_and_accept(db_session, run, policy, key="result", payload={"result": "done"})
 
     assert db_session.get(models.AgentTaskNode, run.id).status == "summarizing"
 
@@ -758,6 +820,21 @@ def test_dependent_child_stays_blocked_until_predecessor_completes(db_session):
         payload={"result": "HR evidence", "token": "must-not-leak"},
     )
 
+    assert hr_check.status == "reviewing"
+    assert it_check.status == "blocked"
+    assert db_session.query(models.AgentMessage).filter_by(
+        task_id=it_check.id, message_type="task.assign", direction="outbound"
+    ).count() == 0
+
+    _review_node_message(
+        db_session,
+        run,
+        hr_check,
+        type="task.result.accepted",
+        key="accepted-result",
+        payload={"feedback": "验收通过"},
+    )
+
     assignment = db_session.query(models.AgentMessage).filter_by(
         task_id=it_check.id, message_type="task.assign", direction="outbound"
     ).one()
@@ -769,6 +846,287 @@ def test_dependent_child_stays_blocked_until_predecessor_completes(db_session):
     assert db_session.query(models.AgentTaskEvent).filter_by(
         task_id=it_check.id, event_type="task.unblocked"
     ).count() == 1
+
+
+def test_only_the_task_coordinator_can_accept_a_submitted_result(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [_subtask("policy", "VE-0002")],
+    )
+    policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, policy)
+    _apply_node_message(
+        db_session,
+        run,
+        policy,
+        type="task.result",
+        key="result",
+        payload={"result": "候选结果"},
+    )
+
+    with pytest.raises(RuntimeError, match="unauthorized_sender"):
+        _review_node_message(
+            db_session,
+            run,
+            policy,
+            type="task.result.accepted",
+            key="unauthorized-review",
+            payload={"feedback": "越权验收"},
+            reviewer_id="VE-0003",
+        )
+
+    assert policy.status == "reviewing"
+
+
+def test_coordinator_rejection_creates_a_linked_revision_and_rewires_dependants(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [
+            _subtask("policy", "VE-0002"),
+            _subtask("account", "VE-0003", depends_on=["policy"]),
+        ],
+    )
+    policy = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id, client_task_key="policy"
+    ).one()
+    account = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id, client_task_key="account"
+    ).one()
+    _start_node(db_session, run, policy)
+    _apply_node_message(
+        db_session,
+        run,
+        policy,
+        type="task.result",
+        key="candidate",
+        payload={"result": "缺少审批证据", "audit_ids": [101]},
+    )
+
+    events = _review_node_message(
+        db_session,
+        run,
+        policy,
+        type="task.result.rejected",
+        key="rejected",
+        payload={"feedback": "请补充审批记录后重新提交"},
+    )
+
+    revision = db_session.query(models.AgentTaskNode).filter_by(
+        revision_of_task_id=policy.id
+    ).one()
+    assert policy.status == "revision_requested"
+    assert policy.output_payload == {"result": "缺少审批证据", "audit_ids": [101]}
+    assert policy.error_message == "请补充审批记录后重新提交"
+    assert revision.status == "assigned"
+    assert revision.parent_task_id == policy.parent_task_id
+    assert revision.assignee_agent_id == policy.assignee_agent_id
+    assert revision.coordinator_agent_id == policy.coordinator_agent_id
+    assert revision.node_kind == policy.node_kind
+    assert revision.input_payload["review_feedback"] == "请补充审批记录后重新提交"
+    assert {event.event_type for event in events} == {
+        "task.result.rejected",
+        "task.revision.created",
+    }
+    dependency = db_session.query(models.AgentTaskDependency).filter_by(
+        task_id=account.id
+    ).one()
+    assert dependency.depends_on_task_id == revision.id
+    assignment = db_session.query(models.AgentMessage).filter_by(
+        task_id=revision.id,
+        message_type="task.assign",
+        direction="outbound",
+    ).one()
+    assert assignment.payload["revision_of_task_id"] == policy.id
+    assert assignment.payload["review_feedback"] == "请补充审批记录后重新提交"
+
+
+def test_rejected_result_requires_bounded_nonempty_feedback(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [_subtask("policy", "VE-0002")],
+    )
+    policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, policy)
+    _apply_node_message(
+        db_session,
+        run,
+        policy,
+        type="task.result",
+        key="candidate",
+        payload={"result": "候选结果"},
+    )
+
+    with pytest.raises(RuntimeError, match="invalid_review_feedback"):
+        _review_node_message(
+            db_session,
+            run,
+            policy,
+            type="task.result.rejected",
+            key="empty-feedback",
+            payload={"feedback": "  "},
+        )
+
+    assert policy.status == "reviewing"
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        revision_of_task_id=policy.id
+    ).count() == 0
+
+
+def test_accepted_result_rejects_unsafe_feedback_before_completing(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")]
+    )
+    policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, policy)
+    _apply_node_message(
+        db_session, run, policy, type="task.result", key="candidate", payload={"result": "候选结果"}
+    )
+
+    with pytest.raises(RuntimeError, match="invalid_review_feedback"):
+        _review_node_message(
+            db_session,
+            run,
+            policy,
+            type="task.result.accepted",
+            key="unsafe-acceptance",
+            payload={"feedback": "token=must-not-cross-agent-boundary"},
+        )
+
+    assert policy.status == "reviewing"
+
+
+def test_only_an_accepted_latest_revision_unblocks_dependants_and_summarizes(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [
+            _subtask("policy", "VE-0002"),
+            _subtask("account", "VE-0003", depends_on=["policy"]),
+        ],
+    )
+    policy = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id, client_task_key="policy"
+    ).one()
+    account = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id, client_task_key="account"
+    ).one()
+    _start_node(db_session, run, policy)
+    _apply_node_message(
+        db_session, run, policy, type="task.result", key="v1", payload={"result": "v1"}
+    )
+    rejection = _review_node_message(
+        db_session,
+        run,
+        policy,
+        type="task.result.rejected",
+        key="reject-v1",
+        payload={"feedback": "补充证据"},
+    )
+    revision_id = next(
+        event.detail["revision_task_id"]
+        for event in rejection
+        if event.event_type == "task.revision.created"
+    )
+    revision = db_session.get(models.AgentTaskNode, revision_id)
+
+    assert account.status == "blocked"
+    _start_node(db_session, run, revision)
+    _apply_node_message(
+        db_session, run, revision, type="task.result", key="v2", payload={"result": "v2"}
+    )
+    assert account.status == "blocked"
+
+    _review_node_message(
+        db_session,
+        run,
+        revision,
+        type="task.result.accepted",
+        key="accept-v2",
+        payload={"feedback": "通过"},
+    )
+
+    assert revision.status == "completed"
+    assert account.status == "assigned"
+    assert db_session.get(models.AgentTaskNode, run.id).status == "waiting_children"
+
+
+def test_result_rejection_replay_does_not_create_another_revision(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")]
+    )
+    policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, policy)
+    _apply_node_message(
+        db_session, run, policy, type="task.result", key="v1", payload={"result": "v1"}
+    )
+    reviewer = db_session.get(models.DigitalEmployee, policy.coordinator_agent_id)
+    message = _protocol(
+        root_id=run.id,
+        task_id=policy.id,
+        parent_id=policy.parent_task_id,
+        sender=reviewer.employee_no,
+        receiver="platform",
+        type="task.result.rejected",
+        key=f"{run.id}:{policy.id}:same-rejection",
+        payload={"feedback": "重新处理"},
+    )
+    from app.services.agentteams_collaboration import apply_message
+
+    first = apply_message(
+        db_session, matrix_sender=_matrix_sender(reviewer.runtime_ref), message=message
+    )
+    repeated = apply_message(
+        db_session, matrix_sender=_matrix_sender(reviewer.runtime_ref), message=message
+    )
+
+    assert first
+    assert repeated == []
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        revision_of_task_id=policy.id
+    ).count() == 1
+
+
+def test_manager_and_leader_delegation_nodes_have_explicit_kinds(db_session):
+    run, leader = _create_run(db_session)
+    root = db_session.get(models.AgentTaskNode, run.id)
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [
+            {
+                **_subtask("hr-lead", "VE-0002"),
+                "node_kind": "team_assignment",
+            },
+            _subtask("audit", "VE-0003"),
+        ],
+    )
+    by_key = {
+        node.client_task_key: node
+        for node in db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id)
+    }
+
+    assert root.node_kind == "mission"
+    assert by_key["hr-lead"].node_kind == "team_assignment"
+    assert by_key["audit"].node_kind == "worker_task"
 
 
 def test_manager_can_delegate_follow_up_round_from_summarizing(db_session):
@@ -1195,7 +1553,7 @@ def test_safe_dependency_results_redact_historical_unsafe_client_key(db_session)
     nodes["predecessor"].client_task_key = leaked_key
     db_session.flush()
     _start_node(db_session, run, nodes["predecessor"])
-    _apply_node_message(db_session, run, nodes["predecessor"], type="task.result", key="done", payload={"result": "complete"})
+    _submit_and_accept(db_session, run, nodes["predecessor"], key="done", payload={"result": "complete"})
 
     assignment = db_session.query(models.AgentMessage).filter_by(
         task_id=nodes["dependent"].id, message_type="task.assign",
@@ -1354,7 +1712,7 @@ def test_two_prerequisites_release_a_blocked_child_once(db_session):
     nodes = {n.client_task_key: n for n in db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id)}
     for key in ("a", "b"):
         _start_node(db_session, run, nodes[key])
-        _apply_node_message(db_session, run, nodes[key], type="task.result", key=f"{key}-done", payload={"result": key})
+        _submit_and_accept(db_session, run, nodes[key], key=f"{key}-done", payload={"result": key})
     assert nodes["c"].status == "assigned"
     assert db_session.query(models.AgentMessage).filter_by(task_id=nodes["c"].id, message_type="task.assign").count() == 1
 
@@ -1382,7 +1740,7 @@ def test_task_summary_completes_root_and_task_run(db_session):
     _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")])
     policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
     _start_node(db_session, run, policy)
-    _apply_node_message(db_session, run, policy, type="task.result", key="result", payload={"result": "done"})
+    _submit_and_accept(db_session, run, policy, key="result", payload={"result": "done"})
     root = db_session.get(models.AgentTaskNode, run.id)
 
     apply_message(
@@ -1409,7 +1767,7 @@ def test_follow_up_summary_requests_are_round_scoped_and_retry_idempotent(db_ses
         parent_task_id=run.id, client_task_key="initial"
     ).one()
     _start_node(db_session, run, initial)
-    _apply_node_message(db_session, run, initial, type="task.result", key="initial-result", payload={"result": "done"})
+    _submit_and_accept(db_session, run, initial, key="initial-result", payload={"result": "done"})
 
     root = db_session.get(models.AgentTaskNode, run.id)
     assert root.status == "summarizing"
@@ -1431,7 +1789,7 @@ def test_follow_up_summary_requests_are_round_scoped_and_retry_idempotent(db_ses
         parent_task_id=run.id, client_task_key="follow-up"
     ).one()
     _start_node(db_session, run, follow_up)
-    _apply_node_message(db_session, run, follow_up, type="task.result", key="follow-up-result", payload={"result": "done"})
+    _submit_and_accept(db_session, run, follow_up, key="follow-up-result", payload={"result": "done"})
 
     summary_requests = db_session.query(models.AgentMessage).filter_by(
         task_id=run.id,
@@ -1520,7 +1878,7 @@ def test_inbound_idempotency_key_cannot_block_summary_outbox(db_session):
     policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
     _start_node(db_session, run, policy)
 
-    _apply_node_message(db_session, run, policy, type="task.result", key="result", payload={"result": "done"})
+    _submit_and_accept(db_session, run, policy, key="result", payload={"result": "done"})
 
     summary_outbox = db_session.query(models.AgentMessage).filter_by(
         idempotency_key=f"{run.id}:task.summary.request:round-1", direction="outbound",

@@ -5,7 +5,7 @@ import {
   RobotOutlined,
   SendOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Card, Col, Empty, Input, Progress, Row, Select, Space, Spin, Switch, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Empty, Input, Progress, Row, Space, Spin, Switch, Tag, Typography } from 'antd';
 import type {
   AgentCollaborationHealth,
   AgentCollaborationTask,
@@ -14,7 +14,6 @@ import type {
   AgentTaskEvent,
   AgentTaskGraph,
   AgentTaskNode,
-  Team,
 } from '@dwp/shared-schema';
 import { api } from '../../api/client';
 import { useCurrentUser } from '../../context/CurrentUserContext';
@@ -23,19 +22,10 @@ import { NodeProcessDetails } from './NodeProcessDetails';
 import { TimelinePanel } from './TimelinePanel';
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out', 'cancelled']);
-const LOCAL_DEMO_TEAM_ID = 'TEAM-ONBOARD';
 const LOCAL_DEMO_TITLE = '岗位调整评估';
 const LOCAL_DEMO_INSTRUCTION = '评估张明的岗位调整是否可以按期完成。';
 const DEFAULT_TASK_TITLE = '岗位调整评估';
 const DEFAULT_TASK_GOAL = '评估张明的岗位调整是否可以按期完成。';
-const DATABASE_TEAM_ID = 'TEAM-DB-BENCH';
-const DATABASE_SCENARIOS = [
-  { value: 'lock_contention', label: '锁等待与并发阻塞' },
-  { value: 'bulk_writes', label: '批量写入压力' },
-  { value: 'vacuum_pressure', label: '清理滞后与表膨胀' },
-  { value: 'index_anomaly', label: '索引异常' },
-  { value: 'large_query', label: '大查询资源占用' },
-];
 
 const EMPTY_GRAPH: AgentTaskGraph = {
   nodes: [],
@@ -125,7 +115,6 @@ export default function AgentTeamsCollaborationPage() {
   const { actor } = useCurrentUser();
   const actorNo = actor.employee_no;
   const [health, setHealth] = useState<AgentCollaborationHealth | null>(null);
-  const [teams, setTeams] = useState<Team[]>([]);
   const [tasks, setTasks] = useState<AgentCollaborationTask[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<AgentCollaborationTask | null>(null);
@@ -135,12 +124,10 @@ export default function AgentTeamsCollaborationPage() {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [result, setResult] = useState<AgentFinalResult | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [teamId, setTeamId] = useState<string | undefined>();
   const [title, setTitle] = useState('');
   const [instruction, setInstruction] = useState('');
   const [material, setMaterial] = useState('');
   const [thinkingEnabled, setThinkingEnabled] = useState(true);
-  const [databaseScenarioId, setDatabaseScenarioId] = useState('lock_contention');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [actingTaskIds, setActingTaskIds] = useState<Set<string>>(() => new Set());
@@ -155,8 +142,6 @@ export default function AgentTeamsCollaborationPage() {
     taskSelectionVersionRef.current += 1;
     setSelectedTaskId(taskId);
   }, [selectedTaskId]);
-  const selectedTeam = useMemo(() => teams.find((team) => team.id === teamId), [teamId, teams]);
-  const isDatabaseTeam = selectedTeam?.id === DATABASE_TEAM_ID;
   const selectedNode = useMemo(() => {
     const nodes = graph.nodes.length > 0 ? graph.nodes : selectedTask?.nodes ?? [];
     return nodes.find((node) => node.id === selectedNodeId) ?? null;
@@ -178,25 +163,15 @@ export default function AgentTeamsCollaborationPage() {
     setLoading(true);
     setLoadError(undefined);
     try {
-      const [nextHealth, nextTeams, nextTasks] = await Promise.all([
+      const [nextHealth, nextTasks] = await Promise.all([
         api.agentTeamsHealth(),
-        api.listTeams(),
         api.listAgentTeamsTasks(actorNo),
       ]);
       if (actorVersionRef.current !== actorVersion) return;
       setHealth(nextHealth);
-      setTeams(nextTeams);
       setTasks(nextTasks);
       setTitle((current) => current || DEFAULT_TASK_TITLE);
       setInstruction((current) => current || DEFAULT_TASK_GOAL);
-      setTeamId((current) => {
-        const supportedTeams = nextHealth.mode === 'local_demo'
-          ? nextTeams.filter((team) => [LOCAL_DEMO_TEAM_ID, DATABASE_TEAM_ID].includes(team.id))
-          : nextTeams;
-        return supportedTeams.some((team) => team.id === current)
-          ? current
-          : supportedTeams.find((team) => team.id === LOCAL_DEMO_TEAM_ID)?.id ?? supportedTeams[0]?.id;
-      });
       setSelectedTaskId((current) => current ?? nextTasks[0]?.id ?? null);
     } catch (error) {
       if (actorVersionRef.current === actorVersion) setLoadError(errorText(error));
@@ -290,8 +265,7 @@ export default function AgentTeamsCollaborationPage() {
   }, [loadTask, selectedTask, selectedTaskId]);
 
   const handleSubmit = async () => {
-    const selectedTeamReady = isDatabaseTeam ? health?.enabled : health?.ready_for_demo;
-    if (!selectedTeam || !selectedTeamReady || submitting) return;
+    if (!health?.ready_for_demo || submitting) return;
     const trimmedTitle = title.trim();
     const trimmedInstruction = instruction.trim();
     if (!trimmedTitle || !trimmedInstruction) {
@@ -299,7 +273,7 @@ export default function AgentTeamsCollaborationPage() {
       return;
     }
     let parsedMaterial: Record<string, unknown> = {};
-    if (!isDatabaseTeam && material.trim()) {
+    if (material.trim()) {
       try {
         const parsed = JSON.parse(material) as unknown;
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not object');
@@ -316,16 +290,10 @@ export default function AgentTeamsCollaborationPage() {
     const actorVersion = actorVersionRef.current;
     try {
       const task = await api.createAgentTeamsTask(actorNo, {
-        team_id: selectedTeam.id,
-        leader_agent_id: selectedTeam.leader_employee_id,
-        title: health?.mode === 'local_demo' && !isDatabaseTeam ? LOCAL_DEMO_TITLE : trimmedTitle,
-        instruction: health?.mode === 'local_demo' && !isDatabaseTeam ? LOCAL_DEMO_INSTRUCTION : trimmedInstruction,
-        material: isDatabaseTeam
-          ? { scenario_id: databaseScenarioId }
-          : health?.mode === 'local_demo'
-            ? {}
-            : parsedMaterial,
-        thinking_enabled: isDatabaseTeam ? false : thinkingEnabled,
+        title: health?.mode === 'local_demo' ? LOCAL_DEMO_TITLE : trimmedTitle,
+        instruction: health?.mode === 'local_demo' ? LOCAL_DEMO_INSTRUCTION : trimmedInstruction,
+        material: health?.mode === 'local_demo' ? {} : parsedMaterial,
+        thinking_enabled: thinkingEnabled,
       });
       if (actorVersionRef.current !== actorVersion) return;
       setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
@@ -406,13 +374,9 @@ export default function AgentTeamsCollaborationPage() {
     }
   };
 
-  const selectedTeamReady = isDatabaseTeam ? health?.enabled : health?.ready_for_demo;
-  const canSubmit = Boolean(selectedTeamReady && selectedTeam && title.trim() && instruction.trim() && !submitting);
+  const canSubmit = Boolean(health?.ready_for_demo && title.trim() && instruction.trim() && !submitting);
   const nodes: AgentTaskNode[] = graph.nodes.length > 0 ? graph.nodes : selectedTask?.nodes ?? [];
   const isLocalDemo = health?.mode === 'local_demo';
-  const selectableTeams = isLocalDemo
-    ? teams.filter((team) => [LOCAL_DEMO_TEAM_ID, DATABASE_TEAM_ID].includes(team.id))
-    : teams;
 
   return (
     <div className="agentteams-page">
@@ -480,29 +444,8 @@ export default function AgentTeamsCollaborationPage() {
 
           <Row gutter={[16, 16]} data-testid="agentteams-overview-row">
             <Col xs={24} xl={8}>
-              <Card title="提交协作任务" className="at-card" extra={<Tag color="blue">服务端预检</Tag>}>
+              <Card title="提交协作任务" className="at-card" extra={<Tag color="blue">Manager 自动路由</Tag>}>
                 <div className="at-form-fields">
-                  <label htmlFor="agentteams-team">协作团队</label>
-                  <Select
-                    id="agentteams-team"
-                    aria-label="协作团队"
-                    value={teamId}
-                    onChange={(nextTeamId) => {
-                      setTeamId(nextTeamId);
-                      if (nextTeamId === DATABASE_TEAM_ID) {
-                        setTitle('数据库锁等待诊断');
-                        setInstruction('请由数据库诊断团队并行检查写入、锁、清理、索引和查询信号，汇总根因、证据与优化建议。');
-                        setMaterial('');
-                      }
-                    }}
-                    options={selectableTeams.map((team) => ({ value: team.id, label: `${team.name}（${team.id}）` }))}
-                    disabled={selectableTeams.length < 2}
-                    placeholder="选择协作团队"
-                  />
-                  <Typography.Text type="secondary" className="at-leader-text">
-                    负责人 Agent：{selectedTeam?.leader_employee_id ?? '未选择'}
-                  </Typography.Text>
-
                   <label htmlFor="agentteams-title">任务标题</label>
                   <Input id="agentteams-title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} />
                   <label htmlFor="agentteams-instruction">任务说明</label>
@@ -513,48 +456,27 @@ export default function AgentTeamsCollaborationPage() {
                     autoSize={{ minRows: 4, maxRows: 8 }}
                     maxLength={2000}
                   />
-                  {isDatabaseTeam ? (
-                    <>
-                      <label htmlFor="agentteams-database-scenario">数据库诊断场景</label>
-                      <Select
-                        id="agentteams-database-scenario"
-                        aria-label="数据库诊断场景"
-                        value={databaseScenarioId}
-                        onChange={setDatabaseScenarioId}
-                        options={DATABASE_SCENARIOS}
-                      />
-                      <Typography.Text type="secondary">
-                        运行时只读取所选的脱敏固定场景；任务标题和说明不会作为数据库材料发送给模型。
-                      </Typography.Text>
-                    </>
-                  ) : (
-                    <>
-                      <label htmlFor="agentteams-material">补充材料（可选 JSON）</label>
-                      <Input.TextArea
-                        id="agentteams-material"
-                        value={material}
-                        onChange={(event) => setMaterial(event.target.value)}
-                        autoSize={{ minRows: 2, maxRows: 5 }}
-                        placeholder='例如：{"policy_version":"2026.09"}'
-                      />
-                    </>
-                  )}
+                  <label htmlFor="agentteams-material">补充材料（可选 JSON）</label>
+                  <Input.TextArea
+                    id="agentteams-material"
+                    value={material}
+                    onChange={(event) => setMaterial(event.target.value)}
+                    autoSize={{ minRows: 2, maxRows: 5 }}
+                    placeholder='例如：{"policy_version":"2026.09"}'
+                  />
                   <div className="at-thinking-mode">
                     <div className="at-thinking-mode-control">
                       <div>
                         <Typography.Text strong>使用大模型思考模式</Typography.Text>
                         <Typography.Text type="secondary">
-                          {isDatabaseTeam
-                            ? '数据库诊断场景使用固定配置：思考模式关闭。'
-                            : thinkingEnabled
-                              ? '会保留模型返回的决策依据，响应时间可能更长。'
-                              : '响应更快，但不会展示模型返回的决策依据。'}
+                          {thinkingEnabled
+                            ? '会保留模型返回的决策依据，响应时间可能更长。'
+                            : '响应更快，但不会展示模型返回的决策依据。'}
                         </Typography.Text>
                       </div>
                       <Switch
                         aria-label="使用大模型思考模式"
-                        checked={isDatabaseTeam ? false : thinkingEnabled}
-                        disabled={isDatabaseTeam}
+                        checked={thinkingEnabled}
                         onChange={setThinkingEnabled}
                       />
                     </div>
@@ -571,7 +493,7 @@ export default function AgentTeamsCollaborationPage() {
                   >
                     提交协作任务
                   </Button>
-                  {!selectedTeamReady && (
+                  {!health?.ready_for_demo && (
                     <Typography.Text type="secondary">提交已由服务端健康预检门禁禁用。</Typography.Text>
                   )}
                 </div>

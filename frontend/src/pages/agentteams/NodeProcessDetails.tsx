@@ -407,7 +407,12 @@ function ProcessList({
 
 export function NodeProcessDetails({ node, messages, taskSummary, rootSkillIds = [] }: Props) {
   const [expandedStepKeys, setExpandedStepKeys] = useState<Set<string>>(() => new Set());
-  const isManager = !node.parent_task_id;
+  const isManager = node.node_kind === 'mission' || !node.parent_task_id;
+  const processHeading = isManager
+    ? 'Manager决策过程'
+    : node.node_kind === 'team_assignment'
+      ? 'Team Leader处理过程'
+      : 'Worker处理过程';
   const assignment = isManager ? undefined : findAssignment(node, messages);
   const skills = selectedSkills(node, messages, rootSkillIds);
   const capability = assignment ? stringValue(assignment, 'required_capability') : '';
@@ -453,7 +458,7 @@ export function NodeProcessDetails({ node, messages, taskSummary, rootSkillIds =
       </button>
       <div className="at-process-expanded">
         <Typography.Text strong className="at-node-process-heading">
-          {isManager ? 'Manager决策过程' : '节点处理过程'}
+          {processHeading}
         </Typography.Text>
         {instruction && (
           <div className="at-node-process-section">

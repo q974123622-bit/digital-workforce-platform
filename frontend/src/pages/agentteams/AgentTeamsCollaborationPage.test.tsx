@@ -66,6 +66,8 @@ const rootNode = {
   title: '入职协作分析',
   coordinator_agent_id: 'DT-E10281',
   assignee_agent_id: 'DT-E10281',
+  node_kind: 'mission' as const,
+  revision_of_task_id: null,
   status: 'completed' as const,
   progress: 100,
   depth: 0,
@@ -82,6 +84,8 @@ const workerNode = {
   title: '制度核查',
   coordinator_agent_id: 'DT-E10281',
   assignee_agent_id: 'VE-0001',
+  node_kind: 'worker_task' as const,
+  revision_of_task_id: null,
   status: 'completed' as const,
   progress: 100,
   depth: 1,
@@ -735,6 +739,42 @@ describe('AgentTeams collaboration page', () => {
     expect(screen.getByRole('button', { name: /选择任务 HR 材料专员/ }).closest('li')).not.toHaveClass('at-chart-branch');
   });
 
+  it('shows explicit Leader assignment and result-review states', () => {
+    const leaderAssignment = {
+      ...workerNode,
+      id: 'AT-LEADER',
+      node_kind: 'team_assignment' as const,
+      status: 'reviewing' as const,
+      title: 'HR 团队任务',
+      assignee_agent_id: 'VE-0002',
+    };
+    const revision = {
+      ...workerNode,
+      id: 'AT-REVISION',
+      parent_task_id: 'AT-LEADER',
+      node_kind: 'worker_task' as const,
+      revision_of_task_id: 'AT-WORKER-V1',
+      status: 'revision_requested' as const,
+      title: '补充审批证据',
+    };
+
+    render(
+      <TaskTree
+        nodes={[rootNode, leaderAssignment, revision]}
+        messages={[]}
+        selectedId="AT-LEADER"
+        onSelect={() => undefined}
+      />,
+    );
+
+    const chart = screen.getByTestId('agentteams-task-chart');
+    expect(chart).toHaveTextContent('Team Leader 派单');
+    expect(chart).toHaveTextContent('待 Leader 验收');
+    expect(chart).toHaveTextContent('Worker 任务');
+    expect(chart).toHaveTextContent('已要求修订');
+    expect(chart).toHaveTextContent('修订自：AT-WORKER-V1');
+  });
+
   it('renders a persisted serial dependency below its predecessor even when nodes arrive out of order', () => {
     const mixedNodes = [
       roleChangeNodes[0],
@@ -875,20 +915,9 @@ describe('AgentTeams collaboration page', () => {
     expect(await screen.findByText(/Matrix事件：\$matrix-policy-1/)).toBeInTheDocument();
   });
 
-  it('keeps the local team binding while leaving the submitted goal editable', async () => {
-    const otherTeam: Team = {
-      id: 'TEAM-OTHER',
-      name: '其他团队',
-      leader_employee_id: 'VE-OTHER',
-      description: '不支持本地固定场景',
-    };
-    const localOnboardTeam: Team = {
-      ...teams[0],
-      leader_employee_id: 'VE-0001',
-    };
+  it('hides Team selection and lets the Manager route the local task', async () => {
     const fetchMock = mockPageApi({
       'GET /api/v1/agentteams-collaboration/health': localReadyHealth,
-      'GET /api/v1/teams': [otherTeam, localOnboardTeam],
       'GET /api/v1/agentteams-collaboration/tasks': [],
       'POST /api/v1/agentteams-collaboration/tasks': completedTask,
       'GET /api/v1/agentteams-collaboration/tasks/AT-ROOT': completedTask,
@@ -899,9 +928,8 @@ describe('AgentTeams collaboration page', () => {
     });
     renderPage();
 
-    const teamSelect = await screen.findByRole('combobox', { name: '协作团队' });
-    expect(teamSelect).toBeDisabled();
-    expect(screen.getByText('负责人 Agent：VE-0001')).toBeInTheDocument();
+    expect(await screen.findByText('Manager 自动路由')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: '协作团队' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('任务标题')).not.toBeDisabled();
     expect(screen.getByLabelText('任务标题')).toHaveValue('岗位调整评估');
     expect(screen.getByLabelText('任务说明')).not.toBeDisabled();
@@ -914,12 +942,12 @@ describe('AgentTeams collaboration page', () => {
         ([input, init]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks') && init?.method === 'POST',
       );
       expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
-        team_id: 'TEAM-ONBOARD',
-        leader_agent_id: 'VE-0001',
         title: '岗位调整评估',
         instruction: '评估张明的岗位调整是否可以按期完成。',
         material: {},
       });
+      expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('team_id');
+      expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('leader_agent_id');
     });
   });
 
@@ -967,8 +995,6 @@ describe('AgentTeams collaboration page', () => {
       );
       expect(call).toBeTruthy();
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({
-        team_id: 'TEAM-ONBOARD',
-        leader_agent_id: 'DT-E10281',
         title: '入职协作分析',
         instruction: '完成制度和账号核查',
         material: {},
@@ -1018,56 +1044,11 @@ describe('AgentTeams collaboration page', () => {
         ([input, init]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks') && init?.method === 'POST',
       );
       expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
-        team_id: 'TEAM-ONBOARD',
         thinking_enabled: false,
       });
+      expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('team_id');
     });
     expect(screen.getByText('响应更快，但不会展示模型返回的决策依据。')).toBeInTheDocument();
-  });
-
-  it('switches to and launches an allowlisted database team in local demo mode', async () => {
-    const databaseTeam: Team = {
-      id: 'TEAM-DB-BENCH',
-      name: '数据库诊断团队',
-      leader_employee_id: 'VE-0001',
-      description: '数据库专项协作',
-    };
-    const submittedTask: AgentCollaborationTask = {
-      ...completedTask,
-      id: 'AT-DB-NEW',
-      team_id: databaseTeam.id,
-      trace_id: 'AT-DB-NEW',
-      title: '数据库锁等待诊断',
-      status: 'planning',
-      nodes: [],
-      summary: '',
-    };
-    const fetchMock = mockPageApi({
-      'GET /api/v1/agentteams-collaboration/health': localReadyHealth,
-      'GET /api/v1/teams': [...teams, databaseTeam],
-      'GET /api/v1/agentteams-collaboration/tasks': [],
-      'POST /api/v1/agentteams-collaboration/tasks': submittedTask,
-    });
-    renderPage();
-
-    const teamSelect = await screen.findByRole('combobox', { name: '协作团队' });
-    fireEvent.mouseDown(teamSelect);
-    fireEvent.click(await screen.findByText(/数据库诊断团队（TEAM-DB-BENCH）/));
-    expect(await screen.findByRole('combobox', { name: '数据库诊断场景' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '提交协作任务' })).not.toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: '提交协作任务' }));
-
-    await waitFor(() => {
-      const call = fetchMock.mock.calls.find(
-        ([input, init]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks') && init?.method === 'POST',
-      );
-      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
-        team_id: 'TEAM-DB-BENCH',
-        leader_agent_id: 'VE-0001',
-        material: { scenario_id: 'lock_contention' },
-        thinking_enabled: false,
-      });
-    });
   });
 
   it('shows a configured Manager as configured rather than claiming it is running', async () => {
@@ -1340,7 +1321,7 @@ describe('AgentTeams collaboration page', () => {
 
     const detail = screen.getByTestId('agentteams-node-detail');
     expect(detail).toHaveTextContent('制度材料已核对，等待Manager汇总。');
-    expect(detail).toHaveTextContent('节点处理过程');
+    expect(detail).toHaveTextContent('Worker处理过程');
     expect(detail).toHaveTextContent('核对员工制度材料并确认是否存在缺口。');
     expect(detail).toHaveTextContent('hr-onboarding-assistant');
     expect(detail).toHaveTextContent('hr.onboarding.read');
@@ -1368,7 +1349,7 @@ describe('AgentTeams collaboration page', () => {
 
     fireEvent.click(within(detail).getByRole('button', { name: /展开决策依据，用时/ }));
 
-    expect(detail).toHaveTextContent('节点处理过程');
+    expect(detail).toHaveTextContent('Worker处理过程');
     expect(detail).toHaveTextContent('决策依据');
     expect(detail).toHaveTextContent('需要先查询制度材料，才能给出有证据的结论。');
     expect(detail).toHaveTextContent('第1轮：决定调用 Tool');

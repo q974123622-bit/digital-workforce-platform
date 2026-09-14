@@ -9,7 +9,9 @@ from app.services.agentteams_decisions import (
     AgentDecisionEngine,
     AgentDecisionError,
     ManagerContext,
+    ResultReviewContext,
     SkillSelectionContext,
+    TeamSelectionContext,
     WorkerContext,
 )
 from app.services.agentteams_skills import ProjectSkillRegistry
@@ -105,6 +107,115 @@ def test_manager_plan_is_validated_and_retried_once(fake_llm, registry, manager_
     assert retry["source"] == "demo"
     assert "validation_errors" in retry["content"]
     assert "bad" not in retry["content"]
+
+
+@pytest.mark.parametrize("action", ["accept", "reject"])
+def test_result_review_decision_is_typed_and_bounded(fake_llm, registry, action):
+    fake_llm.outputs = [
+        {
+            "action": action,
+            "feedback": "证据完整，可以验收" if action == "accept" else "缺少审批记录，请修订",
+        }
+    ]
+    context = ResultReviewContext(
+        reviewer_agent_id="VE-0002",
+        task={"title": "复核材料", "instruction": "核对审批记录"},
+        submitted_result={"result": "已完成材料核对", "audit_ids": [101]},
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).review_result(context)
+
+    assert decision.action == action
+    assert decision.feedback
+
+
+def test_manager_selects_a_registered_team_leader(fake_llm, registry):
+    fake_llm.outputs = [{
+        "action": "delegate",
+        "team_id": "TEAM-DB-BENCH",
+        "leader_agent_id": "VE-0001",
+        "reason": "任务需要数据库锁等待诊断能力。",
+    }]
+    context = TeamSelectionContext(
+        user_goal="定位数据库锁等待根因",
+        team_catalog=[
+            {
+                "team_id": "TEAM-ONBOARD",
+                "name": "新员工入职团队",
+                "description": "处理入职准备任务",
+                "leader_agent_id": "VE-0001",
+                "leader_name": "新员工入职助手",
+                "workers": [],
+                "capabilities": ["入职准备"],
+            },
+            {
+                "team_id": "TEAM-DB-BENCH",
+                "name": "数据库诊断团队",
+                "description": "处理数据库诊断任务",
+                "leader_agent_id": "VE-0001",
+                "leader_name": "数据库协调员",
+                "workers": [],
+                "capabilities": ["锁等待诊断"],
+            },
+        ],
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).select_team(context)
+
+    assert decision.team_id == "TEAM-DB-BENCH"
+    assert decision.leader_agent_id == "VE-0001"
+    assert "数据库" in decision.reason
+
+
+def test_manager_retries_when_model_invents_a_team_or_worker_leader(fake_llm, registry):
+    fake_llm.outputs = [
+        {
+            "action": "delegate",
+            "team_id": "TEAM-INVENTED",
+            "leader_agent_id": "VE-WORKER",
+            "reason": "错误选择。",
+        },
+        {
+            "action": "delegate",
+            "team_id": "TEAM-ONBOARD",
+            "leader_agent_id": "VE-LEADER",
+            "reason": "该团队负责入职任务。",
+        },
+    ]
+    context = TeamSelectionContext(
+        user_goal="安排新员工入职",
+        team_catalog=[{
+            "team_id": "TEAM-ONBOARD",
+            "name": "新员工入职团队",
+            "description": "处理入职准备任务",
+            "leader_agent_id": "VE-LEADER",
+            "leader_name": "入职负责人",
+            "workers": [{"agent_id": "VE-WORKER", "name": "HR专员", "role": "worker"}],
+            "capabilities": ["入职准备"],
+        }],
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).select_team(context)
+
+    assert decision.leader_agent_id == "VE-LEADER"
+    assert len(fake_llm.calls) == 2
+
+def test_result_review_retries_an_invalid_model_action(fake_llm, registry):
+    fake_llm.outputs = [
+        {"action": "complete", "feedback": "错误动作"},
+        {"action": "reject", "feedback": "缺少可核验的证据"},
+    ]
+
+    decision = AgentDecisionEngine(fake_llm, registry).review_result(
+        ResultReviewContext(
+            reviewer_agent_id="VE-0002",
+            task={"title": "复核材料"},
+            submitted_result={"result": "候选结果"},
+        )
+    )
+
+    assert decision.action == "reject"
+    assert len(fake_llm.calls) == 2
 
 
 def test_manager_decision_keeps_provider_reasoning_for_runtime_trace(registry, manager_context):

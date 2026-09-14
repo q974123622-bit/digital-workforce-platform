@@ -29,7 +29,9 @@ from .agentteams_transport import AgentTeamsTransport, create_agentteams_transpo
 
 
 _CURSOR_SCOPE_PREFIX = "agentteams:transport-sync:"
-_TERMINAL_STATUSES = {"completed", "failed", "timed_out", "cancelled"}
+_TERMINAL_STATUSES = {
+    "completed", "failed", "timed_out", "cancelled", "revision_requested"
+}
 logger = logging.getLogger(__name__)
 
 

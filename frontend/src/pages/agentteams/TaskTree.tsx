@@ -8,12 +8,21 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   assigned: { label: '已分派', color: 'cyan' },
   accepted: { label: '已接单', color: 'processing' },
   running: { label: '执行中', color: 'processing' },
+  submitted: { label: '结果已提交', color: 'geekblue' },
+  reviewing: { label: '待 Leader 验收', color: 'purple' },
+  revision_requested: { label: '已要求修订', color: 'volcano' },
   waiting_children: { label: '等待子任务', color: 'gold' },
   summarizing: { label: '汇总中', color: 'purple' },
   completed: { label: '已完成', color: 'success' },
   failed: { label: '失败', color: 'error' },
   timed_out: { label: '已超时', color: 'warning' },
   cancelled: { label: '已取消', color: 'default' },
+};
+
+const NODE_KIND_LABEL: Record<string, string> = {
+  mission: 'Manager 任务',
+  team_assignment: 'Team Leader 派单',
+  worker_task: 'Worker 任务',
 };
 
 interface Props {
@@ -130,8 +139,12 @@ export function TaskTree({ nodes, graph, messages = [], selectedId, onSelect }: 
             <Tag color={status.color} style={{ marginInlineEnd: 0 }}>{status.label}</Tag>
           </span>
           <span className="at-chart-meta">
+            <span>{NODE_KIND_LABEL[node.node_kind] ?? '协作任务'}</span>
             <span>执行：{agentLabel(node.assignee_agent_id)}</span>
           </span>
+          {node.revision_of_task_id && (
+            <span className="at-chart-meta">修订自：{node.revision_of_task_id}</span>
+          )}
           {node.status === 'blocked' && dependencies.length > 0 && (
             <span className="at-chart-meta">等待前置任务：{dependencies.join('、')}</span>
           )}
