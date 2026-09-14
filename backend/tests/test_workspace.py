@@ -9,27 +9,17 @@ def test_workspace_formal_twin(client):
     assert "架构部员工张三的数字分身" in ws["role_prompt"]
     assert ws["security"]["location"] == "remote"
     assert ws["security"]["internet"] == "deny"
-    plugin_ids = {p["plugin_id"] for p in ws["plugins"]}
-    assert "knowledge-l1" not in plugin_ids
-    assert "knowledge-l2" not in plugin_ids
     kbs = {kb["knowledge_base_id"]: kb for kb in ws["knowledge_bases"]}
-    assert kbs["KB-INTERNAL"]["accessible"] is False
-    assert kbs["KB-PUBLIC"]["accessible"] is False
+    assert kbs["KB-IT-SERVICE"]["accessible"] is False
+    assert kbs["KB-SECURITIES"]["accessible"] is False
 
 
 def test_workspace_intern_twin_kb_denied(client):
     ws = client.get("/api/v1/employees/DT-E20999/workspace").json()
     kbs = {kb["knowledge_base_id"]: kb for kb in ws["knowledge_bases"]}
-    assert kbs["KB-INTERNAL"]["accessible"] is False
-    assert kbs["KB-INTERNAL"]["decision"] == "deny"
-    assert kbs["KB-PUBLIC"]["accessible"] is False
-
-
-def test_workspace_virtual_onboarding_only(client):
-    ws = client.get("/api/v1/employees/VE-0001/workspace").json()
-    kbs = {kb["knowledge_base_id"]: kb for kb in ws["knowledge_bases"]}
-    assert kbs["KB-ONBOARD"]["accessible"] is True
-    assert kbs["KB-INTERNAL"]["accessible"] is False
+    assert kbs["KB-IT-SERVICE"]["accessible"] is False
+    assert kbs["KB-IT-SERVICE"]["decision"] == "deny"
+    assert kbs["KB-SECURITIES"]["accessible"] is False
 
 
 def test_workspace_not_found(client):

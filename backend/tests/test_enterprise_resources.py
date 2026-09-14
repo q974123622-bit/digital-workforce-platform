@@ -15,6 +15,24 @@ def _search(client, employee_id, kb_id, query, trace_id):
     )
 
 
+class _FakeInternalAdapter:
+    """替身内部知识引擎 Adapter：返回 internal hits，不依赖真实引擎/网络。"""
+
+    def search(self, *, employee_id, knowledge_base_id, query, trace_id):
+        return {
+            "source": "internal",
+            "knowledge_base_id": knowledge_base_id,
+            "query": query,
+            "hits": [{"title": "内部知识片段", "snippet": "来自内部知识引擎的检索内容"}],
+        }
+
+
+def _patch_internal(monkeypatch):
+    from app.services import gateway
+
+    monkeypatch.setattr(gateway, "select_adapter", lambda *args, **kwargs: _FakeInternalAdapter())
+
+
 # ---- Knowledge Resource Registry ----
 
 
@@ -22,35 +40,13 @@ def test_registry_resources(client):
     resp = client.get("/api/v1/knowledge-bases")
     assert resp.status_code == 200
     kbs = {kb["id"]: kb for kb in resp.json()}
-    assert set(kbs) == {
-        "KB-CUSTOMER-SENSITIVE",
-        "KB-PUBLIC",
-        "KB-ONBOARD",
-        "KB-INTERNAL",
-        "KB-FINTECH",
-        "KB-IT-SERVICE",
-        "KB-SECURITIES",
-        "KB-REG-INTERNAL",
-            "KB-REG-EXTERNAL",
-            "KB-INVESTMENT-BANKING",
-        }
-    assert kbs["KB-PUBLIC"]["data_level"] == "L1"
-    assert kbs["KB-PUBLIC"]["allowed_employment_type"] == ["formal", "intern"]
-    assert kbs["KB-ONBOARD"]["name"] == "入职 Demo 知识库"
-    assert kbs["KB-INTERNAL"]["data_level"] == "L2"
-    assert kbs["KB-INTERNAL"]["allowed_employment_type"] == ["formal"]
-    assert kbs["KB-FINTECH"]["department_scope"] == ["金融科技部"]
-    assert kbs["KB-INTERNAL"]["resource_type"] == "knowledge"
+    assert set(kbs) == {"KB-IT-SERVICE", "KB-SECURITIES", "KB-INVESTMENT-BANKING"}
     assert kbs["KB-IT-SERVICE"]["data_level"] == "L2"
     assert kbs["KB-IT-SERVICE"]["allowed_employment_type"] == ["formal"]
-    assert kbs["KB-IT-SERVICE"]["doc_path"] == "mock-data/kb/it-service"
     assert kbs["KB-SECURITIES"]["data_level"] == "L2"
     assert kbs["KB-SECURITIES"]["allowed_employment_type"] == ["formal"]
-    assert kbs["KB-SECURITIES"]["doc_path"] == "mock-data/kb/securities"
-    assert kbs["KB-REG-INTERNAL"]["data_level"] == "L2"
-    assert kbs["KB-REG-INTERNAL"]["allowed_employment_type"] == ["formal"]
-    assert kbs["KB-REG-EXTERNAL"]["data_level"] == "L1"
-    assert kbs["KB-REG-EXTERNAL"]["allowed_employment_type"] == ["formal", "intern"]
+    assert kbs["KB-INVESTMENT-BANKING"]["data_level"] == "L2"
+    assert kbs["KB-INVESTMENT-BANKING"]["allowed_employment_type"] == ["formal"]
 
 
 def test_registry_kb_not_found(client):
@@ -60,8 +56,8 @@ def test_registry_kb_not_found(client):
 # ---- 安全资源边界：正式 / 实习 / 虚拟员工 ----
 
 
-def test_general_employee_read_internal_kb_deny(client):
-    resp = _search(client, "AI-GENERAL", "KB-INTERNAL", "入职流程", "T-S3-FORMAL-001")
+def test_general_employee_read_un_granted_kb_deny(client):
+    resp = _search(client, "AI-GENERAL", "KB-SECURITIES", "股票期权", "T-S3-FORMAL-001")
     assert resp.status_code == 403
     body = resp.json()
     assert body["error"]["code"] == "POLICY_DENIED"
@@ -69,47 +65,15 @@ def test_general_employee_read_internal_kb_deny(client):
 
 
 def test_intern_twin_read_internal_kb_deny(client):
-    resp = _search(client, "DT-E20999", "KB-INTERNAL", "入职流程", "T-S3-INTERN-001")
+    resp = _search(client, "DT-E20999", "KB-SECURITIES", "融资融券流程", "T-S3-INTERN-001")
     assert resp.status_code == 403
     body = resp.json()
     assert body["error"]["code"] == "POLICY_DENIED"
     assert body["error"]["detail"]["policy_id"] == "POLICY-002"
     audit = client.get(f"/api/v1/audit/{body['error']['detail']['audit_id']}").json()
-    assert audit["knowledge_base_id"] == "KB-INTERNAL"
+    assert audit["knowledge_base_id"] == "KB-SECURITIES"
     assert audit["decision"] == "deny"
     assert audit["employee_id"] == "DT-E20999"
-
-
-def test_virtual_employee_unapproved_kb_deny(client):
-    # VE-0002（HR 助理）无 knowledge-l2 授权 → KB-INTERNAL DENY（未授权默认拒绝）
-    resp = _search(client, "VE-0002", "KB-INTERNAL", "入职流程", "T-S3-VE-001")
-    assert resp.status_code == 403
-    body = resp.json()
-    assert body["error"]["code"] == "POLICY_DENIED"
-    audit = client.get(f"/api/v1/audit/{body['error']['detail']['audit_id']}").json()
-    assert audit["decision"] == "deny"
-    assert audit["knowledge_base_id"] == "KB-INTERNAL"
-    assert "未授权插件" in audit["reason"]
-
-
-def test_virtual_employee_onboarding_kb_allow(client):
-    # VE-0001 仅授权公共 + 入职 Demo 知识库 → KB-ONBOARD（L1）ALLOW
-    resp = _search(client, "VE-0001", "KB-ONBOARD", "第一天做什么", "T-S3-VE-OK-001")
-    assert resp.status_code == 200
-    assert resp.json()["decision"] == "allow"
-
-
-def test_virtual_employee_internal_kb_deny(client):
-    # VE-0001 无 knowledge-l2 grant（单独授权移除）→ KB-INTERNAL DENY
-    resp = _search(client, "VE-0001", "KB-INTERNAL", "内部制度", "T-S3-VE-DENY-001")
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "POLICY_DENIED"
-
-
-def test_public_kb_requires_explicit_grant(client):
-    resp = _search(client, "DT-E20999", "KB-PUBLIC", "员工守则", "T-S3-PUB-001")
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "POLICY_DENIED"
 
 
 def test_knowledge_grants_do_not_cross_assign(client):
@@ -125,15 +89,8 @@ def test_knowledge_grants_do_not_cross_assign(client):
         assert body["error"]["detail"]["policy_id"] == "AGENT-KB-GRANT"
 
 
-def test_fintech_kb_unapproved_deny(client):
-    # VE-0003 无 knowledge-l2 grant → KB-FINTECH DENY
-    resp = _search(client, "VE-0003", "KB-FINTECH", "金融科技材料", "T-S3-FIN-001")
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "POLICY_DENIED"
-
-
 def test_search_missing_employee(client):
-    resp = _search(client, "VE-9999", "KB-PUBLIC", "x", "T-S3-NOEMP-001")
+    resp = _search(client, "VE-9999", "KB-IT-SERVICE", "x", "T-S3-NOEMP-001")
     assert resp.status_code == 404
 
 
@@ -142,25 +99,27 @@ def test_search_missing_kb(client):
     assert resp.status_code == 404
 
 
-# ---- P17：新增模拟知识库（多格式虚构目录） ----
+# ---- 内部知识引擎检索（真实 adapter，测试用替身） ----
 
 
-def test_it_service_kb_is_internal(client):
+def test_it_service_kb_is_internal(client, monkeypatch):
+    _patch_internal(monkeypatch)
     formal = _search(client, "AI-GENERAL", "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-001")
     assert formal.status_code == 200
-    assert formal.json()["policy_id"] is None
+    assert formal.json()["policy_id"] == "POLICY-006"
 
     intern = _search(client, "DT-E20999", "KB-IT-SERVICE", "VPN 怎么连", "T-P17-IT-002")
     assert intern.status_code == 403
     assert intern.json()["error"]["detail"]["policy_id"] == "POLICY-002"
 
 
-def test_new_securities_kb_l2_formal_allow(client):
+def test_new_securities_kb_l2_formal_allow(client, monkeypatch):
+    _patch_internal(monkeypatch)
     resp = _search(client, "AI-INVESTMENT", "KB-SECURITIES", "融资融券流程", "T-P17-SEC-001")
     assert resp.status_code == 200
     body = resp.json()
     assert body["decision"] == "allow"
-    assert body["policy_id"] is None
+    assert body["policy_id"] == "POLICY-006"
     assert len(body["data"]["hits"]) >= 1
 
 
@@ -168,32 +127,6 @@ def test_new_securities_kb_l2_intern_deny(client):
     resp = _search(client, "DT-E20999", "KB-SECURITIES", "融资融券流程", "T-P17-SEC-002")
     assert resp.status_code == 403
     assert resp.json()["error"]["detail"]["policy_id"] == "POLICY-002"
-
-
-def test_internal_reg_kb_removed_from_general(client):
-    # 内规（742）已从内部引擎下线，AI-GENERAL 不再持有 KB-REG-INTERNAL 授权。
-    resp = _search(client, "AI-GENERAL", "KB-REG-INTERNAL", "反洗钱", "T-P17-REG-001")
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "POLICY_DENIED"
-    assert resp.json()["error"]["detail"]["policy_id"] == "AGENT-KB-GRANT"
-
-
-def test_new_external_reg_kb_l1_requires_grant(client):
-    resp = _search(client, "DT-E20999", "KB-REG-EXTERNAL", "反垄断", "T-P17-EXT-001")
-    assert resp.status_code == 403
-    assert resp.json()["error"]["code"] == "POLICY_DENIED"
-
-
-def test_multiformat_directory_search_returns_nonempty_hits(client):
-    # 目录内 .xlsx 与 .docx 均可被解析并返回片段
-    cases = [
-        ("AI-GENERAL", "KB-IT-SERVICE", "企业邮箱"),
-        ("AI-INVESTMENT", "KB-SECURITIES", "股票期权"),
-    ]
-    for i, (emp, kb_id, query) in enumerate(cases):
-        resp = _search(client, emp, kb_id, query, f"T-P17-MF-{i}")
-        assert resp.status_code == 200
-        assert len(resp.json()["data"]["hits"]) >= 1
 
 
 # ---- Sandbox Policy：remote_only / internet_deny / local_deny ----
@@ -276,23 +209,7 @@ def test_sandbox_missing_employee(client):
     assert resp.status_code == 404
 
 
-# ---- Secret / Config 与 Stub ----
-
-
-def test_internal_kb_stub_safe_without_config(client):
-    # 未配置环境变量：Stub 返回 stub 状态，不包含任何真实内容
-    from app.services.knowledge_adapter import InternalKnowledgeAdapterStub
-
-    result = InternalKnowledgeAdapterStub().search(
-        employee_id="DT-E10281",
-        knowledge_base_id="KB-INTERNAL",
-        query="x",
-        trace_id="T-S3-STUB-001",
-    )
-    assert result["source"] == "stub"
-    assert result["status"] == "stub"
-    assert result["configured"] is False
-    assert "真实" in result["message"] or "未接入" in result["message"]
+# ---- Secret / Config ----
 
 
 def test_credential_refs_are_references_only():

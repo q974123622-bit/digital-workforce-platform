@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Index, LargeBinary, String, text
+from sqlalchemy import JSON, DateTime, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -197,21 +197,6 @@ class KnowledgeBase(Base):
     doc_path: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
-class KnowledgeChunk(Base):
-    """RAG 索引块：kb_chunk 表（id / kb_id / source_file / title / content / embedding BLOB / dims / created_at）。"""
-
-    __tablename__ = "kb_chunk"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    kb_id: Mapped[str] = mapped_column(String, index=True)
-    source_file: Mapped[str] = mapped_column(String, default="")
-    title: Mapped[str] = mapped_column(String, default="")
-    content: Mapped[str] = mapped_column(String, default="")
-    embedding: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    dims: Mapped[int] = mapped_column(default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-
-
 class ChatSession(Base):
     __tablename__ = "chat_session"
 
@@ -244,7 +229,7 @@ class TaskRun(Base):
     status: Mapped[str] = mapped_column(String, default="pending")
     subtasks: Mapped[list] = mapped_column(JSON, default=list)
     summary: Mapped[str] = mapped_column(String, default="")
-    source: Mapped[str] = mapped_column(String, default="builtin")  # builtin | agentteams
+    source: Mapped[str] = mapped_column(String, default="builtin")  # builtin
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -412,17 +397,6 @@ class AgentExecutionEvent(Base):
     target_agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
     hit_count: Mapped[int | None] = mapped_column(nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-
-
-class AgentTeamsEventSeen(Base):
-    """已回传过的 AgentTeams 房间事件（持久化去重，避免重启后重放）。"""
-
-    __tablename__ = "agentteams_event_seen"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    event_id: Mapped[str] = mapped_column(String, unique=True, index=True)
-    conversation_id: Mapped[str] = mapped_column(String, index=True, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 

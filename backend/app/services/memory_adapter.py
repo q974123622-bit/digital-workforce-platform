@@ -7,7 +7,6 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-import httpx
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -77,97 +76,6 @@ class MockMemoryAdapter(MemoryAdapter):
         return {"mode": "mock", "status": "healthy"}
 
 
-class InternalMemoryAdapter(MockMemoryAdapter):
-    def _settings(self) -> tuple[str, str]:
-        base = os.getenv("DWP_INTERNAL_MEM0_BASE_URL", "").rstrip("/")
-        token = os.getenv("DWP_INTERNAL_MEM0_AUTHORIZATION", "")
-        if not base or not token:
-            raise RuntimeError("内部 mem0 配置不完整")
-        return base, token
-
-    @staticmethod
-    def _enqueue(db, row, operation: str, *, attempts: int = 0, payload: dict | None = None):
-        job = models.MemorySyncJob(
-            id=f"MJ-{uuid4().hex[:14].upper()}", memory_id=row.id if row else None,
-            operation=operation, payload=payload or {}, status="pending", attempts=attempts,
-            next_attempt_at=datetime.now() + timedelta(seconds=5) if attempts else datetime.now(),
-        )
-        db.add(job)
-        if row is not None:
-            row.sync_status = "pending"
-            db.add(row)
-        db.commit()
-        return job
-
-    def _sync_upsert_now(self, db, row, ns, content, memory_type):
-        base, token = self._settings()
-        with httpx.Client(timeout=10) as client:
-            response = client.post(f"{base}/memories", headers={"Authorization": token}, json={
-                "namespace": ":".join(ns), "content": content, "memory_type": memory_type,
-            })
-            response.raise_for_status()
-            body = response.json()
-        row.external_id = str(body.get("id", "")) or None
-        row.sync_status = "synced"
-        db.add(row); db.commit(); db.refresh(row)
-
-    def upsert(self, db, ns, content, memory_type, source, expires_at=None):
-        row = super().upsert(db, ns, content, memory_type, source, expires_at)
-        if source != "explicit":
-            self._enqueue(db, row, "upsert")
-            return row
-        try:
-            self._sync_upsert_now(db, row, ns, content, memory_type)
-        except Exception as exc:  # never persist endpoint, response or credentials
-            self._enqueue(db, row, "upsert", attempts=1)
-            raise RuntimeError("长期记忆暂时无法同步，请稍后重试") from exc
-        return row
-
-    def update(self, db, row, content):
-        row = super().update(db, row, content)
-        self._enqueue(db, row, "update")
-        return row
-
-    def delete(self, db, row):
-        payload = {
-            "external_id": row.external_id or "",
-            "namespace": ":".join((row.tenant_id, row.requester_human_no, row.agent_id)),
-        }
-        self._enqueue(db, row, "delete", payload=payload)
-        db.delete(row); db.commit()
-
-    def search(self, db, ns, query, top_k=5):
-        try:
-            base, token = self._settings()
-            with httpx.Client(timeout=10) as client:
-                response = client.post(f"{base}/memories/search", headers={"Authorization": token}, json={
-                    "namespace": ":".join(ns), "query": query, "top_k": top_k,
-                })
-                response.raise_for_status(); body = response.json()
-            rows = []
-            for item in (body.get("memories") or body.get("results") or [])[:top_k]:
-                rows.append(models.MemoryRecord(
-                    id=str(item.get("id") or f"REMOTE-{uuid4().hex}"), tenant_id=ns[0],
-                    requester_human_no=ns[1], agent_id=ns[2],
-                    memory_type=str(item.get("memory_type") or "summary"),
-                    content=str(item.get("content") or item.get("memory") or "")[:4000],
-                    source=str(item.get("source") or "automatic"), sync_status="synced",
-                ))
-            return rows
-        except Exception:
-            # Internal mem0 unavailable: continue with only five-round short-term memory.
-            return []
-
-    def health(self):
-        try:
-            base, token = self._settings()
-            with httpx.Client(timeout=5) as client:
-                response = client.get(f"{base}/health", headers={"Authorization": token})
-                response.raise_for_status()
-            return {"mode": "internal", "status": "healthy"}
-        except Exception:
-            return {"mode": "internal", "status": "unavailable"}
-
-
 def get_memory_adapter() -> MemoryAdapter:
-    return InternalMemoryAdapter() if os.getenv("DWP_MEMORY_MODE", "mock") == "internal" else MockMemoryAdapter()
+    # MVP 仅保留本地 mock 记忆（前端记忆页展示用）；真实 mem0 适配器已移除。
+    return MockMemoryAdapter()

@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..services import runtime_manager
-from ..services import config
 from ..services.auth import current_account, optional_account, require_roles
 from ..services.identity import resolve_identity
 from ..services.knowledge_registry import plugin_id_for_level
@@ -149,7 +148,7 @@ def get_effective_capabilities(
         employee_id=employee.employee_no, display_name=employee.name,
         identity_kind=profile.identity_kind if profile else ("human_twin" if employee.type == "twin" else "role_employee"),
         runtime_engine=runtime.engine, runtime_state=runtime.state, container_name=runtime.container_name,
-        knowledge_mode=config.kb_mode(), capabilities=capabilities,
+        knowledge_mode="internal", capabilities=capabilities,
         available_count=available_count, attention_count=len(capabilities) - available_count,
     )
 

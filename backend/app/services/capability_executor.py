@@ -7,7 +7,6 @@ from dataclasses import dataclass
 
 from .. import models
 from . import config
-from .adapters import run_adapter
 from .capability_contract import plugin_contract
 from .runtime_adapter import DockerHarnessRuntimeAdapter, HarnessExecutionContext, NoopRuntimeAdapter, RuntimeAdapter
 
@@ -38,7 +37,7 @@ def _harness_prompt(
         f"【岗位职责】{context.responsibility}\n"
         f"【用户任务】{context.request}\n"
         f"【当前子任务】{context.subtask}\n"
-        f"【AgentTeams 协作结论】{context.collaboration_summary or '无补充结论，按既定角色计划执行'}\n"
+        f"【协作结论】{context.collaboration_summary or '无补充结论，按既定角色计划执行'}\n"
         f"【允许使用的工具】{plugin.name}（{plugin.id} / {plugin.type}）\n"
         f"【工具参数】{json.dumps(params, ensure_ascii=False)}\n\n"
         "请用简洁中文输出：任务理解、将调用的工具、关键参数和风险提示。"
@@ -81,9 +80,10 @@ def execute_capability(
             else:
                 raise RuntimeError(result.result or "Harness 执行失败")
 
-    # 受控工具桥：Adapter 在整条授权链中只调用一次。
+    # Mock Adapter 引擎已随历史 workflow/rpa/mcp/http 插件移除；
+    # 当前非知识插件（外部 MCP）走 ExternalMcpClient，不再经本执行器。
     return CapabilityExecution(
-        data=run_adapter(plugin, params),
+        data={},
         runtime_mode=runtime_mode,
         tool_name=plugin.name,
         tool_type=plugin.type,

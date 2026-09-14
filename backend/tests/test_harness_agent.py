@@ -22,7 +22,7 @@ def test_harness_agent_labels_internal_knowledge_card(db_session, monkeypatch):
         models.AuditEvent(
             trace_id="T-LABEL",
             employee_id="AI-GENERAL",
-            plugin_id="knowledge-l1",
+            plugin_id="KB-IT-SERVICE",
             knowledge_base_id="KB-IT-SERVICE",
             action="read",
             decision="allow",
@@ -41,6 +41,6 @@ def test_harness_agent_labels_internal_knowledge_card(db_session, monkeypatch):
         message="查询 VPN 连接方式。",
         trace_id="T-LABEL",
     )
-    card = next(card for card in result.tool_cards if card.plugin_id == "knowledge-l1")
+    card = next(card for card in result.tool_cards if card.plugin_id == "KB-IT-SERVICE")
     assert card.name == "IT 服务知识库"
     assert card.source == "internal"

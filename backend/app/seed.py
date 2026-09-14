@@ -51,7 +51,6 @@ def seed_data(db, data: dict) -> None:
         models.DirectoryBinding,
         models.AuthSession,
         models.Account,
-        models.AgentTeamsEventSeen,
         models.ConversationMessage,
         models.Conversation,
         models.Skill,
@@ -59,7 +58,6 @@ def seed_data(db, data: dict) -> None:
         models.AuditEvent,
         models.TeamMember,
         models.Team,
-        models.KnowledgeChunk,
         models.KnowledgeBase,
         models.AccessRequest,
         models.ChatMessage,
@@ -142,8 +140,7 @@ def ensure_mvp_seed(db) -> None:
             "responsibilities": ["回答证券投资类咨询", "解读投资规则与市场资讯", "提供开户及业务办理指引"],
         },
     }
-    # 当前知识问答 MVP 只保留三名岗位型数字员工；真人分身继续保留。
-    # 历史演示员工改为 inactive，以保留审计/历史关联但不再出现在通讯录中。
+    # 知识问答 MVP 保留岗位型数字员工 + 真人分身；历史 VE/RPA 演示员工已从种子数据移除。
     active_role_employee_ids = set(employee_specs)
     for existing in db.query(models.DigitalEmployee).all():
         if existing.type != "twin" and existing.employee_no not in active_role_employee_ids:
@@ -169,8 +166,8 @@ def ensure_mvp_seed(db) -> None:
         db.add(models.KnowledgeBase(
             id="KB-INVESTMENT-BANKING", name="投行咨询知识库", level="L2", data_level="L2",
             resource_type="knowledge", allowed_employment_type=["formal"], department_scope=["*"],
-            domain="投行咨询", description="投行业务、尽调和项目咨询知识（虚构演示）",
-            status="active", doc_path="mock-data/kb/investment-banking.md",
+            domain="投行咨询", description="投行业务、尽调和项目咨询知识（内部知识引擎）",
+            status="active",
         ))
     db.flush()
 
@@ -205,9 +202,6 @@ def ensure_mvp_seed(db) -> None:
         # 张三的分身不直接持有知识库；遇到知识问题必须委派给岗位数字员工。
         "DT-E10281": [],
         "DT-E20999": [],
-        # Historical inactive demo identities remain callable by compatibility tests,
-        # but are not shown in the active directory or provisioned as MVP containers.
-        "VE-0001": ["KB-PUBLIC", "KB-ONBOARD"],
     }
     for employee_id, kb_ids in grant_specs.items():
         db.query(models.AgentKnowledgeGrant).filter(
@@ -220,28 +214,15 @@ def ensure_mvp_seed(db) -> None:
                 models.AgentKnowledgeGrant.knowledge_base_id == kb_id,
             )) is None:
                 db.add(models.AgentKnowledgeGrant(employee_id=employee_id, knowledge_base_id=kb_id))
-        levels = {
-            db.get(models.KnowledgeBase, kb_id).data_level
-            for kb_id in kb_ids
-            if db.get(models.KnowledgeBase, kb_id) is not None
-        }
-        expected_plugin_ids = {
-            f"knowledge-{data_level.lower()}" for data_level in levels
-        }
-        db.query(models.AgentPluginBinding).filter(
-            models.AgentPluginBinding.target_agent_id == employee_id,
-            models.AgentPluginBinding.plugin_id.in_(["knowledge-l1", "knowledge-l2", "knowledge-l3"]),
-            models.AgentPluginBinding.plugin_id.not_in(expected_plugin_ids) if expected_plugin_ids else True,
-        ).delete(synchronize_session=False)
-        db.query(models.EmployeePluginGrant).filter(
-            models.EmployeePluginGrant.employee_id == employee_id,
-            models.EmployeePluginGrant.plugin_id.in_(["knowledge-l1", "knowledge-l2", "knowledge-l3"]),
-        ).delete(synchronize_session=False)
-        for data_level in sorted(levels):
-            db.add(models.EmployeePluginGrant(
-                employee_id=employee_id, plugin_id=f"knowledge-{data_level.lower()}", action="read",
-                decision_mode="allow", grant_source="seed",
-            ))
+
+    # 历史 knowledge-l1/l2/l3 mock 插件已删除，清理其残留的绑定与授权记录。
+    # 知识访问现在由 Policy（data_level 分级）+ AgentKnowledgeGrant 控制，不再依赖分级插件。
+    db.query(models.AgentPluginBinding).filter(
+        models.AgentPluginBinding.plugin_id.in_(["knowledge-l1", "knowledge-l2", "knowledge-l3"]),
+    ).delete(synchronize_session=False)
+    db.query(models.EmployeePluginGrant).filter(
+        models.EmployeePluginGrant.plugin_id.in_(["knowledge-l1", "knowledge-l2", "knowledge-l3"]),
+    ).delete(synchronize_session=False)
 
     # 盈米 External MCP 插件：配置了 DWP_QIEMAN_MCP_URL 才注册并授权。
     # 工具由 ExternalMcpClient 动态发现（listChanged=true），Manifest 不静态声明 Schema。
@@ -423,7 +404,7 @@ def ensure_mvp_seed(db) -> None:
     db.commit()
 
 
-# 盈米 Skill 的中文显示名（load_skill 与 available_skills 用中文名，DSH 更易关联场景）
+# 盈米 Skill 的中文显示名（前置路由用中文名，DSH 更易关联场景）
 QIEMAN_SKILL_NAMES = {
     "fund-screener": "基金筛选",
     "portfolio-doctor": "组合诊断",
@@ -442,7 +423,7 @@ QIEMAN_SKILL_NAMES = {
 def ensure_qieman_skills(db) -> None:
     """接入盈米金融 Skill：读取 mock-data/qieman-skills.json，创建 Skill/插件并绑定 AI-FUND。
 
-    盈米 Skill 是场景化 SOP（意图识别 + 工具编排 + 输出规范），通过 load_skill 显式加载。
+    盈米 Skill 是场景化 SOP（意图识别 + 工具编排 + 输出规范），通过前置路由注入任务上下文。
     skill_id 使用 QM- 前缀区分平台演示 Skill（SK-），插件绑定到 AI-FUND（岗位员工）。
     """
     path = Path(__file__).resolve().parents[2] / "mock-data" / "qieman-skills.json"
@@ -468,7 +449,7 @@ def ensure_qieman_skills(db) -> None:
             skill.status = "active"
         # Plugin 记录（幂等：已存在则更新 name/description）
         # scope 用 shared：skill 是团队共享能力，若用 personal + SYS-ADMIN owner
-        # 会被 effective_plugins 按 owner 过滤掉，导致 available_skills 为空。
+        # 会被 effective_plugins 按 owner 过滤掉，导致前置路由无法命中。
         plugin = db.get(models.Plugin, plugin_id)
         if plugin is None:
             db.add(models.Plugin(
@@ -558,10 +539,6 @@ def main() -> None:
             db_file.unlink()
     Base.metadata.create_all(bind=engine)
     seed_if_empty()
-    # RAG 索引：seed 重建时顺带重建 kb_chunk（离线无 Key 时使用本地演示向量）
-    from .services import kb_index
-
-    kb_index.rebuild_index()
     print("seed ok")
 
 

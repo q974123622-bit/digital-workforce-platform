@@ -14,7 +14,6 @@ import type {
   TaskRun,
   Team,
   TeamDetail,
-  Workflow,
   Workspace,
   WorkplaceHome,
   Account,
@@ -216,7 +215,6 @@ export const api = {
       `/conversations/${encodeURIComponent(conversationId)}?actor_no=${encodeURIComponent(actorNo)}`,
       { method: 'DELETE' },
     ),
-  listWorkflows: () => request<Workflow[]>('/workflows'),
 };
 
 export interface UnifiedPlugin { id?: string | number; plugin_id?: string; name: string; plugin_type: 'skill' | 'mcp'; scope?: string; mcp_category?: string; current_version?: string; version?: string; status?: string; tools?: unknown[] }

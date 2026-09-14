@@ -45,24 +45,6 @@ class AgentDelegateToolIn(BaseModel):
     question: str
 
 
-class SaveMemoryToolIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    content: str
-    memory_type: str = "preference"
-
-
-def _save_memory(db: Session, claims: HarnessClaims, payload: SaveMemoryToolIn) -> dict:
-    from ..services.memory_service import save_explicit
-    try:
-        row = save_explicit(
-            db, claims.requester_human_no, claims.employee_id,
-            payload.content, payload.memory_type,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="长期记忆暂时无法保存，请稍后重试") from exc
-    return {"memory_id": row.id, "saved": True, "trace_id": claims.trace_id}
-
-
 def _claims(authorization: str | None = Header(default=None)) -> HarnessClaims:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="缺少 Harness 工具令牌")
@@ -78,16 +60,12 @@ def _can_delegate(db: Session, claims: HarnessClaims) -> bool:
 
 
 def _has_knowledge_tool(db: Session, claims: HarnessClaims) -> bool:
-    return db.scalar(select(models.AgentPluginBinding).join(
-        models.Plugin, models.Plugin.id == models.AgentPluginBinding.plugin_id,
-    ).where(
-        models.AgentPluginBinding.target_agent_id == claims.employee_id,
-        models.AgentPluginBinding.admin_enabled.is_(True),
-        models.AgentPluginBinding.employee_enabled.is_(True),
-        models.AgentPluginBinding.decision_mode == "allow",
-        models.Plugin.plugin_type == "mcp",
-        models.Plugin.mcp_category == "knowledge",
-        models.Plugin.status == "active",
+    # 知识访问已改为 Policy（data_level 分级）+ AgentKnowledgeGrant 控制，
+    # 不再依赖 knowledge-lX 插件绑定；有显式知识授权即可提供 search_knowledge 工具。
+    return db.scalar(select(models.AgentKnowledgeGrant).where(
+        models.AgentKnowledgeGrant.employee_id == claims.employee_id,
+        models.AgentKnowledgeGrant.action == "read",
+        models.AgentKnowledgeGrant.status == "active",
     )) is not None
 
 
@@ -146,70 +124,6 @@ def _agent_search(
         "hits": hits,
         "decision": out.get("decision", "deny"),
         "trace_id": claims.trace_id,
-    }
-
-
-def _authorized_skills(db: Session, claims: HarnessClaims) -> list[dict]:
-    """当前员工已绑定且启用的 Skill 路由清单（id/name/description）。"""
-    skills: list[dict] = []
-    for skill in db.query(models.Skill).filter(models.Skill.status == "active").all():
-        plugin_id = f"SKILL-{skill.id}"
-        bound = db.scalar(select(models.AgentPluginBinding).where(
-            models.AgentPluginBinding.plugin_id == plugin_id,
-            models.AgentPluginBinding.target_agent_id == claims.employee_id,
-            models.AgentPluginBinding.admin_enabled.is_(True),
-            models.AgentPluginBinding.employee_enabled.is_(True),
-            models.AgentPluginBinding.decision_mode == "allow",
-        ))
-        if bound is not None:
-            skills.append({"id": skill.id, "name": skill.name, "description": skill.description})
-    return skills
-
-
-def _load_skill(db: Session, claims: HarnessClaims, skill_name: str) -> dict:
-    """按名称加载当前员工已授权的 Skill 完整内容，并写入事件与审计轨迹。"""
-    skill = db.scalar(select(models.Skill).where(
-        models.Skill.name == skill_name,
-        models.Skill.status == "active",
-    ))
-    if skill is None:
-        raise HTTPException(status_code=404, detail="技能不存在")
-    plugin_id = f"SKILL-{skill.id}"
-    bound = db.scalar(select(models.AgentPluginBinding).where(
-        models.AgentPluginBinding.plugin_id == plugin_id,
-        models.AgentPluginBinding.target_agent_id == claims.employee_id,
-        models.AgentPluginBinding.admin_enabled.is_(True),
-        models.AgentPluginBinding.employee_enabled.is_(True),
-        models.AgentPluginBinding.decision_mode == "allow",
-    ))
-    if bound is None:
-        raise HTTPException(status_code=403, detail="当前员工无权使用该技能")
-    execution = execution_events.execution_for_trace(db, claims.trace_id)
-    if execution is not None:
-        execution_events.emit(
-            db, execution.id, event_type="skill_started", stage="skill",
-            status="running", actor_employee_id=claims.employee_id,
-            title=f"正在加载技能 {skill.name}", detail="正在读取技能方法论并准备按其执行",
-        )
-    write_audit(
-        db, trace_id=claims.trace_id, employee_id=claims.employee_id,
-        plugin_id=plugin_id, action="execute", decision="allow",
-        reason=f"加载技能 {skill.name}",
-        result_summary=__import__("json").dumps(
-            {"source": "skill", "tool": skill.name, "type": "skill"}, ensure_ascii=False,
-        ),
-    )
-    if execution is not None:
-        execution_events.emit(
-            db, execution.id, event_type="skill_completed", stage="skill",
-            status="running", actor_employee_id=claims.employee_id,
-            title=f"技能 {skill.name} 加载完成", detail="技能方法论已就绪",
-        )
-    return {
-        "skill_id": skill.id,
-        "name": skill.name,
-        "description": skill.description,
-        "content": skill.content,
     }
 
 
@@ -354,34 +268,6 @@ async def agent_tools_mcp(
                     "required": ["target_agent_id", "question"],
                 },
             })
-        tools.append({
-            "name": "save_memory",
-            "description": "仅在用户明确要求'请记住'或'以后都这样处理'时保存长期记忆。",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "content": {"type": "string"},
-                    "memory_type": {"type": "string", "enum": ["preference", "fact", "decision", "todo"]},
-                },
-                "required": ["content"],
-            },
-        })
-        # 追加当前员工已授权技能的显式加载工具（按需加载技能完整方法论）。
-        authorized_skills = _authorized_skills(db, claims)
-        if authorized_skills:
-            skill_desc = "加载一个已授权的员工技能，返回其完整方法论（SOP）；任务命中技能场景时先加载再按其执行。skill_name 必须从以下已授权技能中选择："
-            skill_desc += "、".join(f"{s['name']}（{s['description']}）" for s in authorized_skills)
-            tools.append({
-                "name": "load_skill",
-                "description": skill_desc,
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "skill_name": {"type": "string", "enum": [s["name"] for s in authorized_skills]},
-                    },
-                    "required": ["skill_name"],
-                },
-            })
         # 追加已授权员工的外部 MCP 工具（动态清单，加前缀；失败降级不阻塞内部工具）。
         for adapter in _EXTERNAL_ADAPTERS:
             if adapter.configured() and adapter.is_authorized(db, claims.employee_id):
@@ -430,9 +316,6 @@ async def agent_tools_mcp(
                         {"source": adapter.plugin_id, "tool": raw_name, "type": "mcp"}, ensure_ascii=False,
                     ),
                 )
-            elif tool_name == "load_skill":
-                data = _load_skill(db, claims, str(arguments.get("skill_name") or ""))
-                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
             elif tool_name == "search_knowledge":
                 data = _agent_search(db, claims, AgentKnowledgeToolIn.model_validate(arguments))
                 result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
@@ -443,9 +326,6 @@ async def agent_tools_mcp(
                 data = await asyncio.to_thread(
                     _agent_delegate, db, claims, AgentDelegateToolIn.model_validate(arguments)
                 )
-                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
-            elif tool_name == "save_memory":
-                data = _save_memory(db, claims, SaveMemoryToolIn.model_validate(arguments))
                 result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
             else:
                 raise HTTPException(status_code=404, detail="未知工具")

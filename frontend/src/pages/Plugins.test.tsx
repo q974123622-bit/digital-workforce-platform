@@ -20,7 +20,7 @@ it('能力中心只把授权、Policy 与 Harness 都就绪的能力标为可用
     }] : {
       employee_id: 'AI-GENERAL', display_name: 'AI员工平台', identity_kind: 'role_employee',
       runtime_engine: 'harness', runtime_state: 'ready', container_name: 'dwp-harness-ai-general',
-      knowledge_mode: 'mock', available_count: 1, attention_count: 1,
+      knowledge_mode: 'internal', available_count: 1, attention_count: 1,
       capabilities: [
         { id: 'knowledge:KB-IT-SERVICE', name: 'IT 服务知识库', kind: 'knowledge', source_type: 'knowledge_base', description: 'IT 服务问答', actions: ['read'], status: 'available', decision: 'allow', reason: '已就绪', authorized: true, installed: true, healthy: true, data_level: 'L2', knowledge_base_id: 'KB-IT-SERVICE', target_employee_ids: [], example_prompts: ['VPN 怎么申请？'] },
         { id: 'knowledge:KB-SECURITIES', name: '证券业务知识库', kind: 'knowledge', source_type: 'knowledge_base', description: '证券业务', actions: ['read'], status: 'unauthorized', decision: 'deny', reason: '未授权', authorized: false, installed: true, healthy: false, data_level: 'L2', knowledge_base_id: 'KB-SECURITIES', target_employee_ids: [], example_prompts: [] },
@@ -35,5 +35,5 @@ it('能力中心只把授权、Policy 与 Harness 都就绪的能力标为可用
   expect(screen.getByText('现在可用')).toBeInTheDocument();
   expect(screen.getByText('证券业务知识库')).toBeInTheDocument();
   expect(screen.getAllByText('未授权').length).toBeGreaterThan(0);
-  expect(screen.getByText('Mock 知识')).toBeInTheDocument();
+  expect(screen.getByText('内部知识引擎')).toBeInTheDocument();
 });

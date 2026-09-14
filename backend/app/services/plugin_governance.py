@@ -184,8 +184,7 @@ def effective_plugins(db: Session, agent_id: str, requester_human_no: str) -> li
             continue
         item = {"plugin_id": plugin.id, "version": version.version, "plugin_type": plugin.plugin_type, "name": plugin.name}
         if plugin.plugin_type == "skill":
-            # Skill 已改为显式加载（load_skill 工具），此处只提供路由清单所需的最小字段，
-            # 不再隐式注入完整 instruction 内容。
+            # Skill 通过前置路由（task_playbook）注入完整 SOP；此处仅保留名称与描述元数据。
             item["description"] = plugin.description
         else:
             item.update({"category": plugin.mcp_category, "tools": version.manifest.get("tools", [])})

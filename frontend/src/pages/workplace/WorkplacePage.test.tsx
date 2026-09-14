@@ -9,7 +9,6 @@ import type {
   Employee,
   Skill,
   TaskRun,
-  Workflow,
   WorkplaceHome,
 } from '@dwp/shared-schema';
 import { CurrentUserProvider } from '../../context/CurrentUserContext';
@@ -476,7 +475,7 @@ describe('WorkplacePage', () => {
       '/api/v1/agents/DT-E10281/effective-capabilities': {
         employee_id: 'DT-E10281', display_name: '张三的数字分身', identity_kind: 'human_twin',
         runtime_engine: 'harness', runtime_state: 'ready', container_name: 'dwp-harness-dt-e10281',
-        knowledge_mode: 'mock', available_count: 2, attention_count: 0,
+        knowledge_mode: 'internal', available_count: 2, attention_count: 0,
         capabilities: [
           {
             id: 'knowledge:KB-PUBLIC', name: '公共知识', kind: 'knowledge', source_type: 'knowledge_base',
@@ -700,34 +699,4 @@ describe('WorkplacePage', () => {
     expect(screen.queryByText('整理新员工入职准备清单')).not.toBeInTheDocument();
   });
 
-  it.skip('工作流使用指南：V1 聚焦知识问答，暂不开放', async () => {
-    const workflows: Workflow[] = [
-      {
-        plugin_id: 'expense-claim',
-        name: '差旅报销流程',
-        type: 'workflow',
-        data_level: 'L2',
-        description: '差旅报销申请与审批打款流程（Mock）',
-        steps: ['报销申请提交', '直属领导审批', '财务复核打款'],
-        demo_prompt: '帮我提交差旅报销',
-        authorized_employees: [{ employee_no: 'VE-0002', name: 'HR 助理', type: 'virtual' }],
-        owner_employee: { employee_no: 'VE-0002', name: 'HR 助理', type: 'virtual' },
-      },
-    ];
-    stubFetch({
-      '/api/v1/workplace?actor_no=E10281': home,
-      '/api/v1/conversations?actor_no=E10281': [],
-      '/api/v1/workflows': workflows,
-    });
-    renderPage();
-
-    fireEvent.click(await screen.findByRole('button', { name: '使用指南' }));
-    expect(screen.getByText('差旅报销流程')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('差旅报销流程'));
-
-    expect(await screen.findByText('执行步骤')).toBeInTheDocument();
-    expect(screen.getByText('报销申请提交')).toBeInTheDocument();
-    expect(screen.getByText('HR 助理')).toBeInTheDocument();
-    expect(screen.getByText(/帮我提交差旅报销/)).toBeInTheDocument();
-  });
 });

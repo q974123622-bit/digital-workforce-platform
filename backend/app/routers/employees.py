@@ -13,8 +13,7 @@ from ..services.identity import resolve_identity
 from ..services.knowledge_registry import plugin_id_for_level
 from ..services.llm import DeepSeekProvider, LLMUnavailableError
 from ..services.policy import ResourceRef, evaluate
-from ..services.agentteams_gateway import AgentTeamsUnavailableError
-from ..services import agentteams_lifecycle as at_lifecycle, config
+from ..services import config
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -114,49 +113,18 @@ def create_employee(payload: schemas.EmployeeCreate, db: Session = Depends(get_d
                 detail=f"每位真人只能拥有一个数字分身，当前已绑定 {existing_twin.employee_no}",
             )
     employee_no = _next_employee_no(db, payload.type, payload.source_human_no)
-    # 概念模型：分身=对话组织者（demo，不建容器）；虚拟员工/RPA=执行者（agentteams，自动建容器）
-    effective_runtime = payload.runtime_type or (
-        "demo" if payload.type == "twin" else "agentteams"
-    )
-    if payload.type == "twin" and effective_runtime != "demo":
-        raise HTTPException(status_code=400, detail="数字分身只负责组织，不创建 AgentTeams worker")
-    if effective_runtime not in ("demo", "agentteams"):
-        raise HTTPException(status_code=400, detail="runtime_type 必须为 demo 或 agentteams")
+    # 运行实例由 DeepSeek Harness 统一管理（twin 与 virtual/rpa 均走 harness，无需外部容器）。
+    effective_runtime = payload.runtime_type or "harness"
+    if effective_runtime not in ("demo", "harness"):
+        raise HTTPException(status_code=400, detail="runtime_type 必须为 demo 或 harness")
     data = payload.model_dump()
     data["runtime_type"] = effective_runtime
     emp = models.DigitalEmployee(employee_no=employee_no, **data)
-    runtime_ref: str | None = None
-    if effective_runtime == "agentteams":
-        expected_worker = at_lifecycle.worker_name(employee_no, payload.type)
-        existed_before: bool | None = None
-        try:
-            existed_before = at_lifecycle.get_worker(expected_worker) is not None
-            runtime_ref = at_lifecycle.create_worker(
-                employee_no=employee_no,
-                employee_type=payload.type,
-                display_name=payload.name,
-                soul=payload.role_prompt or f"你是{payload.name}，请按角色履行职责。",
-            )
-            at_lifecycle.add_team_member(runtime_ref)
-        except AgentTeamsUnavailableError as exc:
-            if existed_before is False:
-                try:
-                    at_lifecycle.delete_worker(expected_worker)
-                except AgentTeamsUnavailableError:
-                    pass
-            raise HTTPException(status_code=503, detail=f"AgentTeams 容器创建失败：{exc}") from exc
-        emp.runtime_ref = runtime_ref
     try:
         db.add(emp)
         db.commit()
         db.refresh(emp)
     except Exception:
-        # 容器已建但落库失败：尽力清理容器，避免孤儿实例
-        if runtime_ref:
-            try:
-                at_lifecycle.delete_worker(runtime_ref)
-            except AgentTeamsUnavailableError:
-                pass
         db.rollback()
         raise
     return _to_out(db, emp)
@@ -177,55 +145,16 @@ def update_employee(employee_no: str, payload: schemas.EmployeeUpdate, db: Sessi
         raise HTTPException(status_code=404, detail="员工不存在")
     patch = payload.model_dump(exclude_unset=True)
     desired_runtime = patch.get("runtime_type", emp.runtime_type)
-    if emp.type == "twin" and desired_runtime != "demo":
-        raise HTTPException(status_code=400, detail="数字分身只负责组织对话，不创建 AgentTeams worker")
-    if desired_runtime not in ("demo", "agentteams"):
-        raise HTTPException(status_code=400, detail="runtime_type 必须为 demo 或 agentteams")
-
-    old_runtime = emp.runtime_type
-    old_ref = emp.runtime_ref
-    new_ref = old_ref
-    if old_runtime != desired_runtime:
-        if desired_runtime == "agentteams":
-            try:
-                new_ref = at_lifecycle.create_worker(
-                    employee_no=emp.employee_no,
-                    employee_type=emp.type,
-                    display_name=patch.get("name", emp.name),
-                    soul=patch.get("role_prompt", emp.role_prompt) or f"你是{emp.name}，请按角色履行职责。",
-                )
-                at_lifecycle.add_team_member(new_ref)
-            except AgentTeamsUnavailableError as exc:
-                raise HTTPException(status_code=503, detail=f"Worker 创建失败：{exc}") from exc
-        elif old_ref:
-            try:
-                at_lifecycle.delete_worker(old_ref)
-            except AgentTeamsUnavailableError as exc:
-                raise HTTPException(status_code=503, detail=f"Worker 删除失败：{exc}") from exc
-            new_ref = None
+    if desired_runtime not in ("demo", "harness"):
+        raise HTTPException(status_code=400, detail="runtime_type 必须为 demo 或 harness")
 
     for field, value in patch.items():
         setattr(emp, field, value)
-    emp.runtime_ref = new_ref
-    # 人设/显示名变化时同步 worker SOUL（仅 agentteams 运行时）
-    if emp.runtime_type == "agentteams" and emp.runtime_ref:
-        changed = payload.role_prompt is not None or payload.name is not None
-        if changed:
-            try:
-                at_lifecycle.update_worker_soul(emp.runtime_ref, payload.name or emp.name, payload.role_prompt or emp.role_prompt)
-            except AgentTeamsUnavailableError as exc:
-                raise HTTPException(status_code=503, detail=f"Worker SOUL 同步失败：{exc}") from exc
     try:
         db.commit()
         db.refresh(emp)
     except Exception:
         db.rollback()
-        # 数据库失败时尽量恢复外部运行实例，避免配置与实际资源长期分叉。
-        if old_runtime != desired_runtime and desired_runtime == "agentteams" and new_ref:
-            try:
-                at_lifecycle.delete_worker(new_ref)
-            except AgentTeamsUnavailableError:
-                pass
         raise
     return _to_out(db, emp)
 
@@ -252,12 +181,7 @@ def delete_employee(employee_no: str, db: Session = Depends(get_db)):
         if owned_conversation:
             raise HTTPException(status_code=409, detail="数字分身仍绑定职场会话，不能直接删除")
 
-    # 先删容器（失败则保留记录），再原子清理平台侧授权和成员关系。
-    if emp.runtime_type == "agentteams" and emp.runtime_ref:
-        try:
-            at_lifecycle.delete_worker(emp.runtime_ref)
-        except AgentTeamsUnavailableError as exc:
-            raise HTTPException(status_code=503, detail=f"AgentTeams 容器删除失败：{exc}") from exc
+    # 原子清理平台侧授权和成员关系。
     for conv in db.scalars(select(models.Conversation)).all():
         participants = [
             p for p in (conv.participants or []) if p.get("employee_no") != employee_no
@@ -275,31 +199,16 @@ def delete_employee(employee_no: str, db: Session = Depends(get_db)):
 
 @router.get("/{employee_no}/runtime", response_model=schemas.EmployeeRuntimeOut)
 def get_employee_runtime(employee_no: str, db: Session = Depends(get_db)):
-    """返回数字员工对应的运行实例状态（AgentTeams worker / demo）。"""
+    """返回数字员工对应的运行实例状态（DeepSeek Harness）。"""
     emp = db.get(models.DigitalEmployee, employee_no)
     if not emp:
         raise HTTPException(status_code=404, detail="员工不存在")
-    if emp.runtime_type != "agentteams" or not emp.runtime_ref:
-        return schemas.EmployeeRuntimeOut(
-            employee_no=emp.employee_no,
-            runtime_type=emp.runtime_type,
-            runtime_ref=emp.runtime_ref,
-            status=emp.status,
-            detail="未绑定 AgentTeams 运行实例",
-        )
-    try:
-        worker = at_lifecycle.get_worker(emp.runtime_ref)
-    except AgentTeamsUnavailableError as exc:
-        raise HTTPException(status_code=503, detail=f"AgentTeams 状态查询失败：{exc}") from exc
     return schemas.EmployeeRuntimeOut(
         employee_no=emp.employee_no,
         runtime_type=emp.runtime_type,
         runtime_ref=emp.runtime_ref,
         status=emp.status,
-        worker_phase=(worker or {}).get("phase"),
-        matrix_user_id=(worker or {}).get("matrixUserID"),
-        room_id=(worker or {}).get("roomID"),
-        detail="" if worker else "实例不存在（可能已删除）",
+        detail="运行实例由 DeepSeek Harness 管理",
     )
 
 

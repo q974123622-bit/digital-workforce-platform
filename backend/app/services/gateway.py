@@ -17,7 +17,7 @@ from .capability_contract import plugin_contract
 from .capability_executor import execute_capability
 from .identity import resolve_identity
 from .knowledge_adapter import select_adapter
-from .knowledge_registry import plugin_id_for_level, resolve as resolve_knowledge_base
+from .knowledge_registry import resolve as resolve_knowledge_base
 from .policy import DECISION_ALLOW, DECISION_APPROVAL, DECISION_DENY, ResourceRef, evaluate
 from .runtime_adapter import HarnessExecutionContext, RuntimeAdapter
 
@@ -53,11 +53,11 @@ def write_audit(
 
 def _result_summary(data: object) -> str:
     """Internal retrieval audits contain metadata only, never query or hit content."""
-    if isinstance(data, dict) and data.get("source") in {"internal", "mock", "demo", "rag", "volcengine_mcp"} and "knowledge_base_id" in data:
+    if isinstance(data, dict) and data.get("source") == "internal" and "knowledge_base_id" in data:
         hits = data.get("hits")
         return json.dumps(
             {
-                "source": "mock" if data.get("source") == "demo" else data.get("source"),
+                "source": data.get("source"),
                 "knowledge_base_id": data.get("knowledge_base_id"),
                 "hit_count": len(hits) if isinstance(hits, list) else 0,
             },
@@ -185,8 +185,6 @@ def invoke_plugin(
                 trace_id=trace_id,
             )
         except RuntimeError as exc:
-            if config.kb_mode() != "internal":
-                raise
             audit_id = write_audit(
                 db, trace_id=trace_id, employee_id=employee_id, plugin_id=plugin_id,
                 action=action, decision=DECISION_DENY, knowledge_base_id=knowledge_base_id,
@@ -277,7 +275,7 @@ def search_knowledge(
     trace_id: str,
     requester_human_no: str | None = None,
 ) -> dict:
-    """知识库专用入口：仍统一经过 Policy → Gateway → Adapter 管线，不绕过。"""
+    """知识库专用入口：Policy（data_level 分级）→ AgentKnowledgeGrant → Knowledge Adapter 检索。"""
     kb = resolve_knowledge_base(db, knowledge_base_id)
     if kb is None:
         raise HTTPException(status_code=404, detail="知识库资源不存在")
@@ -294,17 +292,20 @@ def search_knowledge(
             raise HTTPException(status_code=403, detail={"reason": "请求用户不在知识库允许的员工范围内"})
         if kb.department_scope and "*" not in kb.department_scope and requester.department not in kb.department_scope:
             raise HTTPException(status_code=403, detail={"reason": "请求用户不在知识库允许的部门范围内"})
-    plugin_id = plugin_id_for_level(kb.data_level)
-    # Preserve the platform Policy decision (and its audit) before applying the
-    # more specific employee-to-knowledge-base grant.
+    # Policy 评估：按 data_level 分级（不依赖已删除的 knowledge-lX 插件）
     base_policy = evaluate(
-        db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read"
+        db, subject, ResourceRef(type="knowledge", id=knowledge_base_id, data_level=kb.data_level), "read"
     )
     if base_policy.decision != DECISION_ALLOW:
-        return invoke_plugin(
-            db, employee_id=employee_id, plugin_id=plugin_id, action="read",
-            params={"query": query, "knowledge_base_id": knowledge_base_id},
-            trace_id=trace_id, knowledge_base_id=knowledge_base_id,
+        reason = f"{base_policy.policy_id}: {base_policy.reason}" if base_policy.policy_id else base_policy.reason
+        audit_id = write_audit(
+            db, trace_id=trace_id, employee_id=employee_id, plugin_id=knowledge_base_id,
+            action="read", decision=base_policy.decision, knowledge_base_id=knowledge_base_id,
+            reason=reason,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={"message": "策略拒绝", "policy_id": base_policy.policy_id, "reason": reason, "audit_id": audit_id},
         )
     explicit_grants = db.scalars(
         select(models.AgentKnowledgeGrant).where(
@@ -315,7 +316,7 @@ def search_knowledge(
     ).all()
     if knowledge_base_id not in {grant.knowledge_base_id for grant in explicit_grants}:
         audit_id = write_audit(
-            db, trace_id=trace_id, employee_id=employee_id, plugin_id=plugin_id,
+            db, trace_id=trace_id, employee_id=employee_id, plugin_id=knowledge_base_id,
             action="read", decision=DECISION_DENY, knowledge_base_id=knowledge_base_id,
             reason="该数字员工未获授权访问此知识库",
         )
@@ -326,29 +327,43 @@ def search_knowledge(
                 "policy_id": "AGENT-KB-GRANT", "audit_id": audit_id,
             },
         )
-    binding = db.scalar(select(models.AgentPluginBinding).where(
-        models.AgentPluginBinding.plugin_id == plugin_id,
-        models.AgentPluginBinding.target_agent_id == employee_id,
-        models.AgentPluginBinding.admin_enabled.is_(True),
-        models.AgentPluginBinding.employee_enabled.is_(True),
-        models.AgentPluginBinding.decision_mode == "allow",
-    ))
-    if binding is None:
-        audit_id = write_audit(
-            db, trace_id=trace_id, employee_id=employee_id, plugin_id=plugin_id,
-            action="read", decision=DECISION_DENY, knowledge_base_id=knowledge_base_id,
-            reason="知识库 MCP 未发布、未授权或未启用",
+    # 直接走知识适配器检索（不再依赖 knowledge-lX 插件与 Plugin Gateway）
+    try:
+        data = select_adapter(None, kb).search(
+            employee_id=employee_id,
+            knowledge_base_id=knowledge_base_id,
+            query=query,
+            trace_id=trace_id,
         )
-        raise HTTPException(status_code=403, detail={
-            "reason": "知识库 MCP 未发布、未授权或未启用",
-            "policy_id": "AGENT-PLUGIN-BINDING", "audit_id": audit_id,
-        })
-    return invoke_plugin(
-        db,
-        employee_id=employee_id,
-        plugin_id=plugin_id,
-        action="read",
-        params={"query": query, "knowledge_base_id": knowledge_base_id},
-        trace_id=trace_id,
-        knowledge_base_id=knowledge_base_id,
+    except RuntimeError as exc:
+        audit_id = write_audit(
+            db, trace_id=trace_id, employee_id=employee_id, plugin_id=knowledge_base_id,
+            action="read", decision=DECISION_DENY, knowledge_base_id=knowledge_base_id,
+            reason=str(exc), result_summary=json.dumps({
+                "source": "internal", "knowledge_base_id": knowledge_base_id,
+                "hit_count": 0, "status": "failed",
+            }, ensure_ascii=False),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={"message": str(exc), "retryable": True, "audit_id": audit_id},
+        ) from exc
+    audit_id = write_audit(
+        db, trace_id=trace_id, employee_id=employee_id, plugin_id=knowledge_base_id,
+        action="read", decision=DECISION_ALLOW, knowledge_base_id=knowledge_base_id,
+        reason=base_policy.reason if base_policy.policy_id else None,
+        result_summary=_result_summary(data),
     )
+    return {
+        "ok": True,
+        "data": data,
+        "decision": DECISION_ALLOW,
+        "audit_ids": [audit_id],
+        "policy_id": base_policy.policy_id,
+        "execution_mode": "knowledge_adapter",
+        "runtime_mode": "knowledge_adapter",
+        "runtime_context_id": f"{employee_id}:{trace_id or 'knowledge'}",
+        "runtime_summary": "",
+        "tool_name": kb.name,
+        "tool_type": "knowledge",
+    }

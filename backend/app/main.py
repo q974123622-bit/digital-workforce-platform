@@ -1,4 +1,3 @@
-import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -30,22 +29,11 @@ async def lifespan(_: FastAPI):
             runtime_manager.ensure_all_active(db)
         finally:
             db.close()
-    memory_stop = asyncio.Event()
-    memory_task = None
-    if (config.get("DWP_MEMORY_MODE", "mock") or "mock").lower() == "internal":
-        from .services import memory_worker
-
-        memory_task = asyncio.create_task(memory_worker.run(memory_stop))
     # 企微机器人长连接：可插拔，未启用时自动空操作（见 wecom_bot.managed_lifespan）。
     from .services import wecom_bot
 
-    try:
-        async with wecom_bot.managed_lifespan():
-            yield
-    finally:
-        if memory_task is not None:
-            memory_stop.set()
-            await memory_task
+    async with wecom_bot.managed_lifespan():
+        yield
 
 
 app = FastAPI(title="数字员工平台 Demo API", version="0.1.0", lifespan=lifespan)
@@ -128,4 +116,3 @@ app.include_router(internal.router)
 app.include_router(workplace.workplace_router, prefix=API_PREFIX)
 app.include_router(workplace.skills_router, prefix=API_PREFIX)
 app.include_router(workplace.conversations_router, prefix=API_PREFIX)
-app.include_router(workplace.workflow_router, prefix=API_PREFIX)

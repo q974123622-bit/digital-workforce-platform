@@ -5,12 +5,12 @@
 
 内置规则 ID 与 mock-data/seed.json 的 policy 记录保持一致（种子用于展示与审计引用）。
 - POLICY-001  正式员工数字分身可访问内部知识库（L2）
+- POLICY-006  岗位数字员工可访问内部知识库（L2）
 - POLICY-002  实习生数字分身访问内部知识库 DENY
 - POLICY-003  禁网（internet=deny）员工调用公网插件 DENY
 - POLICY-004  仅远程（location=remote）员工请求本地执行 DENY
 - POLICY-005  敏感操作（L3 执行类）APPROVAL
 - P-DATA-003  L3 读取仅允许 whitelist grant
-- P-PLUGIN-007 VE-0001 可执行 adp-onboarding
 - P-DEFAULT-001 默认 L1 可读
 """
 
@@ -27,8 +27,9 @@ DECISION_ALLOW = "allow"
 DECISION_DENY = "deny"
 DECISION_APPROVAL = "approval"
 
-# 插件类资源（需检查 employee_plugin_grant）；sandbox 等执行资源只走规则
-PLUGIN_RESOURCE_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http"}
+# 插件类资源（需检查 employee_plugin_grant）；knowledge 走 data_level 分级规则 + AgentKnowledgeGrant，
+# 不查插件授权；sandbox 等执行资源只走规则
+PLUGIN_RESOURCE_TYPES = {"mcp", "workflow", "rpa", "http"}
 
 
 @dataclass(frozen=True)
@@ -95,17 +96,17 @@ RULES: list[Rule] = [
         "正式员工数字分身可访问内部知识库",
         lambda s, r, a: s.employee_type == "twin" and s.employment_type == "formal" and _is_internal_kb(r),
     ),
+    # POLICY-006 岗位数字员工可访问内部知识库（历史版本经 knowledge-lX 插件授权，现改为 Policy 直接分级）
+    Rule(
+        "POLICY-006", DECISION_ALLOW, 55,
+        "岗位数字员工可访问内部知识库",
+        lambda s, r, a: s.employee_type == "virtual" and _is_internal_kb(r) and a == "read",
+    ),
     # POLICY-005 敏感操作审批
     Rule(
         "POLICY-005", DECISION_APPROVAL, 50,
         "敏感操作需要人工审批",
         lambda s, r, a: r.data_level == "L3" and a in ("execute", "export", "delete", "approve"),
-    ),
-    # P-PLUGIN-007 VE-0001 可执行 ADP
-    Rule(
-        "P-PLUGIN-007", DECISION_ALLOW, 10,
-        "入职助手可用 ADP 入职流程",
-        lambda s, r, a: s.employee_id == "VE-0001" and r.id == "adp-onboarding" and a == "execute",
     ),
     # P-DEFAULT-001 默认 L1 可读
     Rule(

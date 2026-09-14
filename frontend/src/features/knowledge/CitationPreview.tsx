@@ -7,10 +7,6 @@ const { Text } = Typography;
 
 const SOURCE_LABEL: Record<string, string> = {
   internal: '内部知识库',
-  demo: '演示知识库',
-  mock: '演示知识库',
-  rag: '本地 RAG',
-  volcengine_mcp: 'Volcengine MCP',
   unknown: '未知来源',
 };
 

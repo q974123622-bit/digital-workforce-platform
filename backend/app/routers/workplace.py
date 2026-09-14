@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..services.adapters import WORKFLOW_META
 from ..services.auth import enforce_actor, optional_account
 from ..services.group_chat import append_user_message, process_conversation_async
 from ..services import config, execution_events
@@ -26,7 +25,7 @@ from .employees import _to_out as _employee_out
 workplace_router = APIRouter(prefix="/workplace", tags=["workplace"])
 skills_router = APIRouter(prefix="/skills", tags=["skills"])
 conversations_router = APIRouter(prefix="/conversations", tags=["conversations"])
-workflow_router = APIRouter(prefix="/workflows", tags=["workflows"])
+
 
 _TASK_STATUS_LABEL = {
     "pending": "待执行",
@@ -52,19 +51,6 @@ def _get_digital_employee(db: Session, employee_no: str) -> models.DigitalEmploy
     if emp.status != "active":
         raise HTTPException(status_code=409, detail="数字员工当前未启用")
     return emp
-
-
-def _employee_workflow_out(
-    db: Session, employee_no: str
-) -> schemas.WorkflowEmployeeOut | None:
-    emp = db.get(models.DigitalEmployee, employee_no)
-    if emp is None:
-        return None
-    return schemas.WorkflowEmployeeOut(
-        employee_no=emp.employee_no,
-        name=emp.name,
-        type=emp.type,
-    )
 
 
 def _participants_out(db: Session, participants: list) -> list[schemas.ConversationParticipantOut]:
@@ -830,57 +816,5 @@ def clear_conversation(
         models.ConversationMessage.conversation_id == conversation_id
     ).delete()
     db.query(models.TaskRun).filter(models.TaskRun.conversation_id == conversation_id).delete()
-    db.query(models.AgentTeamsEventSeen).filter(
-        models.AgentTeamsEventSeen.conversation_id == conversation_id
-    ).delete()
     db.commit()
     return schemas.ClearConversationOut(ok=True)
-
-
-# ---- 工作流目录（职场「工作流」卡片）----
-
-
-@workflow_router.get("", response_model=list[schemas.WorkflowOut])
-def list_workflows(db: Session = Depends(get_db)):
-    """Mock 工作流/RPA 目录：步骤、示例指令与授权成员（仅展示，不执行）。"""
-    plugins = db.scalars(
-        select(models.Plugin)
-        .where(
-            models.Plugin.type.in_(["workflow", "rpa"]),
-            models.Plugin.status == "active",
-        )
-        .order_by(models.Plugin.type, models.Plugin.id)
-    ).all()
-    grant_map: dict[str, list[str]] = {}
-    for grant in db.scalars(select(models.EmployeePluginGrant)).all():
-        if grant.decision_mode in ("allow", "approval"):
-            grant_map.setdefault(grant.plugin_id, []).append(grant.employee_id)
-
-    out: list[schemas.WorkflowOut] = []
-    for plugin in plugins:
-        meta = WORKFLOW_META.get(plugin.id, {})
-        employees = []
-        for employee_no in grant_map.get(plugin.id, []):
-            emp = db.get(models.DigitalEmployee, employee_no)
-            if emp is not None:
-                out_emp = _employee_workflow_out(db, employee_no)
-                if out_emp is not None:
-                    employees.append(out_emp)
-        out.append(
-            schemas.WorkflowOut(
-                plugin_id=plugin.id,
-                name=plugin.name,
-                type=plugin.type,
-                data_level=plugin.data_level,
-                description=plugin.description,
-                steps=meta.get("steps", []),
-                demo_prompt=meta.get("demo_prompt", ""),
-                authorized_employees=employees,
-                owner_employee=(
-                    _employee_workflow_out(db, meta["owner_employee"])
-                    if meta.get("owner_employee")
-                    else None
-                ),
-            )
-        )
-    return out

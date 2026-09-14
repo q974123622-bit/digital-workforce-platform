@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Avatar, Card, Descriptions, Empty, Input, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { Employee, Grant, Workflow } from '@dwp/shared-schema';
+import type { Employee, Grant } from '@dwp/shared-schema';
 import { api } from '../api/client';
 import { DecisionTag, EmploymentTag, LevelTag, PluginTypeTag, StatusBadge, TypeTag } from '../components/tags';
 import { ErrorState, LoadingState } from '../components/PageState';
@@ -15,33 +15,7 @@ export default function EmployeeDetail() {
     [employeeNo],
   );
   const { data: emp, loading, error, reload } = useAsyncData<Employee>(fetcher);
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const [workflowsLoading, setWorkflowsLoading] = useState(true);
   const [capabilityKeyword, setCapabilityKeyword] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    setWorkflowsLoading(true);
-    api.listWorkflows()
-      .then((rows) => {
-        if (!cancelled) setWorkflows(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setWorkflows([]);
-      })
-      .finally(() => {
-        if (!cancelled) setWorkflowsLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  const employeeWorkflows = useMemo(() => {
-    if (!employeeNo) return [];
-    return workflows.filter((workflow) =>
-      workflow.owner_employee?.employee_no === employeeNo ||
-      workflow.authorized_employees.some((item) => item.employee_no === employeeNo),
-    );
-  }, [employeeNo, workflows]);
 
   const availableGrants = useMemo(
     () => (emp?.grants ?? []).filter((grant) => grant.decision_mode !== 'deny'),
@@ -57,15 +31,6 @@ export default function EmployeeDetail() {
     );
   }, [availableGrants, capabilityKeyword]);
 
-  const visibleWorkflows = useMemo(() => {
-    const keyword = capabilityKeyword.trim().toLowerCase();
-    if (!keyword) return employeeWorkflows;
-    return employeeWorkflows.filter((workflow) =>
-      [workflow.name, workflow.plugin_id, workflow.description, ...workflow.steps]
-        .some((value) => value.toLowerCase().includes(keyword)),
-    );
-  }, [capabilityKeyword, employeeWorkflows]);
-
   if (loading) return <LoadingState rows={8} />;
   if (error || !emp) return <ErrorState onRetry={reload} />;
 
@@ -80,27 +45,6 @@ export default function EmployeeDetail() {
       render: (value: string) => <DecisionTag value={value} />,
     },
     { title: '数据等级', dataIndex: 'data_level', render: (value: string) => <LevelTag value={value} /> },
-  ];
-
-  const workflowColumns: ColumnsType<Workflow> = [
-    {
-      title: '工作流',
-      key: 'workflow',
-      render: (_: unknown, workflow: Workflow) => (
-        <div>
-          <Typography.Text strong>{workflow.name}</Typography.Text>
-          <div><Typography.Text type="secondary" className="mono">{workflow.plugin_id}</Typography.Text></div>
-        </div>
-      ),
-    },
-    { title: '类型', dataIndex: 'type', width: 120, render: (value: string) => <PluginTypeTag value={value} /> },
-    { title: '说明', dataIndex: 'description' },
-    {
-      title: '执行步骤',
-      dataIndex: 'steps',
-      render: (steps: string[]) => steps.length ? steps.join(' → ') : '—',
-    },
-    { title: '数据等级', dataIndex: 'data_level', width: 110, render: (value: string) => <LevelTag value={value} /> },
   ];
 
   return (
@@ -197,14 +141,14 @@ export default function EmployeeDetail() {
           },
           {
             key: 'capabilities',
-            label: `功能与工作流（${availableGrants.length + employeeWorkflows.length}）`,
+            label: `具备的功能（${availableGrants.length}）`,
             children: (
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 <Card>
                   <Input.Search
                     allowClear
-                    aria-label="检索功能与工作流"
-                    placeholder="检索功能、插件、工作流或执行步骤"
+                    aria-label="检索功能"
+                    placeholder="检索功能、插件或动作"
                     value={capabilityKeyword}
                     onChange={(event) => setCapabilityKeyword(event.target.value)}
                     style={{ maxWidth: 420 }}
@@ -221,18 +165,6 @@ export default function EmployeeDetail() {
                       scroll={{ x: 760 }}
                     />
                   ) : <Empty description="没有匹配的功能" />}
-                </Card>
-                <Card title={<Space><span>可执行的工作流</span><Tag>{visibleWorkflows.length}</Tag></Space>}>
-                  <Table<Workflow>
-                    rowKey="plugin_id"
-                    size="small"
-                    loading={workflowsLoading}
-                    pagination={false}
-                    dataSource={visibleWorkflows}
-                    columns={workflowColumns}
-                    locale={{ emptyText: <Empty description="没有匹配的工作流" /> }}
-                    scroll={{ x: 900 }}
-                  />
                 </Card>
               </Space>
             ),

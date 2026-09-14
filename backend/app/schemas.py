@@ -20,7 +20,7 @@ class EmployeeCreate(BaseModel):
     owner_human_no: str
     department: str = ""
     role_prompt: str = ""
-    runtime_type: str | None = None  # 缺省按 type：twin→demo（不建容器），virtual/rpa→agentteams
+    runtime_type: str | None = None  # 缺省按 type：twin→demo（不建容器），virtual/rpa→容器
     location: str = "remote"
     internet: str = "deny"
     max_data_level: str = "L1"
@@ -372,12 +372,8 @@ class TaskRunOut(BaseModel):
     status: str = "pending"  # parsing | running | approval | completed | denied | failed
     subtasks: list[SubtaskOut] = []
     summary: str = ""
-    source: str = "builtin"  # builtin | agentteams
+    source: str = "builtin"
     created_at: datetime
-
-
-class TaskCreateIn(BaseModel):
-    request: str
 
 
 class TaskApproveIn(BaseModel):
@@ -568,24 +564,6 @@ class WorkplaceHomeOut(BaseModel):
     available_employees: list[EmployeeOut] = []
     skills: list[SkillOut] = []
     recent_conversations: list[ConversationSummaryOut] = []
-
-
-class WorkflowEmployeeOut(BaseModel):
-    employee_no: str
-    name: str
-    type: str
-
-
-class WorkflowOut(BaseModel):
-    plugin_id: str
-    name: str
-    type: str
-    data_level: str
-    description: str
-    steps: list[str] = []
-    demo_prompt: str = ""
-    authorized_employees: list[WorkflowEmployeeOut] = []
-    owner_employee: WorkflowEmployeeOut | None = None
 
 
 class ClearConversationOut(BaseModel):

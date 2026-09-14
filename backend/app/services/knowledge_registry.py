@@ -22,8 +22,12 @@ def resolve(db: Session, knowledge_base_id: str) -> models.KnowledgeBase | None:
 
 
 def plugin_id_for_level(data_level: str) -> str:
-    """知识库访问经分级知识插件入口。"""
-    return {"L1": "knowledge-l1", "L2": "knowledge-l2", "L3": "knowledge-l3"}.get(data_level, "knowledge-l3")
+    """知识库分级标识：直接返回数据等级（L1/L2/L3）。
+
+    历史版本曾映射到 mock 插件 knowledge-l1/l2/l3；现已删除这些 mock 插件，
+    知识访问改由 Policy 按 data_level 直接分级判断，不再依赖分级插件入口。
+    """
+    return data_level
 
 
 def accessible_knowledge_bases(db: Session, subject, requester_human_no: str | None = None) -> list[dict]:

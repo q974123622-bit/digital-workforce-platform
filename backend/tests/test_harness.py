@@ -12,7 +12,7 @@ def test_harness_execute_allow(client, db_session, monkeypatch):
     monkeypatch.setattr("app.routers.internal.DockerHarnessRuntimeAdapter", FakeHarness)
     resp = client.post(
         "/internal/harness/execute",
-        json={"employee_no": "VE-0001", "task_prompt": "欢迎任务", "trace_id": "H-1"},
+        json={"employee_no": "AI-GENERAL", "task_prompt": "欢迎任务", "trace_id": "H-1"},
     )
     assert resp.status_code == 200
     body = resp.json()

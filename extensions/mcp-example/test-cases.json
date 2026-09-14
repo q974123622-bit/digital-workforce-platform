@@ -1,9 +1,0 @@
-{
-  "tools": [
-    {
-      "name": "query_example_data",
-      "input": {"query": "mock connectivity check"},
-      "expected": {"source": "mock", "items": []}
-    }
-  ]
-}

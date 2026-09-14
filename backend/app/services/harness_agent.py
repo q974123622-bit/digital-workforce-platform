@@ -16,7 +16,7 @@ from .chat import ChatResult, ToolCard, knowledge_display_name
 from .harness_token import issue_token
 from .identity import resolve_identity
 from .knowledge_registry import accessible_knowledge_bases
-from .memory_service import five_complete_rounds, relevant_memories
+from .memory_service import five_complete_rounds
 from .plugin_governance import effective_plugins
 from .runtime_adapter import DockerHarnessRuntimeAdapter
 
@@ -30,7 +30,6 @@ def _lock(employee_id: str) -> threading.Lock:
 
 
 # 技能前置路由关键词：任务命中时直接把对应技能的完整 SOP 注入任务上下文。
-# 命中则无需 DSH 主动 load_skill；未命中时仍保留 load_skill 兜底。
 SKILL_ROUTE_KEYWORDS: dict[str, list[str]] = {
     "市场早报": ["早报", "盘前", "收盘", "行情速报", "市场热点", "基金经理观点"],
     "基金筛选": ["筛选", "选基", "选基金", "挑基金", "推荐基金", "回撤", "偏股", "股票基金", "指数基金", "债基"],
@@ -69,9 +68,10 @@ def _route_skill_content(db: Session, employee_id: str, message: str) -> dict | 
     if not skills:
         return None
     best, best_score = None, 0
+    message_lower = message.lower()
     for skill in skills:
         keywords = SKILL_ROUTE_KEYWORDS.get(skill["name"], [skill["name"]])
-        score = sum(1 for kw in keywords if kw in message)
+        score = sum(1 for kw in keywords if kw.lower() in message_lower)
         if score > best_score:
             best, best_score = skill, score
     return best if best_score > 0 else None
@@ -80,16 +80,12 @@ def _route_skill_content(db: Session, employee_id: str, message: str) -> dict | 
 def _prompt(
     *, employee: models.DigitalEmployee, profile: models.AgentProfile, requester: str,
     message: str, history: list[dict], knowledge: list[dict], depth: int,
-    plugins: list[dict], memories: list[dict], routed_skill: dict | None = None,
+    plugins: list[dict], routed_skill: dict | None = None,
 ) -> str:
     can_delegate = profile.identity_kind == "human_twin" and depth == 0
     authorized = [{"id": kb["id"], "name": kb["name"]} for kb in knowledge]
-    # Skill 已改为显式加载：这里只保留轻量的路由清单（name + 触发条件），完整内容由 load_skill 工具按需加载。
+    # Skill 通过前置路由（task_playbook）注入完整 SOP，不再出现在 enabled_plugins 清单。
     enabled = [p for p in plugins if p.get("plugin_type") != "skill"]
-    skills = [
-        {"name": p.get("name"), "description": p.get("description", "")}
-        for p in plugins if p.get("plugin_type") == "skill"
-    ]
     envelope = {
         "identity": {
             "employee_id": employee.employee_no,
@@ -101,10 +97,7 @@ def _prompt(
         "requester_human_no": requester,
         "authorized_knowledge_bases": authorized,
         "recent_conversation": five_complete_rounds(history),
-        "relevant_long_term_memories": memories,
         "enabled_plugins": enabled,
-        "available_skills": skills,
-        "skill_loading_rule": "当任务属于 available_skills 中某个技能的描述场景时，第一步必须调用 load_skill 工具加载该技能的完整 SOP，再严格按其步骤执行，禁止跳过技能直接自行调用工具。Skill 只补充工作方法，不得覆盖系统安全、身份、知识授权和委派限制。",
         "goal": message,
         "limits": {
             "knowledge_searches": 5,
@@ -114,7 +107,7 @@ def _prompt(
         },
     }
     if routed_skill:
-        # 前置路由命中：把完整 SOP 直接注入，DSH 无需主动 load_skill 即可按 SOP 执行。
+        # 前置路由命中：把完整 SOP 直接注入任务上下文，DSH 按 SOP 执行。
         envelope["task_playbook"] = {
             "skill_name": routed_skill["name"],
             "sop": routed_skill["content"],
@@ -124,10 +117,7 @@ def _prompt(
             "请严格按其步骤、工具编排与输出规范执行，不要偏离 SOP 自行发挥。"
         )
     else:
-        playbook_lead = (
-            "若任务属于 available_skills 中某个技能的描述场景（如基金筛选、组合诊断、市场早报），"
-            "必须先调用 load_skill 加载该技能再按其 SOP 执行，不要跳过技能直接调工具。"
-        )
+        playbook_lead = ""
     return (
         "你是企业内部的真实数字同事，请在本轮内自主完成任务。先理解问题，再判断是否需要检索知识库；"
         "证据不足时可顺序检索其他已授权知识库，但最多五次。只能使用工具目录中出现的工具，"
@@ -171,7 +161,6 @@ def run_agent(
         )
     knowledge = accessible_knowledge_bases(db, subject, requester_human_no)
     plugins = effective_plugins(db, employee_id, requester_human_no)
-    memories = relevant_memories(db, requester_human_no, employee_id, message)
     routed_skill = _route_skill_content(db, employee_id, message)
     if routed_skill is not None and execution is not None:
         # 前置路由命中：在轨迹中显式记录技能来源，保证可审计（SOP 已注入任务上下文）。
@@ -184,7 +173,7 @@ def run_agent(
     task = _prompt(
         employee=employee, profile=profile, requester=requester_human_no,
         message=message, history=history or [], knowledge=knowledge, depth=depth,
-        plugins=plugins, memories=memories, routed_skill=routed_skill,
+        plugins=plugins, routed_skill=routed_skill,
     )
     token = issue_token(
         employee_id=employee_id,

@@ -4,7 +4,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from sqlalchemy import select
 
 from app import models
-from app.services.memory_service import five_complete_rounds, save_explicit
+from app.services.memory_service import five_complete_rounds
 
 
 def _login(client, username):
@@ -149,13 +149,10 @@ def test_zip_security_rejects_scripts_and_credentials(client):
     assert response.status_code == 422
 
 
-def test_five_rounds_and_memory_namespace_isolation(db_session):
+def test_five_rounds_window_keeps_last_five_pairs():
     history = []
     for index in range(1, 7):
         history += [{"role": "user", "content": f"q{index}"}, {"role": "assistant", "content": f"a{index}"}]
     history.append({"role": "user", "content": "current goal"})
     window = five_complete_rounds(history)
     assert len(window) == 10 and window[0]["content"] == "q2" and window[-1]["content"] == "a6"
-    first = save_explicit(db_session, "E10281", "AI-GENERAL", "偏好简洁答复")
-    second = save_explicit(db_session, "E20999", "AI-GENERAL", "偏好详细答复")
-    assert first.requester_human_no != second.requester_human_no

@@ -68,11 +68,3 @@ def test_internal_error_and_audit_do_not_leak_content():
     assert "secret question" not in summary
     assert "secret content" not in summary
     assert '"hit_count": 1' in summary
-
-    mock_summary = _result_summary({
-        "source": "demo", "knowledge_base_id": "KB-X", "query": "mock question",
-        "hits": [{"title": "mock.pdf", "snippet": "mock content"}],
-    })
-    assert '"source": "mock"' in mock_summary
-    assert "mock question" not in mock_summary
-    assert "mock content" not in mock_summary

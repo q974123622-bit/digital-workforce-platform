@@ -60,13 +60,6 @@ def get_team(team_id: str, db: Session = Depends(get_db)):
     return _to_out(db, team)
 
 
-@router.post("/{team_id}/tasks", response_model=schemas.TaskRunOut, status_code=201)
-def create_task(team_id: str, payload: schemas.TaskCreateIn, db: Session = Depends(get_db)):
-    """发起任务（Sprint 5）：模板拆解 + Worker 执行（走 Gateway） + 审批挂起 + Leader 汇总。"""
-    orchestrator = _team_orchestrator()
-    return orchestrator.create_task(db, team_id=team_id, request=payload.request)
-
-
 @router.get("/{team_id}/tasks/{task_id}", response_model=schemas.TaskRunOut)
 def get_task(team_id: str, task_id: str, db: Session = Depends(get_db)):
     run = db.get(models.TaskRun, task_id)

@@ -160,7 +160,7 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: {
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-ink">{task.request}</div>
           <Text type="secondary" style={{ fontSize: 11 }}>
-            {task.id} · {task.source === 'agentteams' ? '团队协作' : '内置协作'} · 全程留痕
+            {task.id} · 内置协作 · 全程留痕
           </Text>
         </div>
         <Space size={4}>

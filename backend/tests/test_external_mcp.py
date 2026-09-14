@@ -4,10 +4,23 @@ import json
 
 import httpx
 import pytest
+from sqlalchemy import select
 
 from app import models
-from app.services.external_mcp_adapter import QIEMAN_PLUGIN_ID, QiemanMcpAdapter
+from app.services.external_mcp_adapter import QIEMAN_PLUGIN_ID, QIEMAN_TOOL_PREFIX, QiemanMcpAdapter
 from app.services.external_mcp_client import ExternalMcpClient, ExternalMcpError
+
+
+def _make_qieman_adapter(client=None, url="", api_key=""):
+    return QiemanMcpAdapter(
+        plugin_id=QIEMAN_PLUGIN_ID,
+        tool_prefix=QIEMAN_TOOL_PREFIX,
+        source_label="盈米",
+        url_fn=lambda: url,
+        api_key_fn=lambda: api_key,
+        timeout_fn=lambda: 20.0,
+        client=client,
+    )
 
 
 def _mcp_response(payload, result):
@@ -109,7 +122,7 @@ def test_adapter_caches_tool_list():
 
     http_client = _client(handler)
     mcp_client = ExternalMcpClient(url="https://mcp.invalid", api_key="k", client=http_client)
-    adapter = QiemanMcpAdapter(client=mcp_client)
+    adapter = _make_qieman_adapter(client=mcp_client)
     adapter.list_tools()
     adapter.list_tools()
     http_client.close()
@@ -129,7 +142,7 @@ def test_adapter_prefixed_tools_adds_namespace():
         return _mcp_response(payload, {})
 
     http_client = _client(handler)
-    adapter = QiemanMcpAdapter(client=ExternalMcpClient(url="https://mcp.invalid", api_key="k", client=http_client))
+    adapter = _make_qieman_adapter(client=ExternalMcpClient(url="https://mcp.invalid", api_key="k", client=http_client))
     names = [t["name"] for t in adapter.prefixed_tools()]
     http_client.close()
     assert names == ["qieman__SearchFunds", "qieman__GuessFundCode"]
@@ -151,7 +164,7 @@ def test_adapter_call_tool_strips_prefix():
         return _mcp_response(payload, {})
 
     http_client = _client(handler)
-    adapter = QiemanMcpAdapter(client=ExternalMcpClient(url="https://mcp.invalid", api_key="k", client=http_client))
+    adapter = _make_qieman_adapter(client=ExternalMcpClient(url="https://mcp.invalid", api_key="k", client=http_client))
     result = adapter.call_tool("qieman__SearchFunds", {"keyword": "x"})
     http_client.close()
     assert called["name"] == "SearchFunds"  # 已去掉前缀
@@ -161,19 +174,25 @@ def test_adapter_call_tool_strips_prefix():
 def test_adapter_not_configured_returns_empty(monkeypatch):
     monkeypatch.delenv("DWP_QIEMAN_MCP_URL", raising=False)
     monkeypatch.delenv("DWP_QIEMAN_MCP_API_KEY", raising=False)
-    adapter = QiemanMcpAdapter()
+    adapter = _make_qieman_adapter()
     assert adapter.configured() is False
     assert adapter.list_tools() == []
     assert adapter.prefixed_tools() == []
 
 
 def test_adapter_authorization_gate(db_session):
-    db_session.add(models.Plugin(id=QIEMAN_PLUGIN_ID, name="盈米基金数据 MCP", type="mcp"))
-    db_session.add(models.AgentPluginBinding(
-        plugin_id=QIEMAN_PLUGIN_ID, target_agent_id="AI-FUND",
-        admin_enabled=True, employee_enabled=True, decision_mode="allow",
+    if db_session.get(models.Plugin, QIEMAN_PLUGIN_ID) is None:
+        db_session.add(models.Plugin(id=QIEMAN_PLUGIN_ID, name="盈米基金数据 MCP", type="mcp"))
+    binding = db_session.scalar(select(models.AgentPluginBinding).where(
+        models.AgentPluginBinding.plugin_id == QIEMAN_PLUGIN_ID,
+        models.AgentPluginBinding.target_agent_id == "AI-FUND",
     ))
+    if binding is None:
+        db_session.add(models.AgentPluginBinding(
+            plugin_id=QIEMAN_PLUGIN_ID, target_agent_id="AI-FUND",
+            admin_enabled=True, employee_enabled=True, decision_mode="allow",
+        ))
     db_session.commit()
-    adapter = QiemanMcpAdapter()
+    adapter = _make_qieman_adapter()
     assert adapter.is_authorized(db_session, "AI-FUND") is True
     assert adapter.is_authorized(db_session, "AI-GENERAL") is False

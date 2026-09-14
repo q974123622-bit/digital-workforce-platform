@@ -8,12 +8,21 @@ from app.services import execution_events
 
 
 def _direct_conversation(db):
-    return db.scalar(
+    conv = db.scalar(
         select(models.Conversation).where(
             models.Conversation.owner_human_no == "E10281",
             models.Conversation.kind == "direct",
         )
     )
+    if conv is None:
+        conv = models.Conversation(
+            id="CONV-TEST-DIRECT", kind="direct", title="", owner_human_no="E10281",
+            participants=[{"employee_no": "DT-E10281", "role": "member"}],
+        )
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+    return conv
 
 
 def test_run_endpoint_creates_one_active_execution(client, db_session, monkeypatch):

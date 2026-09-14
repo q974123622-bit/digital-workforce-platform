@@ -1,13 +1,14 @@
 import os
 
 os.environ["DATABASE_URL"] = "sqlite://"
-# 测试默认 mock 检索模式：避免 RAG 路径访问生产 DB/真实 embedding 服务
-os.environ["DWP_KB_MODE"] = "mock"
-# 测试默认走内置编排，避免加载真实 .env 后连 Matrix/AgentTeams（AgentTeams 路径由专门测试 mock 覆盖）
+# 测试默认走内置编排，避免加载真实 .env 后连外部编排服务
 os.environ["DWP_TEAM_BACKEND"] = "builtin"
 os.environ["DWP_HARNESS_ENABLED"] = "0"
 # 旧版接口测试保留兼容模式；正式部署默认要求登录。
 os.environ["DWP_REQUIRE_AUTH"] = "0"
+# 固定初始密码：避免容器 /run/secrets 的真实密码覆盖测试默认密码，导致登录 401。
+os.environ["DWP_EMPLOYEE_INITIAL_PASSWORD"] = "Demo@123456"
+os.environ["DWP_ADMIN_INITIAL_PASSWORD"] = "Demo@123456"
 
 import pytest
 from fastapi.testclient import TestClient

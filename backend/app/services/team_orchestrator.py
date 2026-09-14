@@ -6,7 +6,6 @@
 """
 
 import json
-import re
 from datetime import datetime
 from uuid import uuid4
 
@@ -20,36 +19,6 @@ from .gateway import write_audit
 from .llm import LLMProvider, LLMUnavailableError
 from .runtime_adapter import RuntimeAdapter
 from .subtask_executor import GatewaySubtaskExecutor, SubtaskExecutor
-
-# TEAM-ONBOARD 预置模板：HR 确认制度 -> IT 开通账号 -> 敏感报表（触发审批）
-ONBOARD_TEMPLATE = [
-    {
-        "worker_id": "VE-0002",
-        "worker_no": "VE-0002",
-        "summary": "确认入职制度与材料",
-        "plugin_ids": ["hr-employee-mcp"],
-        "action": "execute",
-        "params": {},
-    },
-    {
-        "worker_id": "VE-0003",
-        "worker_no": "VE-0003",
-        "summary": "开通办公账号与 IT 流程",
-        "plugin_ids": ["adp-onboarding"],
-        "action": "execute",
-        "params": {},
-    },
-    {
-        "worker_id": "RPA-0001",
-        "worker_no": "RPA-0001",
-        "summary": "生成入职权限报表（敏感操作，需审批）",
-        "plugin_ids": ["rpa-report"],
-        "action": "execute",
-        "params": {},
-    },
-]
-
-TEMPLATES = {"TEAM-ONBOARD": ONBOARD_TEMPLATE}
 
 _STATUS_CN = {
     "submitted": "已提交",
@@ -100,37 +69,6 @@ def _format_gateway_result(data, plugin_name: str = "") -> str:
         parts.append(json.dumps(data, ensure_ascii=False))
     return "；".join(parts)
 
-# 请求关键词 → 插件（演示稳定性兜底：LLM 拆解失效时按语义指派）
-PLUGIN_KEYWORDS = [
-    ("expense-claim", ["报销", "差旅", "打款"]),
-    ("leave-request", ["请假", "年假", "调休"]),
-    ("meeting-notes", ["会议纪要", "纪要", "会议记录"]),
-    ("weekly-report", ["周报", "月报", "费用周报"]),
-    ("purchase-request", ["采购", "下单", "比价"]),
-    ("adp-onboarding", ["入职", "账号", "工牌"]),
-    ("rpa-report", ["报表", "权限报表"]),
-]
-
-FALLBACK_SUMMARY = {
-    "adp-onboarding": "整理入职材料清单并开通办公账号（企业微信/邮箱/VPN）",
-    "expense-claim": "提交差旅报销申请并跟进审批打款",
-    "leave-request": "提交请假申请并同步考勤",
-    "meeting-notes": "整理会议纪要（结论/决议/行动项/遗留问题四段式）",
-    "weekly-report": "生成本周/本月费用周报",
-    "purchase-request": "发起采购申请并完成比价下单",
-    "rpa-report": "生成权限报表（敏感）",
-}
-
-# 从请求中提取员工姓名（仅用于演示参数注入；匹配"新员工Xxx准备/办理/入职"等明确模式）
-_EMPLOYEE_NAME_RE = re.compile(
-    r"(?:帮|给)?新员工([\u4e00-\u9fa5]{2,4})(?:准备|办理|入职|安排|开通|做)"
-)
-
-
-def extract_employee_name(request: str) -> str:
-    m = _EMPLOYEE_NAME_RE.search(request)
-    return m.group(1) if m else ""
-
 
 def _fallback_summary(run: models.TaskRun) -> str:
     done = [s["summary"] for s in run.subtasks if s.get("status") == "completed"]
@@ -148,57 +86,6 @@ class TeamTaskOrchestrator:
         self.executor = executor or GatewaySubtaskExecutor(runtime=runtime)
 
     # ---------- 创建与执行 ----------
-
-    def create_task(self, db: Session, *, team_id: str, request: str) -> schemas.TaskRunOut:
-        team = db.get(models.Team, team_id)
-        if team is None:
-            raise HTTPException(status_code=404, detail="团队不存在")
-        template = TEMPLATES.get(team_id)
-        if template is None:
-            raise HTTPException(status_code=400, detail="该团队暂无任务模板")
-
-        task_id = f"T-{datetime.now():%Y%m%d}-{uuid4().hex[:6].upper()}"
-        employee_name = extract_employee_name(request)
-        subtasks = []
-        for t in template:
-            params = dict(t.get("params") or {})
-            if "adp-onboarding" in (t.get("plugin_ids") or []):
-                params["employee_name"] = employee_name or "该员工"
-            subtasks.append(
-                {
-                    "worker_id": t["worker_id"],
-                    "worker_no": t["worker_no"],
-                    "summary": t["summary"],
-                    "plugin_ids": list(t["plugin_ids"]),
-                    "params": params,
-                    "status": "pending",
-                    "result": None,
-                    "approval": None,
-                }
-            )
-        run = models.TaskRun(
-            id=task_id,
-            team_id=team_id,
-            trace_id=task_id,
-            request=request,
-            status="running",
-            subtasks=subtasks,
-            summary="",
-        )
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-        write_audit(
-            db,
-            trace_id=run.trace_id,
-            employee_id=team.leader_employee_id,
-            plugin_id="team:task",
-            action="create",
-            decision="allow",
-            reason="任务创建",
-            result_summary=request[:200],
-        )
-        return self._run_loop(db, run)
 
     def create_conversation_task(
         self,
@@ -231,11 +118,7 @@ class TeamTaskOrchestrator:
         source: str = "builtin",
         task_id: str | None = None,
     ) -> tuple[models.TaskRun, models.DigitalEmployee]:
-        """拆解并持久化任务，但暂不执行。
-
-        AgentTeams+Harness 组合链先用它建立 running 任务卡，再让 AgentTeams
-        展示协作，最后由 Harness/Gateway 执行同一 TaskRun，避免建立两个任务。
-        """
+        """拆解并持久化任务，再交由执行循环逐个子任务执行。"""
         if conversation.kind != "group":
             raise HTTPException(status_code=400, detail="只有协作群聊可以发起任务")
 
@@ -263,13 +146,6 @@ class TeamTaskOrchestrator:
                 return existing, leader
 
         subtasks = self._decompose(db, conversation, members, request)
-        # 把请求中的员工姓名注入入职类子任务参数（避免 Mock 流程显示占位姓名）
-        employee_name = extract_employee_name(request)
-        for sub in subtasks:
-            if "adp-onboarding" in (sub.get("plugin_ids") or []):
-                params = dict(sub.get("params") or {})
-                params["employee_name"] = employee_name or "该员工"
-                sub["params"] = params
         task_id = task_id or f"T-{datetime.now():%Y%m%d}-{uuid4().hex[:6].upper()}"
         run = models.TaskRun(
             id=task_id,
@@ -293,26 +169,10 @@ class TeamTaskOrchestrator:
             plugin_id="conv:task",
             action="create",
             decision="allow",
-            reason=(
-                "群聊任务创建（AgentTeams 协作 + Harness 执行）"
-                if source == "agentteams"
-                else "群聊任务创建（分身拆解）"
-            ),
+            reason="群聊任务创建（分身拆解）",
             result_summary=request[:200],
         )
         return run, leader
-
-    def run_prepared_task(
-        self,
-        db: Session,
-        run: models.TaskRun,
-        *,
-        leader_employee_id: str,
-    ) -> schemas.TaskRunOut:
-        """执行已持久化任务；供 AgentTeams 协作阶段完成后接入 Harness。"""
-        if run.status != "running":
-            return self._to_out(run)
-        return self._run_loop(db, run, leader_employee_id=leader_employee_id)
 
     def _decompose(
         self,
@@ -342,32 +202,6 @@ class TeamTaskOrchestrator:
             f"{'、'.join(plugin_names.get(pid, pid) for pid in executable.get(m.employee_no, [])) or '无'}"
             for m in members
         )
-        suggested = [pid for pid, keywords in PLUGIN_KEYWORDS if any(k in request for k in keywords)]
-        # 入职是跨 HR / IT / RPA 的固定职责链。只要会话中至少具备 HR 与 IT
-        # 两个角色，就优先使用可审计的角色模板；AgentTeams 负责围绕该计划协作，
-        # 不让模型把所有工作随意塞给单一员工。
-        if "adp-onboarding" in suggested:
-            tpl = [
-                {
-                    "worker_id": t["worker_id"],
-                    "worker_no": t["worker_id"],
-                    "summary": t["summary"],
-                    "plugin_ids": list(t["plugin_ids"]),
-                    "status": "pending",
-                    "result": None,
-                    "approval": None,
-                    "params": dict(t.get("params") or {}),
-                }
-                for t in ONBOARD_TEMPLATE
-                if t["worker_id"] in executable
-                and t["plugin_ids"][0] in executable[t["worker_id"]]
-                and (
-                    t["plugin_ids"][0] != "rpa-report"
-                    or any(keyword in request for keyword in ("报表", "权限", "清单导出"))
-                )
-            ]
-            if len(tpl) >= 2:
-                return tpl
         prompt = [
             {
                 "role": "system",
@@ -376,9 +210,6 @@ class TeamTaskOrchestrator:
                     '只输出 JSON：{"subtasks":[{"worker_id":"成员工号","summary":"子任务说明","plugin_ids":["插件ID"]}]}。'
                     "规则：worker_id 必须来自成员列表；plugin_ids 只从该成员的可执行插件中选 1 个；"
                     "summary 用一句话描述要完成的事，不要编造不存在的成员或插件。"
-                    "插件选择参考：报销/打款→expense-claim；请假→leave-request；会议纪要→meeting-notes；"
-                    "周报/报告→weekly-report；入职/账号开通→adp-onboarding；采购/下单→purchase-request；报表→rpa-report。"
-                    + (f"建议优先使用插件：{'、'.join(suggested)}。" if suggested else "")
                 ),
                 "source": "demo",
             },
@@ -412,50 +243,12 @@ class TeamTaskOrchestrator:
                         "approval": None,
                     }
                 )
-            subtasks = self._merge_suggested(
-                subtasks,
-                suggested=suggested,
-                executable=executable,
-                members=members,
-                plugin_names=plugin_names,
-            )
             if subtasks:
                 return subtasks
         except (LLMUnavailableError, Exception):
             pass
 
-        # 兜底：按请求关键词为命中的插件指派拥有该插件的成员
-        subtasks = self._merge_suggested(
-            subtasks,
-            suggested=suggested,
-            executable=executable,
-            members=members,
-            plugin_names=plugin_names,
-        )
-        if subtasks:
-            return subtasks
-
-        # 兜底 2a：入职类请求按团队模板拆成 HR/IT 两个子任务（指派给对应成员，避免一人包办）
-        if "adp-onboarding" in suggested:
-            member_ids = {m.employee_no for m in members}
-            tpl = [
-                {
-                    "worker_id": t["worker_id"],
-                    "worker_no": t["worker_id"],
-                    "summary": t["summary"],
-                    "plugin_ids": list(t["plugin_ids"]),
-                    "status": "pending",
-                    "result": None,
-                    "approval": None,
-                    "params": dict(t.get("params") or {}),
-                }
-                for t in ONBOARD_TEMPLATE
-                if t["worker_id"] in member_ids
-            ]
-            if len(tpl) >= 2:
-                return tpl
-
-        # 兜底 2b：第一个有可执行插件的成员执行一个子任务
+        # 兜底：第一个有可执行插件的成员执行一个子任务
         for member in members:
             plugins = executable.get(member.employee_no) or []
             if plugins:
@@ -471,36 +264,6 @@ class TeamTaskOrchestrator:
                     }
                 ]
         raise HTTPException(status_code=400, detail="协作空间成员均无可执行插件")
-
-    @staticmethod
-    def _merge_suggested(
-        subtasks: list[dict],
-        *,
-        suggested: list[str],
-        executable: dict[str, list[str]],
-        members: list[models.DigitalEmployee],
-        plugin_names: dict[str, str],
-    ) -> list[dict]:
-        """把关键词命中的插件补进子任务（LLM 漏掉的语义插件，指派给拥有它的成员）。"""
-        covered = {sub["plugin_ids"][0] for sub in subtasks if sub.get("plugin_ids")}
-        for plugin_id in suggested:
-            if plugin_id in covered or len(subtasks) >= 3:
-                continue
-            for member in members:
-                if plugin_id in executable.get(member.employee_no, []):
-                    subtasks.append(
-                        {
-                            "worker_id": member.employee_no,
-                            "worker_no": member.employee_no,
-                            "summary": FALLBACK_SUMMARY.get(plugin_id, f"执行：{plugin_names.get(plugin_id, plugin_id)}"),
-                            "plugin_ids": [plugin_id],
-                            "status": "pending",
-                            "result": None,
-                            "approval": None,
-                        }
-                    )
-                    break
-        return subtasks
 
     @staticmethod
     def _resolve_plugin(

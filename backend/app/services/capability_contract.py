@@ -10,7 +10,6 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from .. import models
-from .adapters import REGISTRY
 
 CONTRACT_VERSION = "1.0"
 PLUGIN_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http"}
@@ -82,9 +81,6 @@ def plugin_contract(plugin: models.Plugin) -> CapabilityContract:
         issues.append("executor.adapter_ref 必须与 plugin.endpoint_ref 一致")
     if not meta.get("actions"):
         issues.append("actions 不能为空")
-    needs_adapter = primary == "adapter" or meta["executor"].get("tool") == "adapter"
-    if plugin.type != "knowledge" and needs_adapter and adapter_ref not in REGISTRY:
-        issues.append(f"Adapter 未注册：{adapter_ref}")
 
     return CapabilityContract(
         contract_version=str(meta["contract_version"]),

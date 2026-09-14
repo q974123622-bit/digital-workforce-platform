@@ -32,8 +32,22 @@ def _tool_script(kb_id, query, final_answer):
     ]
 
 
-def test_chat_orchestrator_tool_allow_path(db_session):
-    """场景 A：AI员工平台问 IT 服务 → 工具经 Gateway Allow → 正常回答。"""
+def test_chat_orchestrator_tool_allow_path(db_session, monkeypatch):
+    """场景 A：AI员工平台问 IT 服务 → 工具经 Gateway Allow → 正常回答（internal 检索）。"""
+    def fake_search_knowledge(*_args, **_kwargs):
+        return {
+            "ok": True,
+            "decision": "allow",
+            "policy_id": "POLICY-006",
+            "data": {
+                "source": "internal",
+                "knowledge_base_id": "KB-IT-SERVICE",
+                "query": "VPN 怎么连",
+                "hits": [{"title": "VPN 接入指引", "snippet": "使用企业 VPN 客户端连接。"}],
+            },
+        }
+
+    monkeypatch.setattr("app.services.chat.search_knowledge", fake_search_knowledge)
     fake = FakeLLM(_tool_script("KB-IT-SERVICE", "VPN 怎么连", "根据 IT 服务知识库，VPN 连接流程如下…"))
     orchestrator = ChatOrchestrator(fake)
     result = orchestrator.handle_message(
@@ -46,16 +60,15 @@ def test_chat_orchestrator_tool_allow_path(db_session):
     assert len(result.tool_cards) == 1
     assert result.tool_cards[0].decision == "allow"
     assert result.tool_cards[0].name == "IT 服务知识库"
-    assert result.tool_cards[0].source == "demo"
+    assert result.tool_cards[0].source == "internal"
     assert result.policy_denied is None
-    # 工具结果确实来自 Gateway（虚构内容，带知识库名称和 source=demo 标签）
+    # 工具结果确实来自 Gateway（internal 内容，带知识库名称和 source=internal 标签）
     tool_msgs = [m for m in fake.calls[1] if m["role"] == "tool"]
-    assert any("知识库：IT 服务知识库" in m["content"] and "source=demo" in m["content"] for m in tool_msgs)
+    assert any("知识库：IT 服务知识库" in m["content"] and "source=internal" in m["content"] for m in tool_msgs)
 
 
 def test_chat_orchestrator_labels_internal_knowledge_base(db_session, monkeypatch):
     """真实知识引擎检索时，卡片和工具消息必须显示真实库名与 source=internal。"""
-    monkeypatch.setenv("DWP_KB_MODE", "internal")
 
     def fake_search_knowledge(*_args, **_kwargs):
         return {
@@ -119,7 +132,7 @@ def test_chat_endpoint_returns_internal_source_label(client, monkeypatch):
 
 def test_chat_endpoint_intern_deny(db_session):
     """场景 B：实习生分身同样问题 → Policy DENY → 权限不足提示 + Deny 卡片。"""
-    fake = FakeLLM(_tool_script("KB-INTERNAL", "内部制度", "当前身份无权访问该知识库。"))
+    fake = FakeLLM(_tool_script("KB-IT-SERVICE", "内部制度", "当前身份无权访问该知识库。"))
     orchestrator = ChatOrchestrator(fake)
     result = orchestrator.handle_message(
         db_session,
@@ -131,20 +144,6 @@ def test_chat_endpoint_intern_deny(db_session):
     assert result.policy_denied.decision == "deny"
     assert result.policy_denied.policy_id == "POLICY-002"
     assert result.message == "当前身份无权访问该知识库。"
-
-
-def test_chat_endpoint_virtual_onboarding_allow(db_session):
-    """VE-0001 只允许公共 + 入职 Demo 知识库 → KB-ONBOARD Allow。"""
-    fake = FakeLLM(_tool_script("KB-ONBOARD", "第一天做什么", "第一天先到 HR 报到，签署合同并领取工牌。"))
-    orchestrator = ChatOrchestrator(fake)
-    result = orchestrator.handle_message(
-        db_session,
-        employee_no="VE-0001",
-        message="新员工第一天要做什么？",
-        session_id=None,
-    )
-    assert result.tool_cards and result.tool_cards[0].decision == "allow"
-    assert "报到" in result.message
 
 
 def test_chat_guard_blocks_query_answer_without_tool(db_session):

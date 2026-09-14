@@ -10,7 +10,6 @@
 单成员失败降级为提示消息并继续，全部失败才返回 503。
 """
 
-import time
 import threading
 from datetime import datetime, timedelta
 from typing import Callable
@@ -19,18 +18,14 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 
 from .. import models
 from . import config, execution_events
-from .agentteams_gateway import AgentTeamsGateway, AgentTeamsUnavailableError
 from .chat import ChatOrchestrator
-from .colleague_orchestrator import answer_as_twin
-from .gateway import write_audit
 from .harness_agent import run_agent
 from .identity import resolve_identity
 from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
-from .team_orchestrator import TeamTaskOrchestrator, extract_employee_name
+from .team_orchestrator import TeamTaskOrchestrator
 from .runtime_adapter import DockerHarnessRuntimeAdapter, NoopRuntimeAdapter
 
 _TASK_STATUS_LABEL = {
@@ -63,19 +58,6 @@ def _default_team_orchestrator(provider: LLMProvider | None = None) -> TeamTaskO
         else NoopRuntimeAdapter()
     )
     return TeamTaskOrchestrator(provider or DeepSeekProvider(), runtime=runtime)
-
-def _employee_by_mxid(db: Session) -> dict[str, tuple[str, str]]:
-    """把 AgentTeams worker MXID 映射到平台数字员工（工号, 姓名）。"""
-    out: dict[str, tuple[str, str]] = {}
-    domain = config.agentteams_matrix_domain()
-    rows = db.scalars(
-        select(models.DigitalEmployee).where(models.DigitalEmployee.runtime_ref.is_not(None))
-    ).all()
-    for emp in rows:
-        mxid = f"@{emp.runtime_ref}:{domain}"
-        out[mxid] = (emp.employee_no, emp.name)
-    return out
-
 
 def _feedback_status(body: str) -> str:
     """根据房间消息关键词粗判成员状态：completed / running / ack。"""
@@ -244,16 +226,6 @@ def member_replies(
                         execution.trace_id if execution is not None else
                         f"T-HAR-{conversation.id}-{employee_no}-{uuid4().hex[:8]}"
                     ),
-                )
-            elif not is_group and employee is not None and employee.type == "twin":
-                result, _delegation = answer_as_twin(
-                    db,
-                    conversation_id=conversation.id,
-                    requester_human_no=actor_no,
-                    twin=employee,
-                    message=content,
-                    provider=orchestrator.provider,
-                    history=history,
                 )
             else:
                 result = orchestrator.handle_message(
@@ -557,20 +529,6 @@ def process_conversation_async(
             conv.updated_at = datetime.now()
             db.add(conv)
             db.commit()
-            # 完整会话保留；超过五组问答的最旧轮次进入长期记忆适配器。
-            answers_for_memory = db.scalars(
-                select(models.ConversationMessage).where(
-                    models.ConversationMessage.conversation_id == conversation_id,
-                    models.ConversationMessage.role == "assistant",
-                    models.ConversationMessage.seq > trigger_seq,
-                    models.ConversationMessage.generation == run_generation,
-                ).order_by(models.ConversationMessage.seq)
-            ).all()
-            if answers_for_memory:
-                from .memory_service import compact_conversation
-                compact_conversation(
-                    db, conversation_id, actor_no, answers_for_memory[-1].participant_no,
-                )
             if execution_id:
                 execution = db.get(models.AgentExecution, execution_id)
                 if execution is None or execution.status == "cancelled":
@@ -618,260 +576,6 @@ def process_conversation_async(
                 db.commit()
         finally:
             db.close()
-
-
-def _try_agentteams_task(
-    db: Session,
-    *,
-    conversation: models.Conversation,
-    leader: models.DigitalEmployee | None,
-    actor_no: str,
-    request: str,
-    trigger_seq: int | None,
-    orchestrator: TeamTaskOrchestrator | None = None,
-) -> models.TaskRun | None:
-    """AgentTeams 协作 + Harness/Gateway 执行同一任务。
-
-    AgentTeams 只承担角色讨论、认领与汇报展示，不直接触发有副作用的插件；
-    实际执行始终由已持久化 TaskRun 进入 Policy -> Gateway -> Harness 链路。
-    因此协作超时只会降级协作展示，不会把同一业务动作执行两次。
-    """
-    room_id = config.get(config.AGENTTEAMS_ROOM_ID)
-    if not room_id:
-        return None
-    orchestrator = orchestrator or _default_team_orchestrator()
-    gateway = AgentTeamsGateway()
-    mode_message: models.ConversationMessage | None = None
-    task_id = f"T-{datetime.now():%Y%m%d}-{uuid4().hex[:6].upper()}"
-    actor = db.get(models.HumanEmployee, actor_no)
-    actor_name = actor.name if actor else actor_no
-    target_name = extract_employee_name(request)
-    run: models.TaskRun | None = None
-    sent = False
-    try:
-        run, prepared_leader = orchestrator.prepare_conversation_task(
-            db,
-            conversation=conversation,
-            actor_no=actor_no,
-            request=request,
-            trigger_seq=trigger_seq,
-            source="agentteams",
-            task_id=task_id,
-        )
-        task_id = run.id
-        leader = leader or prepared_leader
-        participant_nos = {
-            p.get("employee_no") for p in (conversation.participants or [])
-        }
-        member_map = {
-            mxid: employee
-            for mxid, employee in _employee_by_mxid(db).items()
-            if employee[0] in participant_nos
-        }
-        plan = "；".join(
-            f"{sub.get('worker_no')}={sub.get('summary')}"
-            for sub in run.subtasks
-        )
-        for sub in run.subtasks:
-            sub["collaboration_status"] = "collaborating"
-            sub["collaboration_messages"] = []
-            sub["execution_mode"] = "pending"
-        TeamTaskOrchestrator._save(db, run)
-
-        # 群聊房间里只有 @mention Manager 的消息才会被处理。
-        # 协议要求所有反馈携带 task_id，从根上隔离共享房间中的并行任务。
-        manager_mxid = config.agentteams_manager_mxid()
-        send_ts = int(time.time() * 1000)
-        gateway.send_message(
-            room_id,
-            (
-                f"{manager_mxid} [平台任务 id={task_id}] "
-                f"请求者={actor_name}({actor_no}) 请求={request}"
-                f"{f' 目标员工={target_name}' if target_name else ''}。"
-                f"平台计划={plan}。"
-                "本阶段只做协作讨论、认领和风险提示，不调用外部 Workflow/RPA。"
-                "每条回复必须原样携带任务 id；最终汇报使用“TASK_COMPLETED id=<任务ID>”。"
-                "实际动作将由平台 Policy→Gateway→DeepSeek Harness 统一执行。"
-            ),
-        )
-        sent = True
-        write_audit(
-            db,
-            trace_id=task_id,
-            employee_id=leader.employee_no if leader else actor_no,
-            plugin_id="agentteams:send",
-            action="send",
-            decision="allow",
-            reason="任务已发送至 AgentTeams 团队房间",
-            result_summary=request[:200],
-        )
-        # 限时回收协作过程；到期后仍按持久化计划进入 Harness，不重复派业务动作。
-        report: str | None = None
-        deadline = time.time() + config.agentteams_collaboration_timeout()
-        while time.time() < deadline:
-            # 清空会话会删除触发消息；检测到后立即停止，禁止后台复活任务。
-            alive = True
-            if trigger_seq is not None:
-                alive = db.scalar(
-                    select(models.ConversationMessage.id).where(
-                        models.ConversationMessage.conversation_id == conversation.id,
-                        models.ConversationMessage.seq == trigger_seq,
-                        models.ConversationMessage.role == "user",
-                    )
-                )
-            if alive is None:
-                return None
-            msgs = gateway.poll_messages(room_id)
-            feedback_changed = False
-            for msg in msgs:
-                sender = msg.get("sender", "")
-                body = msg.get("body", "")
-                if (msg.get("ts") or 0) < send_ts:
-                    continue
-                if task_id not in body:
-                    continue
-                if sender not in member_map:
-                    continue
-                emp_no, emp_name = member_map[sender]
-                event_id = msg.get("event_id") or ""
-                if event_id:
-                    exists = db.scalar(
-                        select(models.AgentTeamsEventSeen).where(
-                            models.AgentTeamsEventSeen.event_id == event_id
-                        )
-                    )
-                    if exists is not None:
-                        continue
-                    db.add(
-                        models.AgentTeamsEventSeen(
-                            event_id=event_id,
-                            conversation_id=conversation.id,
-                        )
-                    )
-                _append(
-                    db,
-                    conversation_id=conversation.id,
-                    participant_no=emp_no,
-                    participant_name=emp_name,
-                    role="assistant",
-                    content=body,
-                    seq=_next_seq(db, conversation.id),
-                )
-                sub = next((s for s in run.subtasks if s.get("worker_id") == emp_no), None)
-                if sub is not None:
-                    messages = list(sub.get("collaboration_messages") or [])
-                    messages.append(body)
-                    sub["collaboration_messages"] = messages[-5:]
-                    sub["collaboration_status"] = (
-                        "reported" if _feedback_status(body) == "completed" else "acknowledged"
-                    )
-                    feedback_changed = True
-            if feedback_changed:
-                TeamTaskOrchestrator._save(db, run)
-            report = gateway.parse_completion(
-                msgs,
-                request[:12],
-                since_ts=send_ts,
-                task_id=task_id,
-                exclude_senders={config.agentteams_bot_mxid()},
-            )
-            if report:
-                break
-            time.sleep(5)
-        if report and leader is not None:
-            _append(
-                db,
-                conversation_id=conversation.id,
-                participant_no=leader.employee_no,
-                participant_name=leader.name,
-                role="assistant",
-                content=report,
-                seq=_next_seq(db, conversation.id),
-            )
-            write_audit(
-                db,
-                trace_id=task_id,
-                employee_id=leader.employee_no,
-                plugin_id="agentteams:receive",
-                action="receive",
-                decision="allow",
-                reason="已回收 AgentTeams 协作汇报，进入平台受控执行",
-                result_summary=report[:200],
-            )
-        elif leader is not None:
-            mode_message = _append(
-                db,
-                conversation_id=conversation.id,
-                participant_no=leader.employee_no,
-                participant_name=leader.name,
-                role="assistant",
-                content="AgentTeams 协作窗口已结束，我将按已确认的角色计划进入平台受控执行。",
-                seq=_next_seq(db, conversation.id),
-            )
-
-        if report:
-            for sub in run.subtasks:
-                sub["collaboration_summary"] = report
-            flag_modified(run, "subtasks")
-            db.add(run)
-            db.commit()
-            db.refresh(run)
-
-        orchestrator.run_prepared_task(
-            db,
-            run,
-            leader_employee_id=leader.employee_no if leader else actor_no,
-        )
-        db.refresh(run)
-        if mode_message is not None:
-            modes = {str(sub.get("runtime_mode") or "") for sub in run.subtasks}
-            if modes == {"harness"}:
-                execution_notice = "AgentTeams 协作窗口已结束；实际运行时：DeepSeek Harness。业务动作已通过 Policy/Gateway 调用员工获授权工具。"
-            elif {"harness", "demo_adapter"}.issubset(modes):
-                execution_notice = "AgentTeams 协作窗口已结束；实际运行时：DeepSeek Harness + Demo Adapter 降级（部分员工 Harness 不可用）。各业务动作仍通过 Policy/Gateway 受控执行。"
-            elif "demo_adapter" in modes:
-                execution_notice = "AgentTeams 协作窗口已结束；实际运行时：Demo Adapter 降级（Harness 未启用或不可用）。业务动作仍通过 Policy/Gateway 受控执行。"
-            else:
-                execution_notice = "AgentTeams 协作窗口已结束；实际运行时已记录在各数字员工子任务中。"
-            mode_message.content = execution_notice
-            db.add(mode_message)
-            db.commit()
-        return run
-    except AgentTeamsUnavailableError as exc:
-        import sys
-
-        print(f"[group_chat] agentteams 路径降级: {exc!r}", file=sys.stderr)
-        if run is not None and not sent:
-            # Matrix 尚未接受任务，没有双重执行风险；沿用同一 TaskRun 走内置/Harness。
-            run.source = "builtin"
-            for sub in run.subtasks:
-                sub["collaboration_status"] = "unavailable"
-            TeamTaskOrchestrator._save(db, run)
-            orchestrator.run_prepared_task(
-                db,
-                run,
-                leader_employee_id=leader.employee_no if leader else actor_no,
-            )
-            db.refresh(run)
-            return run
-        if run is not None:
-            run.status = "failed"
-            run.summary = "AgentTeams 任务已发送，但协作通道中断；为避免重复执行，未自动降级。"
-            TeamTaskOrchestrator._save(db, run)
-            return run
-        return None
-    except Exception as exc:  # noqa: BLE001
-        import sys
-
-        print(f"[group_chat] 协作执行异常: {exc!r}", file=sys.stderr)
-        if run is not None:
-            run.status = "failed"
-            run.summary = f"协作链路异常：{exc.__class__.__name__}"
-            TeamTaskOrchestrator._save(db, run)
-            return run
-        return None
-    finally:
-        gateway.close()
 
 
 def _find_recent_task(

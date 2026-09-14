@@ -13,7 +13,7 @@
 - **统一插件体系**：能力统一归入 `Plugin`，只分 `Skill` 与 `MCP`。支持 ZIP 安全扫描、版本、审核、手动发布、回滚、数字员工授权和员工启停；知识库是知识库 MCP 下的受控资源。
 - **五轮记忆**：Harness 默认携带最近五组完整问答；更早轮次异步压缩，通过 `MemoryAdapter` 写入本地 MockMemory 或后续内部 mem0。长期记忆按“租户 × 请求员工 × Agent”隔离。
 - **四个独立 Harness 实例**：AI员工平台、投资分析AI员工、张三数字分身和陈晓萌数字分身分别运行在稳定的独立容器中。每轮自动装载当前有效 Skill，并通过平台 Tool Gateway 使用知识检索、一次委派和显式记忆工具。
-- **知识库适配层**：默认读取 Mock 数据；`DWP_KB_MODE=internal` 时切换内部知识引擎，失败会明确报错且不会静默回退 Mock。真实地址和认证只允许进入本地 `.env` 或公司 Secret 系统。
+- **知识库适配层**：知识检索统一走内部知识引擎（HTTP 只读检索，经平台 KB ID 映射到远端知识库），失败会明确报错且不会静默回退演示数据。真实地址和认证只允许进入本地 `.env` 或公司 Secret 系统。
 - **Agent Teams 延后**：旧协作代码保留为实验能力，但 V1 用户界面不开放群聊编排与复杂 Team 工作流，先验证知识问答、身份、权限、委派和部署。
 
 仓库只包含虚构种子账号、人物、知识库与业务数据，不包含真实内部数据和真实密钥。
@@ -25,7 +25,7 @@ logicalNpc/
   frontend/            # React + TS + Vite + AntD（工作台、插件中心、记忆页、管理后台）
   backend/             # FastAPI + SQLAlchemy + SQLite（身份、策略、插件、记忆、网关、Harness）
   adapters/            # Runtime / Knowledge / MCP Adapter 预留（仅契约）
-  mock-data/           # 虚构种子数据 + 虚构知识库（含四分类文档目录）
+  mock-data/           # 虚构种子数据（员工/岗位/盈米技能）
   docker/              # DeepSeek Harness 镜像（Dockerfile.dsh）
   tests/               # 测试布局索引
   shared-schema/       # 前后端统一 TS 类型（契约）
@@ -87,10 +87,6 @@ pnpm --filter frontend dev
 |---|---|
 | `DEEPSEEK_API_KEY` | DeepSeek Key（问答/汇总必需） |
 | `DEEPSEEK_MODEL` | 模型名；本次已用 `deepseek-v4-flash` 完成真实链路验证 |
-| `DWP_EMBED_API_KEY`（兼容 `DASHSCOPE_API_KEY`） | 阿里百炼 Key（RAG 向量检索必需） |
-| `DWP_KB_MODE` | `mock` / `rag` / `internal` / `volcengine_mcp`；MVP 使用 `mock` |
-| `DWP_VOLCENGINE_MCP_ENDPOINT` | 火山引擎 MCP 服务地址（后续接入） |
-| `DWP_VOLCENGINE_MCP_CREDENTIAL_REF` | 凭据引用名，只保存引用，不保存明文凭据 |
 | `DWP_REQUIRE_AUTH` | `1` 强制登录（部署默认），测试兼容模式可设为 `0` |
 | `DWP_HARNESS_ENABLED` | `1` 启用四个独立 Harness 容器 |
 | `DWP_AGENT_EXECUTION_MODE` | MVP 固定使用 `harness`；失败不回退旧 ChatOrchestrator |

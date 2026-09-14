@@ -64,12 +64,11 @@ export DWP_HTTP_PORT=18080
 DEEPSEEK_BASE_URL=http://实际模型网关主机:实际端口/v1
 DEEPSEEK_MODEL=实际启用的模型名
 DEEPSEEK_CHAT_COMPLETIONS_PATH=/chat/completions
-DWP_KB_MODE=mock
 ```
 
 Coding Plan Key 只需替换 `secrets/llm_api_key`，并在 `config.env` 修改 Base URL 和模型名；Harness、Agent 和知识工具协议无需改变。
 
-接内部知识引擎时，把 `DWP_KB_MODE` 改为 `internal`，再通过安全渠道填写 `config.env` 中的内部配置。不要把配置后的文件重新打包或上传 Git。
+知识检索统一走内部知识引擎：通过安全渠道在 `config.env` 填写 `DWP_INTERNAL_KB_*` 内部配置即可。不要把配置后的文件重新打包或上传 Git。
 
 模型网关的协议、主机、端口、路径前缀、Chat Completions 相对路径和模型名均可在目标机修改。当前模型接口要求 OpenAI Chat Completions 兼容协议；协议本身不兼容时再修改 `source/backend/app/services/llm.py`，无需改变业务接口。
 

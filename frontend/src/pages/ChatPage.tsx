@@ -39,10 +39,6 @@ const DECISION_TAG: Record<string, { color: string; text: string }> = {
 
 const SOURCE_LABEL: Record<string, string> = {
   internal: '真实知识库',
-  demo: '演示知识库',
-  mock: '演示知识库',
-  rag: '本地 RAG',
-  volcengine_mcp: 'Volcengine MCP',
 };
 
 interface Msg {

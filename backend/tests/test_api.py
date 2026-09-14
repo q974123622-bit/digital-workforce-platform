@@ -6,17 +6,14 @@ def test_health(client):
 
 def test_seed_counts(client):
     employees = client.get("/api/v1/employees").json()
-    assert len(employees) == 10
-    assert {employee["employee_no"] for employee in employees} >= {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH"}
+    assert len(employees) == 7
+    assert {employee["employee_no"] for employee in employees} >= {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ"}
     assert len([e for e in employees if e["type"] == "twin"]) == 2
-    assert len([e for e in employees if e["type"] == "virtual"]) == 7
-    assert len([e for e in employees if e["type"] == "rpa"]) == 1
-    assert len(client.get("/api/v1/plugins").json()) == 12
-    assert len(client.get("/api/v1/policies").json()) == 9
-    assert len(client.get("/api/v1/knowledge-bases").json()) == 10
+    assert len([e for e in employees if e["type"] == "virtual"]) == 5
+    assert len(client.get("/api/v1/policies").json()) == 8
+    assert len(client.get("/api/v1/knowledge-bases").json()) == 3
     teams = client.get("/api/v1/teams").json()
-    assert len(teams) == 1
-    assert len(teams[0]["members"]) == 4
+    assert len(teams) == 0
 
 
 def test_employee_list_filters(client):
@@ -29,11 +26,7 @@ def test_employee_list_filters(client):
 def test_employee_detail_grants(client):
     emp = client.get("/api/v1/employees/DT-E10281").json()
     assert emp["owner_human_no"] == "E10281"
-    modes = {g["plugin_id"]: g["decision_mode"] for g in emp["grants"]}
-    assert "knowledge-l1" not in modes
-    assert "knowledge-l2" not in modes
-    assert "knowledge-l3" not in modes
-    assert modes["rpa-report"] == "deny"
+    assert emp["grants"] == []
 
 
 def test_employee_crud(client):
@@ -49,7 +42,7 @@ def test_employee_crud(client):
     )
     assert resp.status_code == 201
     employee_no = resp.json()["employee_no"]
-    assert employee_no == "VE-0005"
+    assert employee_no == "VE-0001"
 
     resp = client.put(f"/api/v1/employees/{employee_no}", json={"name": "改名后的虚拟员工"})
     assert resp.status_code == 200
@@ -102,7 +95,7 @@ def test_audit_events(client):
             "trace_id": "T-TEST-001",
             "actor": "DT-E10281",
             "employee_id": "DT-E10281",
-            "plugin_id": "knowledge-l1",
+            "plugin_id": "some-plugin",
             "action": "read",
             "decision": "allow",
         },
@@ -110,27 +103,16 @@ def test_audit_events(client):
     assert created.status_code == 201
     assert created.json()["trace_id"] == "T-TEST-001"
 
-    denied = client.get("/api/v1/audit", params={"decision": "deny"}).json()
-    assert len(denied) >= 2
-    assert all(e["decision"] == "deny" for e in denied)
-
-    by_trace = client.get("/api/v1/audit", params={"trace_id": "T-DEMO-001"}).json()
-    assert len(by_trace) == 2
-
     event_id = created.json()["id"]
     assert client.delete(f"/api/v1/audit/{event_id}").status_code == 204
     assert client.get(f"/api/v1/audit/{event_id}").status_code == 404
 
 
 def test_teams_and_knowledge(client):
-    team = client.get("/api/v1/teams/TEAM-ONBOARD").json()
-    assert team["leader_employee_id"] == "VE-0001"
-    assert {m["employee_id"] for m in team["members"]} == {
-        "VE-0001", "VE-0002", "VE-0003", "RPA-0001"
-    }
+    assert client.get("/api/v1/teams/TEAM-ONBOARD").status_code == 404
 
-    kb = client.get("/api/v1/knowledge-bases/KB-PUBLIC").json()
-    assert kb["level"] == "L1"
+    kb = client.get("/api/v1/knowledge-bases/KB-IT-SERVICE").json()
+    assert kb["level"] == "L2"
     assert client.get("/api/v1/knowledge-bases/NOT-EXIST").status_code == 404
 
 
