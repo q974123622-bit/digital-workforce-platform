@@ -256,7 +256,7 @@ def test_create_task_writes_root_and_outbox(db_session):
     assert outbox[0].payload["thinking_enabled"] is False
 
 
-def test_create_task_defaults_to_thinking_enabled(db_session):
+def test_create_task_defaults_to_non_thinking_low_latency_mode(db_session):
     from app.services.agentteams_collaboration import create_task
 
     _enable_test_leader(db_session)
@@ -270,7 +270,7 @@ def test_create_task_defaults_to_thinking_enabled(db_session):
     )
 
     submit = db_session.query(models.AgentMessage).filter_by(task_id=run.id).one()
-    assert submit.payload["thinking_enabled"] is True
+    assert submit.payload["thinking_enabled"] is False
 
 
 def _relationship_runtime():

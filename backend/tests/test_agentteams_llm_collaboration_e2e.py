@@ -522,6 +522,39 @@ def test_real_smoke_exits_safely_when_the_started_api_is_not_strict(monkeypatch,
     assert "must-not-leak" not in output
 
 
+def test_real_smoke_submits_non_thinking_low_latency_task(monkeypatch, capsys):
+    smoke = _load_script("run_agentteams_real_smoke.py")
+    posted: dict[str, object] = {}
+
+    class _Client:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+
+    def fake_get(_client, path, *, actor=False):
+        del actor
+        if path.endswith("/health"):
+            return deepcopy(_valid_real_smoke_evidence_inputs()[0])
+        if path.endswith("/graph"):
+            return {"dependency_edges": []}
+        if path.endswith("/events") or path.endswith("/messages"):
+            return []
+        if path.endswith("/result"):
+            return {"status": "timed_out", "summary": ""}
+        return {"status": "timed_out", "nodes": []}
+
+    def fake_post(_client, _path, payload):
+        posted.update(payload)
+        return {"id": "AT-non-thinking"}
+
+    monkeypatch.setattr(smoke.httpx, "Client", lambda **_kwargs: _Client())
+    monkeypatch.setattr(smoke, "_get", fake_get)
+    monkeypatch.setattr(smoke, "_post", fake_post)
+
+    assert smoke.main([]) == 1
+    assert posted["thinking_enabled"] is False
+    assert "completed_result" in capsys.readouterr().out
+
+
 def test_real_smoke_timeout_returns_failure_without_printing_response_bodies(monkeypatch, capsys):
     """Polling a live but unfinished strict run has a bounded, redacted failure."""
     smoke = _load_script("run_agentteams_real_smoke.py")

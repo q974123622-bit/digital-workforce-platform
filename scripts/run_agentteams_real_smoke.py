@@ -769,7 +769,7 @@ def main(argv: list[str] | None = None) -> int:
             if not _strict_onboarding_health_ready(health):
                 print(json.dumps(_safe_empty("strict_matrix_not_ready"), ensure_ascii=False))
                 return 2
-            task = _post(client, "/agentteams-collaboration/tasks", {"team_id": LOCAL_DEMO_TEAM_ID, "leader_agent_id": LOCAL_DEMO_LEADER_ID, "title": "新员工A按期入职评估", "instruction": FIXED_GOAL, "material": {}})
+            task = _post(client, "/agentteams-collaboration/tasks", {"team_id": LOCAL_DEMO_TEAM_ID, "leader_agent_id": LOCAL_DEMO_LEADER_ID, "title": "新员工A按期入职评估", "instruction": FIXED_GOAL, "material": {}, "thinking_enabled": False})
             task_id = str(task.get("id") or "") if isinstance(task, dict) else ""
             if not task_id:
                 print(json.dumps(_safe_empty("task_id_missing"), ensure_ascii=False))

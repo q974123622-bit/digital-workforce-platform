@@ -156,7 +156,7 @@ class AgentTeamsCollaborationService:
         instruction: str,
         material: dict,
         owner_human_no: str = "",
-        thinking_enabled: bool = True,
+        thinking_enabled: bool = False,
         team_selection: Mapping[str, str] | None = None,
     ) -> models.TaskRun:
         team = db.get(models.Team, team_id)

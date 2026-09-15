@@ -127,7 +127,7 @@ export default function AgentTeamsCollaborationPage() {
   const [title, setTitle] = useState('');
   const [instruction, setInstruction] = useState('');
   const [material, setMaterial] = useState('');
-  const [thinkingEnabled, setThinkingEnabled] = useState(true);
+  const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [actingTaskIds, setActingTaskIds] = useState<Set<string>>(() => new Set());

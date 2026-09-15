@@ -1058,12 +1058,12 @@ describe('AgentTeams collaboration page', () => {
         title: '入职协作分析',
         instruction: '完成制度和账号核查',
         material: {},
-        thinking_enabled: true,
+        thinking_enabled: false,
       });
     });
   });
 
-  it('lets the user disable thinking mode for an ordinary collaboration task', async () => {
+  it('defaults to low-latency mode and lets the user enable thinking explicitly', async () => {
     const submittedTask: AgentCollaborationTask = {
       ...completedTask,
       id: 'AT-NON-THINKING',
@@ -1094,9 +1094,10 @@ describe('AgentTeams collaboration page', () => {
     renderPage();
 
     const thinkingSwitch = await screen.findByRole('switch', { name: '使用大模型思考模式' });
-    expect(thinkingSwitch).toBeChecked();
-    fireEvent.click(thinkingSwitch);
     expect(thinkingSwitch).not.toBeChecked();
+    expect(screen.getByText('响应更快，但不会展示模型返回的决策依据。')).toBeInTheDocument();
+    fireEvent.click(thinkingSwitch);
+    expect(thinkingSwitch).toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: '提交协作任务' }));
 
     await waitFor(() => {
@@ -1104,11 +1105,11 @@ describe('AgentTeams collaboration page', () => {
         ([input, init]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks') && init?.method === 'POST',
       );
       expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
-        thinking_enabled: false,
+        thinking_enabled: true,
       });
       expect(JSON.parse(String(call?.[1]?.body))).not.toHaveProperty('team_id');
     });
-    expect(screen.getByText('响应更快，但不会展示模型返回的决策依据。')).toBeInTheDocument();
+    expect(screen.getByText('会保留模型返回的决策依据，响应时间可能更长。')).toBeInTheDocument();
   });
 
   it('shows a configured Manager as configured rather than claiming it is running', async () => {
