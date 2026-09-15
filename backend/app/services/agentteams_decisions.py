@@ -538,6 +538,13 @@ class AgentDecisionEngine:
         )
 
         def validate(raw: dict[str, Any]) -> ManagerDecision:
+            raw = _canonicalize_manager_delegate_routes(
+                context,
+                raw,
+                contract_capabilities=_scenario_contract_capabilities(
+                    scenario_execution_contract
+                ),
+            )
             decision = ManagerDecision.model_validate(raw)
             if decision.summary is not None:
                 _validate_final_summary_language(decision.summary)
@@ -890,6 +897,100 @@ def _validate_manager_delegate_plan(context: ManagerContext, subtasks: list[Plan
 
     for key in by_key:
         visit(key)
+
+
+def _scenario_contract_capabilities(contract: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for key in ("parallel_capabilities", "serial_capabilities", "allowed_capabilities"):
+        raw = contract.get(key)
+        if isinstance(raw, list):
+            values.update(item for item in raw if isinstance(item, str))
+    return values
+
+
+def _canonicalize_manager_delegate_routes(
+    context: ManagerContext,
+    raw: dict[str, Any],
+    *,
+    contract_capabilities: set[str],
+) -> dict[str, Any]:
+    """Lift a uniquely identified Worker capability to its direct Leader route.
+
+    AgentScope's Manager addresses Team Leaders, while an LLM can still express
+    the correct business intent using a leaf Worker's capability.  The platform
+    relationship graph is authoritative: only an unambiguous, advertised
+    Leader route may be substituted, and normal validation still rejects every
+    other malformed plan.
+    """
+    if not isinstance(raw, dict) or raw.get("action") != "delegate":
+        return raw
+    raw_subtasks = raw.get("subtasks")
+    if not isinstance(raw_subtasks, list):
+        return raw
+
+    catalog: dict[str, set[str]] = {}
+    for item in context.team_capability_catalog:
+        agent_id = item.get("agent_id") if isinstance(item, dict) else None
+        capabilities = item.get("capabilities") if isinstance(item, dict) else None
+        if isinstance(agent_id, str) and isinstance(capabilities, list):
+            catalog.setdefault(agent_id, set()).update(
+                capability for capability in capabilities if isinstance(capability, str)
+            )
+
+    direct_report_ids = {
+        item.get("agent_id")
+        for item in context.team_relationship_graph.get("direct_reports", [])
+        if isinstance(item, dict) and isinstance(item.get("agent_id"), str)
+    }
+    routes = {
+        (leader_id, capability)
+        for leader_id in direct_report_ids
+        for capability in catalog.get(leader_id, set())
+        if capability in _LEADER_CHILD_CAPABILITIES
+        and (not contract_capabilities or capability in contract_capabilities)
+    }
+    if not routes:
+        return raw
+
+    normalized_subtasks: list[Any] = []
+    changed = False
+    for item in raw_subtasks:
+        if not isinstance(item, dict):
+            normalized_subtasks.append(item)
+            continue
+        assignee = item.get("assignee_agent_id")
+        capability = item.get("required_capability")
+        if not isinstance(assignee, str) or not isinstance(capability, str):
+            normalized_subtasks.append(item)
+            continue
+        if (assignee, capability) in routes:
+            normalized_subtasks.append(item)
+            continue
+
+        candidates = {
+            route
+            for route in routes
+            if capability in _LEADER_CHILD_CAPABILITIES[route[1]]
+            and (
+                assignee == route[0]
+                or (
+                    assignee not in direct_report_ids
+                    and capability in catalog.get(assignee, set())
+                )
+            )
+        }
+        if len(candidates) != 1:
+            normalized_subtasks.append(item)
+            continue
+        leader_id, leader_capability = next(iter(candidates))
+        normalized_subtasks.append({
+            **item,
+            "assignee_agent_id": leader_id,
+            "required_capability": leader_capability,
+        })
+        changed = True
+
+    return {**raw, "subtasks": normalized_subtasks} if changed else raw
 
 
 def _validate_result_review_decision(
