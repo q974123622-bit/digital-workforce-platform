@@ -415,7 +415,19 @@ class AgentRuntime:
         payload: dict[str, Any] = {"feedback": self._text(decision.feedback)}
         if decision.action == "replan":
             payload["subtasks"] = [
-                item.model_dump(mode="json") for item in decision.subtasks
+                self._safe_subtask(
+                    item,
+                    catalog,
+                    direct_report_ids=self._direct_report_ids(
+                        message.payload.get("team_relationship_graph")
+                    ),
+                    inherited_material=(
+                        message.payload.get("material")
+                        if isinstance(message.payload.get("material"), Mapping)
+                        else {}
+                    ),
+                )
+                for item in decision.subtasks
             ]
         responses.append(
             self._reply(

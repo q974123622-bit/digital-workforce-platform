@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from app import models
 from app.services import config
@@ -1644,6 +1645,219 @@ def test_required_worker_failure_returns_to_leader_without_failing_root(db_sessi
         "error_code": "evidence_missing",
         "error_message": "",
     }
+
+
+def _failed_hr_worker_graph(db_session):
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("hr", "VE-0002")])
+    department = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, department)
+    _delegate(
+        db_session,
+        run,
+        "VE-0002",
+        db_session.get(models.DigitalEmployee, "VE-0002").runtime_ref,
+        [
+            _subtask("materials", "VE-HR-MATERIAL"),
+            _subtask(
+                "training",
+                "VE-HR-TRAINING",
+                depends_on=["materials"],
+            ),
+        ],
+        key="leader-delegate-for-recovery",
+        parent=department,
+    )
+    nodes = {
+        item.client_task_key: item
+        for item in db_session.query(models.AgentTaskNode).filter_by(
+            parent_task_id=department.id
+        )
+    }
+    _start_node(db_session, run, nodes["materials"])
+    _apply_node_message(
+        db_session,
+        run,
+        nodes["materials"],
+        type="task.failed",
+        key="materials-interrupted",
+        payload={"error_code": "evidence_missing"},
+    )
+    return run, department, nodes["materials"], nodes["training"]
+
+
+def _replan_subtask(
+    key,
+    assignee,
+    capability,
+    *,
+    depends_on=None,
+):
+    return {
+        "client_task_key": key,
+        "title": f"恢复任务 {key}",
+        "instruction": "根据 Leader 的恢复计划重新取得并核验授权证据。",
+        "assignee_agent_id": assignee,
+        "required_capability": capability,
+        "depends_on": list(depends_on or []),
+        "required": True,
+        "material": {},
+        "node_kind": "worker_task",
+    }
+
+
+def test_leader_replan_replaces_failed_worker_with_complete_dag(db_session):
+    run, department, failed, original_dependent = _failed_hr_worker_graph(db_session)
+
+    events = _review_node_message(
+        db_session,
+        run,
+        failed,
+        type="task.replan",
+        key="leader-replan",
+        payload={
+            "feedback": "原材料核查中断，先重查材料，再由培训专员进行交叉验证。",
+            "subtasks": [
+                _replan_subtask(
+                    "materials-retry",
+                    "VE-HR-MATERIAL",
+                    "agentteams-onboarding-materials",
+                ),
+                _replan_subtask(
+                    "materials-verify",
+                    "VE-HR-TRAINING",
+                    "agentteams-onboarding-training",
+                    depends_on=["materials-retry"],
+                ),
+            ],
+        },
+    )
+
+    replacements = list(db_session.scalars(
+        select(models.AgentTaskNode)
+        .where(models.AgentTaskNode.revision_of_task_id == failed.id)
+        .order_by(models.AgentTaskNode.client_task_key)
+    ))
+    by_key = {item.client_task_key: item for item in replacements}
+    assert failed.status == "failed"
+    assert department.status == "waiting_children"
+    assert set(by_key) == {"materials-retry", "materials-verify"}
+    assert by_key["materials-retry"].status == "assigned"
+    assert by_key["materials-verify"].status == "blocked"
+    replacement_dependency = db_session.query(models.AgentTaskDependency).filter_by(
+        task_id=by_key["materials-verify"].id
+    ).one()
+    assert replacement_dependency.depends_on_task_id == by_key["materials-retry"].id
+    original_dependency = db_session.query(models.AgentTaskDependency).filter_by(
+        task_id=original_dependent.id
+    ).one()
+    assert original_dependency.depends_on_task_id == by_key["materials-verify"].id
+    assert db_session.query(models.AgentMessage).filter_by(
+        task_id=by_key["materials-retry"].id,
+        message_type="task.assign",
+        direction="outbound",
+    ).count() == 1
+    assert {event.event_type for event in events} >= {
+        "task.replan",
+        "task.revision.created",
+    }
+
+
+def test_invalid_final_replan_task_creates_no_replacement_nodes(db_session):
+    run, _, failed, _ = _failed_hr_worker_graph(db_session)
+
+    with pytest.raises(RuntimeError, match="invalid_team_assignee"):
+        _review_node_message(
+            db_session,
+            run,
+            failed,
+            type="task.replan",
+            key="invalid-replan",
+            payload={
+                "feedback": "尝试重规划，但最后一项越过了团队边界。",
+                "subtasks": [
+                    _replan_subtask(
+                        "materials-retry",
+                        "VE-HR-MATERIAL",
+                        "agentteams-onboarding-materials",
+                    ),
+                    _replan_subtask(
+                        "outside-review",
+                        "VE-OUTSIDE",
+                        "agentteams-onboarding-materials",
+                        depends_on=["materials-retry"],
+                    ),
+                ],
+            },
+        )
+
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        revision_of_task_id=failed.id
+    ).count() == 0
+
+
+def test_duplicate_leader_replan_is_idempotent(db_session):
+    run, _, failed, _ = _failed_hr_worker_graph(db_session)
+    reviewer = db_session.get(models.DigitalEmployee, failed.coordinator_agent_id)
+    message = _protocol(
+        root_id=run.id,
+        task_id=failed.id,
+        parent_id=failed.parent_task_id,
+        sender=reviewer.employee_no,
+        receiver="platform",
+        type="task.replan",
+        key=f"{run.id}:{failed.id}:same-replan",
+        payload={
+            "feedback": "重新派发材料核查。",
+            "subtasks": [
+                _replan_subtask(
+                    "materials-retry",
+                    "VE-HR-MATERIAL",
+                    "agentteams-onboarding-materials",
+                )
+            ],
+        },
+    )
+    from app.services.agentteams_collaboration import apply_message
+
+    first = apply_message(
+        db_session,
+        matrix_sender=_matrix_sender(reviewer.runtime_ref),
+        message=message,
+    )
+    repeated = apply_message(
+        db_session,
+        matrix_sender=_matrix_sender(reviewer.runtime_ref),
+        message=message,
+    )
+
+    assert first
+    assert repeated == []
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        revision_of_task_id=failed.id
+    ).count() == 1
+
+
+def test_only_leader_blocked_decision_propagates_worker_failure(db_session):
+    run, department, failed, dependent = _failed_hr_worker_graph(db_session)
+
+    _review_node_message(
+        db_session,
+        run,
+        failed,
+        type="task.blocked",
+        key="leader-blocked",
+        payload={
+            "feedback": "没有具备权限的替代执行人，当前部门任务无法恢复。",
+            "reason_code": "recovery_exhausted",
+        },
+    )
+
+    assert failed.status == "failed"
+    assert dependent.status == "cancelled"
+    assert department.status == "failed"
+    assert db_session.get(models.AgentTaskNode, run.id).status == "failed"
+    assert db_session.get(models.TaskRun, run.id).status == "failed"
 
 
 def test_failed_dependency_cancels_direct_and_recursive_dependents(db_session):

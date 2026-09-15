@@ -27,6 +27,8 @@ from . import config
 from .agentteams_hierarchy import TeamHierarchy, TeamHierarchyError
 from .agentteams_protocol import AgentProtocolMessage
 from .agentteams_runtime_config import load_strict_runtime_config
+from .agentteams_taskflow_adapter import DatabaseTaskflowAdapter, ReplacementTask
+from ..vendor.agentscope_agentteams.taskflow_core import TaskflowError
 from .gateway import invoke_plugin
 from .identity import resolve_identity, resolve_twin_identity
 from .knowledge_registry import plugin_id_for_level, resolve as resolve_knowledge_base
@@ -271,7 +273,7 @@ class AgentTeamsCollaborationService:
         message: AgentProtocolMessage,
     ) -> list[models.AgentTaskEvent]:
         run, node = self._locked_context(db, message)
-        if message.type == "task.delegate":
+        if message.type in {"task.delegate", "task.replan"}:
             self._prevalidate_delegate_subtasks(message.payload)
         if not self._reserve_protocol(db, message):
             return []
@@ -294,6 +296,12 @@ class AgentTeamsCollaborationService:
         elif message.type == "task.result.rejected":
             self._authorize(db, run, node, matrix_sender, message, roles={"coordinator"})
             events = self._apply_result_rejected(db, node, message)
+        elif message.type == "task.replan":
+            self._authorize(db, run, node, matrix_sender, message, roles={"coordinator"})
+            events = self._apply_replan(db, run, node, message)
+        elif message.type == "task.blocked":
+            self._authorize(db, run, node, matrix_sender, message, roles={"coordinator"})
+            events = self._apply_blocked(db, node, message)
         elif message.type == "task.failed":
             self._authorize(db, run, node, matrix_sender, message, roles={"assignee"})
             events = self._apply_failed(db, run, node, message)
@@ -939,6 +947,228 @@ class AgentTeamsCollaborationService:
             events.extend(self._maybe_request_parent_summary(db, node, message.sender))
         events.extend(self._cancel_dependency_descendants(db, node, message.sender))
         return events
+
+    def _apply_replan(
+        self,
+        db: Session,
+        run: models.TaskRun,
+        node: models.AgentTaskNode,
+        message: AgentProtocolMessage,
+    ) -> list[models.AgentTaskEvent]:
+        feedback, tasks = self._validated_replan(db, run, node, message.payload)
+        if node.status == "reviewing":
+            self._transition(node, "revision_requested")
+        elif node.status != "failed":
+            raise CollaborationConflict("invalid_transition")
+        node.error_code = "leader_replanned"
+        node.error_message = feedback
+        node.finished_at = node.finished_at or datetime.now()
+        try:
+            applied = DatabaseTaskflowAdapter(db).apply_replan(
+                node,
+                feedback=feedback,
+                tasks=tasks,
+            )
+        except TaskflowError as exc:
+            raise CollaborationConflict("invalid_recovery_dag") from exc
+
+        events = [
+            self._append_event(
+                db,
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                event_type="task.replan",
+                actor_agent_id=message.sender,
+                target_agent_id=node.coordinator_agent_id,
+                summary="Leader replaced interrupted work with a new task graph",
+                detail={
+                    "feedback": feedback,
+                    "replacement_task_ids": [item.id for item in applied.nodes],
+                },
+            )
+        ]
+        depends_by_key = {task.client_task_key: list(task.depends_on) for task in tasks}
+        for replacement in applied.nodes:
+            events.append(self._append_event(
+                db,
+                root_task_id=replacement.root_task_id,
+                task_id=replacement.id,
+                event_type="task.revision.created",
+                actor_agent_id=message.sender,
+                target_agent_id=replacement.assignee_agent_id,
+                summary="Leader recovery task created",
+                detail={
+                    "revision_of_task_id": node.id,
+                    "replacement_task_id": replacement.id,
+                },
+            ))
+            if replacement.status == "assigned":
+                self._queue_assignment(
+                    db,
+                    replacement,
+                    depends_by_key[replacement.client_task_key],
+                    dependency_results=self._safe_dependency_results(db, replacement.id),
+                )
+                events.append(self._append_event(
+                    db,
+                    root_task_id=replacement.root_task_id,
+                    task_id=replacement.id,
+                    event_type="task.assigned",
+                    actor_agent_id=message.sender,
+                    target_agent_id=replacement.assignee_agent_id,
+                    summary="Leader recovery task assigned",
+                    detail={"revision_of_task_id": node.id},
+                ))
+            else:
+                events.append(self._append_event(
+                    db,
+                    root_task_id=replacement.root_task_id,
+                    task_id=replacement.id,
+                    event_type="task.blocked",
+                    actor_agent_id=message.sender,
+                    target_agent_id=replacement.assignee_agent_id,
+                    summary="recovery task blocked until dependencies complete",
+                    detail={"revision_of_task_id": node.id},
+                ))
+        return events
+
+    def _apply_blocked(
+        self,
+        db: Session,
+        node: models.AgentTaskNode,
+        message: AgentProtocolMessage,
+    ) -> list[models.AgentTaskEvent]:
+        feedback = self._validated_review_feedback(message.payload)
+        if node.node_kind != "worker_task":
+            raise CollaborationConflict("invalid_recovery_target")
+        if node.status == "reviewing":
+            self._transition(node, "failed")
+        elif node.status != "failed":
+            raise CollaborationConflict("invalid_transition")
+        node.error_code = self._safe_tool_text(
+            str(message.payload.get("reason_code") or "leader_blocked")
+        )
+        node.error_message = feedback
+        node.finished_at = node.finished_at or datetime.now()
+        events = [self._append_event(
+            db,
+            root_task_id=node.root_task_id,
+            task_id=node.id,
+            event_type="task.blocked",
+            actor_agent_id=message.sender,
+            target_agent_id=node.coordinator_agent_id,
+            summary="Leader reported the Worker task as unrecoverable",
+            detail={"feedback": feedback, "reason_code": node.error_code},
+        )]
+        events.extend(self._cancel_dependency_descendants(db, node, message.sender))
+        if node.required:
+            events.extend(self._propagate_required_failure(db, node, message.sender))
+        else:
+            events.extend(self._maybe_request_parent_summary(db, node, message.sender))
+        return events
+
+    def _validated_replan(
+        self,
+        db: Session,
+        run: models.TaskRun,
+        node: models.AgentTaskNode,
+        payload: Mapping[str, Any],
+    ) -> tuple[str, tuple[ReplacementTask, ...]]:
+        feedback = self._validated_review_feedback(payload)
+        if node.node_kind != "worker_task" or node.parent_task_id is None:
+            raise CollaborationConflict("invalid_recovery_target")
+        if self._remaining_recovery_attempts(db, node) < 1:
+            raise CollaborationConflict("recovery_attempts_exhausted")
+        raw_subtasks = payload.get("subtasks")
+        if not isinstance(raw_subtasks, list) or not 1 <= len(raw_subtasks) <= self.max_children:
+            raise CollaborationConflict("invalid_subtask_count")
+        subtasks = [self._validate_subtask(item) for item in raw_subtasks]
+        if not any(item["required"] for item in subtasks):
+            raise CollaborationConflict("required_subtask_required")
+        keys = [item["client_task_key"] for item in subtasks]
+        if len(keys) != len(set(keys)):
+            raise CollaborationConflict("duplicate_client_task_key")
+        if any(dependency not in keys for item in subtasks for dependency in item["depends_on"]):
+            raise CollaborationConflict("unknown_dependency")
+        if any(len(item["depends_on"]) != len(set(item["depends_on"])) for item in subtasks):
+            raise CollaborationConflict("duplicate_dependency")
+        self._assert_acyclic(subtasks)
+        existing_keys = set(db.scalars(
+            select(models.AgentTaskNode.client_task_key).where(
+                models.AgentTaskNode.parent_task_id == node.parent_task_id
+            )
+        ))
+        if existing_keys.intersection(keys):
+            raise CollaborationConflict("duplicate_client_task_key")
+        total_nodes = db.scalar(select(func.count(models.AgentTaskNode.id)).where(
+            models.AgentTaskNode.root_task_id == node.root_task_id
+        )) or 0
+        if total_nodes + len(subtasks) > self.max_nodes:
+            raise CollaborationConflict("max_nodes_exceeded")
+
+        parent = db.get(models.AgentTaskNode, node.parent_task_id)
+        if parent is None or parent.root_task_id != node.root_task_id:
+            raise CollaborationConflict("invalid_parent_task")
+        if parent.assignee_agent_id != node.coordinator_agent_id:
+            raise CollaborationConflict("invalid_recovery_coordinator")
+        catalog = self._team_capability_catalog(
+            db, run.team_id, owner_human_no=run.owner_human_no
+        )
+        capabilities_by_agent = {
+            item["agent_id"]: set(item["capabilities"]) for item in catalog
+        }
+        ancestor_assignees = self._parent_chain_assignees(db, parent)
+        for item in subtasks:
+            assignee = db.get(models.DigitalEmployee, item["assignee_agent_id"])
+            if assignee is None or not self._is_team_member(
+                db, run.team_id, item["assignee_agent_id"]
+            ):
+                raise CollaborationConflict("invalid_team_assignee")
+            if not self._runtime_ref(assignee):
+                raise CollaborationConflict("missing_runtime_ref")
+            if assignee.status != "active":
+                raise CollaborationConflict("inactive_assignee")
+            if item["assignee_agent_id"] in ancestor_assignees:
+                raise CollaborationConflict("parent_chain_cycle")
+            if item["requires_capability"] and item["capability"] not in capabilities_by_agent.get(
+                item["assignee_agent_id"], set()
+            ):
+                raise CollaborationConflict("capability_not_available")
+        try:
+            self._team_hierarchy(db, run.team_id).validate_delegation(
+                parent.assignee_agent_id,
+                [item["assignee_agent_id"] for item in subtasks],
+            )
+        except TeamHierarchyError as exc:
+            raise CollaborationConflict(str(exc)) from None
+
+        planned = tuple(ReplacementTask(
+            client_task_key=item["client_task_key"],
+            title=item["title"],
+            instruction=item["instruction"],
+            assignee_agent_id=item["assignee_agent_id"],
+            required_capability=item["capability"],
+            depends_on=tuple(item["depends_on"]),
+            required=item["required"],
+            material=dict(item["material"]),
+        ) for item in subtasks)
+        try:
+            DatabaseTaskflowAdapter.validate_replan(planned)
+        except TaskflowError as exc:
+            raise CollaborationConflict("invalid_recovery_dag") from exc
+        return feedback, planned
+
+    def _validated_review_feedback(self, payload: Mapping[str, Any]) -> str:
+        feedback = payload.get("feedback")
+        if (
+            not isinstance(feedback, str)
+            or not feedback.strip()
+            or not self._is_safe_cross_agent_text(
+                feedback.strip(), _MAX_SUBTASK_INSTRUCTION_LENGTH
+            )
+        ):
+            raise CollaborationConflict("invalid_review_feedback")
+        return feedback.strip()
 
     def _review_tool_evidence(
         self, db: Session, node: models.AgentTaskNode
