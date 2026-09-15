@@ -412,6 +412,32 @@ def test_manager_selects_skill_then_delegates_without_invalid_root_ack(tmp_path)
     assert pauses == [0.0, 0.0]
 
 
+def test_completed_matrix_batch_discards_event_ids_behind_advanced_cursor(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path)
+    engine.selections = [
+        SkillSelection(selected_skill_ids=["agentteams-onboarding-readiness"])
+    ]
+    engine.plans = [plan()]
+    gateway.events = [
+        event(
+            message(
+                type="task.submit",
+                sender="platform",
+                receiver="VE-0001",
+                payload=manager_payload(),
+                key="current-submit",
+            ),
+            event_id="$current-submit",
+        )
+    ]
+
+    assert subject.run_once() == 1
+
+    assert subject._state["cursor"] == "cursor-1"
+    assert subject._state["processed_event_ids"] == []
+    assert "current-submit" in subject._state["processed_idempotency_keys"]
+
+
 def test_manager_runtime_receives_platform_relationship_graph_in_each_planning_round(tmp_path):
     subject, gateway, engine, _ = runtime(tmp_path)
     graph = {

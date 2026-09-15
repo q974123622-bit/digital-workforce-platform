@@ -239,6 +239,10 @@ class AgentRuntime:
             self._save_state()
         # Only a fully-consumed batch advances the opaque Matrix token.
         self._state["cursor"] = next_cursor
+        # Event IDs only protect replay while the old cursor is still active.
+        # Once the cursor advances, every event in this batch is behind it;
+        # protocol idempotency keys remain as the durable duplicate guard.
+        self._state["processed_event_ids"] = []
         self._save_state()
         return handled
 
