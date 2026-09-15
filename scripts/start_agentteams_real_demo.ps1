@@ -215,6 +215,7 @@ function Stop-OwnedComposeProject {
 function Set-AgentTeamsStrictRuntimeEnvironment {
     $env:DWP_AGENTTEAMS_MODE = 'agentteams_strict'
     $env:DWP_AGENTTEAMS_COLLAB_ENABLED = '1'
+    $env:DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS = '180'
     $env:DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS = '1800'
     $env:DWP_SKIP_AUTO_SEED = '1'
     $env:DWP_AGENTTEAMS_RUNTIME_CONFIG = $runtimeConfig
