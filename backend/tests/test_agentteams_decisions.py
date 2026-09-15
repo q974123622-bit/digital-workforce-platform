@@ -808,7 +808,7 @@ def test_onboarding_manager_uses_department_round_then_real_audit_round(
     assert second.subtasks[0].assignee_agent_id == "VE-0005"
 
 
-def test_manager_canonicalizes_a_worker_route_to_its_unique_direct_leader(
+def test_onboarding_manager_uses_full_retry_budget_to_fix_leader_and_capability(
     fake_llm, registry,
 ):
     graph = {
@@ -869,7 +869,15 @@ def test_manager_canonicalizes_a_worker_route_to_its_unique_direct_leader(
 
     assert decision.subtasks[0].assignee_agent_id == "VE-0005"
     assert decision.subtasks[0].required_capability == "audit.onboarding.coordinate"
-    assert len(fake_llm.calls) == 1
+    assert len(fake_llm.calls) == 3
+    first_feedback = json.loads(fake_llm.calls[1][-1]["content"])
+    second_feedback = json.loads(fake_llm.calls[2][-1]["content"])
+    assert first_feedback["validation_errors"][0]["msg"] == (
+        "A Manager may delegate only to a direct Team Leader and must use one of that Leader's advertised capabilities."
+    )
+    assert second_feedback["validation_errors"][0]["msg"] == (
+        "Each required capability must belong to its assigned agent in the current team catalog."
+    )
 
 
 def test_onboarding_manager_requires_targeted_follow_up_after_audit_round(fake_llm, registry):

@@ -1002,16 +1002,38 @@ class AgentRuntime:
         current_round, limits, relationship_graph=None,
     ) -> ManagerContext:
         safe_limits = limits if isinstance(limits, Mapping) else {}
+        graph = relationship_graph if isinstance(relationship_graph, Mapping) else {}
+        identity = graph.get("self")
+        direct_reports = graph.get("direct_reports")
+        visible_agent_ids: set[str] | None = None
+        if (
+            isinstance(identity, Mapping)
+            and identity.get("level") == "manager"
+            and isinstance(direct_reports, list)
+        ):
+            visible_agent_ids = {
+                item.get("agent_id")
+                for item in direct_reports
+                if isinstance(item, Mapping) and isinstance(item.get("agent_id"), str)
+            }
+        visible_catalog = {
+            key: value
+            for key, value in catalog.items()
+            if visible_agent_ids is None or key in visible_agent_ids
+        }
         return ManagerContext(
             user_goal=goal, manager_skill_id="agentteams-manager-coordination", selected_skill_ids=selected,
-            team_capability_catalog=[{"agent_id": key, **self._bounded_value(value)} for key, value in catalog.items()],
+            team_capability_catalog=[
+                {"agent_id": key, **self._bounded_value(value)}
+                for key, value in visible_catalog.items()
+            ],
             child_results=child_results,
             existing_child_task_keys=self._bounded_text_list(existing_child_task_keys, limit=20),
             current_round=current_round,
             remaining_rounds=self._nonnegative_int(safe_limits.get("rounds"), 5),
             max_children=self._positive_int(safe_limits.get("children"), 5),
             max_nodes=self._positive_int(safe_limits.get("nodes"), 20),
-            team_relationship_graph=self._bounded_value(relationship_graph or {}),
+            team_relationship_graph=self._bounded_value(graph),
         )
 
     def _remember_manager(

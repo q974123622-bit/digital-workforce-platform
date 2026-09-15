@@ -455,6 +455,38 @@ def test_manager_runtime_receives_platform_relationship_graph_in_each_planning_r
     assert sent_protocols(gateway)[-1].payload["round"] == 2
 
 
+def test_manager_planning_context_exposes_only_direct_team_leaders(tmp_path):
+    subject, _, _, _ = runtime(tmp_path)
+    graph = {
+        "self": {"agent_id": "VE-0001", "role": "Manager", "level": "manager"},
+        "reports_to": [],
+        "direct_reports": [
+            {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.read"]},
+            {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.readiness.read"]},
+        ],
+    }
+    catalog = {
+        **TEAM,
+        "VE-HR-MATERIAL": {"capabilities": ["hr.materials.read"]},
+        "VE-IT-DEVICE": {"capabilities": ["it.devices.read"]},
+    }
+
+    context = subject._manager_context(
+        goal="评估新员工A",
+        selected=["agentteams-onboarding-readiness"],
+        catalog=catalog,
+        child_results=[],
+        existing_child_task_keys=[],
+        current_round=1,
+        limits={},
+        relationship_graph=graph,
+    )
+
+    assert {item["agent_id"] for item in context.team_capability_catalog} == {
+        "VE-0002", "VE-0003",
+    }
+
+
 def test_manager_uses_non_thinking_engine_when_task_disables_thinking(tmp_path):
     subject, gateway, thinking_engine, pauses = runtime(tmp_path)
     non_thinking_engine = FakeEngine()
