@@ -466,6 +466,43 @@ def test_result_review_accepts_complete_recovery_graph(fake_llm, registry):
     ]
 
 
+def test_result_review_retries_replan_that_reuses_a_current_dag_key(fake_llm, registry):
+    reused = {
+        "action": "replan",
+        "feedback": "重新执行原材料核查任务。",
+        "subtasks": [{
+            "client_task_key": "materials",
+            "title": "重新核查 HR 材料",
+            "goal": "重新读取并核验入职材料证据。",
+            "required_capability": "hr.materials.read",
+            "assignee_agent_id": "VE-HR-MATERIAL",
+            "depends_on": [],
+            "required": True,
+            "reason": "原任务执行中断，需要重新取得证据。",
+        }],
+    }
+    corrected = {
+        **reused,
+        "subtasks": [{
+            **reused["subtasks"][0],
+            "client_task_key": "materials-retry",
+        }],
+    }
+    fake_llm.outputs = [reused, corrected]
+
+    decision = AgentDecisionEngine(fake_llm, registry).review_result(
+        _recovery_context()
+    )
+
+    assert decision.subtasks[0].client_task_key == "materials-retry"
+    assert len(fake_llm.calls) == 2
+    retry_message = json.loads(fake_llm.calls[-1][-1]["content"])
+    assert retry_message["validation_errors"][0]["msg"] == (
+        "Replacement client_task_key values must be new and must not reuse "
+        "a key from the current department DAG."
+    )
+
+
 def test_result_review_rejects_replan_to_non_direct_report(fake_llm, registry):
     invalid = {
         "action": "replan",

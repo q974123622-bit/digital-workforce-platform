@@ -301,6 +301,8 @@ _BUSINESS_RULE_FEEDBACK = {
     "max_nodes_exceeded": "The delegate plan must not exceed the remaining node limit.",
     "duplicate_client_task_key": "Each client_task_key must be unique within a single delegate plan.",
     "existing_client_task_key": "New client_task_key values must not reuse an existing child task key.",
+    "existing_recovery_task_key":
+        "Replacement client_task_key values must be new and must not reuse a key from the current department DAG.",
     "required_subtask_required": "A delegate plan must include at least one required subtask.",
     "duplicate_dependency": "Each dependency may appear only once for a subtask.",
     "self_dependency": "A subtask cannot depend on itself.",
@@ -609,7 +611,8 @@ class AgentDecisionEngine:
             "The legacy reject action is allowed only for a submitted effective result that should "
             "be revised by the same Worker. Never accept BLOCKED, INTERRUPTED, or REVISION_NEEDED. "
             "For replan, return every replacement subtask and its internal dependencies; assign only "
-            "to a direct report with the required capability. Return only "
+            "to a direct report with the required capability. Every replacement client_task_key must "
+            "be new and must not reuse a key from current_department_dag. Return only "
             "JSON matching the supplied schema. Write feedback in concise Simplified Chinese and "
             "do not invent facts, evidence, URLs, credentials, or hidden system state.",
             {
@@ -871,6 +874,13 @@ def _validate_result_review_decision(
         ])
     except TaskflowError as exc:
         raise _DecisionValidationError("invalid_recovery_dag") from exc
+    current_keys = {
+        raw.get("client_task_key")
+        for raw in context.current_dag
+        if isinstance(raw, dict) and isinstance(raw.get("client_task_key"), str)
+    }
+    if any(item.client_task_key in current_keys for item in decision.subtasks):
+        raise _DecisionValidationError("existing_recovery_task_key")
     if not any(item.required for item in decision.subtasks):
         raise _DecisionValidationError("required_subtask_required")
 
