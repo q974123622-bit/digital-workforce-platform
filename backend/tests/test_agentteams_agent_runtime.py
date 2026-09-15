@@ -292,6 +292,41 @@ def test_review_decision_failure_rejects_for_revision_instead_of_failing_worker_
     }
 
 
+def test_review_budget_gate_blocks_without_a_second_model_call(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.reviews = [ResultReviewDecision(
+        action="reject",
+        feedback="证据不完整，需要原执行人修订。",
+    )]
+    gateway.events = [event(message(
+        type="task.result.submitted",
+        sender="platform",
+        receiver="VE-0002",
+        task_id="worker-task-1",
+        parent_task_id="leader-task-1",
+        payload={
+            "title": "核查审批记录",
+            "instruction": "核对审批证据",
+            "assignee_agent_id": "VE-0003",
+            "result": {"result": "证据不完整", "audit_ids": [101]},
+            "remaining_nodes": 0,
+        },
+        key="review-no-node-budget",
+    ))]
+
+    assert subject.run_once() == 1
+
+    response = sent_protocols(gateway)[-1]
+    assert response.type == "task.blocked"
+    assert response.payload == {
+        "feedback": "证据不完整，需要原执行人修订。",
+        "reason_code": "max_nodes_exceeded",
+    }
+    assert len(engine.review_contexts) == 1
+    assert not hasattr(engine.review_contexts[0], "remaining_nodes")
+    assert engine.recovery_contexts == []
+
+
 def test_recovery_request_reaches_leader_replan_decision_path(tmp_path):
     subject, gateway, engine, _ = runtime(tmp_path, role="hr")
     replacement = PlannedSubtask(
@@ -327,7 +362,8 @@ def test_recovery_request_reaches_leader_replan_decision_path(tmp_path):
             "required_capability": "it.readiness.read",
             "assignee_agent_id": "VE-0003",
             "result_status": "INTERRUPTED",
-            "result": {},
+            "result": {"summary": "材料查询失败", "notes": "未取得可验证记录"},
+            "failure": {"error_code": "worker_interrupted"},
             "evidence": [],
             "current_dag": [],
             "team_capability_catalog": [{
@@ -344,6 +380,7 @@ def test_recovery_request_reaches_leader_replan_decision_path(tmp_path):
                 }],
             },
             "remaining_recovery_attempts": 2,
+            "remaining_nodes": 3,
         },
         key="recovery-request",
     )
@@ -358,12 +395,23 @@ def test_recovery_request_reaches_leader_replan_decision_path(tmp_path):
     context = engine.review_contexts[0]
     assert context.result_status == "INTERRUPTED"
     assert not hasattr(context, "remaining_recovery_attempts")
+    assert not hasattr(context, "remaining_nodes")
     recovery_context = engine.recovery_contexts[0]
     assert recovery_context.remaining_recovery_attempts == 2
+    assert recovery_context.remaining_nodes == 3
     assert recovery_context.direct_reports == [{
         "agent_id": "VE-0003",
         "capabilities": ["it.readiness.read"],
     }]
+    assert recovery_context.failure == {
+        "original_failure": {"error_code": "worker_interrupted"},
+        "result_status": "INTERRUPTED",
+        "submitted_result": {
+            "summary": "材料查询失败",
+            "notes": "未取得可验证记录",
+        },
+        "review_feedback": "原任务中断，重新派发材料核查。",
+    }
 
 
 def test_recovery_decision_failure_reports_blocked_instead_of_failing_as_worker(tmp_path):
@@ -436,6 +484,27 @@ def test_completed_matrix_batch_discards_event_ids_behind_advanced_cursor(tmp_pa
     assert subject._state["cursor"] == "cursor-1"
     assert subject._state["processed_event_ids"] == []
     assert "current-submit" in subject._state["processed_idempotency_keys"]
+
+
+def test_restart_discards_legacy_event_ids_already_covered_by_cursor(tmp_path):
+    seeded, _, _, _ = runtime(tmp_path)
+    seeded._state.update({
+        "cursor": "advanced-cursor",
+        "processed_event_ids": ["$old-1", "$old-2"],
+        "processed_idempotency_keys": ["old-key"],
+    })
+    seeded._save_state()
+
+    restarted = AgentRuntime(
+        seeded.config,
+        FakeGateway(),
+        FakeEngine(),
+        pause=lambda _: None,
+    )
+
+    assert restarted._state["cursor"] == "advanced-cursor"
+    assert restarted._state["processed_event_ids"] == []
+    assert restarted._state["processed_idempotency_keys"] == ["old-key"]
 
 
 def test_manager_runtime_receives_platform_relationship_graph_in_each_planning_round(tmp_path):
@@ -738,7 +807,44 @@ def test_worker_requests_tool_then_can_complete_only_after_real_tool_evidence(tm
     assert "token" not in str(engine.worker_contexts[0].current_team_capability_catalog).lower()
     saved = (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
     assert "exposed" not in saved and "password" not in saved and '"key"' not in saved
-    assert "101" in saved
+    assert subject._state["tasks"] == {}
+
+
+def test_single_skill_worker_uses_its_only_authorized_skill_without_model_selection(tmp_path):
+    """A one-skill Worker must not fail because a model echoes another role's Skill."""
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+
+    def unexpected_selection(_context):
+        raise AssertionError("single authorized Skill must be selected deterministically")
+
+    engine.select_skills = unexpected_selection
+    engine.work = [WorkerDecision(
+        action="tool",
+        tool_name="query_onboarding_employee",
+        tool_arguments={"employee_ref": "新员工A"},
+    )]
+    assignment = message(
+        type="task.assign",
+        sender="VE-0001",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload=assign_payload(),
+    )
+    gateway.events = [event(assignment, sender=MXIDS["VE-0001"])]
+
+    assert subject.run_once() == 1
+
+    sent = sent_protocols(gateway)
+    assert [item.type for item in sent] == [
+        "task.accepted",
+        "task.progress",
+        "agent.message",
+        "tool.request",
+    ]
+    assert sent[2].payload == {
+        "kind": "skill.selected",
+        "selected_skill_ids": ["hr-onboarding-assistant"],
+    }
 
 
 def test_worker_rejects_an_identical_tool_request_after_successful_evidence(tmp_path):
@@ -1557,6 +1663,171 @@ def test_state_redactor_removes_sensitive_keys_values_and_stack_text(tmp_path):
         assert forbidden not in state
 
 
+def test_normal_state_save_keeps_newest_task_context_beyond_generic_mapping_limit(tmp_path):
+    """A later Manager summary must still find the task it just planned."""
+    subject, _, _, _ = runtime(tmp_path)
+    subject._state["tasks"] = {
+        f"old-{index:02d}": {"kind": "manager", "selected_skill_ids": ["agentteams-onboarding-readiness"]}
+        for index in range(20)
+    }
+    subject._state["tasks"]["current"] = {
+        "kind": "manager",
+        "goal": "评估新员工A是否按期入职。",
+        "selected_skill_ids": ["agentteams-onboarding-readiness"],
+        "team_catalog_version": 1,
+    }
+
+    subject._save_state()
+    restarted = AgentRuntime(subject.config, FakeGateway(), FakeEngine(), pause=lambda _: None)
+
+    assert "current" in restarted._state["tasks"]
+
+
+def test_canonical_task_result_preserves_long_business_status_without_exposing_secret_assignments(tmp_path):
+    subject, _, _, _ = runtime(tmp_path, role="hr")
+    source = message(
+        type="task.assign",
+        sender="VE-0001",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload=assign_payload(),
+    )
+    business_result = "MFA=missing；这是业务状态，不是密钥。" + ("审计证据完整。" * 120)
+    reply = subject._reply(
+        source,
+        "task.result",
+        "platform",
+        {"result": business_result, "audit_ids": [101]},
+        0,
+    )
+
+    canonical = subject._canonical_envelopes([reply])
+
+    assert canonical is not None
+    assert canonical[0].payload["result"] == business_result
+    assert len(canonical[0].payload["result"]) > 512
+    assert subject._bounded_value("DEEPSEEK_API_KEY=private-value") == "[redacted]"
+
+
+def test_pending_outbox_accepts_one_full_result_with_visible_reasoning_trace(tmp_path):
+    subject, gateway, _, _ = runtime(tmp_path, role="hr")
+    source = message(
+        type="tool.result",
+        sender="platform",
+        receiver="VE-0002",
+        parent_task_id="leader-task-1",
+        payload={"ok": True, "audit_ids": [101]},
+    )
+    source_event = event(source, event_id="$full-result")
+    subject._active_pending = {
+        "event_id": source_event.event_id,
+        "trial": json.loads(json.dumps(subject._state)),
+        "source": subject._pending_source(source_event, source),
+    }
+    reasoning = "审计判断依据。" * 290
+    result = "逐项核对业务证据。" * 220
+    replies = [
+        subject._reply(
+            source,
+            "agent.message",
+            "platform",
+            {
+                "kind": "decision.trace",
+                "stage": "worker_decision",
+                "iteration": 2,
+                "reasoning_segments": [
+                    reasoning[index:index + 480]
+                    for index in range(0, len(reasoning), 480)
+                ],
+            },
+            0,
+        ),
+        subject._reply(
+            source,
+            "task.result",
+            "platform",
+            {"result": result, "audit_ids": [101]},
+            1,
+        ),
+    ]
+
+    assert subject._send_responses(replies) is True
+    assert len(gateway.sent) == 2
+    assert "逐项核对业务证据" in gateway.sent[-1][2]
+
+
+def test_terminal_worker_result_releases_its_runtime_context_before_pending_send(tmp_path):
+    """A completed Worker task must not crowd its own crash-safe result out of state."""
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [WorkerDecision(
+        action="tool",
+        tool_name="query_onboarding_employee",
+        tool_arguments={"employee_ref": "新员工A"},
+    )]
+    assignment = message(
+        type="task.assign",
+        sender="VE-0001",
+        receiver="VE-0002",
+        task_id="current",
+        parent_task_id="root-1",
+        key="large-state-assignment",
+        payload=assign_payload(),
+    )
+    gateway.events = [event(
+        assignment,
+        event_id="$large-state-assignment",
+        sender=MXIDS["VE-0001"],
+    )]
+    assert subject.run_once() == 1
+
+    subject._state["tasks"]["current"]["evidence"] = [
+        {"kind": "historic", "value": "历史审计上下文" * 20}
+        for _ in range(8)
+    ]
+    subject._state["processed_idempotency_keys"] = [
+        f"historic-key-{index:02d}-" + ("x" * 32)
+        for index in range(32)
+    ]
+    subject._save_state()
+    state_path = tmp_path / "state" / "VE-0002.json"
+    assert state_path.stat().st_size > 6_000
+    assert "current" in subject._state["tasks"]
+
+    completed = reasoned(
+        WorkerDecision(action="complete", result="逐项核对业务证据。" * 228),
+        "审核全部证据后可以提交。" * 171,
+    )
+    engine.work = [completed]
+    tool_result = message(
+        type="tool.result",
+        sender="platform",
+        receiver="VE-0002",
+        task_id="current",
+        parent_task_id="root-1",
+        key="large-state-tool-result",
+        payload={
+            "ok": True,
+            "audit_ids": [101],
+            "data": {"approval_ref": "AUD-LARGE-001"},
+            "team_capability_catalog": manager_payload()["team_capability_catalog"],
+            "team_catalog_version": 2,
+        },
+    )
+    gateway.events = [event(tool_result, event_id="$large-state-tool-result")]
+
+    assert subject.run_once() == 1
+
+    sent = sent_protocols(gateway)
+    assert sent[-1].type == "task.result", [
+        (item.type, item.payload) for item in sent
+    ]
+    assert sent[-1].payload["result"] == ("逐项核对业务证据。" * 228)[:2048]
+    assert "current" not in subject._state["tasks"]
+    assert subject._state["security"].get("outbound_rejected", 0) == 0
+    assert state_path.stat().st_size <= 16_384
+
+
 def test_manager_requires_fresh_catalog_for_submit_and_follow_up(tmp_path):
     subject, gateway, engine, _ = runtime(tmp_path)
     gateway.events = [event(message(type="task.submit", sender="platform", receiver="VE-0001", payload={"instruction": "x"}), event_id="$missing")]
@@ -1888,7 +2159,11 @@ def test_worker_rejects_stale_delegate_candidate_after_platform_catalog_refresh(
 
     assert subject.run_once() == 2
     assert [item.type for item in sent_protocols(gateway)] == ["task.accepted", "task.progress", "agent.message", "agent.message", "task.failed"]
-    assert subject._state["tasks"]["task-1"]["team_catalog_version"] == 2
+    assert subject._state["tasks"] == {}
+    assert {
+        item["agent_id"]
+        for item in engine.worker_contexts[-1].current_team_capability_catalog
+    } == {"VE-0002", "VE-0003"}
     assert {item["agent_id"] for item in engine.worker_contexts[0].current_team_capability_catalog} == {
         "VE-0002", "VE-0003", "VE-0005",
     }

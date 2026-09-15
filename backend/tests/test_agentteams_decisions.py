@@ -43,9 +43,11 @@ class FakeLLM(LLMProvider):
     def __init__(self):
         self.outputs: list[dict] = []
         self.calls: list[list[dict]] = []
+        self.schemas: list[type] = []
 
     def structured_output(self, messages, schema):
         self.calls.append(messages)
+        self.schemas.append(schema)
         result = self.outputs.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -165,6 +167,12 @@ def test_result_review_prompt_contains_only_current_task_result_and_direct_evide
     assert "current_team_capability_catalog" not in payload
     assert "team_relationship_graph" not in payload
     assert "remaining_recovery_attempts" not in payload
+    assert "remaining_nodes" not in payload
+    review_instruction = fake_llm.calls[0][0]["content"]
+    assert "explicitly reports an evidence gap or unknown" in review_instruction
+    assert "unsupported Tool query parameters" in review_instruction
+    assert "explicitly marks unavailable facts as unknown" in review_instruction
+    assert "Do not reject merely because unavailable facts" in review_instruction
 
 
 def test_recovery_plan_loads_department_context_only_after_review_requests_replan(fake_llm, registry):
@@ -206,13 +214,14 @@ def test_recovery_plan_loads_department_context_only_after_review_requests_repla
         current_dag=[{"client_task_key": "materials", "status": "failed"}],
         direct_reports=[{"agent_id": "VE-HR-MATERIAL", "capabilities": ["hr.materials.read"]}],
         remaining_recovery_attempts=1,
+        remaining_nodes=1,
     ))
 
     assert planned.subtasks[0].assignee_agent_id == "VE-HR-MATERIAL"
     recovery_payload = json.loads(fake_llm.calls[1][1]["content"])
     assert set(recovery_payload) == {
         "reviewer_agent_id", "task", "failure", "current_department_dag",
-        "direct_reports", "remaining_recovery_attempts",
+        "direct_reports", "remaining_recovery_attempts", "remaining_nodes",
     }
 
 
@@ -390,6 +399,112 @@ def test_department_lead_receives_relationship_graph_and_delegates_one_batch_to_
     assert "VE-HR-MATERIAL" in prompt
 
 
+def test_department_lead_initial_plan_schema_only_allows_delegation(fake_llm, registry):
+    graph = {
+        "self": {"agent_id": "VE-0005", "role": "审计负责人", "level": "leader"},
+        "reports_to": ["VE-0001"],
+        "direct_reports": [{
+            "agent_id": "VE-AUDIT-REVIEW",
+            "role": "审计专员",
+            "capabilities": ["audit.evidence.read", "audit.permission.review"],
+        }],
+    }
+    fake_llm.outputs = [{
+        "action": "delegate",
+        "subtasks": [{
+            "client_task_key": "audit-evidence",
+            "title": "复核入职证据",
+            "goal": "核对四类入职证据并报告缺口。",
+            "required_capability": "audit.evidence.read",
+            "assignee_agent_id": "VE-AUDIT-REVIEW",
+            "depends_on": [],
+            "required": True,
+            "reason": "由直属审计专员取得独立证据。",
+        }],
+    }]
+    context = WorkerContext(
+        current_agent_id="VE-0005",
+        task={
+            "title": "独立审计",
+            "goal": "复核 HR 与 IT 入职证据。",
+            "required_capability": "audit.onboarding.coordinate",
+        },
+        professional_skill_ids=["audit-evidence-review"],
+        safe_tool_catalog=[{
+            "name": "agentteams.audit.review_onboarding",
+            "required_capability": "audit.onboarding.coordinate",
+        }],
+        current_team_capability_catalog=[{
+            "agent_id": "VE-AUDIT-REVIEW",
+            "capabilities": ["audit.evidence.read", "audit.permission.review"],
+        }],
+        parent_chain_agent_ids=["VE-0001"],
+        team_relationship_graph=graph,
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).decide_work(context)
+
+    response_schema = fake_llm.schemas[0]
+    assert response_schema["properties"]["action"] == {
+        "const": "delegate",
+        "title": "Action",
+        "type": "string",
+    }
+    assert "tool_name" not in response_schema["properties"]
+    prompt = json.loads(fake_llm.calls[0][1]["content"])
+    assert "safe_tool_catalog" not in prompt
+    audit_skill = prompt["professional_skills"][0]["content"]
+    assert "负责人模式" in audit_skill
+    assert "只向 `direct_reports`" in audit_skill
+    assert "专员模式" in audit_skill
+    assert decision.action == "delegate"
+
+
+def test_specialist_with_successful_tool_evidence_schema_only_allows_completion(
+    fake_llm, registry,
+):
+    fake_llm.outputs = [{
+        "action": "complete",
+        "result": "审计 Tool 已确认材料与设备记录，并发现多因素认证证据缺失。",
+    }]
+    context = WorkerContext(
+        current_agent_id="VE-AUDIT-REVIEW",
+        task={
+            "title": "独立核查入职证据",
+            "goal": "核对入职证据并报告缺口。",
+            "required_capability": "audit.evidence.read",
+        },
+        professional_skill_ids=["audit-evidence-review"],
+        safe_tool_catalog=[{
+            "name": "agentteams.audit.lookup_evidence",
+            "required_capability": "audit.evidence.read",
+        }],
+        current_team_capability_catalog=[{
+            "agent_id": "VE-AUDIT-REVIEW",
+            "capabilities": ["audit.evidence.read"],
+        }],
+        parent_chain_agent_ids=["VE-0001", "VE-0005"],
+        previous_results=[{
+            "kind": "tool.result",
+            "value": {"ok": True, "decision": "allow", "audit_ids": [107]},
+        }],
+        team_relationship_graph={
+            "self": {"agent_id": "VE-AUDIT-REVIEW", "role": "审计专员", "level": "worker"},
+            "reports_to": ["VE-0005"],
+            "direct_reports": [],
+        },
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).decide_work(context)
+
+    response_schema = fake_llm.schemas[0]
+    assert response_schema["properties"]["action"]["const"] == "complete"
+    assert "tool_name" not in response_schema["properties"]
+    prompt = json.loads(fake_llm.calls[0][1]["content"])
+    assert "safe_tool_catalog" not in prompt
+    assert decision.action == "complete"
+
+
 @pytest.mark.parametrize(
     ("leader_id", "leader_capability", "workers"),
     [
@@ -489,6 +604,7 @@ def _recovery_context(**updates):
             },
         ],
         "remaining_recovery_attempts": 2,
+        "remaining_nodes": 2,
     }
     base.update(updates)
     return RecoveryPlanContext(**base)
@@ -531,6 +647,67 @@ def test_result_review_accepts_complete_recovery_graph(fake_llm, registry):
         "materials-retry",
         "training-cross-check",
     ]
+
+
+def test_result_review_does_not_load_or_correct_against_hidden_node_budget(fake_llm, registry):
+    fake_llm.outputs = [
+        {"action": "reject", "feedback": "证据不完整，需要原执行人修订。"},
+    ]
+
+    decision = AgentDecisionEngine(fake_llm, registry).review_result(
+        ResultReviewContext(
+            reviewer_agent_id="VE-0002",
+            task={"title": "核查材料", "goal": "核验证据"},
+            submitted_result={"summary": "证据不完整"},
+        )
+    )
+
+    assert decision.action == "reject"
+    assert len(fake_llm.calls) == 1
+    assert "remaining_nodes" not in json.loads(fake_llm.calls[0][1]["content"])
+
+
+def test_recovery_plan_stops_when_replacement_exceeds_remaining_node_slots(fake_llm, registry):
+    too_large = {
+        "action": "replan",
+        "feedback": "重新并行核查材料与培训记录。",
+        "subtasks": [
+            {
+                "client_task_key": "materials-retry",
+                "title": "重新核查材料",
+                "goal": "重新取得材料证据。",
+                "required_capability": "hr.materials.read",
+                "assignee_agent_id": "VE-HR-MATERIAL",
+                "depends_on": [],
+                "required": True,
+                "reason": "原任务中断。",
+            },
+            {
+                "client_task_key": "training-retry",
+                "title": "重新核查培训",
+                "goal": "重新取得培训证据。",
+                "required_capability": "hr.training.read",
+                "assignee_agent_id": "VE-HR-TRAINING",
+                "depends_on": [],
+                "required": True,
+                "reason": "原任务中断。",
+            },
+        ],
+    }
+    fake_llm.outputs = [
+        too_large,
+        {"action": "stop_blocked", "feedback": "仅剩一个节点额度，无法完成恢复。", "subtasks": []},
+    ]
+
+    decision = AgentDecisionEngine(fake_llm, registry).plan_recovery(
+        _recovery_context(remaining_nodes=1)
+    )
+
+    assert decision.action == "stop_blocked"
+    retry_message = json.loads(fake_llm.calls[-1][-1]["content"])
+    assert retry_message["validation_errors"][0]["msg"] == (
+        "The delegate plan must not exceed the remaining node limit."
+    )
 
 
 def test_result_review_retries_replan_that_reuses_a_current_dag_key(fake_llm, registry):

@@ -47,6 +47,28 @@ def test_agentteams_domain_tool_returns_bounded_demo_evidence_and_writes_audit(
     assert audit.decision == "allow"
 
 
+def test_onboarding_audit_evidence_maps_each_department_source_record(db_session):
+    result = _invoke(
+        db_session,
+        "VE-AUDIT-REVIEW",
+        "agentteams-onboarding-evidence",
+        {"employee_ref": "新员工A"},
+    )
+
+    records = [*result["data"]["evidence"], *result["data"]["open_gaps"]]
+    mapped = {
+        source_id
+        for record in records
+        for source_id in record.get("source_evidence_ids", [])
+    }
+    assert mapped == {
+        "HR-MAT-A-001", "HR-MAT-A-002",
+        "HR-TRN-A-001", "HR-TRN-A-002",
+        "IT-ACC-A-001", "IT-ACC-A-002",
+        "IT-DEV-A-001", "IT-DEV-A-002",
+    }
+
+
 @pytest.mark.parametrize(
     ("employee_id", "plugin_id"),
     [

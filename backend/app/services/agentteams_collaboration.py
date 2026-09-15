@@ -236,17 +236,19 @@ class AgentTeamsCollaborationService:
             detail={"title": title},
         )
         catalog, catalog_version = self._next_catalog_snapshot(db, root, team.id)
+        relationship_graph = self._team_relationship_graph(
+            db, team.id, leader.employee_no, catalog=catalog
+        )
         submit_payload = {
             "title": title,
             "instruction": instruction,
             "material": dict(material),
             "thinking_enabled": thinking_enabled,
-            "team_capability_catalog": catalog,
+            "team_capability_catalog": self._scoped_capability_catalog(
+                catalog, leader.employee_no, relationship_graph
+            ),
             "team_catalog_version": catalog_version,
         }
-        relationship_graph = self._team_relationship_graph(
-            db, team.id, leader.employee_no, catalog=catalog
-        )
         if relationship_graph:
             submit_payload["team_relationship_graph"] = relationship_graph
         self._queue_outbound(
@@ -654,6 +656,7 @@ class AgentTeamsCollaborationService:
             "result_status": "SUCCESS",
             "result": self._sanitize_tool_result_data(dict(message.payload)),
             "evidence": self._review_tool_evidence(db, node),
+            "remaining_nodes": self._remaining_node_slots(db, node.root_task_id),
         }
         review_digest = hashlib.sha256(
             message.idempotency_key.encode("utf-8", errors="ignore")
@@ -740,6 +743,8 @@ class AgentTeamsCollaborationService:
         ):
             raise CollaborationConflict("invalid_review_feedback")
         feedback = feedback.strip()
+        if self._remaining_node_slots(db, node.root_task_id) < 1:
+            raise CollaborationConflict("max_nodes_exceeded")
         self._transition(node, "revision_requested")
         node.error_code = "result_rejected"
         node.error_message = feedback
@@ -894,17 +899,22 @@ class AgentTeamsCollaborationService:
                 },
                 "current_dag": self._department_dag_payload(db, parent.id),
                 "thinking_enabled": self._task_thinking_enabled(root),
-                "team_capability_catalog": catalog,
                 "team_catalog_version": catalog_version,
                 "remaining_recovery_attempts": self._remaining_recovery_attempts(
                     db, node
                 ),
+                "remaining_nodes": self._remaining_node_slots(db, node.root_task_id),
             }
             relationship_graph = self._team_relationship_graph(
                 db,
                 run.team_id,
                 node.coordinator_agent_id,
                 catalog=catalog,
+            )
+            recovery_payload["team_capability_catalog"] = (
+                self._scoped_capability_catalog(
+                    catalog, node.coordinator_agent_id, relationship_graph
+                )
             )
             if relationship_graph:
                 recovery_payload["team_relationship_graph"] = relationship_graph
@@ -1245,6 +1255,14 @@ class AgentTeamsCollaborationService:
         ) or 0
         return max(0, self.max_rounds - attempts)
 
+    def _remaining_node_slots(self, db: Session, root_task_id: str) -> int:
+        total_nodes = db.scalar(
+            select(func.count(models.AgentTaskNode.id)).where(
+                models.AgentTaskNode.root_task_id == root_task_id
+            )
+        ) or 0
+        return max(0, self.max_nodes - total_nodes)
+
     def _apply_summary(
         self,
         db: Session,
@@ -1333,9 +1351,14 @@ class AgentTeamsCollaborationService:
                 summary = "tool request failed"
 
         catalog, catalog_version = self._next_catalog_snapshot(db, root, run.team_id)
+        relationship_graph = self._team_relationship_graph(
+            db, run.team_id, node.assignee_agent_id, catalog=catalog
+        )
         result_payload = {
             **result_payload,
-            "team_capability_catalog": catalog,
+            "team_capability_catalog": self._scoped_capability_catalog(
+                catalog, node.assignee_agent_id, relationship_graph
+            ),
             "team_catalog_version": catalog_version,
         }
         self._queue_outbound(
@@ -1421,14 +1444,17 @@ class AgentTeamsCollaborationService:
 
     @classmethod
     def _sanitize_tool_result_data(cls, value: Any, depth: int = 0) -> Any:
-        if depth >= _MAX_TOOL_RESULT_DEPTH:
-            return "[truncated]"
         if value is None or isinstance(value, (bool, int)):
             return value
         if isinstance(value, float):
             return value if math.isfinite(value) else None
         if isinstance(value, str):
             return cls._safe_tool_text(value)
+        # The depth guard limits nested containers, not harmless primitive
+        # leaves.  Otherwise a normal list of evidence identifiers reaches the
+        # boundary and every useful ID is replaced with ``[truncated]``.
+        if depth >= _MAX_TOOL_RESULT_DEPTH:
+            return "[truncated]"
         if isinstance(value, Mapping):
             sanitized: dict[str, Any] = {}
             for index, (key, item) in enumerate(value.items()):
@@ -1657,6 +1683,9 @@ class AgentTeamsCollaborationService:
         if root is None or run is None:
             raise CollaborationConflict("unknown_root_task")
         catalog, catalog_version = self._next_catalog_snapshot(db, root, run.team_id)
+        relationship_graph = self._team_relationship_graph(
+            db, run.team_id, child.assignee_agent_id, catalog=catalog
+        )
         payload: dict[str, Any] = {
             "title": self._safe_cross_agent_text(child.title, _MAX_SUBTASK_TITLE_LENGTH),
             "instruction": self._safe_cross_agent_text(child.instruction, _MAX_SUBTASK_INSTRUCTION_LENGTH),
@@ -1667,13 +1696,12 @@ class AgentTeamsCollaborationService:
             "depends_on": [self._safe_client_task_key(key) for key in dependency_keys],
             "parent_chain_agent_ids": self._assignment_parent_chain(db, child),
             "thinking_enabled": self._task_thinking_enabled(root),
-            "team_capability_catalog": catalog,
+            "team_capability_catalog": self._scoped_capability_catalog(
+                catalog, child.assignee_agent_id, relationship_graph
+            ),
             "team_catalog_version": catalog_version,
             "material": dict(child.input_payload or {}),
         }
-        relationship_graph = self._team_relationship_graph(
-            db, run.team_id, child.assignee_agent_id, catalog=catalog
-        )
         if relationship_graph:
             payload["team_relationship_graph"] = relationship_graph
         if child.revision_of_task_id:
@@ -1831,11 +1859,16 @@ class AgentTeamsCollaborationService:
         }
         if parent.node_kind == "mission":
             catalog, catalog_version = self._next_catalog_snapshot(db, root, run.team_id)
+            relationship_graph = self._team_relationship_graph(
+                db, run.team_id, parent.assignee_agent_id, catalog=catalog
+            )
             summary_payload.update({
                 "existing_child_task_keys": [
                     item.client_task_key for item in active_children
                 ],
-                "team_capability_catalog": catalog,
+                "team_capability_catalog": self._scoped_capability_catalog(
+                    catalog, parent.assignee_agent_id, relationship_graph
+                ),
                 "team_catalog_version": catalog_version,
                 "remaining_limits": {
                     "rounds": max(0, 1 + self.max_rounds - coordination["round"]),
@@ -1844,9 +1877,6 @@ class AgentTeamsCollaborationService:
                     "depth": max(0, self.max_depth - parent.depth),
                 },
             })
-            relationship_graph = self._team_relationship_graph(
-                db, run.team_id, parent.assignee_agent_id, catalog=catalog
-            )
             if relationship_graph:
                 summary_payload["team_relationship_graph"] = relationship_graph
         else:
@@ -2324,6 +2354,28 @@ class AgentTeamsCollaborationService:
             return hierarchy.project_for(agent_id, capabilities_by_agent)
         except TeamHierarchyError as exc:
             raise CollaborationConflict(str(exc)) from None
+
+    @staticmethod
+    def _scoped_capability_catalog(
+        catalog: list[dict[str, Any]],
+        agent_id: str,
+        relationship_graph: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Expose direct reports to coordinators and only self to leaf Workers."""
+        if not relationship_graph:
+            return catalog
+        direct_reports = relationship_graph.get("direct_reports")
+        visible_ids = {
+            item.get("agent_id")
+            for item in direct_reports
+            if isinstance(item, Mapping) and isinstance(item.get("agent_id"), str)
+        } if isinstance(direct_reports, list) else set()
+        if not visible_ids:
+            visible_ids = {agent_id}
+        return [
+            item for item in catalog
+            if isinstance(item, Mapping) and item.get("agent_id") in visible_ids
+        ]
 
     def _team_hierarchy(self, db: Session, team_id: str) -> TeamHierarchy:
         team = db.get(models.Team, team_id)

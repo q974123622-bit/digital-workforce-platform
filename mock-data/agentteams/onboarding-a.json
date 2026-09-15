@@ -65,11 +65,38 @@
     "新员工A": {
       "readiness": "incomplete",
       "evidence": [
-        {"evidence_id": "AUD-A-001", "item": "HR 材料核验记录", "status": "verified"},
-        {"evidence_id": "AUD-A-002", "item": "IT 设备交接记录", "status": "verified"}
+        {
+          "evidence_id": "AUD-A-001",
+          "item": "HR 材料核验记录",
+          "status": "verified",
+          "source_evidence_ids": ["HR-MAT-A-001", "HR-MAT-A-002"]
+        },
+        {
+          "evidence_id": "AUD-A-004",
+          "item": "HR 培训安排记录",
+          "status": "verified",
+          "source_evidence_ids": ["HR-TRN-A-001", "HR-TRN-A-002"]
+        },
+        {
+          "evidence_id": "AUD-A-005",
+          "item": "IT 账号开通记录",
+          "status": "verified",
+          "source_evidence_ids": ["IT-ACC-A-001"]
+        },
+        {
+          "evidence_id": "AUD-A-002",
+          "item": "IT 设备交接记录",
+          "status": "verified",
+          "source_evidence_ids": ["IT-DEV-A-001", "IT-DEV-A-002"]
+        }
       ],
       "open_gaps": [
-        {"evidence_id": "AUD-A-003", "item": "多因素认证注册证据", "status": "missing"}
+        {
+          "evidence_id": "AUD-A-003",
+          "item": "多因素认证注册证据",
+          "status": "missing",
+          "source_evidence_ids": ["IT-ACC-A-002"]
+        }
       ]
     }
   }

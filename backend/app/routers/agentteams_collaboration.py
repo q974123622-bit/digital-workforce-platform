@@ -407,6 +407,8 @@ def _service() -> AgentTeamsCollaborationService:
     return AgentTeamsCollaborationService(
         max_depth=config.agentteams_max_depth(),
         max_children=config.agentteams_max_children(),
+        max_rounds=config.agentteams_max_rounds(),
+        max_nodes=config.agentteams_max_nodes(),
     )
 
 

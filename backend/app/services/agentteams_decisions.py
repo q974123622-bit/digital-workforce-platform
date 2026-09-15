@@ -167,6 +167,20 @@ class WorkerDecision(_StrictModel):
         return self
 
 
+class LeaderDelegationDecision(_StrictModel):
+    """Initial Team Leader plan: the model may design tasks, but cannot bypass Workers."""
+
+    action: Literal["delegate"]
+    subtasks: list[PlannedSubtask] = Field(min_length=1, max_length=5)
+
+
+class WorkerCompletionDecision(_StrictModel):
+    """A leaf Worker with successful Tool evidence must return its finding."""
+
+    action: Literal["complete"]
+    result: str = Field(min_length=1)
+
+
 class ResultReviewDecision(_StrictModel):
     action: Literal["accept", "reject", "replan", "stop_blocked"]
     feedback: str = Field(min_length=1, max_length=512)
@@ -273,6 +287,7 @@ class RecoveryPlanContext(_StrictModel):
     current_dag: list[dict[str, Any]] = Field(default_factory=list)
     direct_reports: list[dict[str, Any]] = Field(default_factory=list)
     remaining_recovery_attempts: int = Field(default=0, ge=0)
+    remaining_nodes: int = Field(default=0, ge=0)
 
 
 _DecisionType = TypeVar("_DecisionType", bound=BaseModel)
@@ -575,6 +590,19 @@ class AgentDecisionEngine:
                         _LEADER_CHILD_CAPABILITIES[assigned_leader_capability],
                     ),
                 }
+        leader_initial_delegation = (
+            department_execution_contract.get("required_action") == "delegate"
+        )
+        worker_completion_required = (
+            not leader_initial_delegation
+            and _has_successful_tool_result(context.previous_results)
+            and not context.team_relationship_graph.get("direct_reports")
+        )
+        if worker_completion_required:
+            department_execution_contract = {
+                "required_action": "complete",
+                "evidence_scope": "successful_tool_result",
+            }
         prompt_context: dict[str, Any] = {
             "current_agent_id": context.current_agent_id,
             "task": context.task,
@@ -586,21 +614,38 @@ class AgentDecisionEngine:
         }
         if department_execution_contract.get("required_action") != "complete":
             prompt_context.update({
-                "safe_tool_catalog": context.safe_tool_catalog,
                 "current_team_capability_catalog": context.current_team_capability_catalog,
                 "team_relationship_graph": context.team_relationship_graph,
             })
+            if not leader_initial_delegation:
+                prompt_context["safe_tool_catalog"] = context.safe_tool_catalog
+        instruction = (
+            "You are a Team Leader creating the initial Worker batch. The response schema permits "
+            "only delegate. Use exactly the entries in department_execution_contract.parallel_direct_reports; "
+            "create one required, dependency-free subtask for every listed Agent-capability pair. "
+            "The model still chooses each task title, goal, key and reason. Do not call a Tool yourself, "
+            "ask another Agent, complete, or fail this coordination task. Return only JSON matching the schema."
+            if leader_initial_delegation
+            else (
+                "You are a specialist Worker with an already successful Tool result. The response schema "
+                "permits only complete. Summarize the observed Tool evidence in concise Chinese, preserve "
+                "missing and unknown facts, and do not call the Tool again. Return only JSON matching the schema."
+                if worker_completion_required
+                else
+                "You are an AgentTeams worker. Select exactly one action permitted by the supplied schema. "
+                "Action payload contract: all other action-specific fields must be omitted. "
+                "tool: action, tool_name, and optional tool_arguments; for tool, omit recipient_agent_id, "
+                "message, subtask, subtasks, result, and failure_reason. ask: action, recipient_agent_id, and message; "
+                "omit tool_name, tool_arguments, subtask, subtasks, result, and failure_reason. delegate: action and "
+                "exactly one of subtask or subtasks; use subtasks for one parallel department batch; omit tool_name, "
+                "tool_arguments, recipient_agent_id, message, result, and failure_reason. "
+                "complete: action and result; omit tool_name, tool_arguments, recipient_agent_id, message, subtask, "
+                "subtasks, and failure_reason. fail: action and failure_reason; omit tool_name, tool_arguments, "
+                "recipient_agent_id, message, subtask, subtasks, and result."
+            )
+        )
         messages = _messages(
-            "You are an AgentTeams worker. Select exactly one action permitted by the supplied "
-            "schema. Action payload contract: all other action-specific fields must be omitted. "
-            "tool: action, tool_name, and optional tool_arguments; for tool, omit recipient_agent_id, "
-            "message, subtask, subtasks, result, and failure_reason. ask: action, recipient_agent_id, and message; "
-            "omit tool_name, tool_arguments, subtask, subtasks, result, and failure_reason. delegate: action and "
-            "exactly one of subtask or subtasks; use subtasks for one parallel department batch; omit tool_name, "
-            "tool_arguments, recipient_agent_id, message, result, and "
-            "failure_reason. complete: action and result; omit tool_name, tool_arguments, "
-            "recipient_agent_id, message, subtask, subtasks, and failure_reason. fail: action and failure_reason; "
-            "omit tool_name, tool_arguments, recipient_agent_id, message, subtask, subtasks, and result. "
+            instruction + " "
             "Do not invent facts, tools, agents, or Tool results. Delegate only bounded "
             "work and never delegate to yourself or an agent in the parent chain. When a team relationship "
             "graph is supplied, delegate only to direct_reports from that graph. Choose Ask and "
@@ -611,13 +656,32 @@ class AgentDecisionEngine:
         )
 
         def validate(raw: dict[str, Any]) -> WorkerDecision:
-            decision = WorkerDecision.model_validate(raw)
+            if leader_initial_delegation:
+                constrained = LeaderDelegationDecision.model_validate(raw)
+                decision = WorkerDecision(
+                    action="delegate",
+                    subtasks=constrained.subtasks,
+                )
+            elif worker_completion_required:
+                constrained = WorkerCompletionDecision.model_validate(raw)
+                decision = WorkerDecision(
+                    action="complete",
+                    result=constrained.result,
+                )
+            else:
+                decision = WorkerDecision.model_validate(raw)
             _validate_worker_decision(context, decision)
             return decision
 
         return self._structured_with_retry(
             messages,
-            WorkerDecision,
+            (
+                LeaderDelegationDecision
+                if leader_initial_delegation
+                else WorkerCompletionDecision
+                if worker_completion_required
+                else WorkerDecision
+            ),
             validate,
             error_code="decision_failed",
         )
@@ -631,6 +695,14 @@ class AgentDecisionEngine:
             "task, or stop_blocked when recovery is impossible. "
             "The legacy reject action is allowed only for a submitted effective result that should "
             "be revised by the same Worker. Never accept BLOCKED, INTERRUPTED, or REVISION_NEEDED. "
+            "An effective result that explicitly reports an evidence gap or unknown, links it to "
+            "the observed Tool evidence and explains its impact can satisfy the task, including when a "
+            "department reports a negative readiness outcome. Treat acceptance criteria as covered when "
+            "the result explicitly marks unavailable facts as unknown and explains that the authorized "
+            "Tool evidence does not supply them. Do not reject merely because unavailable facts such as a "
+            "missing record's cause, owner, ETA, or cross-run audit-id mapping cannot be recovered from the "
+            "supplied evidence. Never demand unsupported Tool query parameters or another retry of the same "
+            "successful Tool query. "
             "For replan, return only the replan intent and feedback; a separate recovery planning "
             "step will load the department DAG and direct-report capabilities. Return only JSON "
             "matching the supplied schema. Write feedback in concise Simplified Chinese and "
@@ -673,6 +745,7 @@ class AgentDecisionEngine:
                 "current_department_dag": context.current_dag,
                 "direct_reports": context.direct_reports,
                 "remaining_recovery_attempts": context.remaining_recovery_attempts,
+                "remaining_nodes": context.remaining_nodes,
             },
         )
 
@@ -918,6 +991,8 @@ def _validate_recovery_plan(
         return
     if context.remaining_recovery_attempts < 1:
         raise _DecisionValidationError("recovery_attempts_exhausted")
+    if len(decision.subtasks) > context.remaining_nodes:
+        raise _DecisionValidationError("max_nodes_exceeded")
 
     try:
         validate_dag([
@@ -1076,6 +1151,24 @@ def _eligible_direct_reports(
         if selected:
             result.append({**raw, "capabilities": selected})
     return result
+
+
+def _has_successful_tool_result(previous_results: list[dict[str, Any]]) -> bool:
+    for record in previous_results:
+        if not isinstance(record, dict) or record.get("kind") != "tool.result":
+            continue
+        value = record.get("value")
+        if not isinstance(value, dict):
+            continue
+        audit_ids = value.get("audit_ids")
+        if (
+            value.get("ok") is True
+            and value.get("decision") == "allow"
+            and isinstance(audit_ids, list)
+            and any(isinstance(item, int) and not isinstance(item, bool) and item > 0 for item in audit_ids)
+        ):
+            return True
+    return False
 
 
 def _validate_worker_decision(context: WorkerContext, decision: WorkerDecision) -> None:

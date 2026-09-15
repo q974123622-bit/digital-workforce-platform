@@ -418,6 +418,9 @@ def test_platform_projects_relationship_graph_into_submit_and_assign(
             {"agent_id": "VE-0005", "role": "审计负责人", "capabilities": ["audit.evidence.read"]},
         ],
     }
+    assert [
+        item["agent_id"] for item in submit.payload["team_capability_catalog"]
+    ] == ["VE-0002", "VE-0003", "VE-0005"]
 
     service.apply_message(
         db_session,
@@ -454,6 +457,84 @@ def test_platform_projects_relationship_graph_into_submit_and_assign(
     assert [item["agent_id"] for item in assignments["VE-0003"]["team_relationship_graph"]["direct_reports"]] == [
         "VE-IT-ACCOUNT", "VE-IT-DEVICE"
     ]
+    assert [
+        item["agent_id"]
+        for item in assignments["VE-0002"]["team_capability_catalog"]
+    ] == ["VE-HR-MATERIAL", "VE-HR-TRAINING"]
+    assert [
+        item["agent_id"]
+        for item in assignments["VE-0003"]["team_capability_catalog"]
+    ] == ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]
+
+    hr_task = db_session.query(models.AgentTaskNode).filter_by(
+        root_task_id=run.id,
+        client_task_key="hr-lead",
+    ).one()
+    for message_type, key, payload in (
+        ("task.accepted", "hr-accepted", {}),
+        ("task.progress", "hr-progress", {"progress": 10}),
+    ):
+        service.apply_message(
+            db_session,
+            matrix_sender="@ve-0002:local",
+            message=_protocol(
+                root_id=run.id,
+                task_id=hr_task.id,
+                parent_id=run.id,
+                sender="VE-0002",
+                receiver="platform",
+                type=message_type,
+                key=f"{run.id}:{key}",
+                payload=payload,
+            ),
+        )
+    service.apply_message(
+        db_session,
+        matrix_sender="@ve-0002:local",
+        message=_protocol(
+            root_id=run.id,
+            task_id=hr_task.id,
+            parent_id=run.id,
+            sender="VE-0002",
+            receiver="platform",
+            type="task.delegate",
+            key=f"{run.id}:hr-workers",
+            payload={"subtasks": [
+                {
+                    "client_task_key": "materials",
+                    "title": "核查材料",
+                    "instruction": "核查材料证据",
+                    "assignee_agent_id": "VE-HR-MATERIAL",
+                    "depends_on": [],
+                    "required_capability": "hr.materials.read",
+                },
+                {
+                    "client_task_key": "training",
+                    "title": "核查培训",
+                    "instruction": "核查培训证据",
+                    "assignee_agent_id": "VE-HR-TRAINING",
+                    "depends_on": [],
+                    "required_capability": "hr.training.read",
+                },
+            ]},
+        ),
+    )
+    worker_assignments = {
+        item.receiver_agent_id: item.payload
+        for item in db_session.query(models.AgentMessage).filter_by(
+            root_task_id=run.id,
+            message_type="task.assign",
+        )
+        if item.receiver_agent_id.startswith("VE-HR-")
+    }
+    assert [
+        item["agent_id"]
+        for item in worker_assignments["VE-HR-MATERIAL"]["team_capability_catalog"]
+    ] == ["VE-HR-MATERIAL"]
+    assert [
+        item["agent_id"]
+        for item in worker_assignments["VE-HR-TRAINING"]["team_capability_catalog"]
+    ] == ["VE-HR-TRAINING"]
 
 
 def test_platform_rejects_forged_non_direct_report_without_partial_tree(
@@ -793,6 +874,7 @@ def test_required_children_trigger_parent_summarizing(db_session):
     ).one()
     assert review_request.receiver_agent_id == policy.coordinator_agent_id
     assert review_request.payload["result"] == {"result": "制度已核查"}
+    assert review_request.payload["remaining_nodes"] == 18
 
     _review_node_message(
         db_session,
@@ -1182,6 +1264,59 @@ def test_coordinator_rejection_creates_a_linked_revision_and_rewires_dependants(
     ).one()
     assert assignment.payload["revision_of_task_id"] == policy.id
     assert assignment.payload["review_feedback"] == "请补充审批记录后重新提交"
+
+
+def test_coordinator_rejection_respects_node_limit_without_partial_revision(db_session):
+    from app.services.agentteams_collaboration import (
+        AgentTeamsCollaborationService,
+        CollaborationConflict,
+    )
+
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session,
+        run,
+        "DT-E10281",
+        leader.runtime_ref,
+        [_subtask("policy", "VE-0002")],
+    )
+    policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, policy)
+    _apply_node_message(
+        db_session,
+        run,
+        policy,
+        type="task.result",
+        key="candidate-at-limit",
+        payload={"result": "缺少审批证据"},
+    )
+    reviewer = db_session.get(models.DigitalEmployee, policy.coordinator_agent_id)
+    original_error_code = policy.error_code
+    original_error_message = policy.error_message
+    message = _protocol(
+        root_id=run.id,
+        task_id=policy.id,
+        parent_id=policy.parent_task_id,
+        sender=reviewer.employee_no,
+        receiver="platform",
+        type="task.result.rejected",
+        key=f"{run.id}:{policy.id}:rejected-at-limit",
+        payload={"feedback": "请补充审批记录后重新提交"},
+    )
+
+    with pytest.raises(CollaborationConflict, match="max_nodes_exceeded"):
+        AgentTeamsCollaborationService(max_nodes=2).apply_message(
+            db_session,
+            matrix_sender=_matrix_sender(reviewer.runtime_ref),
+            message=message,
+        )
+
+    assert policy.status == "reviewing"
+    assert policy.error_code == original_error_code
+    assert policy.error_message == original_error_message
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        revision_of_task_id=policy.id
+    ).count() == 0
 
 
 def test_rejected_result_requires_bounded_nonempty_feedback(db_session):
@@ -1689,6 +1824,7 @@ def test_required_worker_failure_returns_to_leader_without_failing_root(db_sessi
         "error_code": "evidence_missing",
         "error_message": "",
     }
+    assert recovery.payload["remaining_nodes"] == 17
 
 
 def _failed_hr_worker_graph(db_session):
@@ -1997,6 +2133,28 @@ def test_safe_child_results_keep_a_bounded_summary_from_result_payload(db_sessio
     assert safe[0]["result"]["summary"].startswith("HR材料与培训证据已经返回。")
     assert len(safe[0]["result"]["summary"]) <= 512
     assert safe[0]["result"]["audit_ids"] == [17, 18]
+
+
+def test_safe_tool_result_preserves_primitive_ids_at_max_container_depth():
+    """Useful leaf values must survive the generic nesting guard."""
+    from app.services.agentteams_collaboration import AgentTeamsCollaborationService
+
+    safe = AgentTeamsCollaborationService._safe_tool_result_payload({
+        "ok": True,
+        "decision": "allow",
+        "audit_ids": [31],
+        "data": {
+            "evidence": [{
+                "evidence_id": "AUD-A-001",
+                "source_evidence_ids": ["HR-MAT-A-001", "HR-MAT-A-002"],
+            }],
+        },
+    })
+
+    assert safe["data"]["evidence"][0]["source_evidence_ids"] == [
+        "HR-MAT-A-001",
+        "HR-MAT-A-002",
+    ]
 
 
 def test_semantic_duplicate_follow_up_is_rejected_with_a_new_client_key(db_session):

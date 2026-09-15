@@ -56,6 +56,8 @@ DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS = "DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS"
 DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS = "DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS"
 DWP_AGENTTEAMS_MAX_DEPTH = "DWP_AGENTTEAMS_MAX_DEPTH"
 DWP_AGENTTEAMS_MAX_CHILDREN = "DWP_AGENTTEAMS_MAX_CHILDREN"
+DWP_AGENTTEAMS_MAX_ROUNDS = "DWP_AGENTTEAMS_MAX_ROUNDS"
+DWP_AGENTTEAMS_MAX_NODES = "DWP_AGENTTEAMS_MAX_NODES"
 DWP_AGENTTEAMS_MODE = "DWP_AGENTTEAMS_MODE"
 # Demo startup can opt out of destructive seed recovery while preserving the
 # regular schema compatibility path for an already initialized database.
@@ -108,6 +110,14 @@ def agentteams_max_depth() -> int:
 
 def agentteams_max_children() -> int:
     return _bounded_int(DWP_AGENTTEAMS_MAX_CHILDREN, 5, 1, 50)
+
+
+def agentteams_max_rounds() -> int:
+    return _bounded_int(DWP_AGENTTEAMS_MAX_ROUNDS, 12, 1, 20)
+
+
+def agentteams_max_nodes() -> int:
+    return _bounded_int(DWP_AGENTTEAMS_MAX_NODES, 20, 2, 100)
 
 
 def team_backend_mode() -> str:

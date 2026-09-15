@@ -87,7 +87,7 @@ function isProtocolMessage(message: AgentMessage) {
 
 function messageSummary(message: AgentMessage) {
   if (message.message_type === 'agent.message') return safeText(message.body || '未提供正文');
-  if (isProtocolMessage(message)) return '已接收结构化协议消息；未展开协议载荷。';
+  if (isProtocolMessage(message)) return '已接收结构化协议消息。';
   return safeText(message.body || '未提供正文');
 }
 

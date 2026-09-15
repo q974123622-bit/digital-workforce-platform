@@ -1,5 +1,6 @@
-import { RobotOutlined, ToolOutlined } from '@ant-design/icons';
-import { Empty, Progress, Tag, Typography } from 'antd';
+import { FullscreenExitOutlined, MinusOutlined, PlusOutlined, RobotOutlined, ToolOutlined } from '@ant-design/icons';
+import { Button, Empty, Progress, Tag, Typography } from 'antd';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { AgentMessage, AgentTaskEvent, AgentTaskGraph, AgentTaskNode } from '@dwp/shared-schema';
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
@@ -97,6 +98,13 @@ const displayProgress = (node: AgentTaskNode) => node.status === 'completed'
   ? 100
   : Math.max(0, Math.min(100, node.progress));
 
+const MIN_TREE_SCALE = 0.5;
+const MAX_TREE_SCALE = 1.3;
+const TREE_SCALE_STEP = 0.1;
+
+const clampTreeScale = (scale: number) => Math.min(MAX_TREE_SCALE, Math.max(MIN_TREE_SCALE, scale));
+const normalizeTreeScale = (scale: number) => Math.round(clampTreeScale(scale) * 100) / 100;
+
 const nodeStatus = (
   node: AgentTaskNode,
   replannedNodeIds: Set<string>,
@@ -118,6 +126,11 @@ const nodeStatus = (
 };
 
 export function TaskTree({ nodes, graph, events = [], messages = [], selectedId, onSelect }: Props) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<HTMLUListElement>(null);
+  const [scale, setScale] = useState(1);
+  const [fitMode, setFitMode] = useState(true);
+  const [chartSize, setChartSize] = useState({ width: 0, height: 0 });
   const nodeIds = new Set(nodes.map((node) => node.id));
   const replannedNodeIds = new Set(
     nodes
@@ -146,6 +159,48 @@ export function TaskTree({ nodes, graph, events = [], messages = [], selectedId,
     // dependencies remain metadata and must never turn a sibling into a child.
     children.set(declaredParentId, [...(children.get(declaredParentId) ?? []), node]);
   }
+
+  const measureTree = useCallback((shouldFit: boolean) => {
+    const viewport = viewportRef.current;
+    const chart = chartRef.current;
+    if (!viewport || !chart) return;
+
+    const width = chart.scrollWidth;
+    const height = chart.scrollHeight;
+    if (width <= 0 || height <= 0) return;
+
+    setChartSize((current) => current.width === width && current.height === height ? current : { width, height });
+    if (shouldFit && viewport.clientWidth > 0) {
+      setScale(normalizeTreeScale(Math.min(1, viewport.clientWidth / width)));
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (nodes.length === 0) return undefined;
+
+    const update = () => measureTree(fitMode);
+    update();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update);
+      return () => window.removeEventListener('resize', update);
+    }
+
+    const observer = new ResizeObserver(update);
+    if (viewportRef.current) observer.observe(viewportRef.current);
+    if (chartRef.current) observer.observe(chartRef.current);
+    return () => observer.disconnect();
+  }, [fitMode, measureTree, nodes]);
+
+  const zoomBy = (delta: number) => {
+    setFitMode(false);
+    setScale((current) => normalizeTreeScale(current + delta));
+  };
+
+  const fitTree = () => {
+    setFitMode(true);
+    measureTree(true);
+  };
 
   const renderNode = (node: AgentTaskNode) => {
     const status = nodeStatus(node, replannedNodeIds, unrecoverableNodeIds);
@@ -213,12 +268,59 @@ export function TaskTree({ nodes, graph, events = [], messages = [], selectedId,
   };
 
   const roots = children.get(null) ?? [];
+  const scaledChartStyle = chartSize.width > 0
+    ? {
+      width: `${Math.ceil(chartSize.width * scale)}px`,
+      height: `${Math.ceil(chartSize.height * scale)}px`,
+    }
+    : undefined;
   return (
     <section className="at-task-tree" aria-labelledby="task-tree-heading">
-      <Typography.Title level={5} id="task-tree-heading">协作调用树</Typography.Title>
+      <div className="at-task-tree-heading">
+        <Typography.Title level={5} id="task-tree-heading">协作调用树</Typography.Title>
+        {roots.length > 0 && (
+          <div className="at-tree-zoom-controls" role="group" aria-label="协作树缩放">
+            <Button
+              size="small"
+              aria-label="缩小协作树"
+              icon={<MinusOutlined />}
+              disabled={scale <= MIN_TREE_SCALE}
+              onClick={() => zoomBy(-TREE_SCALE_STEP)}
+            />
+            <Typography.Text className="at-tree-zoom-value" aria-live="polite">
+              {Math.round(scale * 100)}%
+            </Typography.Text>
+            <Button
+              size="small"
+              aria-label="放大协作树"
+              icon={<PlusOutlined />}
+              disabled={scale >= MAX_TREE_SCALE}
+              onClick={() => zoomBy(TREE_SCALE_STEP)}
+            />
+            <Button
+              size="small"
+              aria-label="适应视图"
+              icon={<FullscreenExitOutlined />}
+              type={fitMode ? 'primary' : 'default'}
+              onClick={fitTree}
+            >
+              适应视图
+            </Button>
+          </div>
+        )}
+      </div>
       {roots.length > 0 ? (
-        <div className="at-task-chart-scroll">
-          <ul className="at-task-chart" data-testid="agentteams-task-chart">{roots.map(renderNode)}</ul>
+        <div className="at-task-chart-scroll" ref={viewportRef}>
+          <div className="at-task-chart-stage" style={scaledChartStyle}>
+            <ul
+              className="at-task-chart"
+              data-testid="agentteams-task-chart"
+              ref={chartRef}
+              style={{ transform: `scale(${scale})` }}
+            >
+              {roots.map(renderNode)}
+            </ul>
+          </div>
         </div>
       ) : (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="服务端尚未返回任务节点" />

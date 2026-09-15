@@ -159,7 +159,7 @@ def test_strict_start_environment_enables_the_collaboration_loop():
         f". '{START.as_posix()}'; "
         "$env:DWP_SKIP_AUTO_SEED = '0'; "
         "Set-AgentTeamsStrictRuntimeEnvironment; "
-        "[Console]::WriteLine($env:DWP_AGENTTEAMS_MODE + '|' + $env:DWP_AGENTTEAMS_COLLAB_ENABLED + '|' + $env:DWP_SKIP_AUTO_SEED + '|' + $env:DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS + '|' + $env:DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS)"
+        "[Console]::WriteLine($env:DWP_AGENTTEAMS_MODE + '|' + $env:DWP_AGENTTEAMS_COLLAB_ENABLED + '|' + $env:DWP_SKIP_AUTO_SEED + '|' + $env:DWP_AGENTTEAMS_ACCEPT_TIMEOUT_SECONDS + '|' + $env:DWP_AGENTTEAMS_TASK_TIMEOUT_SECONDS + '|' + $env:DWP_AGENTTEAMS_MAX_ROUNDS + '|' + $env:DWP_AGENTTEAMS_MAX_NODES)"
     )
     completed = subprocess.run(
         [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
@@ -171,7 +171,7 @@ def test_strict_start_environment_enables_the_collaboration_loop():
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "agentteams_strict|1|1|180|1800"
+    assert completed.stdout.strip() == "agentteams_strict|1|1|180|1800|12|40"
 
 
 def test_strict_start_waits_for_shared_secret_registration_endpoint():

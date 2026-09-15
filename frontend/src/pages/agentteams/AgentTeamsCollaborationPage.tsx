@@ -383,9 +383,6 @@ export default function AgentTeamsCollaborationPage() {
       <div className="at-page-heading">
         <div>
           <Typography.Title level={3}>AgentTeams 协作演示</Typography.Title>
-          <Typography.Paragraph type="secondary">
-            数据只来自服务端已持久化的协作状态；页面不会生成本地演示任务，也不会自行判定 Matrix 已连接。
-          </Typography.Paragraph>
         </div>
         {health && (
           <Tag icon={<RobotOutlined />} color={isLocalDemo ? 'gold' : 'geekblue'}>
@@ -431,11 +428,6 @@ export default function AgentTeamsCollaborationPage() {
                     <Tag>严格就绪：{health.strict_ready ? '是' : '否'}</Tag>
                     <Tag>已配置团队：{health.configured_team_id || '未产生'}</Tag>
                   </Space>
-                  {!health.ready_for_demo && (
-                    <Typography.Text type="secondary">
-                      此状态只控制 TEAM-ONBOARD；TEAM-DB-BENCH 数据库诊断场景独立运行，不受此状态影响。
-                    </Typography.Text>
-                  )}
                 </Space>
               }
               className="at-alert"
@@ -595,12 +587,12 @@ export default function AgentTeamsCollaborationPage() {
                 </Space>
                 <div className="at-workspace-grid" data-testid="agentteams-workspace">
                 <Row gutter={[16, 16]} className="at-workspace-row">
-                  <Col xs={24} lg={16}>
+                  <Col xs={24} xl={18} xxl={19}>
                     <div className="at-main-stack" data-testid="agentteams-main-stack">
                       <TaskTree nodes={nodes} graph={graph} events={events} messages={messages} selectedId={selectedNodeId} onSelect={setSelectedNodeId} />
                     </div>
                   </Col>
-                  <Col xs={24} lg={8}>
+                  <Col xs={24} xl={6} xxl={5}>
                     <div className="at-side-stack" data-testid="agentteams-side-stack">
                       <Card size="small" title="当前节点状态" className="at-detail-card" data-testid="agentteams-node-detail">
                         {selectedNode ? (

@@ -37,6 +37,18 @@ DATABASE_ROLES = {
 }
 
 
+def test_api_service_uses_configured_recovery_round_and_node_budgets(monkeypatch):
+    from app.routers import agentteams_collaboration as collaboration_router
+
+    monkeypatch.setenv("DWP_AGENTTEAMS_MAX_ROUNDS", "12")
+    monkeypatch.setenv("DWP_AGENTTEAMS_MAX_NODES", "40")
+
+    service = collaboration_router._service()
+
+    assert service.max_rounds == 12
+    assert service.max_nodes == 40
+
+
 def _strict_runtime_document(team_id="TEAM-ONBOARD") -> dict:
     roles = ONBOARDING_ROLES if team_id == "TEAM-ONBOARD" else DATABASE_ROLES
     document = {

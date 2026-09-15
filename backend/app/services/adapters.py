@@ -55,7 +55,9 @@ def _onboarding_fixture_section(params: dict, section_name: str) -> dict:
     return section
 
 
-def _bounded_evidence(items: object) -> list[dict[str, str]]:
+def _bounded_evidence(
+    items: object, *, include_source_evidence_ids: bool = False,
+) -> list[dict[str, object]]:
     if not isinstance(items, list):
         raise RuntimeError("onboarding_demo_fixture_unavailable")
     bounded: list[dict[str, str]] = []
@@ -67,7 +69,21 @@ def _bounded_evidence(items: object) -> list[dict[str, str]]:
         status = item.get("status")
         if not all(isinstance(value, str) and value for value in (evidence_id, label, status)):
             raise RuntimeError("onboarding_demo_fixture_unavailable")
-        bounded.append({"evidence_id": evidence_id, "item": label, "status": status})
+        record: dict[str, object] = {
+            "evidence_id": evidence_id,
+            "item": label,
+            "status": status,
+        }
+        if include_source_evidence_ids:
+            source_ids = item.get("source_evidence_ids")
+            if (
+                not isinstance(source_ids, list)
+                or not source_ids
+                or not all(isinstance(value, str) and value for value in source_ids)
+            ):
+                raise RuntimeError("onboarding_demo_fixture_unavailable")
+            record["source_evidence_ids"] = list(source_ids)
+        bounded.append(record)
     return bounded
 
 
@@ -127,8 +143,12 @@ def _mock_agentteams_it_readiness(_plugin: models.Plugin, params: dict) -> dict:
 
 def _mock_agentteams_onboarding_evidence(_plugin: models.Plugin, params: dict) -> dict:
     section = _onboarding_fixture_section(params, "audit_evidence")
-    evidence = _bounded_evidence(section.get("evidence"))
-    open_gaps = _bounded_evidence(section.get("open_gaps"))
+    evidence = _bounded_evidence(
+        section.get("evidence"), include_source_evidence_ids=True,
+    )
+    open_gaps = _bounded_evidence(
+        section.get("open_gaps"), include_source_evidence_ids=True,
+    )
     return {
         "source": "demo",
         "employee_ref": _ONBOARDING_EMPLOYEE_REF,

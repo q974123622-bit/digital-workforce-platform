@@ -649,8 +649,31 @@ body {
   background: #fbfdff;
 }
 
-.at-task-tree > .ant-typography {
+.at-task-tree-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.at-task-tree-heading > .ant-typography {
   margin-top: 0;
+  margin-bottom: 0;
+}
+
+.at-tree-zoom-controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.at-tree-zoom-value {
+  width: 42px;
+  color: #526173;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 .at-tree-wrap {
@@ -2214,11 +2237,16 @@ button.at-tree-manager:hover {
   padding: 6px 2px 14px;
 }
 
+.at-task-chart-stage {
+  position: relative;
+  width: max-content;
+  margin-inline: auto;
+}
+
 .at-task-chart,
 .at-chart-children {
   display: flex;
   width: max-content;
-  min-width: 100%;
   justify-content: center;
   margin: 0;
   padding: 0;
@@ -2227,16 +2255,22 @@ button.at-tree-manager:hover {
 
 .at-task-chart {
   align-items: flex-start;
+  transform-origin: top left;
+  transition: transform 160ms ease;
+}
+
+.at-chart-children {
+  min-width: 100%;
 }
 
 .at-chart-node {
   position: relative;
   display: flex;
-  min-width: 300px;
-  flex: 0 0 300px;
+  min-width: 236px;
+  flex: 0 0 236px;
   flex-direction: column;
   align-items: center;
-  padding: 22px 8px 0;
+  padding: 20px 6px 0;
 }
 
 .at-chart-node.at-chart-branch {
@@ -2250,12 +2284,12 @@ button.at-tree-manager:hover {
 
 .at-chart-node-card {
   display: flex;
-  width: 300px;
+  width: 236px;
   max-width: 100%;
-  min-height: 114px;
+  min-height: 106px;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 11px;
+  gap: 5px;
+  padding: 8px 9px;
   border: 1px solid #dfe8f4;
   border-radius: 10px;
   background: #fff;
@@ -2298,7 +2332,7 @@ button.at-tree-manager:hover {
   align-items: center;
   gap: 5px;
   overflow: visible;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
   text-overflow: clip;
@@ -2311,8 +2345,11 @@ button.at-tree-manager:hover {
 }
 
 .at-chart-meta {
+  flex-wrap: wrap;
   color: #7c8799;
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .at-chart-node-card .ant-progress {
@@ -2338,7 +2375,7 @@ button.at-tree-manager:hover {
   border-radius: 5px;
   background: #f5f9ff;
   color: #475467;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.35;
 }
 
@@ -2399,12 +2436,22 @@ button.at-tree-manager:hover {
 }
 
 @media (max-width: 760px) {
+  .at-task-tree-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .at-tree-zoom-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
   .at-chart-node {
-    min-width: 280px;
-    flex-basis: 280px;
+    min-width: 224px;
+    flex-basis: 224px;
   }
 
   .at-chart-node-card {
-    width: 280px;
+    width: 224px;
   }
 }

@@ -69,6 +69,8 @@ class AgentTeamsCollaborationRunner:
         self.service = service or AgentTeamsCollaborationService(
             max_depth=config.agentteams_max_depth(),
             max_children=config.agentteams_max_children(),
+            max_rounds=config.agentteams_max_rounds(),
+            max_nodes=config.agentteams_max_nodes(),
         )
         configured_room = room_id or (
             strict_runtime.room_id

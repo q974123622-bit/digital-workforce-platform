@@ -38,4 +38,24 @@ describe('AppLayout', () => {
     expect(screen.getByText(/所有数据均为虚构/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '跳到主要内容' })).toHaveAttribute('href', '#main-content');
   });
+
+  it('为 Agent 协作演示提供更宽的主内容区', async () => {
+    render(
+      <MemoryRouter initialEntries={['/agentteams-collaboration']}>
+        <CurrentUserProvider>
+          <Routes>
+            <Route element={<AppLayout />}>
+              <Route path="/agentteams-collaboration" element={<div>协作演示内容</div>} />
+            </Route>
+          </Routes>
+        </CurrentUserProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('服务正常')).toBeInTheDocument();
+    expect(screen.getByRole('main')).toHaveStyle({
+      maxWidth: '1920px',
+      padding: '16px 12px 24px',
+    });
+  });
 });

@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { MemoryRouter } from 'react-router-dom';
 import AgentTeamsCollaborationPage from './AgentTeamsCollaborationPage';
 import { TaskTree } from './TaskTree';
+import { TimelinePanel } from './TimelinePanel';
 import { CurrentUserProvider, useCurrentUser } from '../../context/CurrentUserContext';
 import type {
   AgentCollaborationHealth,
@@ -1658,7 +1659,7 @@ describe('AgentTeams collaboration page', () => {
     expect(await screen.findByText('Matrix 登录失败：连接被拒绝')).toBeInTheDocument();
     const healthAlert = screen.getByText('协作环境未就绪').closest('.ant-alert');
     expect(healthAlert).not.toBeNull();
-    expect(healthAlert).toHaveTextContent('TEAM-DB-BENCH 数据库诊断场景独立运行，不受此状态影响');
+    expect(healthAlert).not.toHaveTextContent('TEAM-DB-BENCH 数据库诊断场景独立运行，不受此状态影响');
     expect(screen.queryByTestId('database-benchmark-panel')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '提交协作任务' })).toBeDisabled();
   });
@@ -1815,5 +1816,106 @@ describe('AgentTeams collaboration page', () => {
     expect(
       fetchMock.mock.calls.filter(([input]) => String(input).split('?')[0].endsWith('/api/v1/agentteams-collaboration/tasks')).length,
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not show internal implementation notes on the collaboration demo page', async () => {
+    const routes = completedTaskRoutes();
+    routes['GET /api/v1/agentteams-collaboration/health'] = {
+      ...readyHealth,
+      ready_for_demo: false,
+      reason: 'VE-HR-MATERIAL未运行或心跳已过期',
+    };
+    mockPageApi(routes);
+
+    renderPage();
+
+    expect(await screen.findByText('VE-HR-MATERIAL未运行或心跳已过期')).toBeInTheDocument();
+    expect(screen.queryByText(/数据只来自服务端已持久化的协作状态/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/此状态只控制 TEAM-ONBOARD/)).not.toBeInTheDocument();
+  });
+
+  it('shows a concise protocol message without the hidden-payload note', () => {
+    render(
+      <TimelinePanel
+        events={[]}
+        messages={[{ ...completedMessages[0], message_type: 'task.assign', body: '' }]}
+        isRealMatrix
+      />,
+    );
+
+    expect(screen.getByText('已接收结构化协议消息。')).toBeInTheDocument();
+    expect(screen.queryByText(/未展开协议载荷/)).not.toBeInTheDocument();
+  });
+
+  it('automatically fits the collaboration tree when its viewport is narrower than the chart', () => {
+    let notifyResize: ResizeObserverCallback | undefined;
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+
+    render(
+      <TaskTree
+        nodes={[rootNode, workerNode]}
+        graph={completedGraph}
+        selectedId={rootNode.id}
+        onSelect={() => undefined}
+      />,
+    );
+
+    const chart = screen.getByTestId('agentteams-task-chart');
+    const viewport = chart.closest('.at-task-chart-scroll') as HTMLElement;
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 720 });
+    Object.defineProperty(chart, 'scrollWidth', { configurable: true, value: 1200 });
+    Object.defineProperty(chart, 'scrollHeight', { configurable: true, value: 500 });
+
+    act(() => notifyResize?.([], {} as ResizeObserver));
+
+    expect(screen.getByText('60%')).toBeInTheDocument();
+    expect(chart).toHaveStyle({ transform: 'scale(0.6)' });
+  });
+
+  it('lets the user zoom the collaboration tree and restore the fitted view', () => {
+    let notifyResize: ResizeObserverCallback | undefined;
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+
+    render(
+      <TaskTree
+        nodes={[rootNode, workerNode]}
+        graph={completedGraph}
+        selectedId={rootNode.id}
+        onSelect={() => undefined}
+      />,
+    );
+
+    const chart = screen.getByTestId('agentteams-task-chart');
+    const viewport = chart.closest('.at-task-chart-scroll') as HTMLElement;
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 720 });
+    Object.defineProperty(chart, 'scrollWidth', { configurable: true, value: 1200 });
+    Object.defineProperty(chart, 'scrollHeight', { configurable: true, value: 500 });
+    act(() => notifyResize?.([], {} as ResizeObserver));
+
+    fireEvent.click(screen.getByRole('button', { name: '放大协作树' }));
+    expect(screen.getByText('70%')).toBeInTheDocument();
+    expect(chart).toHaveStyle({ transform: 'scale(0.7)' });
+
+    fireEvent.click(screen.getByRole('button', { name: '缩小协作树' }));
+    expect(screen.getByText('60%')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '放大协作树' }));
+    fireEvent.click(screen.getByRole('button', { name: '适应视图' }));
+    expect(screen.getByText('60%')).toBeInTheDocument();
+    expect(chart).toHaveStyle({ transform: 'scale(0.6)' });
   });
 });

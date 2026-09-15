@@ -388,9 +388,9 @@ def test_tool_request_uses_platform_gateway(db_session, monkeypatch):
         },
     }
     assert result.payload["team_catalog_version"] == 4
-    assert {item["agent_id"] for item in result.payload["team_capability_catalog"]} >= {
-        "VE-0002", "VE-0003", "VE-0005",
-    }
+    assert {
+        item["agent_id"] for item in result.payload["team_capability_catalog"]
+    } == {node.assignee_agent_id}
     assert "token" not in json.dumps(result.payload).lower()
 
 

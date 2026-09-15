@@ -30,6 +30,7 @@ from .agentteams_decisions import (
     PlannedSubtask,
     RecoveryPlanContext,
     ResultReviewContext,
+    SkillSelection,
     SkillSelectionContext,
     WorkerContext,
 )
@@ -81,10 +82,18 @@ _MAX_TASK_CONTEXTS = 32
 _MAX_EVIDENCE_ITEMS = 8
 _MAX_EVIDENCE_BYTES = 4096
 _MAX_TEXT = 512
+_MAX_RESULT_TEXT = 2048
 _MAX_STATE_BYTES = 16_384
-_MAX_PENDING_ENVELOPE_BYTES = 8_192
+_MAX_PENDING_ENVELOPE_BYTES = 14_336
 _PENDING_VERSION = 1
-_SENSITIVE_TEXT = re.compile(r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+|\b(?:https?|wss?|file|ftp)://\S+|\b(?:api[_-]?key|password|token|authorization|credential)\s*[:=]\s*\S+|\b[a-z_][a-z0-9_]*\s*=\s*\S+|traceback\s*\(|\bfile\s+['\"]?[a-z]:[/\\])", re.I)
+_SENSITIVE_TEXT = re.compile(
+    r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+"
+    r"|\b(?:https?|wss?|file|ftp)://\S+"
+    r"|\b[a-z0-9_]*(?:api[_-]?key|password|passwd|pwd|token|authorization|credential|secret)"
+    r"[a-z0-9_]*\s*[:=]\s*\S+"
+    r"|traceback\s*\(|\bfile\s+['\"]?[a-z]:[/\\])",
+    re.I,
+)
 _OUTBOUND_TYPES = {
     "agent.message", "task.accepted", "task.progress", "task.delegate",
     "task.summary", "task.failed", "tool.request", "task.result",
@@ -333,6 +342,13 @@ class AgentRuntime:
             responses = [self._decision_failure(message, self._safe_code(exc.code))]
         except Exception:
             responses = [self._decision_failure(message, "runtime_error")]
+        if any(response.type in {"task.result", "task.failed"} for response in responses):
+            # The canonical pending outbox now owns the terminal response.  The
+            # completed Worker's planning context is no longer needed to replay
+            # that response and must not crowd it out of the crash-safe state.
+            tasks = state.get("tasks")
+            if isinstance(tasks, dict):
+                tasks.pop(message.task_id, None)
         if not self._send_responses(responses):
             return None
         self._mark_idempotency(state, message.idempotency_key)
@@ -413,6 +429,21 @@ class AgentRuntime:
             sequence=0,
             action=decision.action,
         )
+        remaining_nodes = self._nonnegative_int(
+            message.payload.get("remaining_nodes"), 1
+        )
+        if decision.action in {"reject", "replan"} and remaining_nodes < 1:
+            responses.append(self._reply(
+                message,
+                "task.blocked",
+                "platform",
+                {
+                    "feedback": self._text(decision.feedback),
+                    "reason_code": "max_nodes_exceeded",
+                },
+                len(responses),
+            ))
+            return responses
         if decision.action == "replan":
             relationship_graph = self._safe_relationship_graph(
                 message.payload.get("team_relationship_graph", {}), catalog,
@@ -424,15 +455,27 @@ class AgentRuntime:
                 if agent_id in catalog
             ]
             self._visible_pause()
+            original_failure = message.payload.get("failure", {})
+            if not isinstance(original_failure, Mapping):
+                original_failure = {}
+            failure_context = {
+                "original_failure": self._bounded_value(original_failure),
+                "result_status": message.payload.get("result_status", "SUCCESS"),
+                "submitted_result": self._bounded_value(
+                    message.payload.get("result", {})
+                ),
+                "review_feedback": self._text(decision.feedback),
+            }
             recovery = decisions.plan_recovery(RecoveryPlanContext(
                 reviewer_agent_id=self.config.agent_id,
                 task=task_spec,
-                failure=self._bounded_value(message.payload.get("failure", {})),
+                failure=failure_context,
                 current_dag=self._bounded_value(message.payload.get("current_dag", [])),
                 direct_reports=direct_reports,
                 remaining_recovery_attempts=message.payload.get(
                     "remaining_recovery_attempts", 0
                 ),
+                remaining_nodes=message.payload.get("remaining_nodes", 0),
             ))
             responses.extend(self._reasoning_trace(
                 message, recovery, stage="recovery_plan", iteration=2,
@@ -599,9 +642,15 @@ class AgentRuntime:
         if not allowed:
             raise AgentDecisionError("skill_selection_failed")
         self._visible_pause()
-        selection = decisions.select_skills(SkillSelectionContext(
-            user_goal=self._goal(message), runtime_skill_id="employee-collaboration", allowed_skill_ids=allowed,
-        ))
+        selection = (
+            SkillSelection(selected_skill_ids=sorted(allowed))
+            if len(allowed) == 1
+            else decisions.select_skills(SkillSelectionContext(
+                user_goal=self._goal(message),
+                runtime_skill_id="employee-collaboration",
+                allowed_skill_ids=allowed,
+            ))
+        )
         selected = self._safe_selected(selection.selected_skill_ids, allowed)
         context = self._new_worker_context(message, selected, thinking_enabled=thinking_enabled)
         state["tasks"][message.task_id] = context
@@ -727,7 +776,7 @@ class AgentRuntime:
             audit_ids = self._successful_audit_ids(context.get("evidence", []))
             if audit_ids:
                 result_payload = {
-                    "result": self._text(decision.result),
+                    "result": self._text(decision.result, _MAX_RESULT_TEXT),
                     "audit_ids": audit_ids,
                     **self._successful_evidence_references(context.get("evidence", [])),
                 }
@@ -1359,6 +1408,11 @@ class AgentRuntime:
             raw.setdefault(key, fallback)
         if not isinstance(raw["processed_event_ids"], list) or not isinstance(raw["processed_idempotency_keys"], list) or not isinstance(raw["tasks"], dict):
             return default
+        if isinstance(raw.get("cursor"), str) and raw["cursor"]:
+            # A persisted cursor is the durable Matrix replay boundary.  Event
+            # IDs left by older runtimes are already behind that boundary;
+            # protocol idempotency keys remain the cross-restart duplicate guard.
+            raw["processed_event_ids"] = []
         return raw
 
     def _save_state(self) -> None:
@@ -1564,7 +1618,13 @@ class AgentRuntime:
     def _bounded_value(self, value: Any, depth: int = 0) -> Any:
         return self._safe_value(value, depth)
 
-    def _safe_value(self, value: Any, depth: int = 0) -> Any:
+    def _safe_value(
+        self,
+        value: Any,
+        depth: int = 0,
+        *,
+        string_limit: int = _MAX_TEXT,
+    ) -> Any:
         # Evidence frequently has one more layer (kind/value/result/audit_ids)
         # than task context.  The state byte budget below is the hard limit;
         # this depth bound merely prevents pathological nesting from reaching it.
@@ -1573,15 +1633,24 @@ class AgentRuntime:
         if value is None or isinstance(value, (bool, int, float)):
             return value
         if isinstance(value, str):
-            return "[redacted]" if _SENSITIVE_TEXT.search(value) else value[:_MAX_TEXT]
+            return "[redacted]" if _SENSITIVE_TEXT.search(value) else value[:string_limit]
         if isinstance(value, Mapping):
             return {
-                str(key)[:80]: self._safe_value(item, depth + 1)
+                str(key)[:80]: self._safe_value(
+                    item,
+                    depth + 1,
+                    string_limit=(
+                        _MAX_RESULT_TEXT if str(key) == "result" else _MAX_TEXT
+                    ),
+                )
                 for key, item in list(value.items())[:20]
                 if not _is_sensitive_key(str(key))
             }
         if isinstance(value, list):
-            return [self._safe_value(item, depth + 1) for item in value[:20]]
+            return [
+                self._safe_value(item, depth + 1, string_limit=string_limit)
+                for item in value[:20]
+            ]
         return "[unsupported]"
 
     @staticmethod
@@ -1614,17 +1683,24 @@ class AgentRuntime:
         """Return a redacted, finite JSON document before any filesystem write."""
         bounded_input = dict(value)
         raw_tasks = value.get("tasks")
-        if preserve_task_id is not None and isinstance(raw_tasks, Mapping) and preserve_task_id in raw_tasks:
-            # `_safe_value` bounds mappings to twenty entries. Put the active
-            # task first so a state already at that bound cannot erase the
-            # context which the pending protocol line commits.
-            bounded_input["tasks"] = {
-                preserve_task_id: raw_tasks[preserve_task_id],
-                **{key: item for key, item in raw_tasks.items() if key != preserve_task_id},
-            }
         safe = self._safe_value(bounded_input)
         if not isinstance(safe, dict):
             return {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}}
+        if isinstance(raw_tasks, Mapping):
+            task_items = list(raw_tasks.items())[-_MAX_TASK_CONTEXTS:]
+            if preserve_task_id is not None and preserve_task_id in raw_tasks:
+                task_items = [
+                    (preserve_task_id, raw_tasks[preserve_task_id]),
+                    *[(key, item) for key, item in task_items if key != preserve_task_id],
+                ]
+            # Task contexts are an ordered cache, not an arbitrary mapping.
+            # Sanitize them independently so the generic twenty-field mapping
+            # limit cannot discard the newest active task before a later
+            # Manager summary or Worker continuation arrives.
+            safe["tasks"] = {
+                str(key)[:128]: self._safe_value(item)
+                for key, item in task_items
+            }
         safe["security"] = self._bounded_security_counts(bounded_input.get("security"))
         # `_safe_value` normally bounds generic lists from the front. Tracking
         # lists are ordered logs, so their newest values are authoritative.

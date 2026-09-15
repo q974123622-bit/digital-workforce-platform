@@ -64,6 +64,7 @@ export default function AppLayout() {
       .filter((key) => location.pathname.startsWith(key))
       .sort((a, b) => b.length - a.length)[0] ?? '/workplace';
   const title = routeMeta[selected] ?? '数字员工平台';
+  const isAgentTeamsPage = selected === '/agentteams-collaboration';
 
   useEffect(() => {
     let active = true;
@@ -199,7 +200,13 @@ export default function AppLayout() {
         <Content
           id="main-content"
           tabIndex={-1}
-          style={{ padding: 24, width: '100%', maxWidth: 1600, margin: '0 auto', outline: 'none' }}
+          style={{
+            padding: isAgentTeamsPage ? '16px 12px 24px' : 24,
+            width: '100%',
+            maxWidth: isAgentTeamsPage ? 1920 : 1600,
+            margin: '0 auto',
+            outline: 'none',
+          }}
         >
           <div key={location.pathname} className="page-enter">
             <Outlet />
