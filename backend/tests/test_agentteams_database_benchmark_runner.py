@@ -85,6 +85,17 @@ class ScriptedBackend:
             "evidence_ids": [observation["evidence_id"]],
         }
 
+    def leader_summarize(self, *, leader_agent_id, scenario, reports):
+        return {
+            "leader_agent_id": leader_agent_id,
+            "finding": "；".join(report["finding"] for report in reports),
+            "evidence_ids": [
+                evidence_id
+                for report in reports
+                for evidence_id in report["evidence_ids"]
+            ],
+        }
+
     def manager_diagnose(self, *, scenario, reports):
         self.manager_calls += 1
         return {
@@ -124,10 +135,10 @@ def test_single_and_agentteams_use_same_fairness_config_and_gateway_audits(db_se
     assert single.metrics.total_model_steps == 3
     assert team.metrics.primary_accuracy == 1.0
     assert team.metrics.tool_call_count == 5
-    assert team.metrics.total_model_steps == 7
+    assert team.metrics.total_model_steps == 9
     assert team.metrics.manager_rounds == 2
-    assert team.metrics.required_child_count == 5
-    assert team.metrics.received_child_result_count == 5
+    assert team.metrics.required_child_count == 2
+    assert team.metrics.received_child_result_count == 2
     assert set(backend.expert_roles) == {"db_write", "db_lock", "db_vacuum", "db_index", "db_query"}
     audits = db_session.query(models.AuditEvent).filter(
         models.AuditEvent.trace_id.in_(["RUN-LOCK-1", "RUN-LOCK-2"])
@@ -473,14 +484,14 @@ def test_agentteam_ablation_modes_change_only_coordination_and_scheduling(db_ses
     )
 
     assert serial.mode == "agentteams_serial"
-    assert serial.metrics.critical_path_steps == 7
+    assert serial.metrics.critical_path_steps == 9
     assert serial.metrics.manager_rounds == 2
     assert serial_backend.manager_plan_calls == 1
     assert serial_backend.uncoordinated_calls == 0
     assert uncoordinated.mode == "agentteams_uncoordinated"
-    assert uncoordinated.metrics.critical_path_steps == 2
+    assert uncoordinated.metrics.critical_path_steps == 3
     assert uncoordinated.metrics.manager_rounds == 1
-    assert uncoordinated.metrics.total_model_steps == 6
+    assert uncoordinated.metrics.total_model_steps == 8
     assert uncoordinated_backend.manager_plan_calls == 0
     assert uncoordinated_backend.uncoordinated_calls == 1
 
@@ -536,7 +547,7 @@ def test_agentteams_can_execute_an_existing_generic_database_task(db_session):
         )
         if message.payload.get("payload", message.payload).get("kind") == "decision.trace"
     ]
-    assert len(traces) == 7
+    assert len(traces) == 11
     assert all(trace["reasoning_segments"] for trace in traces)
 
 
@@ -629,7 +640,7 @@ def test_agentteams_expert_model_steps_reach_a_shared_concurrency_barrier(db_ses
 
     assert result.status == "completed"
     assert len(backend.expert_roles) == 5
-    assert result.metrics.critical_path_steps == 3
+    assert result.metrics.critical_path_steps == 4
 
 
 def test_agentteams_run_is_materialized_by_existing_collaboration_state_machine(db_session):
@@ -661,21 +672,26 @@ def test_agentteams_run_is_materialized_by_existing_collaboration_state_machine(
     nodes = db_session.query(models.AgentTaskNode).filter_by(
         root_task_id=result.task_run_id,
     ).all()
-    assert len(nodes) == 6
+    assert len(nodes) == 8
     assert {node.assignee_agent_id for node in nodes if node.depth == 1} == {
+        "DB-OPS-LEAD", "DB-PERF-LEAD",
+    }
+    assert {node.assignee_agent_id for node in nodes if node.depth == 2} == {
         "DB-WRITE-01", "DB-LOCK-01", "DB-VACUUM-01", "DB-INDEX-01", "DB-QUERY-01",
     }
+    assert {node.node_kind for node in nodes if node.depth == 1} == {"team_assignment"}
+    assert {node.node_kind for node in nodes if node.depth == 2} == {"worker_task"}
     child_signals = {
         node.client_task_key: node.input_payload["signal"]
         for node in nodes
-        if node.depth == 1
+        if node.depth == 2
     }
     assert child_signals == {
-        "db_write": "statements",
-        "db_lock": "locks",
-        "db_vacuum": "vacuum",
-        "db_index": "indexes",
-        "db_query": "table_stats",
+        "round-1-db_write": "statements",
+        "round-1-db_lock": "locks",
+        "round-1-db_vacuum": "vacuum",
+        "round-1-db_index": "indexes",
+        "round-1-db_query": "table_stats",
     }
     event_types = {
         event.event_type

@@ -757,10 +757,18 @@ describe('AgentTeams collaboration page', () => {
       status: 'revision_requested' as const,
       title: '补充审批证据',
     };
+    const workerReview = {
+      ...workerNode,
+      id: 'AT-WORKER-REVIEW',
+      parent_task_id: 'AT-LEADER',
+      node_kind: 'worker_task' as const,
+      status: 'reviewing' as const,
+      title: '等待负责人验收',
+    };
 
     render(
       <TaskTree
-        nodes={[rootNode, leaderAssignment, revision]}
+        nodes={[rootNode, leaderAssignment, revision, workerReview]}
         messages={[]}
         selectedId="AT-LEADER"
         onSelect={() => undefined}
@@ -768,14 +776,15 @@ describe('AgentTeams collaboration page', () => {
     );
 
     const chart = screen.getByTestId('agentteams-task-chart');
-    expect(chart).toHaveTextContent('Team Leader 派单');
+    expect(chart).toHaveTextContent('Leader 任务');
+    expect(within(screen.getByRole('button', { name: /选择任务 HR 团队任务/ })).getByText('待 Manager 验收')).toBeInTheDocument();
     expect(chart).toHaveTextContent('待 Leader 验收');
     expect(chart).toHaveTextContent('Worker 任务');
     expect(chart).toHaveTextContent('已要求修订');
     expect(chart).toHaveTextContent('修订自：AT-WORKER-V1');
   });
 
-  it('renders a persisted serial dependency below its predecessor even when nodes arrive out of order', () => {
+  it('keeps persisted hierarchy separate from serial dependencies when nodes arrive out of order', () => {
     const mixedNodes = [
       roleChangeNodes[0],
       { ...roleChangeNodes[4], client_task_key: 'activate' },
@@ -800,8 +809,11 @@ describe('AgentTeams collaboration page', () => {
 
     const chart = screen.getByTestId('agentteams-task-chart');
     const planBranch = chart.querySelector('[data-parent-task-id="AT-RC-PLAN"]');
-    expect(planBranch).not.toBeNull();
-    expect(planBranch).toHaveTextContent('IT权限激活');
+    expect(planBranch).toBeNull();
+    const managerBranch = chart.querySelector('[data-parent-task-id="AT-RC"]');
+    expect(managerBranch).not.toBeNull();
+    expect(managerBranch).toHaveTextContent('IT权限激活');
+    expect(managerBranch).toHaveTextContent('IT权限计划');
     expect(screen.queryByText('第1轮')).not.toBeInTheDocument();
   });
 

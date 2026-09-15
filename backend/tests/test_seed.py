@@ -19,9 +19,9 @@ def test_agentteams_onboarding_demo_seed_registers_domain_workers_and_plugins(db
         "agentteams-onboarding-evidence",
     } <= plugin_ids
 
-    audit_worker = db_session.get(models.DigitalEmployee, "VE-0005")
+    audit_worker = db_session.get(models.DigitalEmployee, "VE-AUDIT-REVIEW")
     assert audit_worker is not None
-    assert audit_worker.runtime_ref == "audit-worker"
+    assert audit_worker.runtime_ref == "audit-review-worker"
     members = {
         member.employee_id
         for member in db_session.query(models.TeamMember).filter_by(team_id="TEAM-ONBOARD")
@@ -31,9 +31,11 @@ def test_agentteams_onboarding_demo_seed_registers_domain_workers_and_plugins(db
 
 def test_agentteams_onboarding_demo_seed_grants_only_the_new_domain_plugins(db_session):
     expected = {
-        "VE-0002": "agentteams-onboarding-employee",
-        "VE-0003": "agentteams-it-readiness",
-        "VE-0005": "agentteams-onboarding-evidence",
+        "VE-HR-MATERIAL": "agentteams-onboarding-materials",
+        "VE-HR-TRAINING": "agentteams-onboarding-training",
+        "VE-IT-ACCOUNT": "agentteams-it-accounts",
+        "VE-IT-DEVICE": "agentteams-it-devices",
+        "VE-AUDIT-REVIEW": "agentteams-onboarding-evidence",
     }
     grants = db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.employee_id.in_(set(expected)),

@@ -97,6 +97,12 @@ class ExpertReport(_FrozenModel):
     evidence_ids: list[str] = Field(min_length=1, max_length=10)
 
 
+class LeaderReport(_FrozenModel):
+    leader_agent_id: str = Field(min_length=1, max_length=64)
+    finding: str = Field(min_length=1, max_length=2000)
+    evidence_ids: list[str] = Field(min_length=1, max_length=20)
+
+
 DatabaseExpertRole = Literal["db_write", "db_lock", "db_vacuum", "db_index", "db_query"]
 AgentTeamsBenchmarkMode = Literal[
     "agentteams_full", "agentteams_serial", "agentteams_uncoordinated",
@@ -109,6 +115,13 @@ _TEAM_CAPABILITIES: tuple[tuple[DatabaseExpertRole, str, tuple[SignalName, ...]]
     ("db_index", "DB-INDEX-01", ("indexes", "statements")),
     ("db_query", "DB-QUERY-01", ("statements", "table_stats")),
 )
+_DATABASE_LEADERS = {
+    "db_write": ("DB-OPS-LEAD", "db.operations.coordinate"),
+    "db_lock": ("DB-OPS-LEAD", "db.operations.coordinate"),
+    "db_vacuum": ("DB-OPS-LEAD", "db.operations.coordinate"),
+    "db_index": ("DB-PERF-LEAD", "db.performance.coordinate"),
+    "db_query": ("DB-PERF-LEAD", "db.performance.coordinate"),
+}
 
 
 def manager_team_catalog() -> list[dict[str, Any]]:
@@ -198,6 +211,14 @@ class DatabaseBenchmarkBackend(Protocol):
     ) -> dict: ...
 
     def expert_report(self, *, role: str, scenario: DatabaseScenario, observation: dict) -> dict: ...
+
+    def leader_summarize(
+        self,
+        *,
+        leader_agent_id: str,
+        scenario: DatabaseScenario,
+        reports: list[dict],
+    ) -> dict: ...
 
     def manager_diagnose(self, *, scenario: DatabaseScenario, reports: list[dict]) -> dict: ...
 
@@ -305,6 +326,19 @@ class DatabaseBenchmarkRunEngine:
             valid_audit_evidence_ids.add(observation["evidence_id"])
 
     def run_agentteams(
+        self,
+        request: BenchmarkRunRequest,
+        *,
+        existing_task_run_id: str | None = None,
+        mode: AgentTeamsBenchmarkMode = "agentteams_full",
+    ) -> BenchmarkRunResult:
+        return self._run_agentteams_hierarchical(
+            request,
+            existing_task_run_id=existing_task_run_id,
+            mode=mode,
+        )
+
+    def _run_agentteams_flat_legacy(
         self,
         request: BenchmarkRunRequest,
         *,
@@ -1005,6 +1039,714 @@ class DatabaseBenchmarkRunEngine:
             manager_rounds=manager_rounds,
             rework_count=rework_count,
             required_child_count=expected_child_results,
+            received_child_result_count=len(reports),
+            terminal_status="completed",
+        )
+        metrics = evaluate_diagnosis(
+            scenario_id=scenario.id,
+            expected=scenario.expected,
+            result=diagnosis,
+            valid_audit_evidence_ids=valid_audit_evidence_ids,
+            facts=facts,
+        )
+        return BenchmarkRunResult(
+            run_id=request.run_id,
+            scenario_id=scenario.id,
+            mode=mode,
+            status="completed" if metrics.hard_gate_passed else "invalid",
+            fairness_fingerprint=request.fairness_fingerprint,
+            task_run_id=task_run.id,
+            diagnosis=diagnosis,
+            metrics=metrics,
+        )
+
+    def _run_agentteams_hierarchical(
+        self,
+        request: BenchmarkRunRequest,
+        *,
+        existing_task_run_id: str | None,
+        mode: AgentTeamsBenchmarkMode,
+    ) -> BenchmarkRunResult:
+        """Run the benchmark through the same strict three-level task graph as live teams."""
+        scenario = self.catalog.get(request.scenario_id)
+        started = perf_counter()
+        model_durations: list[int] = []
+        evidence_ids: list[str] = []
+        followup_evidence_ids: list[str] = []
+        valid_audit_evidence_ids: set[str] = set()
+        scenario_tool_budget = min(request.budget.max_tool_calls, scenario.tool_budget)
+        initial_assignment_count = (
+            len(_TEAM_CAPABILITIES)
+            if scenario.complexity == "legacy"
+            else scenario_tool_budget - (1 if scenario.expected.requires_followup_signals else 0)
+        )
+        if initial_assignment_count < 1:
+            return self._failed(request, mode, "tool_call_budget_exhausted", 0, [], [])
+
+        collaboration = AgentTeamsCollaborationService(
+            max_children=len(_TEAM_CAPABILITIES),
+            capability_catalog_source="database",
+        )
+        if existing_task_run_id is None:
+            task_run = collaboration.create_task(
+                self.db,
+                team_id="TEAM-DB-BENCH",
+                leader_agent_id="VE-0001",
+                title=f"数据库异常诊断：{scenario.title}",
+                instruction=scenario.task,
+                material={
+                    "scenario_id": scenario.id,
+                    "available_signals": list(scenario.available_signals),
+                    "benchmark_run_id": request.run_id,
+                },
+                owner_human_no=request.owner_human_no,
+            )
+            task_run.trace_id = request.run_id
+        else:
+            task_run = self.db.get(models.TaskRun, existing_task_run_id)
+            if (
+                task_run is None
+                or task_run.team_id != "TEAM-DB-BENCH"
+                or task_run.owner_human_no != request.owner_human_no
+            ):
+                raise RuntimeError("database_collaboration_task_mismatch")
+        root = self.db.get(models.AgentTaskNode, task_run.id)
+        if root is None:
+            raise RuntimeError("database_benchmark_root_missing")
+        root.trace_id = task_run.trace_id
+        self.db.flush()
+        self.db.commit()
+
+        manager_id = "VE-0001"
+        if mode == "agentteams_uncoordinated":
+            plan = self._fixed_uncoordinated_plan(limit=scenario_tool_budget)
+        else:
+            planning_started = perf_counter()
+            raw_plan = self.backend.manager_plan(
+                scenario=scenario,
+                initial_assignment_count=initial_assignment_count,
+                reserved_followup_calls=(1 if scenario.expected.requires_followup_signals else 0),
+            )
+            model_durations.append(self._elapsed_ms(planning_started))
+            try:
+                plan = ManagerPlan.model_validate(raw_plan)
+            except ValidationError as error:
+                self._fail_collaboration_node(
+                    collaboration=collaboration,
+                    request=request,
+                    task_run_id=task_run.id,
+                    node=root,
+                    code="invalid_manager_plan",
+                    validation=self._validation_metadata("manager_plan", error),
+                )
+                return self._failed(
+                    request, mode, "invalid_manager_plan", self._elapsed_ms(started),
+                    model_durations, evidence_ids, invalid=True, task_run_id=task_run.id,
+                )
+
+        expected_assignment_count = (
+            scenario_tool_budget if mode == "agentteams_uncoordinated" else initial_assignment_count
+        )
+        if len(plan.assignments) != expected_assignment_count:
+            self._fail_collaboration_node(
+                collaboration=collaboration,
+                request=request,
+                task_run_id=task_run.id,
+                node=root,
+                code="invalid_manager_plan",
+            )
+            return self._failed(
+                request, mode, "invalid_manager_plan", self._elapsed_ms(started),
+                model_durations, evidence_ids, invalid=True, task_run_id=task_run.id,
+            )
+        try:
+            for assignment in plan.assignments:
+                self.catalog.validate_inspection_request(
+                    scenario.id,
+                    assignment.signal,
+                    filters=assignment.filters.model_dump(exclude_none=True),
+                    limit=20,
+                )
+        except ValueError:
+            self._fail_collaboration_node(
+                collaboration=collaboration,
+                request=request,
+                task_run_id=task_run.id,
+                node=root,
+                code="invalid_manager_plan",
+            )
+            return self._failed(
+                request, mode, "invalid_manager_plan", self._elapsed_ms(started),
+                model_durations, evidence_ids, invalid=True, task_run_id=task_run.id,
+            )
+
+        initial_leader_count = len({_DATABASE_LEADERS[item.role][0] for item in plan.assignments})
+        required_model_steps = len(plan.assignments) + initial_leader_count + 1
+        if mode != "agentteams_uncoordinated":
+            required_model_steps += 1
+            if scenario.complexity == "coordination":
+                required_model_steps += 1
+                if scenario.expected.requires_followup_signals:
+                    required_model_steps += 2
+        if request.budget.max_model_steps < required_model_steps:
+            self._fail_collaboration_node(
+                collaboration=collaboration,
+                request=request,
+                task_run_id=task_run.id,
+                node=root,
+                code="model_step_budget_exhausted",
+            )
+            return self._failed(
+                request, mode, "model_step_budget_exhausted", self._elapsed_ms(started),
+                model_durations, evidence_ids, task_run_id=task_run.id,
+            )
+
+        self._record_decision_basis(
+            collaboration=collaboration,
+            request=request,
+            task_run_id=task_run.id,
+            node=root,
+            stage="planning",
+            action="delegate",
+            text=plan.rationale,
+            suffix="manager-plan-basis",
+        )
+
+        expected_leader_results = 0
+
+        def execute_round(
+            assignments: list[ManagerAssignment],
+            *,
+            round_number: int,
+            rationale: str,
+        ) -> tuple[list[dict], str | None, bool]:
+            nonlocal expected_leader_results
+            groups: dict[str, dict[str, Any]] = {}
+            for assignment in assignments:
+                leader_id, coordination_capability = _DATABASE_LEADERS[assignment.role]
+                group = groups.setdefault(
+                    leader_id,
+                    {"capability": coordination_capability, "assignments": []},
+                )
+                group["assignments"].append(assignment)
+
+            manager_subtasks = []
+            for leader_id, group in groups.items():
+                manager_subtasks.append({
+                    "client_task_key": f"round-{round_number}-{leader_id.lower()}",
+                    "title": f"数据库领域调查（{leader_id}）",
+                    "instruction": "组织直属数据库 Worker 完成指定检查并汇总证据。",
+                    "assignee_agent_id": leader_id,
+                    "depends_on": [],
+                    "material": {
+                        "scenario_id": scenario.id,
+                        "round": round_number,
+                        "assignments": [
+                            {
+                                "role": item.role,
+                                "signal": item.signal,
+                                "filters": item.filters.model_dump(exclude_none=True),
+                                "instruction": item.instruction,
+                            }
+                            for item in group["assignments"]
+                        ],
+                    },
+                    "required": True,
+                    "required_capability": group["capability"],
+                })
+            collaboration.apply_message(
+                self.db,
+                matrix_sender=self._matrix_sender(manager_id),
+                message=self._protocol_message(
+                    request=request,
+                    message_type="task.delegate",
+                    root_task_id=task_run.id,
+                    task_id=task_run.id,
+                    parent_task_id=None,
+                    sender=manager_id,
+                    receiver=manager_id,
+                    suffix=f"delegate-round-{round_number}",
+                    payload={
+                        "selected_skill_ids": ["agentteams-database-diagnosis"],
+                        "planning_rationale": rationale,
+                        "subtasks": manager_subtasks,
+                    },
+                ),
+            )
+            leader_nodes = {
+                node.client_task_key: node
+                for node in self.db.query(models.AgentTaskNode).filter_by(
+                    root_task_id=task_run.id,
+                    parent_task_id=task_run.id,
+                )
+            }
+            round_leaders: dict[str, models.AgentTaskNode] = {}
+            worker_inputs: list[tuple[ManagerAssignment, str, models.AgentTaskNode]] = []
+            for leader_id, group in groups.items():
+                leader_key = f"round-{round_number}-{leader_id.lower()}"
+                leader_node = leader_nodes.get(leader_key)
+                if leader_node is None or leader_node.assignee_agent_id != leader_id:
+                    return [], "missing_leader_task", True
+                round_leaders[leader_id] = leader_node
+                leader_sender = self._matrix_sender(leader_id)
+                for message_type, suffix, payload in (
+                    ("task.accepted", f"{leader_key}-accepted", {}),
+                    ("task.progress", f"{leader_key}-progress", {"progress": 10}),
+                ):
+                    collaboration.apply_message(
+                        self.db,
+                        matrix_sender=leader_sender,
+                        message=self._protocol_message(
+                            request=request,
+                            message_type=message_type,
+                            root_task_id=task_run.id,
+                            task_id=leader_node.id,
+                            parent_task_id=task_run.id,
+                            sender=leader_id,
+                            receiver=manager_id,
+                            suffix=suffix,
+                            payload=payload,
+                        ),
+                    )
+                self._record_decision_basis(
+                    collaboration=collaboration,
+                    request=request,
+                    task_run_id=task_run.id,
+                    node=leader_node,
+                    stage="leader_delegation",
+                    action="delegate",
+                    text=f"按领域边界将 {len(group['assignments'])} 项检查派给直属专业 Worker。",
+                    suffix=f"{leader_key}-delegation-basis",
+                    iteration=round_number,
+                )
+                collaboration.apply_message(
+                    self.db,
+                    matrix_sender=leader_sender,
+                    message=self._protocol_message(
+                        request=request,
+                        message_type="task.delegate",
+                        root_task_id=task_run.id,
+                        task_id=leader_node.id,
+                        parent_task_id=task_run.id,
+                        sender=leader_id,
+                        receiver=leader_id,
+                        suffix=f"{leader_key}-delegate-workers",
+                        payload={
+                            "planning_rationale": "Leader 根据本领域任务选择直属 Worker。",
+                            "subtasks": [
+                                {
+                                    "client_task_key": f"round-{round_number}-{item.role}",
+                                    "title": f"{item.role} 专项调查",
+                                    "instruction": item.instruction,
+                                    "assignee_agent_id": item.assignee_agent_id,
+                                    "depends_on": [],
+                                    "material": {
+                                        "scenario_id": scenario.id,
+                                        "signal": item.signal,
+                                        "filters": item.filters.model_dump(exclude_none=True),
+                                        "round": round_number,
+                                    },
+                                    "required": True,
+                                    "required_capability": "agentteams-database-inspector",
+                                }
+                                for item in group["assignments"]
+                            ],
+                        },
+                    ),
+                )
+                workers = {
+                    node.client_task_key: node
+                    for node in self.db.query(models.AgentTaskNode).filter_by(
+                        root_task_id=task_run.id,
+                        parent_task_id=leader_node.id,
+                    )
+                }
+                for item in group["assignments"]:
+                    worker = workers.get(f"round-{round_number}-{item.role}")
+                    if worker is None or worker.assignee_agent_id != item.assignee_agent_id:
+                        return [], "missing_child_task", True
+                    worker_inputs.append((item, leader_id, worker))
+
+            expert_inputs: list[tuple[ManagerAssignment, str, models.AgentTaskNode, dict]] = []
+            for assignment, leader_id, worker in worker_inputs:
+                if self._elapsed_ms(started) >= request.budget.timeout_ms:
+                    return [], "timeout", False
+                sender_mxid = self._matrix_sender(assignment.assignee_agent_id)
+                for message_type, suffix, payload in (
+                    ("task.accepted", f"{worker.client_task_key}-accepted", {}),
+                    ("task.progress", f"{worker.client_task_key}-progress", {"progress": 20}),
+                    ("tool.request", f"{worker.client_task_key}-tool", {
+                        "plugin_id": "agentteams-database-inspector",
+                        "action": "read",
+                        "params": {
+                            "scenario_id": scenario.id,
+                            "signal": assignment.signal,
+                            "filters": assignment.filters.model_dump(exclude_none=True),
+                            "limit": 20,
+                        },
+                    }),
+                ):
+                    collaboration.apply_message(
+                        self.db,
+                        matrix_sender=sender_mxid,
+                        message=self._protocol_message(
+                            request=request,
+                            message_type=message_type,
+                            root_task_id=task_run.id,
+                            task_id=worker.id,
+                            parent_task_id=worker.parent_task_id,
+                            sender=assignment.assignee_agent_id,
+                            receiver="platform" if message_type == "tool.request" else leader_id,
+                            suffix=suffix,
+                            payload=payload,
+                        ),
+                    )
+                self.db.flush()
+                tool_result = (
+                    self.db.query(models.AgentMessage)
+                    .filter_by(
+                        root_task_id=task_run.id,
+                        task_id=worker.id,
+                        message_type="tool.result",
+                        direction="outbound",
+                    )
+                    .order_by(models.AgentMessage.created_at.desc(), models.AgentMessage.id.desc())
+                    .first()
+                )
+                if tool_result is None or tool_result.payload.get("ok") is not True:
+                    return [], "database_inspection_failed", False
+                observation = dict(tool_result.payload.get("data") or {})
+                evidence_id = observation.get("evidence_id")
+                if not evidence_id:
+                    return [], "database_inspection_not_audited", True
+                evidence_ids.append(evidence_id)
+                valid_audit_evidence_ids.add(evidence_id)
+                if round_number > 1:
+                    followup_evidence_ids.append(evidence_id)
+                expert_inputs.append((assignment, leader_id, worker, observation))
+            self.db.commit()
+
+            def run_expert(item: tuple[ManagerAssignment, str, models.AgentTaskNode, dict]) -> tuple[dict, int]:
+                assignment, _leader_id, _worker, observation = item
+                step_started = perf_counter()
+                raw = self.backend.expert_report(
+                    role=assignment.role,
+                    scenario=scenario,
+                    observation=observation,
+                )
+                return raw, self._elapsed_ms(step_started)
+
+            if mode == "agentteams_serial":
+                expert_outputs = [run_expert(item) for item in expert_inputs]
+            else:
+                with ThreadPoolExecutor(max_workers=len(expert_inputs)) as executor:
+                    expert_outputs = list(executor.map(run_expert, expert_inputs))
+
+            reports_by_leader: dict[str, list[dict]] = {leader_id: [] for leader_id in groups}
+            for expert_input, (raw_report, duration_ms) in zip(
+                expert_inputs, expert_outputs, strict=True,
+            ):
+                assignment, leader_id, worker, observation = expert_input
+                model_durations.append(duration_ms)
+                try:
+                    report = ExpertReport.model_validate(raw_report)
+                except ValidationError:
+                    self._fail_collaboration_node(
+                        collaboration=collaboration,
+                        request=request,
+                        task_run_id=task_run.id,
+                        node=worker,
+                        code="invalid_child_result",
+                    )
+                    return [], "invalid_child_result", True
+                if report.role != assignment.role or report.evidence_ids != [observation["evidence_id"]]:
+                    self._fail_collaboration_node(
+                        collaboration=collaboration,
+                        request=request,
+                        task_run_id=task_run.id,
+                        node=worker,
+                        code="invalid_child_result",
+                    )
+                    return [], "invalid_child_result", True
+                payload = report.model_dump(mode="json")
+                reports_by_leader[leader_id].append(payload)
+                self._record_decision_basis(
+                    collaboration=collaboration,
+                    request=request,
+                    task_run_id=task_run.id,
+                    node=worker,
+                    stage="worker_analysis" if round_number == 1 else "worker_followup",
+                    action="complete",
+                    text=report.finding,
+                    suffix=f"{worker.client_task_key}-decision-basis",
+                    iteration=round_number,
+                )
+                self._submit_and_accept_result(
+                    collaboration=collaboration,
+                    request=request,
+                    node=worker,
+                    coordinator_agent_id=leader_id,
+                    suffix=f"{worker.client_task_key}-result",
+                    payload={**payload, "summary": report.finding},
+                )
+
+            def run_leader(item: tuple[str, list[dict]]) -> tuple[dict, int]:
+                leader_id, worker_reports = item
+                step_started = perf_counter()
+                raw = self.backend.leader_summarize(
+                    leader_agent_id=leader_id,
+                    scenario=scenario,
+                    reports=worker_reports,
+                )
+                return raw, self._elapsed_ms(step_started)
+
+            leader_inputs = list(reports_by_leader.items())
+            if mode == "agentteams_serial":
+                leader_outputs = [run_leader(item) for item in leader_inputs]
+            else:
+                with ThreadPoolExecutor(max_workers=len(leader_inputs)) as executor:
+                    leader_outputs = list(executor.map(run_leader, leader_inputs))
+
+            round_reports: list[dict] = []
+            for (leader_id, worker_reports), (raw_report, duration_ms) in zip(
+                leader_inputs, leader_outputs, strict=True,
+            ):
+                model_durations.append(duration_ms)
+                leader_node = round_leaders[leader_id]
+                try:
+                    leader_report = LeaderReport.model_validate(raw_report)
+                except ValidationError:
+                    self._fail_collaboration_node(
+                        collaboration=collaboration,
+                        request=request,
+                        task_run_id=task_run.id,
+                        node=leader_node,
+                        code="invalid_leader_result",
+                    )
+                    return [], "invalid_leader_result", True
+                expected_evidence = list(dict.fromkeys(
+                    evidence_id
+                    for worker_report in worker_reports
+                    for evidence_id in worker_report["evidence_ids"]
+                ))
+                if (
+                    leader_report.leader_agent_id != leader_id
+                    or set(leader_report.evidence_ids) != set(expected_evidence)
+                    or len(leader_report.evidence_ids) != len(expected_evidence)
+                ):
+                    self._fail_collaboration_node(
+                        collaboration=collaboration,
+                        request=request,
+                        task_run_id=task_run.id,
+                        node=leader_node,
+                        code="invalid_leader_result",
+                    )
+                    return [], "invalid_leader_result", True
+                payload = leader_report.model_dump(mode="json")
+                round_reports.append(payload)
+                self._record_decision_basis(
+                    collaboration=collaboration,
+                    request=request,
+                    task_run_id=task_run.id,
+                    node=leader_node,
+                    stage="leader_summary",
+                    action="complete",
+                    text=leader_report.finding,
+                    suffix=f"{leader_node.client_task_key}-summary-basis",
+                    iteration=round_number,
+                )
+                self._submit_and_accept_result(
+                    collaboration=collaboration,
+                    request=request,
+                    node=leader_node,
+                    coordinator_agent_id=manager_id,
+                    suffix=f"{leader_node.client_task_key}-result",
+                    payload={**payload, "summary": leader_report.finding},
+                )
+            expected_leader_results += len(round_reports)
+            summary_request = (
+                self.db.query(models.AgentMessage)
+                .filter_by(
+                    root_task_id=task_run.id,
+                    task_id=task_run.id,
+                    message_type="task.summary",
+                    direction="outbound",
+                )
+                .order_by(models.AgentMessage.created_at.desc(), models.AgentMessage.id.desc())
+                .first()
+            )
+            if (
+                summary_request is None
+                or len(summary_request.payload.get("child_results", [])) != expected_leader_results
+            ):
+                return [], "lost_child_result", True
+            self.db.commit()
+            return round_reports, None, False
+
+        reports, round_error, round_invalid = execute_round(
+            plan.assignments,
+            round_number=1,
+            rationale=plan.rationale,
+        )
+        if round_error is not None:
+            return self._failed(
+                request, mode, round_error, self._elapsed_ms(started), model_durations,
+                evidence_ids, invalid=round_invalid, task_run_id=task_run.id,
+            )
+
+        manager_rounds = 1 if mode == "agentteams_uncoordinated" else 2
+        rework_count = 0
+        if scenario.complexity == "coordination" and mode != "agentteams_uncoordinated":
+            review_started = perf_counter()
+            raw_review = self.backend.manager_review(
+                scenario=scenario,
+                reports=reports,
+                observed_signals=[assignment.signal for assignment in plan.assignments],
+                remaining_tool_calls=scenario_tool_budget - len(evidence_ids),
+            )
+            model_durations.append(self._elapsed_ms(review_started))
+            manager_rounds = 3
+            try:
+                review = ManagerReview.model_validate(raw_review)
+            except ValidationError as error:
+                self._fail_collaboration_node(
+                    collaboration=collaboration,
+                    request=request,
+                    task_run_id=task_run.id,
+                    node=root,
+                    code="invalid_manager_review",
+                    validation=self._validation_metadata("manager_review", error),
+                )
+                return self._failed(
+                    request, mode, "invalid_manager_review", self._elapsed_ms(started),
+                    model_durations, evidence_ids, invalid=True, task_run_id=task_run.id,
+                )
+            if review.assignment is not None:
+                try:
+                    self.catalog.validate_inspection_request(
+                        scenario.id,
+                        review.assignment.signal,
+                        filters=review.assignment.filters.model_dump(exclude_none=True),
+                        limit=20,
+                    )
+                except ValueError:
+                    return self._failed(
+                        request, mode, "invalid_manager_review", self._elapsed_ms(started),
+                        model_durations, evidence_ids, invalid=True, task_run_id=task_run.id,
+                    )
+            self._record_decision_basis(
+                collaboration=collaboration,
+                request=request,
+                task_run_id=task_run.id,
+                node=root,
+                stage="review",
+                action=review.action,
+                text=review.rationale,
+                suffix="manager-review-basis",
+                iteration=2,
+            )
+            if review.action == "follow_up":
+                if len(evidence_ids) >= scenario_tool_budget:
+                    return self._failed(
+                        request, mode, "tool_call_budget_exhausted", self._elapsed_ms(started),
+                        model_durations, evidence_ids, task_run_id=task_run.id,
+                    )
+                assignment = review.assignment
+                if assignment is None:
+                    raise RuntimeError("validated_follow_up_assignment_missing")
+                followup_reports, round_error, round_invalid = execute_round(
+                    [assignment],
+                    round_number=2,
+                    rationale=review.rationale,
+                )
+                if round_error is not None:
+                    return self._failed(
+                        request, mode, round_error, self._elapsed_ms(started), model_durations,
+                        evidence_ids, invalid=round_invalid, task_run_id=task_run.id,
+                    )
+                reports.extend(followup_reports)
+                rework_count = 1
+
+        self.db.commit()
+        manager_started = perf_counter()
+        diagnose = (
+            getattr(self.backend, "uncoordinated_diagnose", self.backend.manager_diagnose)
+            if mode == "agentteams_uncoordinated"
+            else self.backend.manager_diagnose
+        )
+        raw_diagnosis = diagnose(scenario=scenario, reports=reports)
+        model_durations.append(self._elapsed_ms(manager_started))
+        try:
+            diagnosis = DiagnosisResult.model_validate(raw_diagnosis)
+        except ValidationError:
+            self._fail_collaboration_node(
+                collaboration=collaboration,
+                request=request,
+                task_run_id=task_run.id,
+                node=root,
+                code="invalid_manager_result",
+            )
+            return self._failed(
+                request, mode, "invalid_manager_result", self._elapsed_ms(started),
+                model_durations, evidence_ids, invalid=True, task_run_id=task_run.id,
+            )
+        if not self._uses_canonical_root_cause_labels(diagnosis):
+            self._fail_collaboration_node(
+                collaboration=collaboration,
+                request=request,
+                task_run_id=task_run.id,
+                node=root,
+                code="invalid_manager_result",
+            )
+            return self._failed(
+                request, mode, "invalid_manager_result", self._elapsed_ms(started),
+                model_durations, evidence_ids, invalid=True, task_run_id=task_run.id,
+            )
+        self._record_decision_basis(
+            collaboration=collaboration,
+            request=request,
+            task_run_id=task_run.id,
+            node=root,
+            stage="summary",
+            action="complete",
+            text=diagnosis.conclusion,
+            suffix="manager-summary-basis",
+            iteration=2,
+        )
+        collaboration.apply_message(
+            self.db,
+            matrix_sender=self._matrix_sender(manager_id),
+            message=self._protocol_message(
+                request=request,
+                message_type="task.summary",
+                root_task_id=task_run.id,
+                task_id=task_run.id,
+                parent_task_id=None,
+                sender=manager_id,
+                receiver="platform",
+                suffix="manager-summary",
+                payload={**diagnosis.model_dump(mode="json"), "summary": diagnosis.conclusion},
+            ),
+        )
+        self.db.flush()
+        if mode == "agentteams_serial":
+            critical_path_steps = len(model_durations)
+        elif mode == "agentteams_uncoordinated":
+            critical_path_steps = 3
+        elif scenario.complexity == "coordination":
+            critical_path_steps = 7 if followup_evidence_ids else 5
+        else:
+            critical_path_steps = 4
+        facts = ProcessFacts(
+            end_to_end_ms=self._elapsed_ms(started),
+            model_step_durations_ms=model_durations,
+            tool_evidence_ids=evidence_ids,
+            followup_evidence_ids=followup_evidence_ids,
+            tool_budget=scenario_tool_budget,
+            critical_path_steps=critical_path_steps,
+            manager_rounds=manager_rounds,
+            rework_count=rework_count,
+            required_child_count=expected_leader_results,
             received_child_result_count=len(reports),
             terminal_status="completed",
         )

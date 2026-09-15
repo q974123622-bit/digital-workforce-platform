@@ -11,20 +11,24 @@ from .services.agentteams_database_scenarios import (
     DatabaseScenarioCatalog,
     database_inspection_input_schema,
 )
+from .services.agentteams_hierarchy import TeamHierarchy, TeamHierarchyError
 
 SEED_PATH = Path(__file__).resolve().parents[2] / "mock-data" / "seed.json"
 _STRICT_DEMO_ROLE_PLUGINS = {
     "manager": ("VE-0001", ()),
-    "hr": ("VE-0002", ("agentteams-onboarding-employee", "agentteams-role-change-hr")),
-    "it": ("VE-0003", ("agentteams-it-readiness", "agentteams-role-change-it-plan", "agentteams-role-change-it-activate")),
-    "audit": ("VE-0005", ("agentteams-onboarding-evidence", "agentteams-role-change-audit")),
-    "hr_material": ("VE-HR-MATERIAL", ("agentteams-onboarding-materials",)),
-    "hr_training": ("VE-HR-TRAINING", ("agentteams-onboarding-training",)),
-    "it_account": ("VE-IT-ACCOUNT", ("agentteams-it-accounts",)),
-    "it_device": ("VE-IT-DEVICE", ("agentteams-it-devices",)),
+    "hr": ("VE-0002", ()),
+    "it": ("VE-0003", ()),
+    "audit": ("VE-0005", ()),
+    "hr_material": ("VE-HR-MATERIAL", ("agentteams-onboarding-materials", "agentteams-role-change-hr")),
+    "hr_training": ("VE-HR-TRAINING", ("agentteams-onboarding-training", "agentteams-role-change-hr")),
+    "it_account": ("VE-IT-ACCOUNT", ("agentteams-it-accounts", "agentteams-role-change-it-plan")),
+    "it_device": ("VE-IT-DEVICE", ("agentteams-it-devices", "agentteams-role-change-it-plan", "agentteams-role-change-it-activate")),
+    "audit_review": ("VE-AUDIT-REVIEW", ("agentteams-onboarding-evidence", "agentteams-role-change-audit")),
 }
 _STRICT_DATABASE_ROLE_PLUGINS = {
     "manager": ("VE-0001", ("agentteams-database-inspector",)),
+    "db_ops_lead": ("DB-OPS-LEAD", ()),
+    "db_perf_lead": ("DB-PERF-LEAD", ()),
     "db_write": ("DB-WRITE-01", ("agentteams-database-inspector",)),
     "db_lock": ("DB-LOCK-01", ("agentteams-database-inspector",)),
     "db_vacuum": ("DB-VACUUM-01", ("agentteams-database-inspector",)),
@@ -36,9 +40,12 @@ _STRICT_ROLE_CATALOGS = {
     frozenset(_STRICT_DATABASE_ROLE_PLUGINS): _STRICT_DATABASE_ROLE_PLUGINS,
 }
 _DATABASE_BENCHMARK_EMPLOYEE_IDS = {
+    "DB-OPS-LEAD", "DB-PERF-LEAD",
     "DB-WRITE-01", "DB-LOCK-01", "DB-VACUUM-01", "DB-INDEX-01", "DB-QUERY-01",
 }
-_DATABASE_BENCHMARK_PRINCIPAL_IDS = {*_DATABASE_BENCHMARK_EMPLOYEE_IDS, "VE-0001"}
+_DATABASE_BENCHMARK_PRINCIPAL_IDS = {
+    "VE-0001", "DB-WRITE-01", "DB-LOCK-01", "DB-VACUUM-01", "DB-INDEX-01", "DB-QUERY-01",
+}
 _DATABASE_BENCHMARK_PLUGIN_ID = "agentteams-database-inspector"
 _DATABASE_BENCHMARK_TEAM_ID = "TEAM-DB-BENCH"
 _COLLABORATION_TEAM_IDS = {"TEAM-ONBOARD", _DATABASE_BENCHMARK_TEAM_ID}
@@ -284,6 +291,8 @@ def sync_database_benchmark_resources(db, *, commit: bool = True) -> None:
             raise ValueError("invalid_database_benchmark_seed")
         if matches:
             matches[0].role = row["role"]
+            matches[0].reports_to_employee_id = row.get("reports_to_employee_id")
+            matches[0].capabilities = deepcopy(row.get("capabilities", []))
         else:
             db.add(models.TeamMember(team_id=_DATABASE_BENCHMARK_TEAM_ID, **row))
     team_grant_row = team_grant_rows[0]
@@ -414,13 +423,17 @@ def sync_strict_runtime_bindings(db, runtime, *, commit: bool = True) -> None:
     role_plugins = _STRICT_ROLE_CATALOGS.get(frozenset(runtime.agents))
     if role_plugins is None:
         raise ValueError("invalid_strict_runtime")
-    expected_roles = {
-        role: "leader" if role == "manager" else "worker"
-        for role in role_plugins
-    }
     agent_ids = {identity.agent_id for identity in runtime.agents.values()}
-    if set(runtime.agents) != set(expected_roles) or None in agent_ids:
+    if set(runtime.agents) != set(role_plugins) or None in agent_ids:
         raise ValueError("invalid_strict_runtime")
+    try:
+        hierarchy = TeamHierarchy.from_relationships(
+            manager_id=runtime.agents["manager"].agent_id,
+            member_ids=agent_ids,
+            relationships=runtime.team_relationships,
+        )
+    except TeamHierarchyError as exc:
+        raise ValueError("invalid_strict_runtime") from exc
 
     team = db.get(models.Team, runtime.team_id)
     manager_id = runtime.agents["manager"].agent_id
@@ -439,8 +452,22 @@ def sync_strict_runtime_bindings(db, runtime, *, commit: bool = True) -> None:
     else:
         team.leader_employee_id = manager_id
 
-    for role, member_role in expected_roles.items():
+    db.query(models.TeamMember).filter(
+        models.TeamMember.team_id == runtime.team_id,
+        ~models.TeamMember.employee_id.in_(agent_ids),
+    ).delete(synchronize_session=False)
+
+    for role in role_plugins:
         identity = runtime.agents[role]
+        member_role = hierarchy.level_of(identity.agent_id)
+        parent_ids = runtime.team_relationships[identity.agent_id]["reports_to"]
+        reports_to = parent_ids[0] if parent_ids else None
+        raw_catalog_entry = getattr(runtime, "team_catalog", {}).get(identity.agent_id, {})
+        structural_capabilities = (
+            list(raw_catalog_entry.get("capabilities", []))
+            if isinstance(raw_catalog_entry, dict)
+            else []
+        )
         employee = db.get(models.DigitalEmployee, identity.agent_id)
         if employee is None:
             template = templates.get(identity.agent_id)
@@ -460,9 +487,13 @@ def sync_strict_runtime_bindings(db, runtime, *, commit: bool = True) -> None:
                 team_id=runtime.team_id,
                 employee_id=identity.agent_id,
                 role=member_role,
+                reports_to_employee_id=reports_to,
+                capabilities=structural_capabilities,
             ))
         else:
             member.role = member_role
+            member.reports_to_employee_id = reports_to
+            member.capabilities = structural_capabilities
     if commit:
         db.commit()
 

@@ -14,7 +14,7 @@ from .. import models
 
 
 def build_manager_team_catalog(db: Session) -> list[dict]:
-    """Return only Teams with one active, explicitly registered Leader."""
+    """Return only Teams with one active, explicitly registered Manager."""
     teams = list(db.scalars(select(models.Team).order_by(models.Team.id)))
     catalog: list[dict] = []
     for team in teams:
@@ -30,7 +30,7 @@ def build_manager_team_catalog(db: Session) -> list[dict]:
             or leader.runtime_type != "agentteams"
             or not (leader.runtime_ref or "").strip()
             or not any(
-                member.employee_id == leader.employee_no and member.role == "leader"
+                member.employee_id == leader.employee_no and member.role == "manager"
                 for member in memberships
             )
         ):

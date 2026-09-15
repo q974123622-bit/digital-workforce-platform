@@ -45,7 +45,7 @@ def test_real_verifiers_have_explicit_safe_contracts():
     assert smoke.FIXED_GOAL == "评估新员工A是否可以按期入职。"
 
 
-def test_matrix_verifier_uses_nine_real_format_events_without_exposing_tokens():
+def test_matrix_verifier_uses_ten_real_format_events_without_exposing_tokens():
     matrix = _load_script("verify_agentteams_matrix.py")
     identities = {
         "platform": MatrixIdentity("@platform:matrix.test", "platform-secret"),
@@ -57,6 +57,7 @@ def test_matrix_verifier_uses_nine_real_format_events_without_exposing_tokens():
         "hr_training": MatrixIdentity("@hr-training:matrix.test", "hr-training-secret", "VE-HR-TRAINING", (), ()),
         "it_account": MatrixIdentity("@it-account:matrix.test", "it-account-secret", "VE-IT-ACCOUNT", (), ()),
         "it_device": MatrixIdentity("@it-device:matrix.test", "it-device-secret", "VE-IT-DEVICE", (), ()),
+        "audit_review": MatrixIdentity("@audit-review:matrix.test", "audit-review-secret", "VE-AUDIT-REVIEW", (), ()),
     }
     runtime = StrictRuntimeConfig("https://matrix.test", "!task9:matrix.test", identities["platform"], {key: value for key, value in identities.items() if key != "platform"}, "TEAM-ONBOARD", {})
     sent: list[str] = []
@@ -90,6 +91,7 @@ def test_matrix_verifier_advances_each_cursor_and_accumulates_split_ping_batches
         "hr_training": MatrixIdentity("@hr-training:matrix.test", "hr-training-secret", "VE-HR-TRAINING", (), ()),
         "it_account": MatrixIdentity("@it-account:matrix.test", "it-account-secret", "VE-IT-ACCOUNT", (), ()),
         "it_device": MatrixIdentity("@it-device:matrix.test", "it-device-secret", "VE-IT-DEVICE", (), ()),
+        "audit_review": MatrixIdentity("@audit-review:matrix.test", "audit-review-secret", "VE-AUDIT-REVIEW", (), ()),
     }
     runtime = StrictRuntimeConfig("https://matrix.test", "!task9:matrix.test", identities["platform"], {name: value for name, value in identities.items() if name != "platform"}, "TEAM-ONBOARD", {})
     sent: list[str] = []
@@ -133,6 +135,7 @@ def test_matrix_verifier_timeout_still_polls_every_account_after_cursor_snapshot
         "hr_training": MatrixIdentity("@hr-training:matrix.test", "hr-training-secret", "VE-HR-TRAINING", (), ()),
         "it_account": MatrixIdentity("@it-account:matrix.test", "it-account-secret", "VE-IT-ACCOUNT", (), ()),
         "it_device": MatrixIdentity("@it-device:matrix.test", "it-device-secret", "VE-IT-DEVICE", (), ()),
+        "audit_review": MatrixIdentity("@audit-review:matrix.test", "audit-review-secret", "VE-AUDIT-REVIEW", (), ()),
     }
     runtime = StrictRuntimeConfig("https://matrix.test", "!task9:matrix.test", identities["platform"], {name: value for name, value in identities.items() if name != "platform"}, "TEAM-ONBOARD", {})
     polled: list[str] = []
@@ -183,6 +186,7 @@ def _valid_real_smoke_evidence_inputs():
             for agent_id in (
                 "VE-0001", "VE-0002", "VE-0003", "VE-0005",
                 "VE-HR-MATERIAL", "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE",
+                "VE-AUDIT-REVIEW",
             )
         ],
     }
@@ -195,6 +199,7 @@ def _valid_real_smoke_evidence_inputs():
         {"id": "it-account", "client_task_key": "it-account", "parent_task_id": "it", "assignee_agent_id": "VE-IT-ACCOUNT", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
         {"id": "it-device", "client_task_key": "it-device", "parent_task_id": "it", "assignee_agent_id": "VE-IT-DEVICE", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
         {"id": "audit", "client_task_key": "audit-check", "parent_task_id": "root", "assignee_agent_id": "VE-0005", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
+        {"id": "audit-worker", "client_task_key": "audit-evidence", "parent_task_id": "audit", "assignee_agent_id": "VE-AUDIT-REVIEW", "coordinator_agent_id": "VE-0005", "depth": 2, "required": True},
         {"id": "it-follow-up", "client_task_key": "it-gap-follow-up", "parent_task_id": "root", "assignee_agent_id": "VE-0003", "coordinator_agent_id": "VE-0001", "depth": 1, "required": True},
         {"id": "it-account-follow-up", "client_task_key": "it-account-follow-up", "parent_task_id": "it-follow-up", "assignee_agent_id": "VE-IT-ACCOUNT", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
         {"id": "it-device-follow-up", "client_task_key": "it-device-follow-up", "parent_task_id": "it-follow-up", "assignee_agent_id": "VE-IT-DEVICE", "coordinator_agent_id": "VE-0003", "depth": 2, "required": True},
@@ -216,9 +221,11 @@ def _valid_real_smoke_evidence_inputs():
         {"event_seq": 14, "event_type": "task.completed", "task_id": "hr", "actor_agent_id": "VE-0002", "detail": {}},
         {"event_seq": 15, "event_type": "task.completed", "task_id": "it", "actor_agent_id": "VE-0003", "detail": {}},
         {"event_seq": 16, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 2, "client_task_keys": ["audit-check"], "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
-        {"event_seq": 17, "event_type": "tool.result", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {"decision": "allow", "audit_ids": [15]}},
-        {"event_seq": 18, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {}},
-        {"event_seq": 19, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 3, "client_task_keys": ["it-gap-follow-up"], "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
+        {"event_seq": 17, "event_type": "task.delegate", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {"client_task_keys": ["audit-evidence"]}},
+        {"event_seq": 18, "event_type": "tool.result", "task_id": "audit-worker", "actor_agent_id": "VE-AUDIT-REVIEW", "detail": {"decision": "allow", "audit_ids": [15]}},
+        {"event_seq": 19, "event_type": "task.completed", "task_id": "audit-worker", "actor_agent_id": "VE-AUDIT-REVIEW", "detail": {}},
+        {"event_seq": 20, "event_type": "task.completed", "task_id": "audit", "actor_agent_id": "VE-0005", "detail": {}},
+        {"event_seq": 21, "event_type": "task.delegate", "task_id": "root", "actor_agent_id": "VE-0001", "detail": {"round": 3, "client_task_keys": ["it-gap-follow-up"], "selected_skill_ids": ["agentteams-onboarding-readiness"]}},
         {"event_seq": 20, "event_type": "task.delegate", "task_id": "it-follow-up", "actor_agent_id": "VE-0003", "detail": {"client_task_keys": ["it-account-follow-up", "it-device-follow-up"]}},
         {"event_seq": 21, "event_type": "tool.result", "task_id": "it-account-follow-up", "actor_agent_id": "VE-IT-ACCOUNT", "detail": {"decision": "allow", "audit_ids": [16]}},
         {"event_seq": 22, "event_type": "task.completed", "task_id": "it-account-follow-up", "actor_agent_id": "VE-IT-ACCOUNT", "detail": {}},
@@ -235,6 +242,7 @@ def _valid_real_smoke_evidence_inputs():
         "it-account": ("VE-0003", "VE-IT-ACCOUNT"),
         "it-device": ("VE-0003", "VE-IT-DEVICE"),
         "audit": ("VE-0001", "VE-0005"),
+        "audit-worker": ("VE-0005", "VE-AUDIT-REVIEW"),
     }
     reviewed_events = []
     for event in events:
@@ -267,7 +275,10 @@ def _valid_real_smoke_evidence_inputs():
             {"client_task_key": "it-device", "assignee_agent_id": "VE-IT-DEVICE", "required_capability": "it.devices.read", "depends_on": [], "required": True},
         ]}},
         {"matrix_event_id": "$delegate-root-2", "message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"round": 2, "subtasks": [
-            {"client_task_key": "audit-check", "assignee_agent_id": "VE-0005", "required_capability": "audit.evidence.read", "depends_on": [], "required": True},
+            {"client_task_key": "audit-check", "assignee_agent_id": "VE-0005", "required_capability": "audit.onboarding.coordinate", "depends_on": [], "required": True},
+        ]}},
+        {"matrix_event_id": "$delegate-audit", "message_type": "task.delegate", "task_id": "audit", "sender_agent_id": "VE-0005", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"subtasks": [
+            {"client_task_key": "audit-evidence", "assignee_agent_id": "VE-AUDIT-REVIEW", "required_capability": "audit.evidence.read", "depends_on": [], "required": True},
         ]}},
         {"matrix_event_id": "$delegate-root-3", "message_type": "task.delegate", "task_id": "root", "sender_agent_id": "VE-0001", "receiver_agent_id": "platform", "direction": "inbound", "payload": {"round": 3, "subtasks": [
             {"client_task_key": "it-gap-follow-up", "assignee_agent_id": "VE-0003", "required_capability": "it.onboarding.coordinate", "depends_on": [], "required": True},
@@ -282,7 +293,7 @@ def _valid_real_smoke_evidence_inputs():
         "hr-training": ("VE-HR-TRAINING", "agentteams.hr.lookup_training", "agentteams-onboarding-training", "hr.training.read", 12, {}),
         "it-account": ("VE-IT-ACCOUNT", "agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read", 13, {"accounts": [{"evidence_id": "IT-ACC-A-002", "status": "missing"}]}),
         "it-device": ("VE-IT-DEVICE", "agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read", 14, {}),
-        "audit": ("VE-0005", "agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read", 15, {}),
+        "audit-worker": ("VE-AUDIT-REVIEW", "agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read", 15, {}),
         "it-account-follow-up": ("VE-IT-ACCOUNT", "agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read", 16, {"accounts": [{"evidence_id": "IT-ACC-A-002", "status": "missing"}]}),
         "it-device-follow-up": ("VE-IT-DEVICE", "agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read", 17, {}),
     }
@@ -385,7 +396,7 @@ def test_real_smoke_rejects_false_positive_tool_evidence(case):
         if message.get("task_id") in {"it-account", "it-account-follow-up"}
         and message.get("message_type") == "tool.result"
     ]
-    audit_request = next(message for message in messages if message.get("task_id") == "audit" and message.get("message_type") == "tool.request")
+    audit_request = next(message for message in messages if message.get("task_id") == "audit-worker" and message.get("message_type") == "tool.request")
     if case == "wrong-account-tool":
         account_request["payload"]["plugin_id"] = "agentteams-onboarding-employee"
     elif case == "account-gap-absent":
@@ -810,7 +821,7 @@ def _decision_outputs():
         {"action": "accept", "feedback": "HR负责人结果证据完整，验收通过。"},
         {"action": "accept", "feedback": "IT负责人结果证据完整，验收通过。"},
         {"selected_skill_ids": ["agentteams-onboarding-readiness"], "action": "delegate", "subtasks": [
-            {"client_task_key": "audit-check", "title": "独立审计核查", "goal": "复核HR和IT返回的入职证据。", "required_capability": "audit.evidence.read", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "部门核查完成后需要独立审计。"},
+            {"client_task_key": "audit-check", "title": "独立审计核查", "goal": "复核HR和IT返回的入职证据。", "required_capability": "audit.onboarding.coordinate", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "部门核查完成后需要独立审计。"},
         ]},
         {"action": "accept", "feedback": "独立审计结果可追溯，验收通过。"},
         {"selected_skill_ids": ["agentteams-onboarding-readiness"], "action": "delegate", "subtasks": [
@@ -849,6 +860,14 @@ def _decision_outputs():
     ]
     audit = [
         {"selected_skill_ids": ["audit-evidence-review"]},
+        {"action": "delegate", "subtasks": [
+            {"client_task_key": "audit-evidence", "title": "审计证据复核", "goal": "复核新员工A的入职证据。", "required_capability": "audit.evidence.read", "assignee_agent_id": "VE-AUDIT-REVIEW", "depends_on": [], "required": True, "reason": "由直属审计专员执行。"},
+        ]},
+        {"action": "accept", "feedback": "审计证据完整，验收通过。"},
+        {"action": "complete", "result": "审计证据已复核，存在待归档项。"},
+    ]
+    audit_review = [
+        {"selected_skill_ids": ["audit-evidence-review"]},
         {"action": "tool", "tool_name": "agentteams.audit.lookup_evidence", "tool_arguments": {"employee_ref": "新员工A"}},
         {"action": "complete", "result": "审计证据已复核，存在待归档项。"},
     ]
@@ -880,7 +899,7 @@ def _decision_outputs():
             {"action": "complete", "result": "IT设备状态已重新核查。"},
         ],
     }
-    return {"manager": manager, "hr": hr, "it": it, "audit": audit, **specialists}
+    return {"manager": manager, "hr": hr, "it": it, "audit": audit, "audit_review": audit_review, **specialists}
 
 
 def _strict_test_runtime_config(mxids):
@@ -893,11 +912,12 @@ def _strict_test_runtime_config(mxids):
         "manager": ("VE-0001", "agentteams-onboarding-readiness", None),
         "hr": ("VE-0002", "hr-onboarding-assistant", ("agentteams.hr.coordinate_onboarding", "agentteams-onboarding-employee", "hr.onboarding.coordinate")),
         "it": ("VE-0003", "it-service-assistant", ("agentteams.it.coordinate_onboarding", "agentteams-it-readiness", "it.onboarding.coordinate")),
-        "audit": ("VE-0005", "audit-evidence-review", ("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read")),
+        "audit": ("VE-0005", "audit-evidence-review", None),
         "hr_material": ("VE-HR-MATERIAL", "hr-material-specialist", ("agentteams.hr.lookup_materials", "agentteams-onboarding-materials", "hr.materials.read")),
         "hr_training": ("VE-HR-TRAINING", "hr-training-specialist", ("agentteams.hr.lookup_training", "agentteams-onboarding-training", "hr.training.read")),
         "it_account": ("VE-IT-ACCOUNT", "it-account-specialist", ("agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read")),
         "it_device": ("VE-IT-DEVICE", "it-device-specialist", ("agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read")),
+        "audit_review": ("VE-AUDIT-REVIEW", "audit-evidence-review", ("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read")),
     }
     agents = {}
     team_catalog = {}
@@ -910,7 +930,10 @@ def _strict_test_runtime_config(mxids):
                 "required_capability": tool[2], "input_schema": schema,
             }],
         }
-        team_catalog[agent_id] = {"capabilities": [] if tool is None else [tool[2]]}
+        team_catalog[agent_id] = {"capabilities": (
+            ["audit.onboarding.coordinate"] if role == "audit"
+            else [] if tool is None else [tool[2]]
+        )}
     return {
         "matrix_url": "http://matrix.test", "room_id": "!task9:matrix.test", "team_id": "TEAM-ONBOARD",
         "platform": {"mxid": mxids["platform"], "token": "test-platform"},
@@ -920,11 +943,12 @@ def _strict_test_runtime_config(mxids):
             "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
             "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
             "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
-            "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": []},
+            "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
             "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
             "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
             "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+            "VE-AUDIT-REVIEW": {"role": "审计复核专员", "reports_to": ["VE-0005"], "direct_reports": []},
         },
     }
 
@@ -938,6 +962,7 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
         "VE-0005": "@audit:matrix.test", "VE-HR-MATERIAL": "@hr-material:matrix.test",
         "VE-HR-TRAINING": "@hr-training:matrix.test", "VE-IT-ACCOUNT": "@it-account:matrix.test",
         "VE-IT-DEVICE": "@it-device:matrix.test",
+        "VE-AUDIT-REVIEW": "@audit-review:matrix.test",
     }
     strict_config_path = tmp_path / "strict-runtime.json"
     strict_config_path.write_text(json.dumps(_strict_test_runtime_config(mxids)), encoding="utf-8")
@@ -958,11 +983,12 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
     }
     assert {"hr.onboarding.coordinate"}.issubset(capability_catalog["VE-0002"])
     assert {"it.onboarding.coordinate"}.issubset(capability_catalog["VE-0003"])
-    assert {"audit.evidence.read"}.issubset(capability_catalog["VE-0005"])
+    assert {"audit.onboarding.coordinate"}.issubset(capability_catalog["VE-0005"])
     assert capability_catalog["VE-HR-MATERIAL"] == {"hr.materials.read"}
     assert capability_catalog["VE-HR-TRAINING"] == {"hr.training.read"}
     assert capability_catalog["VE-IT-ACCOUNT"] == {"it.accounts.read"}
     assert capability_catalog["VE-IT-DEVICE"] == {"it.devices.read"}
+    assert capability_catalog["VE-AUDIT-REVIEW"] == {"audit.evidence.read"}
     run = service.create_task(
         db_session,
         team_id="TEAM-ONBOARD",
@@ -981,11 +1007,12 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
         ("VE-0001", "manager", {"agentteams-manager-coordination", "agentteams-onboarding-readiness"}, [], outputs_by_role["manager"]),
         ("VE-0002", "hr", {"employee-collaboration", "hr-onboarding-assistant"}, [{"name": "agentteams.hr.coordinate_onboarding", "plugin_id": "agentteams-onboarding-employee", "action": "execute", "required_capability": "hr.onboarding.coordinate"}], outputs_by_role["hr"]),
         ("VE-0003", "it", {"employee-collaboration", "it-service-assistant"}, [{"name": "agentteams.it.coordinate_onboarding", "plugin_id": "agentteams-it-readiness", "action": "execute", "required_capability": "it.onboarding.coordinate"}], outputs_by_role["it"]),
-        ("VE-0005", "audit", {"employee-collaboration", "audit-evidence-review"}, [{"name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "audit.evidence.read"}], outputs_by_role["audit"]),
+        ("VE-0005", "audit", {"employee-collaboration", "audit-evidence-review"}, [], outputs_by_role["audit"]),
         ("VE-HR-MATERIAL", "hr_material", {"employee-collaboration", "hr-material-specialist"}, [{"name": "agentteams.hr.lookup_materials", "plugin_id": "agentteams-onboarding-materials", "action": "execute", "required_capability": "hr.materials.read"}], outputs_by_role["hr_material"]),
         ("VE-HR-TRAINING", "hr_training", {"employee-collaboration", "hr-training-specialist"}, [{"name": "agentteams.hr.lookup_training", "plugin_id": "agentteams-onboarding-training", "action": "execute", "required_capability": "hr.training.read"}], outputs_by_role["hr_training"]),
         ("VE-IT-ACCOUNT", "it_account", {"employee-collaboration", "it-account-specialist"}, [{"name": "agentteams.it.lookup_accounts", "plugin_id": "agentteams-it-accounts", "action": "execute", "required_capability": "it.accounts.read"}], outputs_by_role["it_account"]),
         ("VE-IT-DEVICE", "it_device", {"employee-collaboration", "it-device-specialist"}, [{"name": "agentteams.it.lookup_devices", "plugin_id": "agentteams-it-devices", "action": "execute", "required_capability": "it.devices.read"}], outputs_by_role["it_device"]),
+        ("VE-AUDIT-REVIEW", "audit_review", {"employee-collaboration", "audit-evidence-review"}, [{"name": "agentteams.audit.lookup_evidence", "plugin_id": "agentteams-onboarding-evidence", "action": "execute", "required_capability": "audit.evidence.read"}], outputs_by_role["audit_review"]),
     ]
     runtimes = []
     trusted = dict(mxids)

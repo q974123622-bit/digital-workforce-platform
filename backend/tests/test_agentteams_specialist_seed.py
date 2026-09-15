@@ -9,6 +9,7 @@ from app.services.agentteams_runtime_config import (
     role_change_activation_input_schema,
     role_change_employee_ref_input_schema,
 )
+from app.services.agentteams_hierarchy import TeamHierarchy
 
 
 SPECIALIST_TO_PLUGIN = {
@@ -17,6 +18,56 @@ SPECIALIST_TO_PLUGIN = {
     "VE-IT-ACCOUNT": "agentteams-it-accounts",
     "VE-IT-DEVICE": "agentteams-it-devices",
 }
+
+
+def _persisted_hierarchy(db_session, team_id: str) -> TeamHierarchy:
+    team = db_session.get(models.Team, team_id)
+    members = db_session.query(models.TeamMember).filter_by(team_id=team_id).all()
+    parent_by_member = {
+        member.employee_id: member.reports_to_employee_id for member in members
+    }
+    relationships = {
+        member.employee_id: {
+            "role": member.role,
+            "reports_to": [member.reports_to_employee_id] if member.reports_to_employee_id else [],
+            "direct_reports": sorted(
+                employee_id
+                for employee_id, parent_id in parent_by_member.items()
+                if parent_id == member.employee_id
+            ),
+        }
+        for member in members
+    }
+    return TeamHierarchy.from_relationships(
+        manager_id=team.leader_employee_id,
+        member_ids=set(parent_by_member),
+        relationships=relationships,
+    )
+
+
+def test_managed_teams_seed_real_manager_leader_worker_hierarchies(db_session):
+    onboarding = _persisted_hierarchy(db_session, "TEAM-ONBOARD")
+    assert onboarding.direct_reports_of("VE-0001") == (
+        "VE-0002", "VE-0003", "VE-0005",
+    )
+    assert onboarding.direct_reports_of("VE-0002") == (
+        "VE-HR-MATERIAL", "VE-HR-TRAINING",
+    )
+    assert onboarding.direct_reports_of("VE-0003") == (
+        "VE-IT-ACCOUNT", "VE-IT-DEVICE",
+    )
+    assert onboarding.direct_reports_of("VE-0005") == ("VE-AUDIT-REVIEW",)
+
+    database = _persisted_hierarchy(db_session, "TEAM-DB-BENCH")
+    assert database.direct_reports_of("VE-0001") == (
+        "DB-OPS-LEAD", "DB-PERF-LEAD",
+    )
+    assert database.direct_reports_of("DB-OPS-LEAD") == (
+        "DB-LOCK-01", "DB-VACUUM-01", "DB-WRITE-01",
+    )
+    assert database.direct_reports_of("DB-PERF-LEAD") == (
+        "DB-INDEX-01", "DB-QUERY-01",
+    )
 
 
 def _tool(plugin_id: str, *, schema: dict | None = None) -> dict:
@@ -36,41 +87,42 @@ def _strict_onboarding_runtime():
         "manager": ("VE-0001", []),
         "hr": (
             "VE-0002",
-            [
-                _tool("agentteams-onboarding-employee"),
-                _tool("agentteams-role-change-hr", schema=role_change_schema),
-            ],
+            [],
         ),
         "it": (
             "VE-0003",
+            [],
+        ),
+        "audit": (
+            "VE-0005",
+            [],
+        ),
+        "hr_material": (
+            "VE-HR-MATERIAL",
+            [_tool("agentteams-onboarding-materials"), _tool("agentteams-role-change-hr", schema=role_change_schema)],
+        ),
+        "hr_training": (
+            "VE-HR-TRAINING",
+            [_tool("agentteams-onboarding-training"), _tool("agentteams-role-change-hr", schema=role_change_schema)],
+        ),
+        "it_account": (
+            "VE-IT-ACCOUNT",
+            [_tool("agentteams-it-accounts"), _tool("agentteams-role-change-it-plan", schema=role_change_schema)],
+        ),
+        "it_device": (
+            "VE-IT-DEVICE",
             [
-                _tool("agentteams-it-readiness"),
+                _tool("agentteams-it-devices"),
                 _tool("agentteams-role-change-it-plan", schema=role_change_schema),
                 _tool("agentteams-role-change-it-activate", schema=activation_schema),
             ],
         ),
-        "audit": (
-            "VE-0005",
+        "audit_review": (
+            "VE-AUDIT-REVIEW",
             [
                 _tool("agentteams-onboarding-evidence"),
                 _tool("agentteams-role-change-audit", schema=role_change_schema),
             ],
-        ),
-        "hr_material": (
-            "VE-HR-MATERIAL",
-            [_tool("agentteams-onboarding-materials")],
-        ),
-        "hr_training": (
-            "VE-HR-TRAINING",
-            [_tool("agentteams-onboarding-training")],
-        ),
-        "it_account": (
-            "VE-IT-ACCOUNT",
-            [_tool("agentteams-it-accounts")],
-        ),
-        "it_device": (
-            "VE-IT-DEVICE",
-            [_tool("agentteams-it-devices")],
         ),
     }
     agents = {
@@ -81,7 +133,18 @@ def _strict_onboarding_runtime():
         )
         for role, (agent_id, tools) in roles.items()
     }
-    return SimpleNamespace(team_id="TEAM-ONBOARD", agents=agents)
+    relationships = {
+        "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+        "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
+        "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
+        "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
+        "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
+        "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
+        "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
+        "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+        "VE-AUDIT-REVIEW": {"role": "审计专员", "reports_to": ["VE-0005"], "direct_reports": []},
+    }
+    return SimpleNamespace(team_id="TEAM-ONBOARD", agents=agents, team_relationships=relationships)
 
 
 def test_onboarding_specialists_have_isolated_seeded_tools_and_permissions(db_session):

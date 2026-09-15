@@ -41,6 +41,7 @@ ONBOARDING_AGENT_IDS_BY_ROLE = {
     "hr_training": "VE-HR-TRAINING",
     "it_account": "VE-IT-ACCOUNT",
     "it_device": "VE-IT-DEVICE",
+    "audit_review": "VE-AUDIT-REVIEW",
 }
 ONBOARDING_AGENT_IDS = frozenset(ONBOARDING_AGENT_IDS_BY_ROLE.values())
 
@@ -108,7 +109,7 @@ def _all_onboarding_workers_ready(health: object) -> bool:
 
 
 def _strict_onboarding_health_ready(health: object) -> bool:
-    """Require the exact TEAM-ONBOARD infrastructure and eight live runtimes."""
+    """Require the exact TEAM-ONBOARD infrastructure and nine live runtimes."""
     return _strict_matrix_base_ready(health) and _all_onboarding_workers_ready(health)
 
 
@@ -296,7 +297,7 @@ def _has_expected_onboarding_tool_evidence(
         "VE-HR-TRAINING": ("agentteams.hr.lookup_training", "agentteams-onboarding-training", "hr.training.read"),
         "VE-IT-ACCOUNT": ("agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read"),
         "VE-IT-DEVICE": ("agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read"),
-        "VE-0005": ("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read"),
+        "VE-AUDIT-REVIEW": ("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read"),
     }
     tool_nodes = [
         node for node in nodes
@@ -392,7 +393,7 @@ def _has_expected_onboarding_tool_evidence(
         for task_id in account_task_ids
     ):
         return False
-    audit_nodes = [node for node in tool_nodes if node.get("assignee_agent_id") == "VE-0005"]
+    audit_nodes = [node for node in tool_nodes if node.get("assignee_agent_id") == "VE-AUDIT-REVIEW"]
     if len(audit_nodes) != 1:
         return False
     audit = audit_nodes[0]
@@ -433,6 +434,7 @@ def _has_expected_onboarding_topology(
         "VE-HR-TRAINING": ("VE-0002", 2),
         "VE-IT-ACCOUNT": ("VE-0003", 2),
         "VE-IT-DEVICE": ("VE-0003", 2),
+        "VE-AUDIT-REVIEW": ("VE-0005", 2),
     }
     for agent_id, (coordinator_id, depth) in ownership.items():
         node = by_agent[agent_id]
@@ -451,7 +453,8 @@ def _has_expected_onboarding_topology(
         ("VE-0001", 1, {"VE-0002": "hr.onboarding.coordinate", "VE-0003": "it.onboarding.coordinate"}),
         ("VE-0002", None, {"VE-HR-MATERIAL": "hr.materials.read", "VE-HR-TRAINING": "hr.training.read"}),
         ("VE-0003", None, {"VE-IT-ACCOUNT": "it.accounts.read", "VE-IT-DEVICE": "it.devices.read"}),
-        ("VE-0001", 2, {"VE-0005": "audit.evidence.read"}),
+        ("VE-0001", 2, {"VE-0005": "audit.onboarding.coordinate"}),
+        ("VE-0005", None, {"VE-AUDIT-REVIEW": "audit.evidence.read"}),
     )
     delegate_seqs: dict[tuple[str, int | None], int] = {}
     for sender_id, round_number, expected in delegate_specs:
@@ -658,6 +661,8 @@ def _has_expected_onboarding_topology(
         < completed["VE-0003"]
         and max(completed["VE-0002"], completed["VE-0003"])
         < delegate_seqs[("VE-0001", 2)]
+        < delegate_seqs[("VE-0005", None)]
+        < completed["VE-AUDIT-REVIEW"]
         < completed["VE-0005"]
         < _event_seq(third_round_events[0])
         < min(follow_up_delegate_seqs)

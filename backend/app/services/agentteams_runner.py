@@ -88,9 +88,23 @@ class AgentTeamsCollaborationRunner:
         a successful tick; web requests and tests can group it with their own
         database work.
         """
+        self._ensure_incremental_cursor(db)
         self._send_pending(db)
         self._receive_new(db)
         self._expire_tasks(db)
+
+    def _ensure_incremental_cursor(self, db: Session) -> None:
+        """Prime a fresh strict Matrix identity before releasing outbox work."""
+        if self.transport_mode != "agentteams_strict" or self._load_cursor(db) is not None:
+            return
+        initializer = getattr(self.transport, "initial_sync_cursor", None)
+        if not callable(initializer):
+            return
+        cursor = initializer({self.room_id})
+        if not isinstance(cursor, str) or not cursor.strip():
+            raise ValueError("matrix_initial_sync_missing_cursor")
+        self._save_cursor(db, cursor)
+        db.flush()
 
     def run_forever(self, stop_event: threading.Event) -> None:
         """Run isolated database transactions until the lifecycle owner stops us."""

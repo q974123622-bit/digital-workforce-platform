@@ -15,7 +15,7 @@ $python = Join-Path $backend '.venv\Scripts\python.exe'
 . (Join-Path $PSScriptRoot 'agentteams_process_helpers.ps1')
 
 function Test-CommandAvailable([string]$Name) { return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue) }
-$AgentRoles = @('manager','hr','it','audit','hr_material','hr_training','it_account','it_device')
+$AgentRoles = @('manager','hr','it','audit','hr_material','hr_training','it_account','it_device','audit_review')
 $AgentRoleApiKeyVariables = [ordered]@{
     manager = 'DEEPSEEK_API_KEY_MANAGER'
     hr = 'DEEPSEEK_API_KEY_HR'
@@ -25,6 +25,7 @@ $AgentRoleApiKeyVariables = [ordered]@{
     hr_training = 'DEEPSEEK_API_KEY_HR'
     it_account = 'DEEPSEEK_API_KEY_IT'
     it_device = 'DEEPSEEK_API_KEY_IT'
+    audit_review = 'DEEPSEEK_API_KEY_AUDIT'
 }
 function Get-AgentRoles { return @($AgentRoles) }
 function ConvertFrom-AgentRoleApiKeyText([string]$Text) {
@@ -33,6 +34,26 @@ function ConvertFrom-AgentRoleApiKeyText([string]$Text) {
         return $value.Substring(1, $value.Length - 2)
     }
     return ($value -replace '\s+#.*$', '').Trim()
+}
+function Get-AgentTeamsModelValue([string]$EnvFile = (Join-Path $backend '.env'), [hashtable]$ProcessEnvironment = $null) {
+    $fromFile = @{}
+    if (Test-Path -LiteralPath $EnvFile -PathType Leaf) {
+        foreach ($line in Get-Content -LiteralPath $EnvFile -ErrorAction Stop) {
+            foreach ($variableName in @('AGENTTEAMS_WORKER_MODEL', 'DEEPSEEK_MODEL')) {
+                if ($line -match ('^\s*' + [regex]::Escape($variableName) + '\s*=\s*(.*)$')) {
+                    $fromFile[$variableName] = ConvertFrom-AgentRoleApiKeyText $Matches[1]
+                }
+            }
+        }
+    }
+    foreach ($variableName in @('AGENTTEAMS_WORKER_MODEL', 'DEEPSEEK_MODEL')) {
+        $processValue = if ($null -eq $ProcessEnvironment) { [Environment]::GetEnvironmentVariable($variableName, 'Process') } else { $ProcessEnvironment[$variableName] }
+        if (-not [string]::IsNullOrWhiteSpace([string]$processValue)) { return [string]$processValue }
+    }
+    foreach ($variableName in @('AGENTTEAMS_WORKER_MODEL', 'DEEPSEEK_MODEL')) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$fromFile[$variableName])) { return [string]$fromFile[$variableName] }
+    }
+    return 'deepseek-chat'
 }
 function Get-AgentRoleApiKeyValues([string]$EnvFile = (Join-Path $backend '.env'), [hashtable]$ProcessEnvironment = $null) {
     $fromFile = @{}
@@ -65,14 +86,18 @@ function Assert-AgentRoleApiKeysConfigured([hashtable]$RoleApiKeys) {
     $missing = @(Get-MissingAgentRoleApiKeys $RoleApiKeys)
     if ($missing.Count -gt 0) { throw ($missing -join ',') }
 }
-function Get-AgentRoleApiKeyEnvironment([string]$Role, [hashtable]$RoleApiKeys) {
+function Get-AgentRoleApiKeyEnvironment([string]$Role, [hashtable]$RoleApiKeys, [string]$Model = '') {
     $variableName = $AgentRoleApiKeyVariables[$Role]
     $value = $RoleApiKeys[$Role]
     if ([string]::IsNullOrWhiteSpace($variableName) -or [string]::IsNullOrWhiteSpace([string]$value)) { throw $Role }
-    return @{$variableName = $value}
+    $environment = @{$variableName = $value}
+    if (-not [string]::IsNullOrWhiteSpace($Model)) { $environment['AGENTTEAMS_WORKER_MODEL'] = $Model }
+    return $environment
 }
-function Get-BackendApiKeyEnvironment([hashtable]$RoleApiKeys) {
-    return Get-AgentRoleApiKeyEnvironment 'manager' $RoleApiKeys
+function Get-BackendApiKeyEnvironment([hashtable]$RoleApiKeys, [string]$Model = '') {
+    $environment = Get-AgentRoleApiKeyEnvironment 'manager' $RoleApiKeys
+    if (-not [string]::IsNullOrWhiteSpace($Model)) { $environment['DEEPSEEK_MODEL'] = $Model }
+    return $environment
 }
 function Test-StringArrayEqual([object[]]$Actual, [object[]]$Expected) {
     if ($Actual.Count -ne $Expected.Count) { return $false }; for ($i=0; $i -lt $Actual.Count; $i++) { if ([string]$Actual[$i] -cne [string]$Expected[$i]) { return $false } }; return $true
@@ -88,6 +113,7 @@ function Get-ExpectedArguments([string]$Name) {
         'hr_training' { return @($agentScript,'--role','hr_training','--config',$runtimeConfig) }
         'it_account' { return @($agentScript,'--role','it_account','--config',$runtimeConfig) }
         'it_device' { return @($agentScript,'--role','it_device','--config',$runtimeConfig) }
+        'audit_review' { return @($agentScript,'--role','audit_review','--config',$runtimeConfig) }
         'frontend' { return @((Join-Path $workspace 'frontend\node_modules\vite\bin\vite.js'),'--host','127.0.0.1','--port','4173') }
         default { throw 'invalid owned process name' }
     }
@@ -227,6 +253,7 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 
 $roleApiKeys = Get-AgentRoleApiKeyValues
 Assert-AgentRoleApiKeysConfigured $roleApiKeys
+$agentTeamsModel = Get-AgentTeamsModelValue
 if (-not (Test-CommandAvailable 'docker')) { throw 'Docker Desktop CLI is unavailable.' }; & docker version --format '{{.Server.Version}}' 1>$null 2>$null; if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop daemon is unavailable.' }
 if (-not (Test-Path -LiteralPath $python)) { throw 'Backend virtual environment Python is missing.' }; Assert-NoExistingDemoProcesses
 if (-not $NoFrontend) { if (-not (Test-CommandAvailable 'node')) { throw 'Node.js is unavailable.' }; if (-not (Test-Path -LiteralPath (Join-Path $workspace 'frontend\node_modules\vite\bin\vite.js'))) { throw 'Frontend dependencies are missing.' } }
@@ -236,8 +263,8 @@ try {
     & $python $bootstrap --runtime-dir $runtimeDirectory --prepare-synapse-env; if ($LASTEXITCODE -ne 0) { throw 'Synapse secret preparation failed.' }
     $ownedCompose=$true; & docker compose -p dwp-agentteams -f $composeFile up -d; if ($LASTEXITCODE -ne 0) { throw 'Synapse compose startup failed.' }; if (-not (Wait-SynapseReady)) { throw 'Synapse did not become ready at 127.0.0.1:8008.' }
     & $python $bootstrap --runtime-dir $runtimeDirectory --matrix-url 'http://127.0.0.1:8008'; if ($LASTEXITCODE -ne 0) { throw 'Matrix account and private-room bootstrap failed.' }
-    $backendRecord=Start-OwnedProcess 'backend' $backend $python (Get-ExpectedArguments 'backend') (Get-BackendApiKeyEnvironment $roleApiKeys); $records+=$backendRecord
+    $backendRecord=Start-OwnedProcess 'backend' $backend $python (Get-ExpectedArguments 'backend') (Get-BackendApiKeyEnvironment $roleApiKeys $agentTeamsModel); $records+=$backendRecord
     $listener=$null; for ($attempt=0;$attempt -lt 40 -and $null -eq $listener;$attempt++) { try { $listener=Get-OwnedBackendListenerRecord $backendRecord } catch { if ($attempt -eq 39) { throw }; Start-Sleep -Milliseconds 250 } }; $backendRecord.listener=$listener
-    foreach ($role in Get-AgentRoles) { $records+=Start-OwnedProcess $role $workspace $python (Get-ExpectedArguments $role) (Get-AgentRoleApiKeyEnvironment $role $roleApiKeys) }; if (-not $NoFrontend) { $records+=Start-OwnedProcess 'frontend' (Join-Path $workspace 'frontend') (Get-ExpectedExecutable 'frontend') (Get-ExpectedArguments 'frontend') }
+    foreach ($role in Get-AgentRoles) { $records+=Start-OwnedProcess $role $workspace $python (Get-ExpectedArguments $role) (Get-AgentRoleApiKeyEnvironment $role $roleApiKeys $agentTeamsModel) }; if (-not $NoFrontend) { $records+=Start-OwnedProcess 'frontend' (Join-Path $workspace 'frontend') (Get-ExpectedExecutable 'frontend') (Get-ExpectedArguments 'frontend') }
     Write-ProcessRecord $records 'running'; $success=$true; Write-Host "AgentTeams strict demo started: recorded $($records.Count) worktree-owned processes."
 } catch { try { Write-ProcessRecord @() 'failed' } catch {}; throw } finally { if (-not $success) { Stop-OnlyOwnedRecords $records; if ($ownedCompose) { Stop-OwnedComposeProject } } }

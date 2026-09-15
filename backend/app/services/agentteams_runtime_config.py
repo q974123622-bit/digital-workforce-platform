@@ -16,13 +16,16 @@ import re
 import stat
 from typing import Any, Mapping
 
+from .agentteams_hierarchy import TeamHierarchy, TeamHierarchyError
+
 
 _ONBOARDING_ROLES = (
     "manager", "hr", "it", "audit",
-    "hr_material", "hr_training", "it_account", "it_device",
+    "hr_material", "hr_training", "it_account", "it_device", "audit_review",
 )
 _DATABASE_ROLES = (
-    "manager", "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
+    "manager", "db_ops_lead", "db_perf_lead",
+    "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 )
 _TEAM_ROLE_ORDERS = {
     "TEAM-ONBOARD": _ONBOARDING_ROLES,
@@ -176,8 +179,18 @@ def load_strict_runtime_config(
     team_relationships = _relationship_map(
         document.get("team_relationships", {}),
         {identity.agent_id for identity in agents.values() if identity.agent_id},
-        required=roles == _ONBOARDING_ROLES,
+        required=True,
     )
+    try:
+        hierarchy = TeamHierarchy.from_relationships(
+            manager_id=agents["manager"].agent_id or "",
+            member_ids={identity.agent_id or "" for identity in agents.values()},
+            relationships=team_relationships,
+        )
+    except TeamHierarchyError:
+        raise ValueError("invalid_runtime_config") from None
+    if hierarchy.manager_id != agents["manager"].agent_id:
+        raise ValueError("invalid_runtime_config")
     return StrictRuntimeConfig(
         matrix_url, room_id, platform, agents, team_id, team_catalog,
         team_relationships,

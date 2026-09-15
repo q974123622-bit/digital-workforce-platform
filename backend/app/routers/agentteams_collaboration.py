@@ -525,7 +525,7 @@ def _require_ready(db: Session, *, team_id: str) -> None:
                 models.TeamMember.team_id == DATABASE_TEAM_ID
             )
         ) or 0
-        if config.agentteams_collaboration_enabled() and team is not None and member_count == 6:
+        if config.agentteams_collaboration_enabled() and team is not None and member_count == 8:
             return
         raise HTTPException(
             status_code=503,

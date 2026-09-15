@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from . import config
+from .agentteams_hierarchy import TeamHierarchy, TeamHierarchyError
 from .agentteams_protocol import AgentProtocolMessage
 from .agentteams_runtime_config import load_strict_runtime_config
 from .gateway import invoke_plugin
@@ -139,7 +140,7 @@ class AgentTeamsCollaborationService:
             raise ValueError("invalid_capability_catalog_source")
         self.max_depth = max_depth
         self.max_children = max_children
-        self.max_rounds = 3 if max_rounds is None else max_rounds
+        self.max_rounds = 5 if max_rounds is None else max_rounds
         self.max_nodes = 20 if max_nodes is None else max_nodes
         self.capability_catalog_source = capability_catalog_source
 
@@ -163,6 +164,9 @@ class AgentTeamsCollaborationService:
         if leader is None:
             raise CollaborationConflict("unknown_leader")
         if not self._is_team_member(db, team, leader_agent_id):
+            raise CollaborationConflict("invalid_team_leader")
+        hierarchy = self._team_hierarchy(db, team.id)
+        if leader_agent_id != hierarchy.manager_id:
             raise CollaborationConflict("invalid_team_leader")
         if not self._runtime_ref(leader):
             raise CollaborationConflict("missing_runtime_ref")
@@ -461,18 +465,6 @@ class AgentTeamsCollaborationService:
             item["agent_id"]: set(item["capabilities"])
             for item in catalog
         }
-        relationship_graph = self._team_relationship_graph(
-            db, run.team_id, parent.assignee_agent_id, catalog=catalog
-        )
-        if relationship_graph:
-            direct_report_ids = {
-                item["agent_id"] for item in relationship_graph["direct_reports"]
-            }
-            if any(
-                subtask["assignee_agent_id"] not in direct_report_ids
-                for subtask in subtasks
-            ):
-                raise CollaborationConflict("delegate_target_not_direct_report")
         for subtask in subtasks:
             assignee = db.get(models.DigitalEmployee, subtask["assignee_agent_id"])
             if assignee is None or not self._is_team_member(db, run.team_id, subtask["assignee_agent_id"]):
@@ -487,6 +479,19 @@ class AgentTeamsCollaborationService:
                 subtask["assignee_agent_id"], set()
             ):
                 raise CollaborationConflict("capability_not_available")
+        hierarchy = self._team_hierarchy(db, run.team_id)
+        try:
+            hierarchy.validate_delegation(
+                parent.assignee_agent_id,
+                [subtask["assignee_agent_id"] for subtask in subtasks],
+            )
+        except TeamHierarchyError as exc:
+            raise CollaborationConflict(str(exc)) from None
+        child_node_kind = (
+            "team_assignment"
+            if hierarchy.level_of(parent.assignee_agent_id) == "manager"
+            else "worker_task"
+        )
 
         children: list[models.AgentTaskNode] = []
         for subtask in subtasks:
@@ -501,7 +506,7 @@ class AgentTeamsCollaborationService:
                 coordinator_agent_id=parent.assignee_agent_id,
                 assignee_agent_id=subtask["assignee_agent_id"],
                 capability=subtask["capability"],
-                node_kind=subtask["node_kind"],
+                node_kind=child_node_kind,
                 revision_of_task_id=None,
                 depth=parent.depth + 1,
                 required=subtask["required"],
@@ -1270,6 +1275,7 @@ class AgentTeamsCollaborationService:
             "thinking_enabled": self._task_thinking_enabled(root),
             "team_capability_catalog": catalog,
             "team_catalog_version": catalog_version,
+            "material": dict(child.input_payload or {}),
         }
         relationship_graph = self._team_relationship_graph(
             db, run.team_id, child.assignee_agent_id, catalog=catalog
@@ -1697,10 +1703,25 @@ class AgentTeamsCollaborationService:
         team = db.get(models.Team, team_id)
         if team is None:
             raise CollaborationConflict("unknown_team")
-        member_ids = {team.leader_employee_id}
-        member_ids.update(db.scalars(
-            select(models.TeamMember.employee_id).where(models.TeamMember.team_id == team_id)
+        members = list(db.scalars(
+            select(models.TeamMember).where(models.TeamMember.team_id == team_id)
         ))
+        member_ids = {team.leader_employee_id, *(member.employee_id for member in members)}
+        structural_capabilities: dict[str, set[str]] = {}
+        for member in members:
+            raw_capabilities = member.capabilities or []
+            if (
+                not isinstance(raw_capabilities, list)
+                or len(raw_capabilities) > 32
+                or any(
+                    not isinstance(value, str) or not value.strip() or len(value.strip()) > 128
+                    for value in raw_capabilities
+                )
+            ):
+                raise CollaborationConflict("invalid_team_hierarchy")
+            structural_capabilities[member.employee_id] = {
+                value.strip() for value in raw_capabilities
+            }
         team_capability_ids = set(db.scalars(
             select(models.TeamPluginGrant.plugin_id).where(
                 models.TeamPluginGrant.team_id == team_id,
@@ -1718,7 +1739,7 @@ class AgentTeamsCollaborationService:
                     models.EmployeePluginGrant.decision_mode == "allow",
                 )
             ))
-            capability_ids = sorted({
+            capability_ids = sorted(structural_capabilities.get(employee_id, set()).union({
                 grant.plugin_id for grant in grants
                 if grant.plugin_id in team_capability_ids
                 and self._capability_allowed_for_owner(
@@ -1729,7 +1750,7 @@ class AgentTeamsCollaborationService:
                     action=grant.action,
                     owner_human_no=owner_human_no,
                 )
-            })
+            }))
             catalog.append({
                 "agent_id": employee.employee_no,
                 "name": employee.name,
@@ -1755,9 +1776,18 @@ class AgentTeamsCollaborationService:
         if team is None:
             raise CollaborationConflict("unknown_team")
         member_ids = {team.leader_employee_id}
-        member_ids.update(db.scalars(
-            select(models.TeamMember.employee_id).where(models.TeamMember.team_id == team_id)
+        members = list(db.scalars(
+            select(models.TeamMember).where(models.TeamMember.team_id == team_id)
         ))
+        member_ids.update(member.employee_id for member in members)
+        structural_capabilities = {
+            member.employee_id: {
+                capability.strip()
+                for capability in (member.capabilities or [])
+                if isinstance(capability, str) and capability.strip()
+            }
+            for member in members
+        }
 
         catalog: list[dict[str, Any]] = []
         for identity in sorted(runtime.agents.values(), key=lambda item: item.agent_id or ""):
@@ -1797,7 +1827,12 @@ class AgentTeamsCollaborationService:
                     if required_capability and plugin_id and action:
                         tool_bindings.setdefault(required_capability, []).append((plugin_id, action))
                 for capability in capabilities:
-                    if any(
+                    # Leader coordination capabilities describe the persisted
+                    # organisation graph, not a plugin invocation.  They must
+                    # survive personal/team/global Tool filtering; otherwise a
+                    # later catalog refresh can silently remove a Leader and
+                    # make a valid Manager follow-up impossible.
+                    if capability in structural_capabilities.get(agent_id, set()) or any(
                         self._capability_allowed_for_owner(
                             db,
                             employee_id=agent_id,
@@ -1828,71 +1863,101 @@ class AgentTeamsCollaborationService:
         *,
         catalog: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Project one platform-owned relationship view for the receiving Agent.
-
-        Legacy onboarding and database runtimes intentionally have no graph and
-        keep their existing flat-team behavior.  Callers never get to supply or
-        widen this authority document themselves.
-        """
-        if config.agentteams_mode() != "agentteams_strict":
-            return {}
-        try:
-            runtime = load_strict_runtime_config()
-        except ValueError as exc:
-            raise CollaborationConflict("invalid_runtime_config") from exc
-        if runtime.team_id != team_id:
-            # A strict runtime only owns the relationship graph for its own
-            # configured team. Other independently seeded teams keep their
-            # existing flat-team behavior.
-            return {}
-        relationships = runtime.team_relationships
-        if not relationships:
-            return {}
-        relationship = relationships.get(agent_id)
-        if not isinstance(relationship, Mapping):
-            raise CollaborationConflict("invalid_runtime_config")
-        role = relationship.get("role")
-        reports_to = relationship.get("reports_to")
-        direct_reports = relationship.get("direct_reports")
-        if (
-            not isinstance(role, str)
-            or not isinstance(reports_to, (list, tuple))
-            or not isinstance(direct_reports, (list, tuple))
-        ):
-            raise CollaborationConflict("invalid_runtime_config")
-
+        """Project the persisted hierarchy; Matrix may confirm but never widen it."""
+        hierarchy = self._team_hierarchy(db, team_id)
         current_catalog = catalog
         if current_catalog is None:
             current_catalog = self._team_capability_catalog(db, team_id)
-        capabilities_by_agent = {
-            item.get("agent_id"): sorted({
-                capability
-                for capability in item.get("capabilities", [])
-                if isinstance(capability, str)
-            })
+        capabilities_by_agent: dict[str, dict[str, object]] = {
+            str(item.get("agent_id")): {
+                "capabilities": sorted({
+                    capability
+                    for capability in item.get("capabilities", [])
+                    if isinstance(capability, str)
+                })
+            }
             for item in current_catalog
             if isinstance(item, Mapping)
             and isinstance(item.get("agent_id"), str)
             and isinstance(item.get("capabilities"), list)
         }
-        projected_reports: list[dict[str, Any]] = []
-        for report_id in direct_reports:
-            report_relationship = relationships.get(report_id)
-            if not isinstance(report_id, str) or not isinstance(report_relationship, Mapping):
-                raise CollaborationConflict("invalid_runtime_config")
-            report_role = report_relationship.get("role")
-            if not isinstance(report_role, str):
-                raise CollaborationConflict("invalid_runtime_config")
-            projected_reports.append({
-                "agent_id": report_id,
-                "role": report_role,
-                "capabilities": capabilities_by_agent.get(report_id, []),
-            })
-        return {
-            "self": {"agent_id": agent_id, "role": role},
-            "reports_to": list(reports_to),
-            "direct_reports": projected_reports,
+        if config.agentteams_mode() == "agentteams_strict":
+            try:
+                runtime = load_strict_runtime_config()
+            except ValueError as exc:
+                if self.capability_catalog_source == "configured":
+                    raise CollaborationConflict("invalid_runtime_config") from exc
+            else:
+                if runtime.team_id == team_id:
+                    try:
+                        runtime_hierarchy = TeamHierarchy.from_relationships(
+                            manager_id=hierarchy.manager_id,
+                            member_ids=set(runtime.team_relationships),
+                            relationships=runtime.team_relationships,
+                        )
+                    except TeamHierarchyError as exc:
+                        raise CollaborationConflict("invalid_runtime_config") from exc
+                    if (
+                        runtime_hierarchy.member_ids != hierarchy.member_ids
+                        or any(
+                            set(runtime_hierarchy.direct_reports_of(member_id))
+                            != set(hierarchy.direct_reports_of(member_id))
+                            for member_id in hierarchy.member_ids
+                        )
+                    ):
+                        raise CollaborationConflict("runtime_hierarchy_mismatch")
+                    hierarchy = runtime_hierarchy
+                elif self.capability_catalog_source == "configured":
+                    raise CollaborationConflict("runtime_team_mismatch")
+        try:
+            return hierarchy.project_for(agent_id, capabilities_by_agent)
+        except TeamHierarchyError as exc:
+            raise CollaborationConflict(str(exc)) from None
+
+    def _team_hierarchy(self, db: Session, team_id: str) -> TeamHierarchy:
+        team = db.get(models.Team, team_id)
+        if team is None:
+            raise CollaborationConflict("unknown_team")
+        members = list(db.scalars(
+            select(models.TeamMember).where(models.TeamMember.team_id == team_id)
+        ))
+        if not members or len({member.employee_id for member in members}) != len(members):
+            raise CollaborationConflict("invalid_team_hierarchy")
+        parent_by_agent = {
+            member.employee_id: member.reports_to_employee_id for member in members
         }
+        relationships: dict[str, dict[str, object]] = {}
+        for member in members:
+            employee = db.get(models.DigitalEmployee, member.employee_id)
+            if employee is None:
+                raise CollaborationConflict("invalid_team_hierarchy")
+            relationships[member.employee_id] = {
+                "role": employee.name,
+                "reports_to": (
+                    [member.reports_to_employee_id]
+                    if member.reports_to_employee_id
+                    else []
+                ),
+                "direct_reports": sorted(
+                    agent_id
+                    for agent_id, parent_id in parent_by_agent.items()
+                    if parent_id == member.employee_id
+                ),
+            }
+        try:
+            hierarchy = TeamHierarchy.from_relationships(
+                manager_id=team.leader_employee_id,
+                member_ids=set(parent_by_agent),
+                relationships=relationships,
+            )
+        except TeamHierarchyError as exc:
+            raise CollaborationConflict(str(exc)) from None
+        if any(
+            member.role != hierarchy.level_of(member.employee_id)
+            for member in members
+        ):
+            raise CollaborationConflict("invalid_team_hierarchy")
+        return hierarchy
 
     @staticmethod
     def _validate_subtask(raw: Any) -> dict[str, Any]:

@@ -40,12 +40,14 @@ from .llm import LLMUnavailableError
 
 Role = Literal[
     "manager", "hr", "it", "audit",
-    "hr_material", "hr_training", "it_account", "it_device",
+    "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+    "db_ops_lead", "db_perf_lead",
     "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 ]
 _ROLES = {
     "manager", "hr", "it", "audit",
-    "hr_material", "hr_training", "it_account", "it_device",
+    "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+    "db_ops_lead", "db_perf_lead",
     "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 }
 _ROLE_PROFESSIONAL_SKILLS = {
@@ -56,6 +58,9 @@ _ROLE_PROFESSIONAL_SKILLS = {
     "hr_training": {"hr-training-specialist"},
     "it_account": {"it-account-specialist"},
     "it_device": {"it-device-specialist"},
+    "audit_review": {"audit-evidence-review", "audit-role-change-review"},
+    "db_ops_lead": {"agentteams-database-diagnosis"},
+    "db_perf_lead": {"agentteams-database-diagnosis"},
     "db_write": {"db-write-investigation"},
     "db_lock": {"db-lock-investigation"},
     "db_vacuum": {"db-vacuum-investigation"},
@@ -625,6 +630,7 @@ class AgentRuntime:
                     context.get("team_catalog", {}),
                     parent_chain=context["parent_chain_agent_ids"],
                     direct_report_ids=self._direct_report_ids(context.get("team_relationship_graph")),
+                    inherited_material=self._delegated_material(context["task"]),
                 )
                 for candidate in candidates
             ]
@@ -911,7 +917,7 @@ class AgentRuntime:
             child_results=child_results,
             existing_child_task_keys=self._bounded_text_list(existing_child_task_keys, limit=20),
             current_round=current_round,
-            remaining_rounds=self._nonnegative_int(safe_limits.get("rounds"), 3),
+            remaining_rounds=self._nonnegative_int(safe_limits.get("rounds"), 5),
             max_children=self._positive_int(safe_limits.get("children"), 5),
             max_nodes=self._positive_int(safe_limits.get("nodes"), 20),
             team_relationship_graph=self._bounded_value(relationship_graph or {}),
@@ -965,6 +971,11 @@ class AgentRuntime:
             "task": {"title": self._text(message.payload.get("title", "task")), "goal": self._goal(message),
                      "client_task_key": self._text(message.payload.get("client_task_key", "task")),
                      "required_capability": self._text(message.payload.get("required_capability", "")),
+                     "material": self._bounded_value(
+                         message.payload.get("material", {})
+                         if isinstance(message.payload.get("material", {}), Mapping)
+                         else {}
+                     ),
                      "dependency_results": self._bounded_collection(message.payload.get("dependency_results"))},
         }
 
@@ -999,6 +1010,7 @@ class AgentRuntime:
         *,
         parent_chain: list[str] | None = None,
         direct_report_ids: set[str] | None = None,
+        inherited_material: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if subtask is None or not subtask.required_capability or subtask.assignee_agent_id == self.config.agent_id or subtask.assignee_agent_id in set(parent_chain or []):
             raise AgentDecisionError("invalid_model_decision")
@@ -1020,8 +1032,24 @@ class AgentRuntime:
             "depends_on": self._bounded_text_list(subtask.depends_on, 32), "required": bool(subtask.required),
             "required_capability": self._text(subtask.required_capability, 128),
             "node_kind": node_kind,
-            "material": {},
+            "material": self._bounded_value(dict(inherited_material or {})),
         }
+
+    def _delegated_material(self, task: Mapping[str, Any]) -> dict[str, Any]:
+        """Forward bounded task input plus verified references from completed prerequisites."""
+        raw_material = task.get("material", {})
+        material = dict(raw_material) if isinstance(raw_material, Mapping) else {}
+        dependency_results = task.get("dependency_results", [])
+        if isinstance(dependency_results, list):
+            for dependency in dependency_results:
+                if not isinstance(dependency, Mapping) or dependency.get("status") != "completed":
+                    continue
+                result = dependency.get("result")
+                approval_ref = result.get("approval_ref") if isinstance(result, Mapping) else None
+                if self._safe_protocol_text(approval_ref):
+                    material["approval_ref"] = approval_ref
+        bounded = self._bounded_value(material)
+        return bounded if isinstance(bounded, dict) else {}
 
     def _safe_relationship_graph(
         self, raw: Any, catalog: Mapping[str, Any],
@@ -1035,10 +1063,11 @@ class AgentRuntime:
         direct_reports = raw.get("direct_reports")
         if (
             not isinstance(identity, Mapping)
-            or set(identity) != {"agent_id", "role"}
+            or set(identity) != {"agent_id", "role", "level"}
             or identity.get("agent_id") != self.config.agent_id
             or not isinstance(identity.get("role"), str)
             or not identity.get("role").strip()
+            or identity.get("level") not in {"manager", "leader", "worker"}
             or not isinstance(reports_to, list)
             or not isinstance(direct_reports, list)
             or len(reports_to) > 8
@@ -1084,6 +1113,7 @@ class AgentRuntime:
             "self": {
                 "agent_id": self.config.agent_id,
                 "role": self._text(identity["role"], 128),
+                "level": identity["level"],
             },
             "reports_to": self._bounded_text_list(reports_to, 8),
             "direct_reports": normalized_reports,

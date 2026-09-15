@@ -125,6 +125,7 @@ function Set-AgentTeamsProcessRoleKeyEnvironment {
         'DEEPSEEK_API_KEY_DB_INDEX',
         'DEEPSEEK_API_KEY_DB_QUERY'
     )
+    $modelConfigNames = @('DEEPSEEK_MODEL', 'AGENTTEAMS_WORKER_MODEL')
     $processEnvironment = $Info.Environment
     if ($null -eq $processEnvironment) { $processEnvironment = $Info.EnvironmentVariables }
     if ($null -eq $processEnvironment) { throw 'agent_process_environment_unavailable' }
@@ -133,13 +134,26 @@ function Set-AgentTeamsProcessRoleKeyEnvironment {
         # reloading a sibling role's local value into this child process.
         $processEnvironment[$name] = ''
     }
+    foreach ($name in $modelConfigNames) {
+        # Model selection is non-secret, but must not drift through an
+        # unrelated parent shell. The launcher passes the selected value.
+        $processEnvironment[$name] = ''
+    }
     if ($null -eq $Environment) { return }
     $nonEmptyRoleKeys = 0
     foreach ($entry in $Environment.GetEnumerator()) {
-        if ($entry.Key -notin $roleKeyNames[1..($roleKeyNames.Count - 1)] -or -not ($entry.Value -is [string])) {
+        if (-not ($entry.Value -is [string])) {
             throw 'invalid_agent_role_key_environment'
         }
-        if (-not [string]::IsNullOrWhiteSpace([string]$entry.Value)) { $nonEmptyRoleKeys++ }
+        if ($entry.Key -in $roleKeyNames[1..($roleKeyNames.Count - 1)]) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$entry.Value)) { $nonEmptyRoleKeys++ }
+            continue
+        }
+        if (($entry.Key -notin $modelConfigNames) -or
+            [string]::IsNullOrWhiteSpace([string]$entry.Value) -or
+            ([string]$entry.Value -notmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$')) {
+            throw 'invalid_agent_role_key_environment'
+        }
     }
     if ($nonEmptyRoleKeys -gt 1) { throw 'invalid_agent_role_key_environment' }
     foreach ($entry in $Environment.GetEnumerator()) {

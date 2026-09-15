@@ -67,24 +67,24 @@ def test_submit_enqueues_manager_delegate_with_preserved_context(monkeypatch):
     messages = _messages(batch)
 
     assert event_id.startswith("local-out-")
-    assert [message.type for message in messages] == ["task.delegate"]
+    assert [message.type for message in messages] == ["agent.message", "task.delegate"]
     assert batch.next_cursor.startswith("local-")
-    assert batch.next_cursor.endswith("-1")
+    assert batch.next_cursor.endswith("-2")
     assert batch.events[0].event_id.startswith("local-in-")
     assert batch.events[0].sender == "@dwp-ve-0001:demo.test"
     assert (
-        messages[0].root_task_id,
-        messages[0].task_id,
-        messages[0].parent_task_id,
-        messages[0].trace_id,
+        messages[-1].root_task_id,
+        messages[-1].task_id,
+        messages[-1].parent_task_id,
+        messages[-1].trace_id,
     ) == (ROOT_ID, ROOT_ID, None, TRACE_ID)
-    assert messages[0].sender == "VE-0001"
-    assert messages[0].receiver == "platform"
-    assert [item["client_task_key"] for item in messages[0].payload["subtasks"]] == [
-        "hr-policy",
-        "it-account",
+    assert messages[-1].sender == "VE-0001"
+    assert messages[-1].receiver == "platform"
+    assert [item["client_task_key"] for item in messages[-1].payload["subtasks"]] == [
+        "onboarding-hr-department",
+        "onboarding-it-department",
     ]
-    assert [item["assignee_agent_id"] for item in messages[0].payload["subtasks"]] == [
+    assert [item["assignee_agent_id"] for item in messages[-1].payload["subtasks"]] == [
         "VE-0002",
         "VE-0003",
     ]
@@ -143,9 +143,9 @@ def test_root_summary_after_round_one_delegates_a_second_manager_round():
     by_capability = {
         item["capability"]: item for item in messages[1].payload["subtasks"]
     }
-    assert by_capability["audit.permission.review"]["depends_on"] == []
-    assert by_capability["it.permission.activate"]["depends_on"] == [
-        by_capability["audit.permission.review"]["client_task_key"]
+    assert by_capability["audit.role_change.coordinate"]["depends_on"] == []
+    assert by_capability["it.role_change.activate.coordinate"]["depends_on"] == [
+        by_capability["audit.role_change.coordinate"]["client_task_key"]
     ]
 
 
@@ -160,7 +160,7 @@ def test_retried_outbound_is_idempotent_and_cursor_does_not_replay():
 
     assert first_event_id == second_event_id
     assert first_event_id.startswith("local-out-")
-    assert len(first_batch.events) == 1
+    assert len(first_batch.events) == 2
     assert replay_batch.events == []
     assert replay_batch.next_cursor == first_batch.next_cursor
 
@@ -185,7 +185,7 @@ def test_new_transport_does_not_skip_new_task_behind_old_cursor_or_reuse_event_i
     second_outbound_id = _send(restarted, second_submit)
     second_batch = restarted.sync_messages(first_batch.next_cursor, {ROOM_ID})
 
-    assert len(second_batch.events) == 1
+    assert len(second_batch.events) == 2
     assert second_outbound_id != first_outbound_id
     assert second_batch.events[0].event_id != first_batch.events[0].event_id
 
@@ -205,7 +205,7 @@ def test_restarted_transport_reconstructs_stable_events_for_same_outbound():
     assert _messages(restarted_batch) == _messages(first_batch)
 
 
-def test_hr_assignment_emits_progress_message_and_nested_delegate(monkeypatch):
+def test_hr_leader_assignment_delegates_only_to_its_two_workers(monkeypatch):
     monkeypatch.setenv(config.AGENTTEAMS_MATRIX_DOMAIN, "demo.test")
     transport = LocalDemoTransport()
     assignment = _message(
@@ -214,7 +214,7 @@ def test_hr_assignment_emits_progress_message_and_nested_delegate(monkeypatch):
         parent_task_id=ROOT_ID,
         sender="VE-0001",
         receiver="VE-0002",
-        payload={"client_task_key": "hr-policy"},
+        payload={"client_task_key": "onboarding-hr-department"},
     )
 
     _send(transport, assignment)
@@ -242,10 +242,10 @@ def test_hr_assignment_emits_progress_message_and_nested_delegate(monkeypatch):
         == (ROOT_ID, "AT-HR", ROOT_ID, TRACE_ID)
         for message in messages
     )
-    assert messages[1].payload == {"progress": 40}
-    assert messages[2].receiver == "VE-0003"
-    assert messages[3].payload["subtasks"][0]["client_task_key"] == "hr-it-check"
-    assert messages[3].payload["subtasks"][0]["assignee_agent_id"] == "VE-0003"
+    assert messages[2].payload["kind"] == "decision.trace"
+    assert {
+        item["assignee_agent_id"] for item in messages[3].payload["subtasks"]
+    } == {"VE-HR-MATERIAL", "VE-HR-TRAINING"}
 
 
 def test_each_generated_response_has_unique_protocol_identity():
@@ -256,7 +256,7 @@ def test_each_generated_response_has_unique_protocol_identity():
         parent_task_id=ROOT_ID,
         sender="VE-0001",
         receiver="VE-0002",
-        payload={"client_task_key": "hr-policy"},
+        payload={"client_task_key": "onboarding-hr-department"},
     )
 
     _send(transport, assignment)
@@ -266,15 +266,15 @@ def test_each_generated_response_has_unique_protocol_identity():
     assert len({message.idempotency_key for message in messages}) == len(messages)
 
 
-def test_it_account_assignment_requests_gateway_tool():
+def test_it_worker_assignment_requests_gateway_tool_without_delegating():
     transport = LocalDemoTransport()
     assignment = _message(
         "task.assign",
         task_id="AT-IT",
-        parent_task_id=ROOT_ID,
-        sender="VE-0001",
-        receiver="VE-0003",
-        payload={"client_task_key": "it-account"},
+        parent_task_id="AT-IT-LEADER",
+        sender="VE-0003",
+        receiver="VE-IT-ACCOUNT",
+        payload={"client_task_key": "onboarding-it-accounts"},
     )
 
     _send(transport, assignment)
@@ -283,26 +283,29 @@ def test_it_account_assignment_requests_gateway_tool():
     assert [message.type for message in messages] == [
         "task.accepted",
         "task.progress",
+        "agent.message",
+        "agent.message",
         "tool.request",
     ]
-    assert messages[1].payload == {"progress": 60}
-    assert messages[2].receiver == "platform"
-    assert messages[2].payload == {
-        "plugin_id": "adp-onboarding",
+    assert messages[-1].receiver == "platform"
+    assert messages[-1].payload == {
+        "tool_name": "agentteams.it.lookup_accounts",
+        "plugin_id": "agentteams-it-accounts",
         "action": "execute",
-        "params": {"employee_name": "李四"},
+        "required_capability": "it.accounts.read",
+        "params": {"employee_ref": "新员工A"},
     }
 
 
-def test_nested_it_assignment_returns_result_after_progress():
+def test_audit_leader_assignment_delegates_to_audit_worker():
     transport = LocalDemoTransport()
     assignment = _message(
         "task.assign",
-        task_id="AT-HR-IT",
-        parent_task_id="AT-HR",
-        sender="VE-0002",
-        receiver="VE-0003",
-        payload={"client_task_key": "hr-it-check"},
+        task_id="AT-AUDIT",
+        parent_task_id=ROOT_ID,
+        sender="VE-0001",
+        receiver="VE-0005",
+        payload={"client_task_key": "onboarding-audit-review"},
     )
 
     _send(transport, assignment)
@@ -311,29 +314,35 @@ def test_nested_it_assignment_returns_result_after_progress():
     assert [message.type for message in messages] == [
         "task.accepted",
         "task.progress",
-        "task.result",
+        "agent.message",
+        "task.delegate",
     ]
-    assert messages[1].payload == {"progress": 80}
-    assert "IT" in messages[2].payload["summary"]
+    assert messages[-1].payload["subtasks"][0]["assignee_agent_id"] == "VE-AUDIT-REVIEW"
 
 
 def test_tool_result_completes_it_account_task():
     transport = LocalDemoTransport()
+    assignment = _message(
+        "task.assign", task_id="AT-IT", parent_task_id="AT-IT-LEADER",
+        sender="VE-0003", receiver="VE-IT-ACCOUNT",
+        payload={"client_task_key": "onboarding-it-accounts"},
+    )
+    _send(transport, assignment)
+    cursor = transport.sync_messages(None, {ROOM_ID}).next_cursor
     tool_result = _message(
         "tool.result",
         task_id="AT-IT",
-        parent_task_id=ROOT_ID,
-        receiver="VE-0003",
+        parent_task_id="AT-IT-LEADER",
+        receiver="VE-IT-ACCOUNT",
         payload={"ok": True, "decision": "allow", "audit_ids": ["AUD-1"]},
     )
 
     _send(transport, tool_result)
-    messages = _messages(transport.sync_messages(None, {ROOM_ID}))
+    messages = _messages(transport.sync_messages(cursor, {ROOM_ID}))
 
-    assert [message.type for message in messages] == ["task.result"]
-    assert messages[0].sender == "VE-0003"
-    assert messages[0].payload["decision"] == "allow"
-    assert messages[0].payload["audit_ids"] == ["AUD-1"]
+    assert [message.type for message in messages] == ["agent.message", "task.result"]
+    assert messages[-1].sender == "VE-IT-ACCOUNT"
+    assert messages[-1].payload["audit_ids"] == ["AUD-1"]
 
 
 def test_submitted_result_is_accepted_by_the_receiving_coordinator():
@@ -395,8 +404,8 @@ def test_malformed_protocol_fails_without_advancing_state():
     submit = _message("task.submit")
     assert _send(transport, submit) == _send(LocalDemoTransport(), submit)
     batch = transport.sync_messages(None, {ROOM_ID})
-    assert len(batch.events) == 1
-    assert batch.next_cursor.endswith("-1")
+    assert len(batch.events) == 2
+    assert batch.next_cursor.endswith("-2")
 
 
 def test_unknown_outbound_type_has_explicit_no_response_and_empty_cursor_is_stable():

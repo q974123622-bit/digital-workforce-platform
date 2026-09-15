@@ -299,7 +299,7 @@ def test_manager_selects_skill_then_delegates_without_invalid_root_ack(tmp_path)
 def test_manager_runtime_receives_platform_relationship_graph_in_each_planning_round(tmp_path):
     subject, gateway, engine, _ = runtime(tmp_path)
     graph = {
-        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "self": {"agent_id": "VE-0001", "role": "Manager", "level": "manager"},
         "reports_to": [],
         "direct_reports": [
             {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.read"]},
@@ -1099,7 +1099,7 @@ def test_department_lead_runtime_emits_parallel_batch_from_platform_relationship
         {"agent_id": "VE-HR-TRAINING", "capabilities": ["hr.training.read"]},
     ]
     payload["team_relationship_graph"] = {
-        "self": {"agent_id": "VE-0002", "role": "HR负责人"},
+        "self": {"agent_id": "VE-0002", "role": "HR负责人", "level": "leader"},
         "reports_to": ["VE-0001"],
         "direct_reports": [
             {"agent_id": "VE-HR-MATERIAL", "role": "HR材料专员", "capabilities": ["hr.materials.read"]},
@@ -1119,6 +1119,63 @@ def test_department_lead_runtime_emits_parallel_batch_from_platform_relationship
         "VE-HR-MATERIAL", "VE-HR-TRAINING",
     }
     assert engine.worker_contexts[0].team_relationship_graph == payload["team_relationship_graph"]
+
+
+def test_role_change_leader_forwards_verified_dependency_reference_to_worker(tmp_path):
+    gateway, engine = FakeGateway(), FakeEngine()
+    trusted = {**MXIDS, "VE-IT-DEVICE": "@it-device:local"}
+    subject = AgentRuntime(AgentRuntimeConfig(
+        agent_id="VE-0003", role="it", matrix_mxid=MXIDS["VE-0003"],
+        matrix_token="never-persist", room_id="!team:local",
+        trusted_sender_mxids=trusted,
+        allowed_skill_ids={"it-service-assistant"},
+        team_catalog={}, safe_tool_catalog=[], state_dir=tmp_path / "state",
+    ), gateway, engine, pause=lambda _: None)
+    engine.selections = [SkillSelection(selected_skill_ids=["it-service-assistant"])]
+    engine.work = [WorkerDecision(
+        action="delegate",
+        subtasks=[PlannedSubtask(
+            client_task_key="activate-role", title="执行最终权限激活",
+            goal="使用已通过审计的审批编号激活权限。",
+            required_capability="it.permission.activate",
+            assignee_agent_id="VE-IT-DEVICE", reason="由执行专员完成激活。",
+        )],
+    )]
+    payload = assign_payload()
+    payload.update({
+        "required_capability": "it.role_change.activate.coordinate",
+        "material": {"employee_ref": "张明"},
+        "dependency_results": [{
+            "client_task_key": "audit-review", "status": "completed",
+            "result": {"result": "审计通过", "approval_ref": "AUD-RC-001", "audit_ids": [1295]},
+        }],
+        "team_capability_catalog": [
+            {"agent_id": "VE-IT-DEVICE", "capabilities": ["it.permission.activate"]},
+        ],
+        "team_relationship_graph": {
+            "self": {"agent_id": "VE-0003", "role": "IT负责人", "level": "leader"},
+            "reports_to": ["VE-0001"],
+            "direct_reports": [{
+                "agent_id": "VE-IT-DEVICE", "role": "IT执行专员",
+                "capabilities": ["it.permission.activate"],
+            }],
+        },
+    })
+    gateway.events = [event(message(
+        type="task.assign", sender="VE-0001", receiver="VE-0003",
+        parent_task_id="root-1", payload=payload,
+    ), sender=MXIDS["VE-0001"])]
+
+    assert subject.run_once() == 1
+
+    context = engine.worker_contexts[0]
+    assert context.task["material"] == {"employee_ref": "张明"}
+    delegate = sent_protocols(gateway)[-1]
+    assert delegate.type == "task.delegate"
+    assert delegate.payload["subtasks"][0]["material"] == {
+        "employee_ref": "张明",
+        "approval_ref": "AUD-RC-001",
+    }
 
 
 def test_spoof_not_for_me_and_parse_errors_are_safely_ignored(tmp_path):

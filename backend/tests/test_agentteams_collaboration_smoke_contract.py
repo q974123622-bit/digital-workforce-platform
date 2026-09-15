@@ -123,6 +123,7 @@ STRICT_HEALTH_ROLES = {
     "hr_training": ("VE-HR-TRAINING", "hr-training-specialist"),
     "it_account": ("VE-IT-ACCOUNT", "it-account-specialist"),
     "it_device": ("VE-IT-DEVICE", "it-device-specialist"),
+    "audit_review": ("VE-AUDIT-REVIEW", "audit-evidence-review"),
 }
 
 
@@ -154,11 +155,12 @@ def _install_full_strict_health_runtime(db_session, monkeypatch, tmp_path):
             "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
             "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
             "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
-            "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": []},
+            "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
             "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
             "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
             "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+            "VE-AUDIT-REVIEW": {"role": "审计复核专员", "reports_to": ["VE-0005"], "direct_reports": []},
         },
     }), encoding="utf-8")
     monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(config_path))
@@ -218,7 +220,7 @@ def test_health_rejects_whitespace_worker_runtime_refs(
 def test_health_closes_every_constructed_gateway_when_membership_check_raises(
     client, db_session, monkeypatch, tmp_path
 ):
-    """A nine-account strict check closes all clients and fails closed."""
+    """The full strict check closes every identity client and fails closed."""
     identities = _install_full_strict_health_runtime(
         db_session, monkeypatch, tmp_path
     )
@@ -248,6 +250,6 @@ def test_health_closes_every_constructed_gateway_when_membership_check_raises(
     assert response.status_code == 200
     body = response.json()
     assert body["ready_for_demo"] is False
-    assert len(FailingGateway.constructed) == 9
+    assert len(FailingGateway.constructed) == 10
     assert all(item.closed for item in FailingGateway.constructed)
     assert "secret" not in json.dumps(body).lower()

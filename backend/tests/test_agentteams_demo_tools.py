@@ -25,7 +25,7 @@ def _invoke(db_session, employee_id: str, plugin_id: str, params: dict):
     [
         ("VE-0002", "agentteams-onboarding-employee", "materials", "HR-A-001"),
         ("VE-0003", "agentteams-it-readiness", "accounts", "IT-A-001"),
-        ("VE-0005", "agentteams-onboarding-evidence", "evidence", "AUD-A-001"),
+        ("VE-AUDIT-REVIEW", "agentteams-onboarding-evidence", "evidence", "AUD-A-001"),
     ],
 )
 def test_agentteams_domain_tool_returns_bounded_demo_evidence_and_writes_audit(
@@ -103,7 +103,7 @@ def test_agentteams_tool_http_rejects_untrusted_input_safely_and_audits(
         "/internal/gateway/invoke",
         json={
             "employee_id": "VE-0002" if plugin_id == "agentteams-onboarding-employee" else (
-                "VE-0003" if plugin_id == "agentteams-it-readiness" else "VE-0005"
+                "VE-0003" if plugin_id == "agentteams-it-readiness" else "VE-AUDIT-REVIEW"
             ),
             "plugin_id": plugin_id,
             "action": "execute",

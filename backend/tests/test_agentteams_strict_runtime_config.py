@@ -47,7 +47,7 @@ def test_onboarding_runtime_configuration_contains_department_relationship_graph
 
     assert set(document["agents"]) == {
         "manager", "hr", "it", "audit",
-        "hr_material", "hr_training", "it_account", "it_device",
+        "hr_material", "hr_training", "it_account", "it_device", "audit_review",
     }
     assert document["team_relationships"]["VE-0002"] == {
         "role": "HR负责人",
@@ -87,7 +87,9 @@ def test_database_runtime_shape_syncs_seeded_team_tools_and_bindings(db_session,
         member.employee_id: member.role
         for member in db_session.query(models.TeamMember).filter_by(team_id="TEAM-DB-BENCH")
     } == {
-        "VE-0001": "leader",
+        "VE-0001": "manager",
+        "DB-OPS-LEAD": "leader",
+        "DB-PERF-LEAD": "leader",
         "DB-WRITE-01": "worker",
         "DB-LOCK-01": "worker",
         "DB-VACUUM-01": "worker",
@@ -127,12 +129,17 @@ def test_sync_strict_runtime_creates_team_and_exact_matrix_bindings_from_seed(db
     assert team is not None
     assert team.leader_employee_id == runtime.agents["manager"].agent_id
     members = {
-        member.employee_id: member.role
+        member.employee_id: (member.role, member.reports_to_employee_id)
         for member in db_session.query(models.TeamMember).filter_by(team_id=runtime.team_id)
     }
     assert members == {
-        identity.agent_id: "leader" if role == "manager" else "worker"
-        for role, identity in runtime.agents.items()
+        agent_id: (
+            "manager" if not relationship["reports_to"] else (
+                "leader" if relationship["direct_reports"] else "worker"
+            ),
+            relationship["reports_to"][0] if relationship["reports_to"] else None,
+        )
+        for agent_id, relationship in runtime.team_relationships.items()
     }
     for identity in runtime.agents.values():
         employee = db_session.get(models.DigitalEmployee, identity.agent_id)
@@ -209,8 +216,7 @@ def test_strict_tool_sync_repairs_only_referenced_demo_plugins_and_grants(db_ses
     assert all(
         plugins[plugin_id].runtime_meta["input_schema"] == _employee_ref_schema()
         for plugin_id in {
-            "agentteams-onboarding-employee", "agentteams-it-readiness", "agentteams-onboarding-evidence",
-            "agentteams-onboarding-materials", "agentteams-onboarding-training",
+            "agentteams-onboarding-evidence", "agentteams-onboarding-materials", "agentteams-onboarding-training",
             "agentteams-it-accounts", "agentteams-it-devices",
         }
     )
@@ -247,7 +253,7 @@ def test_strict_tool_sync_fails_closed_for_a_runtime_plugin_absent_from_demo_see
     from app.services.agentteams_runtime_config import load_strict_runtime_config
 
     value = _runtime_config()
-    value["agents"]["hr"]["safe_tool_catalog"][0]["plugin_id"] = "invented-plugin"
+    value["agents"]["hr_material"]["safe_tool_catalog"][0]["plugin_id"] = "invented-plugin"
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps(value), encoding="utf-8")
     runtime = load_strict_runtime_config(path, environ={})
@@ -397,6 +403,8 @@ def _database_runtime_config() -> dict:
     schema = database_plugin["runtime_meta"]["input_schema"]
     roles = {
         "manager": ("VE-0001", ["agentteams-database-diagnosis"]),
+        "db_ops_lead": ("DB-OPS-LEAD", ["db-operations-coordination"]),
+        "db_perf_lead": ("DB-PERF-LEAD", ["db-performance-coordination"]),
         "db_write": ("DB-WRITE-01", ["db-write-investigation"]),
         "db_lock": ("DB-LOCK-01", ["db-lock-investigation"]),
         "db_vacuum": ("DB-VACUUM-01", ["db-vacuum-investigation"]),
@@ -405,7 +413,7 @@ def _database_runtime_config() -> dict:
     }
     agents = {}
     for role, (agent_id, skills) in roles.items():
-        tools = [{
+        tools = [] if role in {"db_ops_lead", "db_perf_lead"} else [{
             "name": f"agentteams.{role}.inspect_database_signal",
             "plugin_id": "agentteams-database-inspector",
             "action": "read",
@@ -425,7 +433,26 @@ def _database_runtime_config() -> dict:
         "team_id": "TEAM-DB-BENCH",
         "platform": {"mxid": "@platform:test", "token": "platform-token"},
         "agents": agents,
-        "team_catalog": {},
+        "team_catalog": {
+            "VE-0001": {"capabilities": ["agentteams-database-inspector"]},
+            "DB-OPS-LEAD": {"capabilities": ["db.operations.coordinate"]},
+            "DB-PERF-LEAD": {"capabilities": ["db.performance.coordinate"]},
+            "DB-WRITE-01": {"capabilities": ["agentteams-database-inspector"]},
+            "DB-LOCK-01": {"capabilities": ["agentteams-database-inspector"]},
+            "DB-VACUUM-01": {"capabilities": ["agentteams-database-inspector"]},
+            "DB-INDEX-01": {"capabilities": ["agentteams-database-inspector"]},
+            "DB-QUERY-01": {"capabilities": ["agentteams-database-inspector"]},
+        },
+        "team_relationships": {
+            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["DB-OPS-LEAD", "DB-PERF-LEAD"]},
+            "DB-OPS-LEAD": {"role": "数据库运维负责人", "reports_to": ["VE-0001"], "direct_reports": ["DB-WRITE-01", "DB-LOCK-01", "DB-VACUUM-01"]},
+            "DB-PERF-LEAD": {"role": "数据库性能负责人", "reports_to": ["VE-0001"], "direct_reports": ["DB-INDEX-01", "DB-QUERY-01"]},
+            "DB-WRITE-01": {"role": "写入诊断专员", "reports_to": ["DB-OPS-LEAD"], "direct_reports": []},
+            "DB-LOCK-01": {"role": "锁诊断专员", "reports_to": ["DB-OPS-LEAD"], "direct_reports": []},
+            "DB-VACUUM-01": {"role": "Vacuum诊断专员", "reports_to": ["DB-OPS-LEAD"], "direct_reports": []},
+            "DB-INDEX-01": {"role": "索引诊断专员", "reports_to": ["DB-PERF-LEAD"], "direct_reports": []},
+            "DB-QUERY-01": {"role": "查询诊断专员", "reports_to": ["DB-PERF-LEAD"], "direct_reports": []},
+        },
     }
 
 
@@ -474,7 +501,7 @@ def test_runtime_config_has_nine_unique_identities_and_a_secret_free_public_view
     assert runtime.platform.mxid == "@platform:test"
     assert set(runtime.agents) == {
         "manager", "hr", "it", "audit",
-        "hr_material", "hr_training", "it_account", "it_device",
+        "hr_material", "hr_training", "it_account", "it_device", "audit_review",
     }
     public = runtime.public_view()
     assert "token" not in json.dumps(public)
@@ -502,17 +529,17 @@ def test_tool_catalog_defaults_missing_action_and_rejects_explicit_invalid_actio
     from app.services.agentteams_runtime_config import load_strict_runtime_config
 
     value = _runtime_config()
-    value["agents"]["hr"]["safe_tool_catalog"] = [{
+    value["agents"]["hr_material"]["safe_tool_catalog"] = [{
         "name": "lookup",
         "plugin_id": "hr-employee-mcp",
         "input_schema": _employee_ref_schema(),
     }]
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps(value), encoding="utf-8")
-    assert load_strict_runtime_config(path, environ={}).agents["hr"].safe_tool_catalog[0]["action"] == "read"
+    assert load_strict_runtime_config(path, environ={}).agents["hr_material"].safe_tool_catalog[0]["action"] == "read"
 
     for action in ("", "delete"):
-        value["agents"]["hr"]["safe_tool_catalog"][0]["action"] = action
+        value["agents"]["hr_material"]["safe_tool_catalog"][0]["action"] = action
         path.write_text(json.dumps(value), encoding="utf-8")
         with pytest.raises(ValueError, match="invalid_runtime_config"):
             load_strict_runtime_config(path, environ={})
@@ -554,7 +581,7 @@ def test_runtime_config_rejects_unsafe_or_malformed_tool_input_schema(tmp_path, 
     from app.services.agentteams_runtime_config import load_strict_runtime_config
 
     value = _runtime_config()
-    tool = value["agents"]["hr"]["safe_tool_catalog"][0]
+    tool = value["agents"]["hr_material"]["safe_tool_catalog"][0]
     if input_schema is None:
         tool.pop("input_schema")
     else:
@@ -581,7 +608,7 @@ def test_runtime_config_rejects_sensitive_tool_schema_constant_content(tmp_path,
     from app.services.agentteams_runtime_config import load_strict_runtime_config
 
     value = _runtime_config()
-    field_schema = value["agents"]["hr"]["safe_tool_catalog"][0]["input_schema"][
+    field_schema = value["agents"]["hr_material"]["safe_tool_catalog"][0]["input_schema"][
         "properties"
     ]["employee_ref"]
     field_schema["const"] = sensitive_const

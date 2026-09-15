@@ -9,7 +9,7 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   accepted: { label: '已接单', color: 'processing' },
   running: { label: '执行中', color: 'processing' },
   submitted: { label: '结果已提交', color: 'geekblue' },
-  reviewing: { label: '待 Leader 验收', color: 'purple' },
+  reviewing: { label: '待上级验收', color: 'purple' },
   revision_requested: { label: '已要求修订', color: 'volcano' },
   waiting_children: { label: '等待子任务', color: 'gold' },
   summarizing: { label: '汇总中', color: 'purple' },
@@ -21,7 +21,7 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
 
 const NODE_KIND_LABEL: Record<string, string> = {
   mission: 'Manager 任务',
-  team_assignment: 'Team Leader 派单',
+  team_assignment: 'Leader 任务',
   worker_task: 'Worker 任务',
 };
 
@@ -40,6 +40,18 @@ const AGENT_LABELS: Record<string, string> = {
   'VE-0002': 'HR Agent',
   'VE-0003': 'IT Agent',
   'VE-0005': '审计Agent',
+  'VE-HR-MATERIAL': 'HR材料专员',
+  'VE-HR-TRAINING': 'HR培训专员',
+  'VE-IT-ACCOUNT': 'IT账号专员',
+  'VE-IT-DEVICE': 'IT设备专员',
+  'VE-AUDIT-REVIEW': '审计复核专员',
+  'DB-OPS-LEAD': '数据库运维Leader',
+  'DB-PERF-LEAD': '数据库性能Leader',
+  'DB-WRITE-01': '写入诊断Worker',
+  'DB-LOCK-01': '锁诊断Worker',
+  'DB-VACUUM-01': 'Vacuum诊断Worker',
+  'DB-INDEX-01': '索引诊断Worker',
+  'DB-QUERY-01': '查询诊断Worker',
 };
 
 const TOOL_LABELS: Record<string, string> = {
@@ -85,6 +97,16 @@ const displayProgress = (node: AgentTaskNode) => node.status === 'completed'
   ? 100
   : Math.max(0, Math.min(100, node.progress));
 
+const nodeStatus = (node: AgentTaskNode) => {
+  if (node.status === 'reviewing') {
+    return {
+      label: node.node_kind === 'team_assignment' ? '待 Manager 验收' : '待 Leader 验收',
+      color: 'purple',
+    };
+  }
+  return STATUS_META[node.status] ?? { label: node.status, color: 'default' };
+};
+
 export function TaskTree({ nodes, graph, messages = [], selectedId, onSelect }: Props) {
   const nodeIds = new Set(nodes.map((node) => node.id));
   const children = new Map<string | null, AgentTaskNode[]>();
@@ -99,20 +121,14 @@ export function TaskTree({ nodes, graph, messages = [], selectedId, onSelect }: 
 
   for (const node of nodes) {
     const declaredParentId = node.parent_task_id && nodeIds.has(node.parent_task_id) ? node.parent_task_id : null;
-    const dependencyIds = (dependencyIdsByNode.get(node.id) ?? []).filter((id) => nodeIds.has(id));
-    // A direct Manager delegation stays attached to the Manager.  A later
-    // task with one persisted predecessor is rendered under that predecessor
-    // so the visual tree also exposes the real serial execution chain.
-    const parentId = (
-      declaredParentId
-      && dependencyIds.length === 1
-      && declaredParentId !== dependencyIds[0]
-    ) ? dependencyIds[0] : declaredParentId;
-    children.set(parentId, [...(children.get(parentId) ?? []), node]);
+    // Delegation hierarchy and execution dependencies are different graphs.
+    // Only the persisted parent may decide where a node appears in this tree;
+    // dependencies remain metadata and must never turn a sibling into a child.
+    children.set(declaredParentId, [...(children.get(declaredParentId) ?? []), node]);
   }
 
   const renderNode = (node: AgentTaskNode) => {
-    const status = STATUS_META[node.status] ?? { label: node.status, color: 'default' };
+    const status = nodeStatus(node);
     const isRoot = !node.parent_task_id;
     const nested = children.get(node.id) ?? [];
     const dependencies = dependencyIdsByNode.get(node.id) ?? [];

@@ -97,17 +97,19 @@ def test_strict_runner_factory_uses_validated_runtime_identity_and_room(monkeypa
                 "hr_training": {"agent_id": "VE-HR-TRAINING", "mxid": "@hr-training:test", "token": "hr-training-token", "allowed_skill_ids": ["hr-training-skill"], "safe_tool_catalog": []},
                 "it_account": {"agent_id": "VE-IT-ACCOUNT", "mxid": "@it-account:test", "token": "it-account-token", "allowed_skill_ids": ["it-account-skill"], "safe_tool_catalog": []},
                 "it_device": {"agent_id": "VE-IT-DEVICE", "mxid": "@it-device:test", "token": "it-device-token", "allowed_skill_ids": ["it-device-skill"], "safe_tool_catalog": []},
+                "audit_review": {"agent_id": "VE-AUDIT-REVIEW", "mxid": "@audit-review:test", "token": "audit-review-token", "allowed_skill_ids": ["audit-review-skill"], "safe_tool_catalog": []},
             },
             "team_catalog": {},
             "team_relationships": {
                 "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
                 "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
                 "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
-                "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": []},
+                "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
                 "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
                 "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
                 "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
                 "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+                "VE-AUDIT-REVIEW": {"role": "审计复核专员", "reports_to": ["VE-0005"], "direct_reports": []},
             },
         }), encoding="utf-8")
     calls = []
@@ -142,11 +144,8 @@ def test_strict_runner_factory_fails_closed_for_invalid_runtime(monkeypatch, tmp
 
 
 def _enable_test_leader(db_session):
-    leader = db_session.get(models.DigitalEmployee, "DT-E10281")
-    leader.runtime_ref = "@dwp-twin-e10281:local"
-    db_session.add(models.TeamMember(
-        team_id="TEAM-ONBOARD", employee_id=leader.employee_no, role="member",
-    ))
+    leader = db_session.get(models.DigitalEmployee, "VE-0001")
+    leader.runtime_ref = "@manager:local"
     db_session.flush()
     return leader
 
@@ -211,16 +210,51 @@ def _delegate_one_child(db_session, service, run, leader):
             timestamp="2026-08-31T15:00:00+08:00",
             idempotency_key=f"{run.id}:delegate:1",
             payload={"subtasks": [{
-                "client_task_key": "policy",
-                "title": "制度核查",
-                "instruction": "核查制度",
+                "client_task_key": "hr-department",
+                "title": "HR部门核查",
+                "instruction": "组织直属员工核查制度",
                 "assignee_agent_id": "VE-0002",
-                "required_capability": "hr-employee-mcp",
+                "required_capability": "hr.onboarding.coordinate",
                 "depends_on": [],
             }]},
         ),
     )
-    return db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    leader_node = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    hr_leader = db_session.get(models.DigitalEmployee, "VE-0002")
+    hr_sender = service._matrix_user_id_for_runtime(hr_leader.runtime_ref)
+    assert hr_sender is not None
+    for event_type, key, payload in (
+        ("task.accepted", "leader-accepted", {}),
+        ("task.progress", "leader-progress", {"progress": 20}),
+    ):
+        service.apply_message(
+            db_session,
+            matrix_sender=hr_sender,
+            message=AgentProtocolMessage(
+                version="1.0", message_id=f"MSG-{key}", type=event_type,
+                root_task_id=run.id, task_id=leader_node.id, parent_task_id=run.id,
+                trace_id=run.trace_id, sender="VE-0002", receiver="platform",
+                timestamp="2026-08-31T15:00:00+08:00",
+                idempotency_key=f"{run.id}:{leader_node.id}:{key}", payload=payload,
+            ),
+        )
+    service.apply_message(
+        db_session,
+        matrix_sender=hr_sender,
+        message=AgentProtocolMessage(
+            version="1.0", message_id="MSG-worker-delegate", type="task.delegate",
+            root_task_id=run.id, task_id=leader_node.id, parent_task_id=run.id,
+            trace_id=run.trace_id, sender="VE-0002", receiver="platform",
+            timestamp="2026-08-31T15:00:00+08:00",
+            idempotency_key=f"{run.id}:{leader_node.id}:worker-delegate",
+            payload={"subtasks": [{
+                "client_task_key": "policy", "title": "制度核查",
+                "instruction": "核查制度", "assignee_agent_id": "VE-HR-MATERIAL",
+                "required_capability": "agentteams-onboarding-materials", "depends_on": [],
+            }]},
+        ),
+    )
+    return db_session.query(models.AgentTaskNode).filter_by(parent_task_id=leader_node.id).one()
 
 
 def _node_message(run, node, *, event_type, key, payload):
@@ -353,7 +387,7 @@ def test_tool_request_uses_platform_gateway(db_session, monkeypatch):
             "bounded": "x" * 512,
         },
     }
-    assert result.payload["team_catalog_version"] == 3
+    assert result.payload["team_catalog_version"] == 4
     assert {item["agent_id"] for item in result.payload["team_capability_catalog"]} >= {
         "VE-0002", "VE-0003", "VE-0005",
     }
@@ -911,6 +945,31 @@ def test_runner_persists_valid_inbound_event_and_cursor(db_session):
 
     assert db_session.query(models.AgentMessage).filter_by(direction="inbound").count() == 1
     assert db_session.query(models.AgentTaskEvent).count() == before_events + 1
+    assert db_session.query(models.AgentMatrixCursor).one().cursor == "s2"
+
+
+def test_strict_runner_primes_a_missing_cursor_before_incremental_sync(db_session):
+    """A fresh platform identity must not request a limited room history."""
+    from app.services.agentteams_runner import AgentTeamsCollaborationRunner
+
+    class PrimingGateway(FakeGateway):
+        def __init__(self):
+            super().__init__([MatrixSyncBatch(events=[], next_cursor="s2")])
+            self.initial_sync_calls = []
+
+        def initial_sync_cursor(self, room_ids):
+            self.initial_sync_calls.append(set(room_ids))
+            return "fresh-cursor"
+
+    gateway = PrimingGateway()
+
+    AgentTeamsCollaborationRunner(
+        gateway=gateway,
+        room_id=ROOM_ID,
+    ).tick_once(db_session)
+
+    assert gateway.initial_sync_calls == [{ROOM_ID}]
+    assert gateway.sync_calls == [("fresh-cursor", {ROOM_ID}, 0)]
     assert db_session.query(models.AgentMatrixCursor).one().cursor == "s2"
 
 

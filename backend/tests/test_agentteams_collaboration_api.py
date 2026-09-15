@@ -23,9 +23,12 @@ ONBOARDING_ROLES = {
     "hr_training": "VE-HR-TRAINING",
     "it_account": "VE-IT-ACCOUNT",
     "it_device": "VE-IT-DEVICE",
+    "audit_review": "VE-AUDIT-REVIEW",
 }
 DATABASE_ROLES = {
     "manager": "VE-0001",
+    "db_ops_lead": "DB-OPS-LEAD",
+    "db_perf_lead": "DB-PERF-LEAD",
     "db_write": "DB-WRITE-01",
     "db_lock": "DB-LOCK-01",
     "db_vacuum": "DB-VACUUM-01",
@@ -58,11 +61,23 @@ def _strict_runtime_document(team_id="TEAM-ONBOARD") -> dict:
             "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
             "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
             "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
-            "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": []},
+            "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
             "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
             "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
             "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+            "VE-AUDIT-REVIEW": {"role": "审计复核专员", "reports_to": ["VE-0005"], "direct_reports": []},
+        }
+    else:
+        document["team_relationships"] = {
+            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["DB-OPS-LEAD", "DB-PERF-LEAD"]},
+            "DB-OPS-LEAD": {"role": "数据库运维负责人", "reports_to": ["VE-0001"], "direct_reports": ["DB-WRITE-01", "DB-LOCK-01", "DB-VACUUM-01"]},
+            "DB-PERF-LEAD": {"role": "数据库性能负责人", "reports_to": ["VE-0001"], "direct_reports": ["DB-INDEX-01", "DB-QUERY-01"]},
+            "DB-WRITE-01": {"role": "写入诊断Worker", "reports_to": ["DB-OPS-LEAD"], "direct_reports": []},
+            "DB-LOCK-01": {"role": "锁诊断Worker", "reports_to": ["DB-OPS-LEAD"], "direct_reports": []},
+            "DB-VACUUM-01": {"role": "Vacuum诊断Worker", "reports_to": ["DB-OPS-LEAD"], "direct_reports": []},
+            "DB-INDEX-01": {"role": "索引诊断Worker", "reports_to": ["DB-PERF-LEAD"], "direct_reports": []},
+            "DB-QUERY-01": {"role": "查询诊断Worker", "reports_to": ["DB-PERF-LEAD"], "direct_reports": []},
         }
     return document
 
@@ -112,14 +127,8 @@ def _stub_health(monkeypatch, value: dict) -> None:
 
 
 def _prepare_leader(db_session):
-    leader = db_session.get(models.DigitalEmployee, "DT-E10281")
-    leader.runtime_ref = "@dwp-twin-e10281:test"
-    if not db_session.query(models.TeamMember).filter_by(
-        team_id="TEAM-ONBOARD", employee_id=leader.employee_no
-    ).first():
-        db_session.add(models.TeamMember(
-            team_id="TEAM-ONBOARD", employee_id=leader.employee_no, role="member"
-        ))
+    leader = db_session.get(models.DigitalEmployee, "VE-0001")
+    leader.runtime_ref = "@manager:test"
     db_session.flush()
     return leader
 
@@ -129,7 +138,7 @@ def _create_task(db_session):
     run = AgentTeamsCollaborationService().create_task(
         db_session,
         team_id="TEAM-ONBOARD",
-        leader_agent_id="DT-E10281",
+        leader_agent_id="VE-0001",
         title="入职协作",
         instruction="完成制度和账号核查",
         material={"employee": "李四"},
@@ -147,8 +156,9 @@ def _prepare_alternative_team(db_session):
         description="不兼容固定本地场景的合法团队",
     ))
     db_session.add_all([
-        models.TeamMember(team_id="TEAM-ALT", employee_id="VE-0002", role="leader"),
-        models.TeamMember(team_id="TEAM-ALT", employee_id="VE-0003", role="worker"),
+        models.TeamMember(team_id="TEAM-ALT", employee_id="VE-0002", role="manager"),
+        models.TeamMember(team_id="TEAM-ALT", employee_id="VE-0003", role="leader", reports_to_employee_id="VE-0002"),
+        models.TeamMember(team_id="TEAM-ALT", employee_id="VE-0005", role="worker", reports_to_employee_id="VE-0003"),
     ])
     db_session.flush()
 
@@ -338,7 +348,7 @@ def test_submit_returns_created_agentteams_task(client, db_session, monkeypatch)
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 201, response.json()
     body = response.json()
     assert body["source"] == "agentteams"
     assert body["status"] == "planning"
@@ -622,7 +632,7 @@ def test_strict_generic_entry_accepts_database_team_and_enqueues_real_scenario(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 201, response.json()
     body = response.json()
     assert body["team_id"] == "TEAM-DB-BENCH"
     assert body["status"] == "planning"

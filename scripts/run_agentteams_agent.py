@@ -25,7 +25,8 @@ from app.services.llm import DeepSeekProvider
 
 _ROLES = {
     "manager", "hr", "it", "audit",
-    "hr_material", "hr_training", "it_account", "it_device",
+    "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+    "db_ops_lead", "db_perf_lead",
     "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 }
 _ROLE_SKILLS = {
@@ -41,6 +42,9 @@ _ROLE_SKILLS = {
     "hr_training": {"hr-training-specialist"},
     "it_account": {"it-account-specialist"},
     "it_device": {"it-device-specialist"},
+    "audit_review": {"audit-evidence-review", "audit-role-change-review"},
+    "db_ops_lead": {"agentteams-database-diagnosis"},
+    "db_perf_lead": {"agentteams-database-diagnosis"},
     "db_write": {"db-write-investigation"},
     "db_lock": {"db-lock-investigation"},
     "db_vacuum": {"db-vacuum-investigation"},
@@ -56,6 +60,9 @@ _ROLE_KEY_ENVIRONMENTS = {
     "hr_training": "DEEPSEEK_API_KEY_HR",
     "it_account": "DEEPSEEK_API_KEY_IT",
     "it_device": "DEEPSEEK_API_KEY_IT",
+    "audit_review": "DEEPSEEK_API_KEY_AUDIT",
+    "db_ops_lead": "DEEPSEEK_API_KEY_MANAGER",
+    "db_perf_lead": "DEEPSEEK_API_KEY_MANAGER",
     "db_write": "DEEPSEEK_API_KEY_DB_WRITE",
     "db_lock": "DEEPSEEK_API_KEY_DB_LOCK",
     "db_vacuum": "DEEPSEEK_API_KEY_DB_VACUUM",

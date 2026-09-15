@@ -124,7 +124,21 @@ def test_create_experiment_additively_syncs_database_benchmark_runtime_resources
 
     assert db_session.get(models.Team, "TEAM-DB-BENCH") is not None
     assert db_session.get(models.Plugin, "agentteams-database-inspector") is not None
-    assert db_session.query(models.TeamMember).filter_by(team_id="TEAM-DB-BENCH").count() == 6
+    members = db_session.query(models.TeamMember).filter_by(team_id="TEAM-DB-BENCH").all()
+    assert len(members) == 8
+    assert {
+        member.employee_id: (member.role, member.reports_to_employee_id)
+        for member in members
+    } == {
+        "VE-0001": ("manager", None),
+        "DB-OPS-LEAD": ("leader", "VE-0001"),
+        "DB-PERF-LEAD": ("leader", "VE-0001"),
+        "DB-WRITE-01": ("worker", "DB-OPS-LEAD"),
+        "DB-LOCK-01": ("worker", "DB-OPS-LEAD"),
+        "DB-VACUUM-01": ("worker", "DB-OPS-LEAD"),
+        "DB-INDEX-01": ("worker", "DB-PERF-LEAD"),
+        "DB-QUERY-01": ("worker", "DB-PERF-LEAD"),
+    }
     assert db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.employee_id.in_({
             "VE-0001", "DB-WRITE-01", "DB-LOCK-01",

@@ -162,7 +162,7 @@ def test_harness_summary_is_not_truncated(db_session):
     [
         ("VE-0002", "agentteams-onboarding-employee", {"employee_ref": "新员工A", "path": "C:/forbidden.json"}),
         ("VE-0003", "agentteams-it-readiness", {"employee_ref": "未知员工"}),
-        ("VE-0005", "agentteams-onboarding-evidence", {"employee_ref": True}),
+        ("VE-AUDIT-REVIEW", "agentteams-onboarding-evidence", {"employee_ref": True}),
     ],
 )
 def test_invalid_agentteams_input_is_denied_before_harness_or_adapter(

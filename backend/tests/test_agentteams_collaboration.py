@@ -11,11 +11,8 @@ from app.services.agentteams_protocol import AgentProtocolMessage
 
 def _enable_test_leader(db_session):
     """Seed twins need a Matrix reference and explicit team membership for protocol tests."""
-    leader = db_session.get(models.DigitalEmployee, "DT-E10281")
+    leader = db_session.get(models.DigitalEmployee, "VE-0001")
     leader.runtime_ref = "@dwp-twin-e10281:local"
-    db_session.add(models.TeamMember(
-        team_id="TEAM-ONBOARD", employee_id=leader.employee_no, role="member",
-    ))
     if not db_session.query(models.TeamPluginGrant).filter_by(
         team_id="TEAM-ONBOARD", plugin_id="weekly-report", action="execute"
     ).first():
@@ -52,7 +49,7 @@ def _create_run(db_session, *, thinking_enabled=True):
         create_task(
             db_session,
             team_id="TEAM-ONBOARD",
-            leader_agent_id="DT-E10281",
+            leader_agent_id="VE-0001",
             title="新员工入职",
             instruction="协调完成入职准备",
             material={"employee": "李四"},
@@ -65,6 +62,12 @@ def _create_run(db_session, *, thinking_enabled=True):
 def _delegate(db_session, run, sender, matrix_sender, subtasks, key="delegate-1", parent=None):
     from app.services.agentteams_collaboration import apply_message
 
+    active_sender = (
+        parent.assignee_agent_id
+        if parent is not None
+        else db_session.get(models.AgentTaskNode, run.id).assignee_agent_id
+    )
+
     return apply_message(
         db_session,
         matrix_sender=_matrix_sender(matrix_sender),
@@ -72,7 +75,7 @@ def _delegate(db_session, run, sender, matrix_sender, subtasks, key="delegate-1"
             root_id=run.id,
             task_id=parent.id if parent is not None else run.id,
             parent_id=parent.parent_task_id if parent is not None else None,
-            sender=sender,
+            sender=active_sender,
             receiver="platform",
             type="task.delegate",
             key=f"{run.id}:{key}",
@@ -81,9 +84,18 @@ def _delegate(db_session, run, sender, matrix_sender, subtasks, key="delegate-1"
     )
 
 
-def _subtask(key, assignee, *, depends_on=None, required=True):
-    capabilities = {"VE-0002": "hr-employee-mcp", "VE-0003": "adp-onboarding", "RPA-0001": "weekly-report"}
-    return {
+def _subtask(key, assignee, *, depends_on=None, required=True, include_capability=True):
+    capabilities = {
+        "VE-0002": "hr-employee-mcp",
+        "VE-0003": "adp-onboarding",
+        "VE-HR-MATERIAL": "agentteams-onboarding-materials",
+        "VE-HR-TRAINING": "agentteams-onboarding-training",
+        "VE-IT-ACCOUNT": "agentteams-it-accounts",
+        "VE-IT-DEVICE": "agentteams-it-devices",
+        "VE-AUDIT-REVIEW": "agentteams-onboarding-evidence",
+        "RPA-0001": "weekly-report",
+    }
+    result = {
         "client_task_key": key,
         "title": f"{key} task",
         "instruction": f"complete {key}",
@@ -92,6 +104,9 @@ def _subtask(key, assignee, *, depends_on=None, required=True):
         "required": required,
         "required_capability": capabilities.get(assignee, "unavailable"),
     }
+    if not include_capability:
+        result.pop("required_capability")
+    return result
 
 
 def _apply_node_message(db_session, run, node, *, type, key, payload):
@@ -221,7 +236,7 @@ def test_create_task_writes_root_and_outbox(db_session):
     run = create_task(
         db_session,
         team_id="TEAM-ONBOARD",
-        leader_agent_id="DT-E10281",
+        leader_agent_id="VE-0001",
         title="新员工入职",
         instruction="协调完成入职准备",
         material={"employee": "李四"},
@@ -247,7 +262,7 @@ def test_create_task_defaults_to_thinking_enabled(db_session):
     run = create_task(
         db_session,
         team_id="TEAM-ONBOARD",
-        leader_agent_id="DT-E10281",
+        leader_agent_id="VE-0001",
         title="新员工入职",
         instruction="协调完成入职准备",
         material={},
@@ -262,11 +277,12 @@ def _relationship_runtime():
         "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
         "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
         "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
-        "VE-0005": {"role": "审计专员", "reports_to": ["VE-0001"], "direct_reports": []},
+        "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
         "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
         "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
         "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
         "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+        "VE-AUDIT-REVIEW": {"role": "审计专员", "reports_to": ["VE-0005"], "direct_reports": []},
     }
     return SimpleNamespace(team_id="TEAM-ONBOARD", team_relationships=relationships)
 
@@ -276,11 +292,12 @@ def _prepare_relationship_team(db_session):
         "VE-0001": ("Manager", "管理"),
         "VE-0002": ("HR负责人", "人力资源部"),
         "VE-0003": ("IT负责人", "IT服务部"),
-        "VE-0005": ("审计专员", "审计部"),
+        "VE-0005": ("审计负责人", "审计部"),
         "VE-HR-MATERIAL": ("HR材料专员", "人力资源部"),
         "VE-HR-TRAINING": ("HR培训专员", "人力资源部"),
         "VE-IT-ACCOUNT": ("IT账号专员", "IT服务部"),
         "VE-IT-DEVICE": ("IT设备专员", "IT服务部"),
+        "VE-AUDIT-REVIEW": ("审计专员", "审计部"),
     }
     team = db_session.get(models.Team, "TEAM-ONBOARD")
     team.leader_employee_id = "VE-0001"
@@ -302,8 +319,36 @@ def _prepare_relationship_team(db_session):
         employee.status = "active"
         employee.runtime_type = "agentteams"
         employee.runtime_ref = f"@{employee_id.lower()}:local"
-        if employee_id not in current_members:
-            db_session.add(models.TeamMember(team_id=team.id, employee_id=employee_id, role="worker"))
+        parent_by_agent = {
+            "VE-0001": None,
+            "VE-0002": "VE-0001",
+            "VE-0003": "VE-0001",
+            "VE-0005": "VE-0001",
+            "VE-HR-MATERIAL": "VE-0002",
+            "VE-HR-TRAINING": "VE-0002",
+            "VE-IT-ACCOUNT": "VE-0003",
+            "VE-IT-DEVICE": "VE-0003",
+            "VE-AUDIT-REVIEW": "VE-0005",
+        }
+        role_by_agent = {
+            "VE-0001": "manager",
+            "VE-0002": "leader",
+            "VE-0003": "leader",
+            "VE-0005": "leader",
+            "VE-HR-MATERIAL": "worker",
+            "VE-HR-TRAINING": "worker",
+            "VE-IT-ACCOUNT": "worker",
+            "VE-IT-DEVICE": "worker",
+            "VE-AUDIT-REVIEW": "worker",
+        }
+        member = db_session.query(models.TeamMember).filter_by(
+            team_id=team.id, employee_id=employee_id
+        ).one_or_none()
+        if member is None:
+            member = models.TeamMember(team_id=team.id, employee_id=employee_id)
+            db_session.add(member)
+        member.role = role_by_agent[employee_id]
+        member.reports_to_employee_id = parent_by_agent[employee_id]
     db_session.flush()
 
 
@@ -317,6 +362,7 @@ def _relationship_catalog():
         "VE-HR-TRAINING": ["hr.training.read"],
         "VE-IT-ACCOUNT": ["it.accounts.read"],
         "VE-IT-DEVICE": ["it.devices.read"],
+        "VE-AUDIT-REVIEW": ["audit.evidence.read"],
     }
     return [
         {
@@ -363,12 +409,12 @@ def test_platform_projects_relationship_graph_into_submit_and_assign(
         task_id=run.id, message_type="task.submit"
     ).one()
     assert submit.payload["team_relationship_graph"] == {
-        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "self": {"agent_id": "VE-0001", "role": "Manager", "level": "manager"},
         "reports_to": [],
         "direct_reports": [
             {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
             {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
-            {"agent_id": "VE-0005", "role": "审计专员", "capabilities": ["audit.evidence.read"]},
+            {"agent_id": "VE-0005", "role": "审计负责人", "capabilities": ["audit.evidence.read"]},
         ],
     }
 
@@ -441,7 +487,7 @@ def test_platform_rejects_forged_non_direct_report_without_partial_tree(
         "assignee_agent_id": "VE-HR-MATERIAL", "depends_on": [], "required_capability": "hr.materials.read",
     }
 
-    with pytest.raises(CollaborationConflict, match="delegate_target_not_direct_report"):
+    with pytest.raises(CollaborationConflict, match="manager_must_delegate_to_leader"):
         service.apply_message(
             db_session,
             matrix_sender="@ve-0001:local",
@@ -459,6 +505,95 @@ def test_platform_rejects_forged_non_direct_report_without_partial_tree(
     assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
 
 
+def test_manager_cannot_delegate_directly_to_persisted_worker_without_partial_tree(
+    db_session,
+):
+    from app.services.agentteams_collaboration import (
+        AgentTeamsCollaborationService,
+        CollaborationConflict,
+    )
+
+    service = AgentTeamsCollaborationService(capability_catalog_source="database")
+    run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="严格三层任务",
+        instruction="必须先交给负责人",
+        material={},
+    )
+    with pytest.raises(CollaborationConflict, match="^manager_must_delegate_to_leader$"):
+        service.apply_message(
+            db_session,
+            matrix_sender=_matrix_sender("dwp-ve-0001"),
+            message=_protocol(
+                root_id=run.id,
+                task_id=run.id,
+                sender="VE-0001",
+                receiver="platform",
+                type="task.delegate",
+                key=f"{run.id}:skip-leader",
+                payload={"subtasks": [_subtask("direct-worker", "VE-HR-MATERIAL")]},
+            ),
+        )
+    assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+
+
+def test_leader_cannot_delegate_to_another_leaders_worker_without_partial_tree(
+    db_session,
+):
+    from app.services.agentteams_collaboration import (
+        AgentTeamsCollaborationService,
+        CollaborationConflict,
+    )
+
+    service = AgentTeamsCollaborationService(capability_catalog_source="database")
+    run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="严格三层任务",
+        instruction="按部门协作",
+        material={},
+    )
+    service.apply_message(
+        db_session,
+        matrix_sender=_matrix_sender("dwp-ve-0001"),
+        message=_protocol(
+            root_id=run.id,
+            task_id=run.id,
+            sender="VE-0001",
+            receiver="platform",
+            type="task.delegate",
+            key=f"{run.id}:hr-leader",
+            payload={"subtasks": [_subtask("hr-leader", "VE-0002")]},
+        ),
+    )
+    leader_node = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id,
+        assignee_agent_id="VE-0002",
+    ).one()
+    _start_node(db_session, run, leader_node)
+    with pytest.raises(CollaborationConflict, match="^leader_must_delegate_to_worker$"):
+        service.apply_message(
+            db_session,
+            matrix_sender=_matrix_sender("dwp-ve-0002"),
+            message=_protocol(
+                root_id=run.id,
+                task_id=leader_node.id,
+                parent_id=run.id,
+                sender="VE-0002",
+                receiver="platform",
+                type="task.delegate",
+                key=f"{run.id}:cross-department",
+                payload={"subtasks": [_subtask("it-worker", "VE-IT-ACCOUNT")]},
+            ),
+        )
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=leader_node.id
+    ).count() == 0
+
+
 def test_manager_delegate_creates_recursive_children(db_session):
     from app.services.agentteams_collaboration import apply_message, create_task
 
@@ -466,7 +601,7 @@ def test_manager_delegate_creates_recursive_children(db_session):
     run = create_task(
         db_session,
         team_id="TEAM-ONBOARD",
-        leader_agent_id="DT-E10281",
+        leader_agent_id="VE-0001",
         title="新员工入职",
         instruction="协调完成入职准备",
         material={},
@@ -475,7 +610,7 @@ def test_manager_delegate_creates_recursive_children(db_session):
     message = _protocol(
         root_id=run.id,
         task_id=run.id,
-        sender="DT-E10281",
+        sender="VE-0001",
         receiver="platform",
         type="task.delegate",
         key=f"{run.id}:delegate:1",
@@ -506,7 +641,7 @@ def test_manager_delegate_creates_recursive_children(db_session):
     assert assignment.payload["thinking_enabled"] is False
 
 
-def test_worker_can_delegate_inside_own_subtree(db_session):
+def test_leader_can_delegate_to_own_workers(db_session):
     run, leader = _create_run(db_session)
     _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")])
     policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
@@ -517,7 +652,7 @@ def test_worker_can_delegate_inside_own_subtree(db_session):
         run,
         "VE-0002",
         db_session.get(models.DigitalEmployee, "VE-0002").runtime_ref,
-        [_subtask("research", "VE-0003")],
+        [_subtask("research", "VE-HR-MATERIAL")],
         key="delegate-child",
         parent=policy,
     )
@@ -547,7 +682,7 @@ def test_delegate_rejects_cycle(db_session):
     assert db_session.get(models.AgentTaskNode, run.id).status == "planning"
 
 
-def test_delegate_rejects_depth_four(db_session):
+def test_worker_cannot_delegate(db_session):
     from app.services.agentteams_collaboration import CollaborationConflict
 
     run, leader = _create_run(db_session)
@@ -556,21 +691,15 @@ def test_delegate_rejects_depth_four(db_session):
     _start_node(db_session, run, first)
     _delegate(
         db_session, run, "VE-0002", db_session.get(models.DigitalEmployee, "VE-0002").runtime_ref,
-        [_subtask("two", "VE-0003")], key="depth-2", parent=first,
+        [_subtask("two", "VE-HR-MATERIAL")], key="depth-2", parent=first,
     )
     second = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=first.id).one()
     _start_node(db_session, run, second)
-    _delegate(
-        db_session, run, "VE-0003", db_session.get(models.DigitalEmployee, "VE-0003").runtime_ref,
-        [_subtask("three", "RPA-0001")], key="depth-3", parent=second,
-    )
-    third = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=second.id).one()
-    _start_node(db_session, run, third)
-
-    with pytest.raises(CollaborationConflict, match="max_depth_exceeded"):
+    with pytest.raises(CollaborationConflict, match="worker_cannot_delegate"):
         _delegate(
-            db_session, run, "RPA-0001", db_session.get(models.DigitalEmployee, "RPA-0001").runtime_ref,
-            [_subtask("four", "VE-0002")], key="depth-4", parent=third,
+            db_session, run, "VE-HR-MATERIAL",
+            db_session.get(models.DigitalEmployee, "VE-HR-MATERIAL").runtime_ref,
+            [_subtask("three", "VE-HR-TRAINING")], key="worker-delegate", parent=second,
         )
 
 
@@ -681,7 +810,7 @@ def test_required_children_trigger_parent_summarizing(db_session):
         task_id=run.id, message_type="task.summary", direction="outbound",
     ).one()
     assert root.status == "summarizing"
-    assert summary_request.receiver_agent_id == "DT-E10281"
+    assert summary_request.receiver_agent_id == "VE-0001"
     assert summary_request.delivery_status == "pending"
     assert summary_request.payload["team_catalog_version"] == 3
     assert summary_request.payload["team_capability_catalog"]
@@ -699,7 +828,7 @@ def test_parent_summary_normalizes_top_level_audit_ids_from_completed_direct_chi
         [
             _subtask("policy", "VE-0002"),
             _subtask("account", "VE-0003"),
-            _subtask("unfinished", "RPA-0001", required=False),
+            _subtask("unfinished", "VE-0005", required=False, include_capability=False),
         ],
     )
     children = {
@@ -713,7 +842,7 @@ def test_parent_summary_normalizes_top_level_audit_ids_from_completed_direct_chi
         run,
         "VE-0002",
         db_session.get(models.DigitalEmployee, "VE-0002").runtime_ref,
-        [_subtask("grandchild", "VE-0003")],
+        [_subtask("grandchild", "VE-HR-MATERIAL")],
         key="grandchild-delegate",
         parent=children["policy"],
     )
@@ -1126,7 +1255,7 @@ def test_manager_and_leader_delegation_nodes_have_explicit_kinds(db_session):
 
     assert root.node_kind == "mission"
     assert by_key["hr-lead"].node_kind == "team_assignment"
-    assert by_key["audit"].node_kind == "worker_task"
+    assert by_key["audit"].node_kind == "team_assignment"
 
 
 def test_manager_can_delegate_follow_up_round_from_summarizing(db_session):
@@ -1164,7 +1293,7 @@ def test_delegate_rejects_node_limit_without_partial_tree(db_session):
     message = _protocol(
         root_id=run.id,
         task_id=run.id,
-        sender="DT-E10281",
+        sender="VE-0001",
         receiver="platform",
         type="task.delegate",
         key=f"{run.id}:node-limit",
@@ -1193,7 +1322,7 @@ def test_delegate_rejects_follow_up_round_limit_without_partial_tree(db_session)
     message = _protocol(
         root_id=run.id,
         task_id=run.id,
-        sender="DT-E10281",
+        sender="VE-0001",
         receiver="platform",
         type="task.delegate",
         key=f"{run.id}:round-limit",
@@ -1266,7 +1395,7 @@ def test_team_capability_catalog_only_lists_active_runtime_bound_team_members(db
         "VE-HR-TRAINING",
         "VE-IT-ACCOUNT",
         "VE-IT-DEVICE",
-        "RPA-0001",
+        "VE-AUDIT-REVIEW",
     }
     assert {"VE-0004", "VE-INACTIVE-TEST", "VE-UNBOUND-TEST"}.isdisjoint(catalog_ids)
     assert all(db_session.get(models.DigitalEmployee, agent_id).status == "active" for agent_id in catalog_ids)
@@ -1284,6 +1413,7 @@ def _strict_runtime_document(
         "manager": manager_agent_id, "hr": "VE-0002", "it": "VE-0003", "audit": "VE-0005",
         "hr_material": "VE-HR-MATERIAL", "hr_training": "VE-HR-TRAINING",
         "it_account": "VE-IT-ACCOUNT", "it_device": "VE-IT-DEVICE",
+        "audit_review": "VE-AUDIT-REVIEW",
     }.items():
         agents[role] = {
             "agent_id": agent_id,
@@ -1301,21 +1431,23 @@ def _strict_runtime_document(
         "team_catalog": {
             "VE-0002": {"capabilities": ["hr.onboarding.coordinate"]},
             "VE-0003": {"capabilities": ["it.onboarding.coordinate"]},
-            "VE-0005": {"capabilities": ["audit.evidence.read"]},
+            "VE-0005": {"capabilities": ["audit.onboarding.coordinate"]},
             "VE-HR-MATERIAL": {"capabilities": ["hr.materials.read"]},
             "VE-HR-TRAINING": {"capabilities": ["hr.training.read"]},
             "VE-IT-ACCOUNT": {"capabilities": ["it.accounts.read"]},
             "VE-IT-DEVICE": {"capabilities": ["it.devices.read"]},
+            "VE-AUDIT-REVIEW": {"capabilities": ["audit.evidence.read"]},
         },
         "team_relationships": {
             manager_agent_id: {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
             "VE-0002": {"role": "HR负责人", "reports_to": [manager_agent_id], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
             "VE-0003": {"role": "IT负责人", "reports_to": [manager_agent_id], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
-            "VE-0005": {"role": "审计负责人", "reports_to": [manager_agent_id], "direct_reports": []},
+            "VE-0005": {"role": "审计负责人", "reports_to": [manager_agent_id], "direct_reports": ["VE-AUDIT-REVIEW"]},
             "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
             "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
             "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+            "VE-AUDIT-REVIEW": {"role": "审计专员", "reports_to": ["VE-0005"], "direct_reports": []},
         },
     }
 
@@ -1362,11 +1494,12 @@ def test_strict_team_catalog_uses_validated_runtime_not_legacy_grants(db_session
         "VE-0001": [],
         "VE-0002": ["hr.onboarding.coordinate"],
         "VE-0003": ["it.onboarding.coordinate"],
-        "VE-0005": ["audit.evidence.read"],
+        "VE-0005": ["audit.onboarding.coordinate"],
         "VE-HR-MATERIAL": ["hr.materials.read"],
         "VE-HR-TRAINING": ["hr.training.read"],
         "VE-IT-ACCOUNT": ["it.accounts.read"],
         "VE-IT-DEVICE": ["it.devices.read"],
+        "VE-AUDIT-REVIEW": ["audit.evidence.read"],
     }
     assert "RPA-0001" not in {item["agent_id"] for item in catalog}
     assert "private-" not in json.dumps(catalog)
@@ -1397,7 +1530,7 @@ def test_delegate_rejects_parent_chain_assignee_without_partial_tree(db_session)
             run,
             "VE-0002",
             db_session.get(models.DigitalEmployee, "VE-0002").runtime_ref,
-            [_subtask("back-to-manager", "DT-E10281")],
+            [_subtask("back-to-manager", "VE-0001")],
             key="parent-chain",
             parent=hr,
         )
@@ -1432,7 +1565,7 @@ def test_required_child_failure_marks_root_failed(db_session):
 
 def test_failed_dependency_cancels_direct_and_recursive_dependents(db_session):
     run, leader = _create_run(db_session)
-    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("a", "VE-0002"), _subtask("b", "VE-0003", depends_on=["a"]), _subtask("c", "RPA-0001", depends_on=["b"])])
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("a", "VE-0002"), _subtask("b", "VE-0003", depends_on=["a"]), _subtask("c", "VE-0005", depends_on=["b"], include_capability=False)])
     nodes = {n.client_task_key: n for n in db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id)}
     _start_node(db_session, run, nodes["a"])
     _apply_node_message(db_session, run, nodes["a"], type="task.failed", key="a-failed", payload={})
@@ -1449,18 +1582,18 @@ def test_optional_failed_dependency_cancels_required_dependent_and_fails_root(db
     assert db_session.get(models.TaskRun, run.id).status == "failed"
 
 
-def test_initial_plus_three_follow_up_rounds_are_allowed(db_session):
+def test_initial_plus_five_follow_up_rounds_are_allowed(db_session):
     from app.services.agentteams_collaboration import CollaborationConflict
     run, leader = _create_run(db_session)
     _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("initial", "VE-0002")])
     root = db_session.get(models.AgentTaskNode, run.id)
-    for round_number in range(2, 5):
+    for round_number in range(2, 7):
         root.status = "summarizing"
         _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask(f"follow-{round_number}", "VE-0002")], key=f"follow-{round_number}")
         assert root.input_payload["coordination"]["round"] == round_number
     root.status = "summarizing"
     with pytest.raises(CollaborationConflict, match="max_rounds_exceeded"):
-        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("follow-5", "VE-0002")], key="follow-5")
+        _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("follow-7", "VE-0002")], key="follow-7")
 
 
 def test_strict_delegate_requires_explicit_nonempty_capability(db_session, monkeypatch, tmp_path):
@@ -1468,7 +1601,7 @@ def test_strict_delegate_requires_explicit_nonempty_capability(db_session, monke
 
     runtime_path = tmp_path / "strict-runtime.json"
     runtime_path.write_text(json.dumps(_strict_runtime_document(
-        manager_agent_id="DT-E10281",
+        manager_agent_id="VE-0001",
         manager_mxid="@dwp-twin-e10281:local",
     )), encoding="utf-8")
     monkeypatch.setattr(config, "agentteams_mode", lambda: "agentteams_strict")
@@ -1712,10 +1845,10 @@ def test_locked_context_refresh_rejects_second_delegate_from_stale_session(db_se
         # must refresh the locked root before testing its transition/round state.
         assert stale.get(models.AgentTaskNode, run.id).status == "planning"
         service = AgentTeamsCollaborationService()
-        first = _protocol(root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="platform", type="task.delegate", key=f"{run.id}:fresh", payload={"subtasks": [_subtask("first", "VE-0002")]})
+        first = _protocol(root_id=run.id, task_id=run.id, sender="VE-0001", receiver="platform", type="task.delegate", key=f"{run.id}:fresh", payload={"subtasks": [_subtask("first", "VE-0002")]})
         service.apply_message(current, matrix_sender=matrix_sender, message=first)
         current.commit()
-        second = _protocol(root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="platform", type="task.delegate", key=f"{run.id}:stale-second", payload={"subtasks": [_subtask("second", "VE-0003")]})
+        second = _protocol(root_id=run.id, task_id=run.id, sender="VE-0001", receiver="platform", type="task.delegate", key=f"{run.id}:stale-second", payload={"subtasks": [_subtask("second", "VE-0003")]})
         with pytest.raises(CollaborationConflict, match="invalid_transition"):
             service.apply_message(stale, matrix_sender=matrix_sender, message=second)
     finally:
@@ -1727,7 +1860,7 @@ def test_two_prerequisites_release_a_blocked_child_once(db_session):
     run, leader = _create_run(db_session)
     _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [
         _subtask("a", "VE-0002"), _subtask("b", "VE-0003"),
-        _subtask("c", "RPA-0001", depends_on=["a", "b"]),
+        _subtask("c", "VE-0005", depends_on=["a", "b"], include_capability=False),
     ])
     nodes = {n.client_task_key: n for n in db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id)}
     for key in ("a", "b"):
@@ -1741,7 +1874,7 @@ def test_duplicate_message_from_another_session_has_no_second_effect(db_session)
     from app.database import SessionLocal
     from app.services.agentteams_collaboration import AgentTeamsCollaborationService
     run, leader = _create_run(db_session)
-    message = _protocol(root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="platform", type="task.delegate", key=f"{run.id}:multi-session", payload={"subtasks": [_subtask("one", "VE-0002")]})
+    message = _protocol(root_id=run.id, task_id=run.id, sender="VE-0001", receiver="platform", type="task.delegate", key=f"{run.id}:multi-session", payload={"subtasks": [_subtask("one", "VE-0002")]})
     service = AgentTeamsCollaborationService()
     service.apply_message(db_session, matrix_sender=_matrix_sender(leader.runtime_ref), message=message)
     db_session.commit()
@@ -1767,7 +1900,7 @@ def test_task_summary_completes_root_and_task_run(db_session):
         db_session,
         matrix_sender=leader.runtime_ref,
         message=_protocol(
-            root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="platform",
+            root_id=run.id, task_id=run.id, sender="VE-0001", receiver="platform",
             type="task.summary", key=f"{run.id}:summary", payload={"summary": "全部完成"},
         ),
     )
@@ -1835,7 +1968,7 @@ def test_follow_up_summary_requests_are_round_scoped_and_retry_idempotent(db_ses
         message=_protocol(
             root_id=run.id,
             task_id=run.id,
-            sender="DT-E10281",
+            sender="VE-0001",
             receiver="platform",
             type="task.summary",
             key=f"{run.id}:final-summary",
@@ -1858,7 +1991,7 @@ def test_plain_agent_message_does_not_change_status(db_session):
         db_session,
         matrix_sender=leader.runtime_ref,
         message=_protocol(
-            root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="VE-0002",
+            root_id=run.id, task_id=run.id, sender="VE-0001", receiver="VE-0002",
             type="agent.message", key=f"{run.id}:message", payload={"text": "收到，开始处理"},
         ),
     )
@@ -1890,7 +2023,7 @@ def test_inbound_idempotency_key_cannot_block_summary_outbox(db_session):
         db_session,
         matrix_sender=leader.runtime_ref,
         message=_protocol(
-            root_id=run.id, task_id=run.id, sender="DT-E10281", receiver="VE-0002",
+            root_id=run.id, task_id=run.id, sender="VE-0001", receiver="VE-0002",
             type="agent.message", key=f"{run.id}:task.summary.request", payload={"text": "collision"},
         ),
     )
@@ -1962,7 +2095,7 @@ def test_assignment_payload_carries_instruction_and_complete_parent_chain(db_ses
     ).one()
 
     assert assignment.payload["instruction"] == "complete policy"
-    assert assignment.payload["parent_chain_agent_ids"] == ["DT-E10281"]
+    assert assignment.payload["parent_chain_agent_ids"] == ["VE-0001"]
     # Each platform-owned outbound is a freshly persisted root snapshot, not a
     # static config catalog.  The root submit owns sequence 1; assignment is 2.
     root_submit = db_session.query(models.AgentMessage).filter_by(
@@ -1978,7 +2111,13 @@ def test_assignment_payload_carries_instruction_and_complete_parent_chain(db_ses
     runtime = AgentRuntime(
         AgentRuntimeConfig(
             agent_id="VE-0002", role="hr", matrix_mxid="@hr:test", matrix_token="worker-only",
-            room_id="!room:test", trusted_sender_mxids={"platform": "@platform:test", "DT-E10281": "@leader:test", "VE-0002": "@hr:test"},
+            room_id="!room:test", trusted_sender_mxids={
+                "platform": "@platform:test",
+                "VE-0001": "@leader:test",
+                "VE-0002": "@hr:test",
+                "VE-HR-MATERIAL": "@hr-material:test",
+                "VE-HR-TRAINING": "@hr-training:test",
+            },
             allowed_skill_ids={"hr-onboarding-assistant"}, state_dir=Path("tmp") / "runtime-contract",
         ),
         gateway=None, decisions=None,
@@ -1986,7 +2125,7 @@ def test_assignment_payload_carries_instruction_and_complete_parent_chain(db_ses
     context = runtime._new_worker_context(
         AgentProtocolMessage(
             version="1.0", message_id="assignment", type="task.assign", root_task_id=run.id, task_id=child.id,
-            parent_task_id=run.id, trace_id=run.trace_id, sender="DT-E10281", receiver="VE-0002",
+            parent_task_id=run.id, trace_id=run.trace_id, sender="VE-0001", receiver="VE-0002",
             timestamp="2026-09-04T10:00:00+08:00", idempotency_key="assignment", payload=dict(assignment.payload),
         ),
         ["hr-onboarding-assistant"],

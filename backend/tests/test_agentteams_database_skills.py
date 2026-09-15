@@ -31,6 +31,8 @@ def test_database_scenario_and_professional_skills_load_from_project_registry():
 @pytest.mark.parametrize(
     ("role", "variable"),
     [
+        ("db_ops_lead", "DEEPSEEK_API_KEY_MANAGER"),
+        ("db_perf_lead", "DEEPSEEK_API_KEY_MANAGER"),
         ("db_write", "DEEPSEEK_API_KEY_DB_WRITE"),
         ("db_lock", "DEEPSEEK_API_KEY_DB_LOCK"),
         ("db_vacuum", "DEEPSEEK_API_KEY_DB_VACUUM"),
@@ -50,6 +52,8 @@ def test_database_role_skill_mapping_is_one_professional_skill_per_worker():
     from scripts.run_agentteams_agent import role_skill_ids
 
     assert role_skill_ids("manager") >= {"agentteams-database-diagnosis"}
+    assert role_skill_ids("db_ops_lead") == {"agentteams-database-diagnosis"}
+    assert role_skill_ids("db_perf_lead") == {"agentteams-database-diagnosis"}
     assert role_skill_ids("db_write") == {"db-write-investigation"}
     assert role_skill_ids("db_lock") == {"db-lock-investigation"}
     assert role_skill_ids("db_vacuum") == {"db-vacuum-investigation"}
@@ -77,11 +81,13 @@ def test_database_runtime_role_defaults_to_its_single_professional_skill(tmp_pat
     assert config.professional_skill_ids == {"db-lock-investigation"}
 
 
-def test_strict_runtime_accepts_a_manager_plus_five_database_workers(tmp_path):
+def test_strict_runtime_accepts_manager_leaders_and_five_database_workers(tmp_path):
     from scripts.run_agentteams_agent import load_runtime_config
 
     role_rows = {
         "manager": ("VE-0001", "agentteams-database-diagnosis"),
+        "db_ops_lead": ("DB-OPS-LEAD", "agentteams-database-diagnosis"),
+        "db_perf_lead": ("DB-PERF-LEAD", "agentteams-database-diagnosis"),
         "db_write": ("DB-WRITE-01", "db-write-investigation"),
         "db_lock": ("DB-LOCK-01", "db-lock-investigation"),
         "db_vacuum": ("DB-VACUUM-01", "db-vacuum-investigation"),
@@ -102,7 +108,8 @@ def test_strict_runtime_accepts_a_manager_plus_five_database_workers(tmp_path):
     agents = {}
     team_catalog = {}
     for role, (agent_id, skill_id) in role_rows.items():
-        tools = [] if role == "manager" else [{
+        is_coordinator = role == "manager" or role.endswith("_lead")
+        tools = [] if is_coordinator else [{
             "name": "inspect_database_signal",
             "plugin_id": "agentteams-database-inspector",
             "action": "read",
@@ -118,7 +125,12 @@ def test_strict_runtime_accepts_a_manager_plus_five_database_workers(tmp_path):
         }
         team_catalog[agent_id] = {
             "agent_id": agent_id,
-            "capabilities": [] if role == "manager" else [f"database.{role.removeprefix('db_')}.inspect"],
+            "capabilities": (
+                [] if role == "manager"
+                else ["db.operations.coordinate"] if role == "db_ops_lead"
+                else ["db.performance.coordinate"] if role == "db_perf_lead"
+                else [f"database.{role.removeprefix('db_')}.inspect"]
+            ),
         }
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps({
@@ -128,17 +140,33 @@ def test_strict_runtime_accepts_a_manager_plus_five_database_workers(tmp_path):
         "platform": {"mxid": "@platform:matrix.test", "token": "platform-matrix-token"},
         "agents": agents,
         "team_catalog": team_catalog,
+        "team_relationships": {
+            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["DB-OPS-LEAD", "DB-PERF-LEAD"]},
+            "DB-OPS-LEAD": {"role": "数据库运维负责人", "reports_to": ["VE-0001"], "direct_reports": ["DB-WRITE-01", "DB-LOCK-01", "DB-VACUUM-01"]},
+            "DB-PERF-LEAD": {"role": "数据库性能负责人", "reports_to": ["VE-0001"], "direct_reports": ["DB-INDEX-01", "DB-QUERY-01"]},
+            "DB-WRITE-01": {"role": "写入诊断", "reports_to": ["DB-OPS-LEAD"], "direct_reports": []},
+            "DB-LOCK-01": {"role": "锁诊断", "reports_to": ["DB-OPS-LEAD"], "direct_reports": []},
+            "DB-VACUUM-01": {"role": "Vacuum诊断", "reports_to": ["DB-OPS-LEAD"], "direct_reports": []},
+            "DB-INDEX-01": {"role": "索引诊断", "reports_to": ["DB-PERF-LEAD"], "direct_reports": []},
+            "DB-QUERY-01": {"role": "查询诊断", "reports_to": ["DB-PERF-LEAD"], "direct_reports": []},
+        },
     }), encoding="utf-8")
 
-    config, _ = load_runtime_config(
-        "db_lock",
-        path,
-        env={
-            "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path),
-            "DEEPSEEK_API_KEY_DB_LOCK": "role-only-key",
-        },
-    )
-
-    assert config.agent_id == "DB-LOCK-01"
-    assert config.allowed_skill_ids == {"db-lock-investigation"}
-    assert config.safe_tool_catalog[0]["name"] == "inspect_database_signal"
+    for role, (agent_id, skill_id) in role_rows.items():
+        key_name = (
+            "DEEPSEEK_API_KEY_MANAGER"
+            if role in {"manager", "db_ops_lead", "db_perf_lead"}
+            else f"DEEPSEEK_API_KEY_{role.upper()}"
+        )
+        config, _ = load_runtime_config(
+            role,
+            path,
+            env={
+                "DWP_AGENTTEAMS_RUNTIME_CONFIG": str(path),
+                key_name: "role-only-key",
+            },
+        )
+        assert config.agent_id == agent_id
+        assert config.allowed_skill_ids == {skill_id}
+        if role.startswith("db_") and not role.endswith("_lead"):
+            assert config.safe_tool_catalog[0]["name"] == "inspect_database_signal"

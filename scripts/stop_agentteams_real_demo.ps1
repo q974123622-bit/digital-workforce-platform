@@ -24,6 +24,7 @@ function Get-ExpectedArguments([string]$Name) {
         'hr_training' { return @($agentScript,'--role','hr_training','--config',$runtimeConfig) }
         'it_account' { return @($agentScript,'--role','it_account','--config',$runtimeConfig) }
         'it_device' { return @($agentScript,'--role','it_device','--config',$runtimeConfig) }
+        'audit_review' { return @($agentScript,'--role','audit_review','--config',$runtimeConfig) }
         'frontend' { return @((Join-Path $workspace 'frontend\node_modules\vite\bin\vite.js'),'--host','127.0.0.1','--port','4173') }
         default { throw 'invalid record name' }
     }

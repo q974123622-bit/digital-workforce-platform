@@ -22,9 +22,9 @@ from app.services.gateway import invoke_plugin
 
 
 ROLE_CHANGE_PLUGINS = {
-    "VE-0002": "agentteams-role-change-hr",
-    "VE-0003": "agentteams-role-change-it-plan",
-    "VE-0005": "agentteams-role-change-audit",
+    "VE-HR-MATERIAL": "agentteams-role-change-hr",
+    "VE-IT-ACCOUNT": "agentteams-role-change-it-plan",
+    "VE-AUDIT-REVIEW": "agentteams-role-change-audit",
 }
 
 
@@ -49,21 +49,21 @@ def test_local_and_matrix_role_change_rules_share_one_contract():
     assert LOCAL_DEMO_TITLE == ROLE_CHANGE_TITLE
     assert LOCAL_DEMO_INSTRUCTION == ROLE_CHANGE_INSTRUCTION
     assert ROLE_CHANGE_FIRST_ROUND_CAPABILITIES == {
-        "hr.role_change.read",
-        "it.permission.plan",
+        "hr.role_change.coordinate",
+        "it.role_change.plan.coordinate",
     }
     assert ROLE_CHANGE_SECOND_ROUND_CAPABILITIES == {
-        "audit.permission.review",
-        "it.permission.activate",
+        "audit.role_change.coordinate",
+        "it.role_change.activate.coordinate",
     }
 
 
 @pytest.mark.parametrize(
     ("employee_id", "plugin_id", "expected_key", "expected_evidence"),
     [
-        ("VE-0002", "agentteams-role-change-hr", "role_change", "HR-RC-001"),
-        ("VE-0003", "agentteams-role-change-it-plan", "permission_plan", "IT-RC-001"),
-        ("VE-0005", "agentteams-role-change-audit", "review", "AUD-RC-001"),
+        ("VE-HR-MATERIAL", "agentteams-role-change-hr", "role_change", "HR-RC-001"),
+        ("VE-IT-ACCOUNT", "agentteams-role-change-it-plan", "permission_plan", "IT-RC-001"),
+        ("VE-AUDIT-REVIEW", "agentteams-role-change-audit", "review", "AUD-RC-001"),
     ],
 )
 def test_role_change_read_tools_return_bounded_demo_evidence_via_gateway(
@@ -86,7 +86,7 @@ def test_role_change_activation_requires_the_audit_approval_reference(db_session
     with pytest.raises(HTTPException) as error:
         _invoke(
             db_session,
-            "VE-0003",
+            "VE-IT-DEVICE",
             "agentteams-role-change-it-activate",
             {"employee_ref": "张明", "approval_ref": "伪造编号"},
         )
@@ -97,7 +97,7 @@ def test_role_change_activation_requires_the_audit_approval_reference(db_session
 
     result = _invoke(
         db_session,
-        "VE-0003",
+        "VE-IT-DEVICE",
         "agentteams-role-change-it-activate",
         {"employee_ref": "张明", "approval_ref": "AUD-RC-001"},
     )
@@ -107,10 +107,12 @@ def test_role_change_activation_requires_the_audit_approval_reference(db_session
 
 def test_role_change_plugins_are_granted_only_to_the_owning_agents(db_session):
     expected = {
-        ("VE-0002", "agentteams-role-change-hr"),
-        ("VE-0003", "agentteams-role-change-it-plan"),
-        ("VE-0003", "agentteams-role-change-it-activate"),
-        ("VE-0005", "agentteams-role-change-audit"),
+        ("VE-HR-MATERIAL", "agentteams-role-change-hr"),
+        ("VE-HR-TRAINING", "agentteams-role-change-hr"),
+        ("VE-IT-ACCOUNT", "agentteams-role-change-it-plan"),
+        ("VE-IT-DEVICE", "agentteams-role-change-it-plan"),
+        ("VE-IT-DEVICE", "agentteams-role-change-it-activate"),
+        ("VE-AUDIT-REVIEW", "agentteams-role-change-audit"),
     }
     grants = db_session.query(models.EmployeePluginGrant).filter(
         models.EmployeePluginGrant.employee_id.in_({employee for employee, _ in expected}),
@@ -150,14 +152,17 @@ def test_matrix_bootstrap_registers_both_scenarios_and_all_role_change_tools():
         "agentteams-onboarding-readiness",
         "agentteams-role-change-readiness",
     ]
-    assert {tool["plugin_id"] for tool in ROLE_IDENTITIES["hr"]["tools"]} >= {
+    assert ROLE_IDENTITIES["hr"]["tools"] == []
+    assert ROLE_IDENTITIES["it"]["tools"] == []
+    assert ROLE_IDENTITIES["audit"]["tools"] == []
+    assert {tool["plugin_id"] for tool in ROLE_IDENTITIES["hr_material"]["tools"]} >= {
         "agentteams-role-change-hr",
     }
-    assert {tool["plugin_id"] for tool in ROLE_IDENTITIES["it"]["tools"]} >= {
+    assert {tool["plugin_id"] for tool in ROLE_IDENTITIES["it_device"]["tools"]} >= {
         "agentteams-role-change-it-plan",
         "agentteams-role-change-it-activate",
     }
-    assert {tool["plugin_id"] for tool in ROLE_IDENTITIES["audit"]["tools"]} >= {
+    assert {tool["plugin_id"] for tool in ROLE_IDENTITIES["audit_review"]["tools"]} >= {
         "agentteams-role-change-audit",
     }
-    assert "it.permission.activate" in TEAM_CATALOG["VE-0003"]["capabilities"]
+    assert "it.role_change.activate.coordinate" in TEAM_CATALOG["VE-0003"]["capabilities"]

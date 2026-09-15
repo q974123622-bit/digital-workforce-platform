@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 from . import config
 from .agentteams_database_benchmark_runner import (
     ExpertReport,
+    LeaderReport,
     ManagerPlan,
     ManagerReview,
     SingleAgentDecision,
@@ -140,6 +141,30 @@ class DeepSeekDatabaseBenchmarkBackend:
                 "scenario": self._scenario_payload(scenario),
                 "required_role": role,
                 "observation": observation,
+            },
+            schema,
+        )
+
+    def leader_summarize(
+        self,
+        *,
+        leader_agent_id: str,
+        scenario: DatabaseScenario,
+        reports: list[dict],
+    ) -> dict:
+        schema = LeaderReport.model_json_schema()
+        schema["properties"]["leader_agent_id"] = {
+            "type": "string",
+            "const": leader_agent_id,
+        }
+        return self._call(
+            "manager",
+            "你是数据库 AgentTeams 的领域 Leader。只汇总直属 Worker 已提交且通过验收的报告，"
+            "不得新增证据、读取隐藏答案或替其他领域作结论。",
+            {
+                "scenario": self._scenario_payload(scenario),
+                "leader_agent_id": leader_agent_id,
+                "worker_reports": reports,
             },
             schema,
         )

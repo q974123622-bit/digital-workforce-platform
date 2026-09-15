@@ -251,7 +251,7 @@ def test_strict_start_reports_only_missing_role_names_for_role_key_preflight():
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "hr,audit,hr_material,hr_training,it_account,it_device"
+    assert completed.stdout.strip() == "hr,audit,hr_material,hr_training,it_account,it_device,audit_review"
 
 
 @pytest.mark.parametrize(
@@ -272,14 +272,25 @@ def test_specialist_runner_uses_its_single_skill_and_parent_department_key(role,
         runner.resolve_role_api_key(role, {"DEEPSEEK_API_KEY": "legacy-shared"})
 
 
+def test_audit_review_runner_supports_both_business_scenarios_with_audit_key():
+    runner = _run_agent_module()
+
+    assert runner.role_skill_ids("audit_review") == {
+        "audit-evidence-review", "audit-role-change-review",
+    }
+    assert runner.resolve_role_api_key(
+        "audit_review", {"DEEPSEEK_API_KEY_AUDIT": "audit-review-key"},
+    ) == "audit-review-key"
+
+
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
-def test_start_lifecycle_exposes_exactly_eight_agents_and_reuses_department_key_variables():
+def test_start_lifecycle_exposes_exactly_nine_agents_and_reuses_department_key_variables():
     command = (
         "$ErrorActionPreference = 'Stop'; "
         f". '{START.as_posix()}'; "
         "$roles = @(Get-AgentRoles); "
-        "$keys = @{ manager='manager'; hr='hr'; it='it'; audit='audit'; hr_material='hm'; hr_training='ht'; it_account='ia'; it_device='id' }; "
-        "$result = [ordered]@{ roles=$roles; hr_material=(Get-AgentRoleApiKeyEnvironment 'hr_material' $keys); hr_training=(Get-AgentRoleApiKeyEnvironment 'hr_training' $keys); it_account=(Get-AgentRoleApiKeyEnvironment 'it_account' $keys); it_device=(Get-AgentRoleApiKeyEnvironment 'it_device' $keys) }; "
+        "$keys = @{ manager='manager'; hr='hr'; it='it'; audit='audit'; hr_material='hm'; hr_training='ht'; it_account='ia'; it_device='id'; audit_review='ar' }; "
+        "$result = [ordered]@{ roles=$roles; hr_material=(Get-AgentRoleApiKeyEnvironment 'hr_material' $keys); hr_training=(Get-AgentRoleApiKeyEnvironment 'hr_training' $keys); it_account=(Get-AgentRoleApiKeyEnvironment 'it_account' $keys); it_device=(Get-AgentRoleApiKeyEnvironment 'it_device' $keys); audit_review=(Get-AgentRoleApiKeyEnvironment 'audit_review' $keys) }; "
         "$result | ConvertTo-Json -Compress -Depth 4"
     )
     completed = subprocess.run(
@@ -296,17 +307,18 @@ def test_start_lifecycle_exposes_exactly_eight_agents_and_reuses_department_key_
     assert result == {
         "roles": [
             "manager", "hr", "it", "audit",
-            "hr_material", "hr_training", "it_account", "it_device",
+            "hr_material", "hr_training", "it_account", "it_device", "audit_review",
         ],
         "hr_material": {"DEEPSEEK_API_KEY_HR": "hm"},
         "hr_training": {"DEEPSEEK_API_KEY_HR": "ht"},
         "it_account": {"DEEPSEEK_API_KEY_IT": "ia"},
         "it_device": {"DEEPSEEK_API_KEY_IT": "id"},
+        "audit_review": {"DEEPSEEK_API_KEY_AUDIT": "ar"},
     }
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
-@pytest.mark.parametrize("role", ("hr_material", "hr_training", "it_account", "it_device"))
+@pytest.mark.parametrize("role", ("hr_material", "hr_training", "it_account", "it_device", "audit_review"))
 def test_start_and_stop_use_the_same_exact_specialist_argv(role):
     command = (
         "$ErrorActionPreference = 'Stop'; "
@@ -443,6 +455,40 @@ def test_process_helper_blocks_dotenv_backfill_for_backend_and_frontend_children
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_process_helper_allows_safe_model_configuration_with_one_role_key(tmp_path):
+    capture = tmp_path / "capture_model_environment.py"
+    output = tmp_path / "model-environment.json"
+    capture.write_text(
+        "import json, os, pathlib, sys\n"
+        "names = ('DEEPSEEK_API_KEY_HR', 'DEEPSEEK_MODEL', 'AGENTTEAMS_WORKER_MODEL')\n"
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({name: os.environ.get(name, '') for name in names}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{PROCESS_HELPERS.as_posix()}'; "
+        f"$started = Start-AgentTeamsOwnedProcess -ExecutablePath '{sys.executable}' -WorkingDirectory '{tmp_path.as_posix()}' -Arguments @('{capture.as_posix()}', '{output.as_posix()}') -Environment @{{ DEEPSEEK_API_KEY_HR = 'hr-child'; DEEPSEEK_MODEL = 'deepseek-chat'; AGENTTEAMS_WORKER_MODEL = 'deepseek-chat' }}; "
+        "$started.Process.WaitForExit(); "
+        "if ($started.Process.ExitCode -ne 0) { throw 'capture failed' }"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "DEEPSEEK_API_KEY_HR": "hr-child",
+        "DEEPSEEK_MODEL": "deepseek-chat",
+        "AGENTTEAMS_WORKER_MODEL": "deepseek-chat",
+    }
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
 def test_backend_environment_uses_only_the_manager_api_key():
     command = (
         "$ErrorActionPreference = 'Stop'; "
@@ -462,6 +508,46 @@ def test_backend_environment_uses_only_the_manager_api_key():
 
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout.strip()) == {"DEEPSEEK_API_KEY_MANAGER": "manager-key"}
+
+
+@pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
+def test_strict_start_passes_one_configured_model_to_backend_and_agents(tmp_path):
+    """A configured model must reach both model-call paths, not just the launcher."""
+    env_file = tmp_path / "model.env"
+    env_file.write_text("DEEPSEEK_MODEL=deepseek-chat\n", encoding="utf-8")
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        f". '{START.as_posix()}'; "
+        f"$model = Get-AgentTeamsModelValue -EnvFile '{env_file.as_posix()}' -ProcessEnvironment @{{}}; "
+        "$keys = @{ manager='manager-key'; hr='hr-key'; it='it-key'; audit='audit-key' }; "
+        "$actual = [ordered]@{ "
+        "model=$model; "
+        "backend=(Get-BackendApiKeyEnvironment $keys $model); "
+        "worker=(Get-AgentRoleApiKeyEnvironment 'hr' $keys $model) "
+        "}; "
+        "$actual | ConvertTo-Json -Compress -Depth 4"
+    )
+    completed = subprocess.run(
+        [POWERSHELL_51, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout.strip()) == {
+        "model": "deepseek-chat",
+        "backend": {
+            "DEEPSEEK_API_KEY_MANAGER": "manager-key",
+            "DEEPSEEK_MODEL": "deepseek-chat",
+        },
+        "worker": {
+            "DEEPSEEK_API_KEY_HR": "hr-key",
+            "AGENTTEAMS_WORKER_MODEL": "deepseek-chat",
+        },
+    }
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
@@ -510,7 +596,8 @@ def test_bootstrap_produces_expanded_onboarding_identities_and_redacts_secrets(t
         "agentteams-role-change-readiness",
     ]
     assert runtime["agents"]["manager"]["safe_tool_catalog"] == []
-    assert all(runtime["agents"][role]["safe_tool_catalog"] for role in runtime["agents"] if role != "manager")
+    assert all(runtime["agents"][role]["safe_tool_catalog"] == [] for role in ("manager", "hr", "it", "audit"))
+    assert all(runtime["agents"][role]["safe_tool_catalog"] for role in ("hr_material", "hr_training", "it_account", "it_device", "audit_review"))
     expected_schema = {
         "type": "object",
         "required": ["employee_ref"],
@@ -521,8 +608,8 @@ def test_bootstrap_produces_expanded_onboarding_identities_and_redacts_secrets(t
     }
     assert {
         role: runtime["agents"][role]["safe_tool_catalog"][0]["input_schema"]
-        for role in ("audit", "hr_material", "hr_training", "it_account", "it_device")
-    } == {role: expected_schema for role in ("audit", "hr_material", "hr_training", "it_account", "it_device")}
+        for role in ("audit_review", "hr_material", "hr_training", "it_account", "it_device")
+    } == {role: expected_schema for role in ("audit_review", "hr_material", "hr_training", "it_account", "it_device")}
     assert {
         tool["plugin_id"]
         for role in runtime["agents"]
@@ -535,7 +622,7 @@ def test_bootstrap_produces_expanded_onboarding_identities_and_redacts_secrets(t
     }
     assert set(runtime["team_catalog"]) == {
         "VE-0002", "VE-0003", "VE-0005", "VE-HR-MATERIAL",
-        "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE",
+        "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE", "VE-AUDIT-REVIEW",
     }
 
     from app.services.agentteams_runtime_config import load_strict_runtime_config
@@ -602,8 +689,8 @@ def test_bootstrap_is_idempotent_and_verifies_private_membership():
 @pytest.mark.parametrize(
     ("team_id", "roles"),
     (
-        ("TEAM-ONBOARD", ("manager", "hr", "it", "audit", "hr_material", "hr_training", "it_account", "it_device")),
-        ("TEAM-DB-BENCH", ("manager", "db_write", "db_lock", "db_vacuum", "db_index", "db_query")),
+        ("TEAM-ONBOARD", ("manager", "hr", "it", "audit", "hr_material", "hr_training", "it_account", "it_device", "audit_review")),
+        ("TEAM-DB-BENCH", ("manager", "db_ops_lead", "db_perf_lead", "db_write", "db_lock", "db_vacuum", "db_index", "db_query")),
     ),
     ids=("expanded-onboarding-9", "database-7"),
 )
@@ -693,7 +780,7 @@ def test_existing_five_account_runtime_is_reused_when_specialists_are_added(tmp_
 
 @pytest.mark.parametrize("role", (
     "manager", "hr", "it", "audit",
-    "hr_material", "hr_training", "it_account", "it_device",
+    "hr_material", "hr_training", "it_account", "it_device", "audit_review",
 ))
 def test_start_script_launches_each_named_role_with_the_single_runtime_path(role):
     assert START.is_file(), "Task 7 start script is missing"

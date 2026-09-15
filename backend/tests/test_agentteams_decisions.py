@@ -241,7 +241,7 @@ def test_department_lead_receives_relationship_graph_and_delegates_one_batch_to_
     fake_llm, registry,
 ):
     graph = {
-        "self": {"agent_id": "VE-0002", "role": "HR负责人"},
+        "self": {"agent_id": "VE-0002", "role": "HR负责人", "level": "leader"},
         "reports_to": ["VE-0001"],
         "direct_reports": [
             {
@@ -306,6 +306,75 @@ def test_department_lead_receives_relationship_graph_and_delegates_one_batch_to_
     assert "VE-HR-MATERIAL" in prompt
 
 
+@pytest.mark.parametrize(
+    ("leader_id", "leader_capability", "workers"),
+    [
+        (
+            "DB-OPS-LEAD", "db.operations.coordinate",
+            [
+                ("DB-WRITE-01", "database.write.inspect"),
+                ("DB-LOCK-01", "database.lock.inspect"),
+                ("DB-VACUUM-01", "database.vacuum.inspect"),
+            ],
+        ),
+        (
+            "DB-PERF-LEAD", "db.performance.coordinate",
+            [
+                ("DB-INDEX-01", "database.index.inspect"),
+                ("DB-QUERY-01", "database.query.inspect"),
+            ],
+        ),
+    ],
+)
+def test_database_leader_delegates_to_every_registered_specialist(
+    fake_llm, registry, leader_id, leader_capability, workers,
+):
+    complete_plan = {
+        "action": "delegate",
+        "subtasks": [{
+            "client_task_key": f"inspect-{agent_id.lower()}",
+            "title": f"核查 {capability}",
+            "goal": "读取对应数据库信号并返回证据。",
+            "required_capability": capability,
+            "assignee_agent_id": agent_id,
+            "depends_on": [],
+            "required": True,
+            "reason": "由对应数据库专员核查。",
+        } for agent_id, capability in workers],
+    }
+    fake_llm.outputs = [
+        {**complete_plan, "subtasks": complete_plan["subtasks"][:-1]},
+        complete_plan,
+    ]
+    graph = {
+        "self": {"agent_id": leader_id, "role": "数据库负责人", "level": "leader"},
+        "reports_to": ["VE-0001"],
+        "direct_reports": [
+            {"agent_id": agent_id, "role": "数据库专员", "capabilities": [capability]}
+            for agent_id, capability in workers
+        ],
+    }
+    context = WorkerContext(
+        current_agent_id=leader_id,
+        task={"title": "数据库诊断", "goal": "汇总诊断证据", "required_capability": leader_capability},
+        professional_skill_ids=["agentteams-database-diagnosis"],
+        current_team_capability_catalog=[
+            {"agent_id": agent_id, "capabilities": [capability]}
+            for agent_id, capability in workers
+        ],
+        parent_chain_agent_ids=["VE-0001"],
+        team_relationship_graph=graph,
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).decide_work(context)
+
+    assert {
+        (task.assignee_agent_id, task.required_capability)
+        for task in decision.subtasks
+    } == set(workers)
+    assert len(fake_llm.calls) == 2
+
+
 def test_department_lead_retries_delegate_outside_direct_reports(fake_llm, registry):
     valid = {
         "action": "delegate",
@@ -346,7 +415,7 @@ def test_department_lead_retries_delegate_outside_direct_reports(fake_llm, regis
         ],
         parent_chain_agent_ids=["VE-0001"],
         team_relationship_graph={
-            "self": {"agent_id": "VE-0002", "role": "HR负责人"},
+            "self": {"agent_id": "VE-0002", "role": "HR负责人", "level": "leader"},
             "reports_to": ["VE-0001"],
             "direct_reports": [{
                 "agent_id": "VE-HR-MATERIAL",
@@ -362,16 +431,57 @@ def test_department_lead_retries_delegate_outside_direct_reports(fake_llm, regis
     assert len(fake_llm.calls) == 2
 
 
+def test_worker_retries_delegate_with_worker_cannot_delegate(fake_llm, registry):
+    fake_llm.outputs = [
+        {
+            "action": "delegate",
+            "subtask": {
+                "client_task_key": "invalid-child",
+                "title": "错误派发",
+                "goal": "普通员工不应继续派发。",
+                "required_capability": "hr.training.read",
+                "assignee_agent_id": "VE-HR-TRAINING",
+                "depends_on": [],
+                "required": True,
+                "reason": "错误示例。",
+            },
+        },
+        {"action": "complete", "result": "材料核查已完成。"},
+    ]
+    context = WorkerContext(
+        current_agent_id="VE-HR-MATERIAL",
+        task={"title": "材料核查", "goal": "核查材料", "required_capability": "hr.materials.read"},
+        professional_skill_ids=["hr-material-specialist"],
+        current_team_capability_catalog=[
+            {"agent_id": "VE-HR-TRAINING", "capabilities": ["hr.training.read"]},
+        ],
+        parent_chain_agent_ids=["VE-0001", "VE-0002"],
+        team_relationship_graph={
+            "self": {"agent_id": "VE-HR-MATERIAL", "role": "HR材料专员", "level": "worker"},
+            "reports_to": ["VE-0002"],
+            "direct_reports": [],
+        },
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).decide_work(context)
+
+    assert decision.action == "complete"
+    assert len(fake_llm.calls) == 2
+    assert json.loads(fake_llm.calls[1][-1]["content"])["validation_errors"][0]["msg"] == (
+        "A Worker must execute or complete its task and cannot create child tasks."
+    )
+
+
 def test_onboarding_manager_uses_department_round_then_real_audit_round(
     fake_llm, registry,
 ):
     graph = {
-        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "self": {"agent_id": "VE-0001", "role": "Manager", "level": "manager"},
         "reports_to": [],
         "direct_reports": [
             {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
             {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
-            {"agent_id": "VE-0005", "role": "审计专员", "capabilities": ["audit.evidence.read"]},
+            {"agent_id": "VE-0005", "role": "审计负责人", "capabilities": ["audit.onboarding.coordinate"]},
         ],
     }
     catalog = [
@@ -399,7 +509,7 @@ def test_onboarding_manager_uses_department_round_then_real_audit_round(
         "action": "delegate",
         "subtasks": [{
             "client_task_key": "audit-review", "title": "审计复核", "goal": "复核HR和IT部门汇总证据。",
-            "required_capability": "audit.evidence.read", "assignee_agent_id": "VE-0005",
+            "required_capability": "audit.onboarding.coordinate", "assignee_agent_id": "VE-0005",
             "depends_on": [], "required": True, "reason": "第二轮独立复核部门证据。",
         }],
     }
@@ -427,18 +537,18 @@ def test_onboarding_manager_uses_department_round_then_real_audit_round(
     assert {item.required_capability for item in first.subtasks} == {
         "hr.onboarding.coordinate", "it.onboarding.coordinate",
     }
-    assert [item.required_capability for item in second.subtasks] == ["audit.evidence.read"]
+    assert [item.required_capability for item in second.subtasks] == ["audit.onboarding.coordinate"]
     assert second.subtasks[0].assignee_agent_id == "VE-0005"
 
 
 def test_onboarding_manager_requires_targeted_follow_up_after_audit_round(fake_llm, registry):
     graph = {
-        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "self": {"agent_id": "VE-0001", "role": "Manager", "level": "manager"},
         "reports_to": [],
         "direct_reports": [
             {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
             {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
-            {"agent_id": "VE-0005", "role": "审计专员", "capabilities": ["audit.evidence.read"]},
+            {"agent_id": "VE-0005", "role": "审计负责人", "capabilities": ["audit.onboarding.coordinate"]},
         ],
     }
     fake_llm.outputs = [{
@@ -483,12 +593,12 @@ def test_onboarding_manager_requires_targeted_follow_up_after_audit_round(fake_l
 
 def test_onboarding_manager_summarizes_after_targeted_follow_up_round(fake_llm, registry):
     graph = {
-        "self": {"agent_id": "VE-0001", "role": "Manager"},
+        "self": {"agent_id": "VE-0001", "role": "Manager", "level": "manager"},
         "reports_to": [],
         "direct_reports": [
             {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
             {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
-            {"agent_id": "VE-0005", "role": "审计专员", "capabilities": ["audit.evidence.read"]},
+            {"agent_id": "VE-0005", "role": "审计负责人", "capabilities": ["audit.onboarding.coordinate"]},
         ],
     }
     fake_llm.outputs = [{
@@ -531,7 +641,7 @@ def test_department_lead_completes_after_direct_reports_return(
     fake_llm, registry,
 ):
     graph = {
-        "self": {"agent_id": "VE-0002", "role": "HR负责人"},
+        "self": {"agent_id": "VE-0002", "role": "HR负责人", "level": "leader"},
         "reports_to": ["VE-0001"],
         "direct_reports": [{
             "agent_id": "VE-HR-MATERIAL", "role": "HR材料专员", "capabilities": ["hr.materials.read"],
@@ -571,22 +681,22 @@ def test_role_change_manager_is_corrected_into_parallel_then_serial_two_round_pl
         "selected_skill_ids": ["agentteams-role-change-readiness"],
         "action": "delegate",
         "subtasks": [
-            {"client_task_key": "hr-role", "title": "HR岗位核查", "goal": "核查张明岗位调整记录。", "required_capability": "hr.role_change.read", "assignee_agent_id": "VE-0002", "depends_on": [], "required": True, "reason": "取得HR一手证据。"},
-            {"client_task_key": "it-plan", "title": "IT权限计划", "goal": "核查张明权限变更计划。", "required_capability": "it.permission.plan", "assignee_agent_id": "VE-0003", "depends_on": [], "required": True, "reason": "取得IT一手证据。"},
+            {"client_task_key": "hr-role", "title": "HR岗位核查", "goal": "组织直属HR员工核查张明岗位调整记录。", "required_capability": "hr.role_change.coordinate", "assignee_agent_id": "VE-0002", "depends_on": [], "required": True, "reason": "由HR负责人组织直属员工。"},
+            {"client_task_key": "it-plan", "title": "IT权限计划", "goal": "组织直属IT员工核查张明权限变更计划。", "required_capability": "it.role_change.plan.coordinate", "assignee_agent_id": "VE-0003", "depends_on": [], "required": True, "reason": "由IT负责人组织直属员工。"},
         ],
     }
     follow_up = {
         "selected_skill_ids": ["agentteams-role-change-readiness"],
         "action": "delegate",
         "subtasks": [
-            {"client_task_key": "audit-review", "title": "权限审计复核", "goal": "独立复核张明权限范围。", "required_capability": "audit.permission.review", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "激活前必须独立复核。"},
-            {"client_task_key": "it-activate", "title": "IT权限激活", "goal": "使用审计批准编号激活张明权限。", "required_capability": "it.permission.activate", "assignee_agent_id": "VE-0003", "depends_on": ["audit-review"], "required": True, "reason": "审计通过后才能激活。"},
+            {"client_task_key": "audit-review", "title": "权限审计复核", "goal": "组织直属审计员工独立复核张明权限范围。", "required_capability": "audit.role_change.coordinate", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "激活前必须由审计负责人组织复核。"},
+            {"client_task_key": "it-activate", "title": "IT权限激活", "goal": "组织直属IT员工使用审计批准编号激活张明权限。", "required_capability": "it.role_change.activate.coordinate", "assignee_agent_id": "VE-0003", "depends_on": ["audit-review"], "required": True, "reason": "审计通过后由IT负责人组织激活。"},
         ],
     }
     catalog = [
-        {"agent_id": "VE-0002", "capabilities": ["hr.role_change.read"]},
-        {"agent_id": "VE-0003", "capabilities": ["it.permission.plan", "it.permission.activate"]},
-        {"agent_id": "VE-0005", "capabilities": ["audit.permission.review"]},
+        {"agent_id": "VE-0002", "capabilities": ["hr.role_change.coordinate"]},
+        {"agent_id": "VE-0003", "capabilities": ["it.role_change.plan.coordinate", "it.role_change.activate.coordinate"]},
+        {"agent_id": "VE-0005", "capabilities": ["audit.role_change.coordinate"]},
     ]
     base = dict(
         user_goal="评估张明的岗位调整是否可以按期完成。",
@@ -596,6 +706,15 @@ def test_role_change_manager_is_corrected_into_parallel_then_serial_two_round_pl
         remaining_rounds=3,
         max_children=5,
         max_nodes=20,
+        team_relationship_graph={
+            "self": {"agent_id": "VE-0001", "role": "Manager", "level": "manager"},
+            "reports_to": [],
+            "direct_reports": [
+                {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.role_change.coordinate"]},
+                {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.role_change.plan.coordinate", "it.role_change.activate.coordinate"]},
+                {"agent_id": "VE-0005", "role": "审计负责人", "capabilities": ["audit.role_change.coordinate"]},
+            ],
+        },
     )
     invalid_summary = {
         "selected_skill_ids": ["agentteams-role-change-readiness"],
@@ -608,7 +727,7 @@ def test_role_change_manager_is_corrected_into_parallel_then_serial_two_round_pl
         **base, child_results=[], existing_child_task_keys=[], current_round=1,
     ))
     assert {task.required_capability for task in round_one.subtasks} == {
-        "hr.role_change.read", "it.permission.plan",
+        "hr.role_change.coordinate", "it.role_change.plan.coordinate",
     }
     assert all(not task.depends_on for task in round_one.subtasks)
 
@@ -619,8 +738,8 @@ def test_role_change_manager_is_corrected_into_parallel_then_serial_two_round_pl
         existing_child_task_keys=["hr-role", "it-plan"],
         current_round=1,
     ))
-    activation = next(task for task in round_two.subtasks if task.required_capability == "it.permission.activate")
-    audit = next(task for task in round_two.subtasks if task.required_capability == "audit.permission.review")
+    activation = next(task for task in round_two.subtasks if task.required_capability == "it.role_change.activate.coordinate")
+    audit = next(task for task in round_two.subtasks if task.required_capability == "audit.role_change.coordinate")
     assert activation.depends_on == [audit.client_task_key]
 
     successful_summary = {
@@ -667,11 +786,11 @@ def test_role_change_manager_is_corrected_into_parallel_then_serial_two_round_pl
     assert '"evidence_precedence": "latest_completed_activation"' in final_round_prompt
 
 
-def test_role_change_it_plan_cannot_activate_or_delegate_before_returning_to_manager(
+def test_role_change_worker_cannot_activate_or_delegate_before_returning_to_leader(
     fake_llm, registry,
 ):
     context = WorkerContext(
-        current_agent_id="VE-0003",
+        current_agent_id="VE-IT-ACCOUNT",
         task={
             "title": "IT权限计划核查",
             "goal": "核查张明权限变更计划。",
@@ -684,9 +803,15 @@ def test_role_change_it_plan_cannot_activate_or_delegate_before_returning_to_man
             {"name": "agentteams.it.activate_role_change", "required_capability": "it.permission.activate"},
         ],
         current_team_capability_catalog=[
-            {"agent_id": "VE-0005", "capabilities": ["audit.permission.review"]},
+            {"agent_id": "VE-AUDIT-REVIEW", "capabilities": ["audit.permission.review"]},
         ],
         previous_results=[],
+        parent_chain_agent_ids=["VE-0001", "VE-0003"],
+        team_relationship_graph={
+            "self": {"agent_id": "VE-IT-ACCOUNT", "role": "IT账号专员", "level": "worker"},
+            "reports_to": ["VE-0003"],
+            "direct_reports": [],
+        },
     )
     fake_llm.outputs = [
         {"action": "tool", "tool_name": "agentteams.it.activate_role_change", "tool_arguments": {"employee_ref": "张明", "approval_ref": "AUD-RC-001"}},
@@ -697,8 +822,8 @@ def test_role_change_it_plan_cannot_activate_or_delegate_before_returning_to_man
     assert len(fake_llm.calls) == 2
 
     fake_llm.outputs = [
-        {"action": "delegate", "subtask": {"client_task_key": "audit", "title": "审计复核", "goal": "复核权限。", "required_capability": "audit.permission.review", "assignee_agent_id": "VE-0005", "depends_on": [], "required": True, "reason": "需要审计。"}},
-        {"action": "complete", "result": "IT权限计划已核查，需由Manager继续安排独立审计。"},
+        {"action": "delegate", "subtask": {"client_task_key": "audit", "title": "审计复核", "goal": "复核权限。", "required_capability": "audit.permission.review", "assignee_agent_id": "VE-AUDIT-REVIEW", "depends_on": [], "required": True, "reason": "需要审计。"}},
+        {"action": "complete", "result": "IT权限计划已核查，返回IT负责人汇总。"},
     ]
     decision = AgentDecisionEngine(fake_llm, registry).decide_work(context.model_copy(update={
         "previous_results": [{"kind": "tool.result", "value": {"ok": True}}],

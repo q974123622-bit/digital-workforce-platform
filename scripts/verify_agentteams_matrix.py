@@ -31,11 +31,11 @@ from app.services.agentteams_runtime_config import (  # noqa: E402
 _SUPPORTED_IDENTITIES_BY_TEAM = {
     "TEAM-ONBOARD": frozenset({
         "platform", "manager", "hr", "it", "audit",
-        "hr_material", "hr_training", "it_account", "it_device",
+        "hr_material", "hr_training", "it_account", "it_device", "audit_review",
     }),
     "TEAM-DB-BENCH": frozenset({
-        "platform", "manager", "db_write", "db_lock", "db_vacuum",
-        "db_index", "db_query",
+        "platform", "manager", "db_ops_lead", "db_perf_lead",
+        "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
     }),
 }
 

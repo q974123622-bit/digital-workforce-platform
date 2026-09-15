@@ -37,7 +37,7 @@ DEFAULT_MATRIX_URL = "http://127.0.0.1:8008"
 TEAM_ID = "TEAM-ONBOARD"
 ACCOUNT_NAMES = (
     "platform", "manager", "hr", "it", "audit",
-    "hr_material", "hr_training", "it_account", "it_device",
+    "hr_material", "hr_training", "it_account", "it_device", "audit_review",
 )
 
 
@@ -66,33 +66,24 @@ ROLE_IDENTITIES = {
     "hr": {
         "agent_id": "VE-0002",
         "skills": ["hr-onboarding-assistant", "hr-role-change-assistant"],
-        "tools": [
-            _demo_tool("agentteams.hr.coordinate_onboarding", "agentteams-onboarding-employee", "hr.onboarding.coordinate"),
-            _demo_tool("agentteams.hr.lookup_role_change", "agentteams-role-change-hr", "hr.role_change.read", input_schema=role_change_employee_ref_input_schema()),
-        ],
+        "tools": [],
     },
     "it": {
         "agent_id": "VE-0003",
         "skills": ["it-service-assistant", "it-role-change-assistant"],
-        "tools": [
-            _demo_tool("agentteams.it.coordinate_onboarding", "agentteams-it-readiness", "it.onboarding.coordinate"),
-            _demo_tool("agentteams.it.lookup_permission_plan", "agentteams-role-change-it-plan", "it.permission.plan", input_schema=role_change_employee_ref_input_schema()),
-            _demo_tool("agentteams.it.activate_role_change", "agentteams-role-change-it-activate", "it.permission.activate", input_schema=role_change_activation_input_schema()),
-        ],
+        "tools": [],
     },
     "audit": {
         "agent_id": "VE-0005",
         "skills": ["audit-evidence-review", "audit-role-change-review"],
-        "tools": [
-            _demo_tool("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read"),
-            _demo_tool("agentteams.audit.review_role_change", "agentteams-role-change-audit", "audit.permission.review", input_schema=role_change_employee_ref_input_schema()),
-        ],
+        "tools": [],
     },
     "hr_material": {
         "agent_id": "VE-HR-MATERIAL",
         "skills": ["hr-material-specialist"],
         "tools": [
             _demo_tool("agentteams.hr.lookup_materials", "agentteams-onboarding-materials", "hr.materials.read"),
+            _demo_tool("agentteams.hr.lookup_role_change", "agentteams-role-change-hr", "hr.role_change.read", input_schema=role_change_employee_ref_input_schema()),
         ],
     },
     "hr_training": {
@@ -100,6 +91,7 @@ ROLE_IDENTITIES = {
         "skills": ["hr-training-specialist"],
         "tools": [
             _demo_tool("agentteams.hr.lookup_training", "agentteams-onboarding-training", "hr.training.read"),
+            _demo_tool("agentteams.hr.verify_role_change", "agentteams-role-change-hr", "hr.role_change.read", input_schema=role_change_employee_ref_input_schema()),
         ],
     },
     "it_account": {
@@ -107,6 +99,7 @@ ROLE_IDENTITIES = {
         "skills": ["it-account-specialist"],
         "tools": [
             _demo_tool("agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read"),
+            _demo_tool("agentteams.it.lookup_permission_plan", "agentteams-role-change-it-plan", "it.permission.plan", input_schema=role_change_employee_ref_input_schema()),
         ],
     },
     "it_device": {
@@ -114,17 +107,28 @@ ROLE_IDENTITIES = {
         "skills": ["it-device-specialist"],
         "tools": [
             _demo_tool("agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read"),
+            _demo_tool("agentteams.it.verify_permission_plan", "agentteams-role-change-it-plan", "it.permission.plan", input_schema=role_change_employee_ref_input_schema()),
+            _demo_tool("agentteams.it.activate_role_change", "agentteams-role-change-it-activate", "it.permission.activate", input_schema=role_change_activation_input_schema()),
+        ],
+    },
+    "audit_review": {
+        "agent_id": "VE-AUDIT-REVIEW",
+        "skills": ["audit-evidence-review", "audit-role-change-review"],
+        "tools": [
+            _demo_tool("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read"),
+            _demo_tool("agentteams.audit.review_role_change", "agentteams-role-change-audit", "audit.permission.review", input_schema=role_change_employee_ref_input_schema()),
         ],
     },
 }
 TEAM_CATALOG = {
-    "VE-0002": {"capabilities": ["hr.onboarding.coordinate", "hr.role_change.read"]},
-    "VE-0003": {"capabilities": ["it.onboarding.coordinate", "it.permission.plan", "it.permission.activate"]},
-    "VE-0005": {"capabilities": ["audit.evidence.read", "audit.permission.review"]},
-    "VE-HR-MATERIAL": {"capabilities": ["hr.materials.read"]},
-    "VE-HR-TRAINING": {"capabilities": ["hr.training.read"]},
-    "VE-IT-ACCOUNT": {"capabilities": ["it.accounts.read"]},
-    "VE-IT-DEVICE": {"capabilities": ["it.devices.read"]},
+    "VE-0002": {"capabilities": ["hr.onboarding.coordinate", "hr.role_change.coordinate"]},
+    "VE-0003": {"capabilities": ["it.onboarding.coordinate", "it.role_change.plan.coordinate", "it.role_change.activate.coordinate"]},
+    "VE-0005": {"capabilities": ["audit.onboarding.coordinate", "audit.role_change.coordinate"]},
+    "VE-HR-MATERIAL": {"capabilities": ["hr.materials.read", "hr.role_change.read"]},
+    "VE-HR-TRAINING": {"capabilities": ["hr.training.read", "hr.role_change.read"]},
+    "VE-IT-ACCOUNT": {"capabilities": ["it.accounts.read", "it.permission.plan"]},
+    "VE-IT-DEVICE": {"capabilities": ["it.devices.read", "it.permission.plan", "it.permission.activate"]},
+    "VE-AUDIT-REVIEW": {"capabilities": ["audit.evidence.read", "audit.permission.review"]},
 }
 TEAM_RELATIONSHIPS = {
     "VE-0001": {
@@ -139,11 +143,12 @@ TEAM_RELATIONSHIPS = {
         "role": "IT负责人", "reports_to": ["VE-0001"],
         "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"],
     },
-    "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": []},
+    "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
     "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
     "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
     "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
     "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
+    "VE-AUDIT-REVIEW": {"role": "审计专员", "reports_to": ["VE-0005"], "direct_reports": []},
 }
 
 

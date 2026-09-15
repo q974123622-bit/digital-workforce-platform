@@ -28,8 +28,8 @@ def test_seed_counts(client):
     teams_by_id = {team["id"]: team for team in teams}
     assert set(teams_by_id) == {"TEAM-ONBOARD", "TEAM-DB-BENCH"}
     assert {member["employee_id"] for member in teams_by_id["TEAM-ONBOARD"]["members"]} == {
-        "VE-0001", "VE-0002", "VE-0003", "VE-0005", "RPA-0001",
-        "VE-HR-MATERIAL", "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE",
+        "VE-0001", "VE-0002", "VE-0003", "VE-0005",
+        "VE-HR-MATERIAL", "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE", "VE-AUDIT-REVIEW",
     }
 
 
@@ -158,8 +158,8 @@ def test_teams_and_knowledge(client):
     team = client.get("/api/v1/teams/TEAM-ONBOARD").json()
     assert team["leader_employee_id"] == "VE-0001"
     assert {m["employee_id"] for m in team["members"]} == {
-        "VE-0001", "VE-0002", "VE-0003", "VE-0005", "RPA-0001",
-        "VE-HR-MATERIAL", "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE",
+        "VE-0001", "VE-0002", "VE-0003", "VE-0005",
+        "VE-HR-MATERIAL", "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE", "VE-AUDIT-REVIEW",
     }
 
     kb = client.get("/api/v1/knowledge-bases/KB-PUBLIC").json()
