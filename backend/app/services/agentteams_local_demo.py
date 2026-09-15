@@ -301,6 +301,55 @@ class LocalDemoTransport:
                 return self._role_change_tool_result(message, client_task_key)
             return []
 
+        if message.type == "task.recovery.requested":
+            remaining = message.payload.get("remaining_recovery_attempts", 0)
+            if isinstance(remaining, bool) or not isinstance(remaining, int) or remaining < 1:
+                return [self._response(
+                    message,
+                    "task.blocked",
+                    response_number=1,
+                    sender=message.receiver,
+                    payload={
+                        "feedback": "本地演示恢复次数已耗尽，向上级报告阻塞",
+                        "reason_code": "recovery_exhausted",
+                    },
+                )]
+            title = str(message.payload.get("title") or "中断任务")[:128]
+            instruction = str(message.payload.get("instruction") or "完成原任务")[:320]
+            assignee = str(message.payload.get("assignee_agent_id") or "")
+            capability = str(message.payload.get("required_capability") or "")
+            recovery_key = f"recovery-{self._stable_id(message.idempotency_key)[:12]}"
+            return [
+                self._trace(
+                    message,
+                    response_number=1,
+                    sender=message.receiver,
+                    iteration=1,
+                    action="replan",
+                    reasoning="Worker任务中断，Leader保留原记录并生成一项有界恢复任务。",
+                ),
+                self._response(
+                    message,
+                    "task.replan",
+                    response_number=2,
+                    sender=message.receiver,
+                    payload={
+                        "feedback": "原任务中断，由 Leader 重新派发恢复任务",
+                        "subtasks": [{
+                            "client_task_key": recovery_key,
+                            "title": f"恢复：{title}",
+                            "instruction": f"重新执行并补充可核验证据：{instruction}",
+                            "assignee_agent_id": assignee,
+                            "required_capability": capability,
+                            "depends_on": [],
+                            "required": True,
+                            "material": {},
+                            "node_kind": "worker_task",
+                        }],
+                    },
+                ),
+            ]
+
         if message.type == "task.result.submitted":
             return [
                 self._response(

@@ -368,6 +368,56 @@ def test_submitted_result_is_accepted_by_the_receiving_coordinator():
     assert messages[0].payload["feedback"] == "本地演示结果验收通过"
 
 
+def test_interrupted_worker_returns_a_deterministic_leader_replan():
+    transport = LocalDemoTransport()
+    request = _message(
+        "task.recovery.requested",
+        task_id="AT-WORKER",
+        parent_task_id="AT-LEADER",
+        receiver="VE-0002",
+        payload={
+            "title": "核查入职材料",
+            "instruction": "核查新员工入职材料。",
+            "assignee_agent_id": "VE-HR-MATERIAL",
+            "required_capability": "agentteams-onboarding-materials",
+            "result_status": "INTERRUPTED",
+            "remaining_recovery_attempts": 2,
+        },
+    )
+
+    _send(transport, request)
+    messages = _messages(transport.sync_messages(None, {ROOM_ID}))
+
+    assert [message.type for message in messages] == ["agent.message", "task.replan"]
+    assert messages[-1].sender == "VE-0002"
+    assert messages[-1].receiver == "platform"
+    assert messages[-1].payload["subtasks"][0]["assignee_agent_id"] == "VE-HR-MATERIAL"
+    assert messages[-1].payload["subtasks"][0]["instruction"].startswith("重新执行")
+
+
+def test_interrupted_worker_reports_blocked_when_local_recovery_budget_is_exhausted():
+    transport = LocalDemoTransport()
+    request = _message(
+        "task.recovery.requested",
+        task_id="AT-WORKER",
+        parent_task_id="AT-LEADER",
+        receiver="VE-0002",
+        payload={
+            "title": "核查入职材料",
+            "assignee_agent_id": "VE-HR-MATERIAL",
+            "required_capability": "agentteams-onboarding-materials",
+            "result_status": "INTERRUPTED",
+            "remaining_recovery_attempts": 0,
+        },
+    )
+
+    _send(transport, request)
+    messages = _messages(transport.sync_messages(None, {ROOM_ID}))
+
+    assert [message.type for message in messages] == ["task.blocked"]
+    assert messages[0].payload["reason_code"] == "recovery_exhausted"
+
+
 @pytest.mark.parametrize(
     ("task_id", "parent_task_id", "receiver", "expected_sender", "expected_type", "phrases"),
     [

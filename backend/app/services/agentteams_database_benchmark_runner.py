@@ -1868,6 +1868,32 @@ class DatabaseBenchmarkRunEngine:
                 },
             ),
         )
+        # The benchmark backend has already established that this structured
+        # result cannot be recovered. Mirror the live Leader result gate by
+        # explicitly stopping the failed Worker graph instead of relying on
+        # the pre-AgentScope behavior where Worker failure killed ancestors.
+        if (
+            node.node_kind == "worker_task"
+            and node.coordinator_agent_id != node.assignee_agent_id
+        ):
+            collaboration.apply_message(
+                self.db,
+                matrix_sender=self._matrix_sender(node.coordinator_agent_id),
+                message=self._protocol_message(
+                    request=request,
+                    message_type="task.blocked",
+                    root_task_id=task_run_id,
+                    task_id=node.id,
+                    parent_task_id=node.parent_task_id,
+                    sender=node.coordinator_agent_id,
+                    receiver="platform",
+                    suffix=f"{node.client_task_key}-blocked-{code}",
+                    payload={
+                        "feedback": "结构化结果无效，当前评测运行无法安全恢复。",
+                        "reason_code": code,
+                    },
+                ),
+            )
         self.db.flush()
 
     @staticmethod
