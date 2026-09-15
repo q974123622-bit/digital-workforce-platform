@@ -310,7 +310,8 @@ _BUSINESS_RULE_FEEDBACK = {
     "cyclic_dependency": "Delegate dependencies must be acyclic.",
     "invalid_team_assignee": "Each assignee must be an agent from the current team catalog.",
     "capability_not_available": "Each required capability must belong to its assigned agent in the current team catalog.",
-    "manager_must_delegate_to_leader": "A Manager may delegate only to direct Team Leaders.",
+    "manager_must_delegate_to_leader":
+        "A Manager may delegate only to a direct Team Leader and must use one of that Leader's advertised capabilities.",
     "leader_must_delegate_to_worker": "A Team Leader may delegate only to its own direct Workers.",
     "worker_cannot_delegate": "A Worker must execute or complete its task and cannot create child tasks.",
     "user_facing_text_must_contain_chinese":
@@ -496,7 +497,10 @@ class AgentDecisionEngine:
             "and capabilities only from the current team catalog. Within one delegate plan, every "
             "client_task_key must be unique; depends_on may reference only keys in that same batch "
             "and must be acyclic. Each assignee and required capability must exactly match the "
-            "current team catalog. New client_task_key values must not reuse an existing child task key; "
+            "current team catalog. A Manager must assign each subtask to a direct Team Leader and use "
+            "that same Leader's advertised coordination capability; never substitute a child Worker's capability. "
+            "When scenario_execution_contract lists capabilities, use those exact capabilities. "
+            "New client_task_key values must not reuse an existing child task key; "
             "do not assert unobserved facts. Return selected_skill_ids with exactly the selected scenario "
             "Skill IDs supplied below. Do not add, drop, or replace IDs; their order is not significant. "
             "If action is summarize, write every user-facing narrative field in Simplified Chinese while "
@@ -540,6 +544,7 @@ class AgentDecisionEngine:
             ManagerDecision,
             validate,
             error_code="planning_failed",
+            max_validation_attempts=_MAX_MODEL_REQUESTS,
         )
 
     def decide_work(self, context: WorkerContext) -> WorkerDecision:
@@ -685,6 +690,7 @@ class AgentDecisionEngine:
         validate: Callable[[dict[str, Any]], _DecisionType],
         *,
         error_code: str,
+        max_validation_attempts: int = _MAX_VALIDATION_ATTEMPTS,
     ) -> _DecisionType:
         schema = schema_model.model_json_schema()
         schema_message = {
@@ -731,7 +737,7 @@ class AgentDecisionEngine:
                 validation_attempts += 1
                 if request_number + 1 >= _MAX_MODEL_REQUESTS:
                     break
-                if validation_attempts >= _MAX_VALIDATION_ATTEMPTS:
+                if validation_attempts >= max_validation_attempts:
                     break
         raise AgentDecisionError(error_code) from last_validation_error
 

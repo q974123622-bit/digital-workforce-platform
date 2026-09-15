@@ -737,6 +737,78 @@ def test_onboarding_manager_uses_department_round_then_real_audit_round(
     assert second.subtasks[0].assignee_agent_id == "VE-0005"
 
 
+def test_onboarding_manager_uses_full_retry_budget_to_fix_leader_and_capability(
+    fake_llm, registry,
+):
+    graph = {
+        "self": {"agent_id": "VE-0001", "role": "Manager", "level": "manager"},
+        "reports_to": [],
+        "direct_reports": [
+            {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
+            {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
+            {"agent_id": "VE-0005", "role": "审计负责人", "capabilities": ["audit.onboarding.coordinate"]},
+        ],
+    }
+    context = ManagerContext(
+        user_goal="评估新员工A的入职就绪情况。",
+        manager_skill_id="agentteams-manager-coordination",
+        selected_skill_ids=["agentteams-onboarding-readiness"],
+        team_capability_catalog=[
+            *[
+                {"agent_id": item["agent_id"], "capabilities": item["capabilities"]}
+                for item in graph["direct_reports"]
+            ],
+            {"agent_id": "VE-AUDIT-REVIEW", "capabilities": ["audit.evidence.read"]},
+        ],
+        child_results=[
+            {"client_task_key": "hr-department", "status": "completed"},
+            {"client_task_key": "it-department", "status": "completed"},
+        ],
+        existing_child_task_keys=["hr-department", "it-department"],
+        current_round=1,
+        remaining_rounds=3,
+        max_children=5,
+        max_nodes=20,
+        team_relationship_graph=graph,
+    )
+
+    def audit_plan(assignee: str, capability: str) -> dict:
+        return {
+            "selected_skill_ids": ["agentteams-onboarding-readiness"],
+            "action": "delegate",
+            "subtasks": [{
+                "client_task_key": "audit-review",
+                "title": "审计复核",
+                "goal": "复核 HR 与 IT 部门证据。",
+                "required_capability": capability,
+                "assignee_agent_id": assignee,
+                "depends_on": [],
+                "required": True,
+                "reason": "第二轮独立复核。",
+            }],
+        }
+
+    fake_llm.outputs = [
+        audit_plan("VE-AUDIT-REVIEW", "audit.evidence.read"),
+        audit_plan("VE-0005", "audit.evidence.read"),
+        audit_plan("VE-0005", "audit.onboarding.coordinate"),
+    ]
+
+    decision = AgentDecisionEngine(fake_llm, registry).plan(context)
+
+    assert decision.subtasks[0].assignee_agent_id == "VE-0005"
+    assert decision.subtasks[0].required_capability == "audit.onboarding.coordinate"
+    assert len(fake_llm.calls) == 3
+    first_feedback = json.loads(fake_llm.calls[1][-1]["content"])
+    second_feedback = json.loads(fake_llm.calls[2][-1]["content"])
+    assert first_feedback["validation_errors"][0]["msg"] == (
+        "A Manager may delegate only to a direct Team Leader and must use one of that Leader's advertised capabilities."
+    )
+    assert second_feedback["validation_errors"][0]["msg"] == (
+        "Each required capability must belong to its assigned agent in the current team catalog."
+    )
+
+
 def test_onboarding_manager_requires_targeted_follow_up_after_audit_round(fake_llm, registry):
     graph = {
         "self": {"agent_id": "VE-0001", "role": "Manager", "level": "manager"},
@@ -1190,12 +1262,12 @@ def test_manager_all_optional_delegate_plan_fails_with_bounded_correction(
         **VALID_MANAGER_PLAN,
         "subtasks": [{**VALID_MANAGER_PLAN["subtasks"][0], "required": False}],
     }
-    fake_llm.outputs = [all_optional, all_optional]
+    fake_llm.outputs = [all_optional, all_optional, all_optional]
 
     with pytest.raises(AgentDecisionError, match="planning_failed"):
         AgentDecisionEngine(fake_llm, registry).plan(manager_context)
 
-    assert len(fake_llm.calls) == 2
+    assert len(fake_llm.calls) == 3
 
 
 def test_manager_summary_requires_readiness_decision_and_retries_missing_field(
@@ -1358,12 +1430,12 @@ def test_dynamic_validation_error_keeps_generic_feedback_without_replaying_value
 def test_manager_invalid_delegate_topology_or_capability_fails_with_bounded_correction(
     fake_llm, registry, manager_context, invalid_plan,
 ):
-    fake_llm.outputs = [invalid_plan, invalid_plan]
+    fake_llm.outputs = [invalid_plan, invalid_plan, invalid_plan]
 
     with pytest.raises(AgentDecisionError, match="planning_failed"):
         AgentDecisionEngine(fake_llm, registry).plan(manager_context)
 
-    assert len(fake_llm.calls) == 2
+    assert len(fake_llm.calls) == 3
 
 
 def test_skill_selection_only_receives_catalog_summaries(fake_llm, registry, skill_context):
@@ -1719,11 +1791,17 @@ def test_retry_validation_feedback_redacts_large_untrusted_model_values(fake_llm
     )
 
 
-def test_second_invalid_manager_plan_raises_safe_planning_error(
+def test_third_invalid_manager_plan_raises_safe_planning_error(
     fake_llm, registry, manager_context,
 ):
-    """Two invalid plans must stop before a downstream task graph is created."""
-    fake_llm.outputs = [{"action": "delegate"}, {"action": "delegate"}]
+    """Three invalid plans must stop before a downstream task graph is created."""
+    fake_llm.outputs = [
+        {"action": "delegate"},
+        {"action": "delegate"},
+        {"action": "delegate"},
+    ]
 
     with pytest.raises(AgentDecisionError, match="planning_failed"):
         AgentDecisionEngine(fake_llm, registry).plan(manager_context)
+
+    assert len(fake_llm.calls) == 3
