@@ -18,7 +18,7 @@ from .. import models, schemas
 from ..database import get_db
 from ..services.auth import enforce_actor, optional_account
 from ..services.group_chat import append_user_message, process_conversation_async
-from ..services import config, execution_events
+from ..services import attachments, config, execution_events
 from ..services.team_orchestrator import TeamTaskOrchestrator
 from .employees import _to_out as _employee_out
 
@@ -449,7 +449,8 @@ def get_conversation(
 
 def _begin_conversation_run(
     db: Session, background_tasks: BackgroundTasks, conv: models.Conversation,
-    actor_no: str, content: str, *, retry_of_execution_id: str | None = None,
+    actor_no: str, content: str, *, attachment_ids: list[str] | None = None,
+    retry_of_execution_id: str | None = None,
 ) -> tuple[models.ConversationMessage, models.AgentExecution]:
     execution_events.fail_orphaned_executions(db, stale_after_seconds=360)
     active = execution_events.active_execution(db, conv.id)
@@ -462,6 +463,19 @@ def _begin_conversation_run(
     if not text:
         raise HTTPException(status_code=400, detail="消息不能为空")
     user_message = append_user_message(db, conversation=conv, actor_no=actor_no, content=text)
+    bound: list[models.ConversationAttachment] = []
+    try:
+        bound = attachments.bind_to_message(
+            db, conversation=conv, owner_human_no=actor_no,
+            message_seq=user_message.seq, attachment_ids=attachment_ids or [],
+        )
+        user_message.attachment_ids = [row.id for row in bound]
+        db.add(user_message)
+        db.commit()
+    except Exception:
+        db.delete(user_message)
+        db.commit()
+        raise
     primary = (conv.participants or [{}])[0].get("employee_no", "")
     try:
         execution = execution_events.create_execution(
@@ -471,6 +485,8 @@ def _begin_conversation_run(
         )
     except RuntimeError as exc:
         if str(exc) == "ACTIVE_EXECUTION_CONFLICT":
+            for row in bound:
+                row.message_seq = None
             db.delete(user_message)
             db.commit()
             raise HTTPException(
@@ -478,6 +494,17 @@ def _begin_conversation_run(
                 detail={"message": "当前会话已有任务正在执行", "retryable": True},
             ) from exc
         raise
+    for row in bound:
+        execution_events.emit(
+            db, execution.id, event_type="attachment_received", stage="attachment",
+            status="queued", actor_employee_id=primary,
+            title=f"已接收附件 {row.filename}",
+            detail=(
+                f"文件已解析，共 {row.page_count} 页" if row.page_count is not None
+                else f"文件已解析，共 {row.sheet_count} 个工作表" if row.sheet_count is not None
+                else f"文件已解析，共 {row.chunk_count} 个内容片段"
+            ),
+        )
     conv.updated_at = datetime.now()
     db.add(conv)
     db.commit()
@@ -502,7 +529,10 @@ def send_message(
     enforce_actor(account, payload.actor_no)
     if conv.owner_human_no != payload.actor_no:
         raise HTTPException(status_code=403, detail="无权向该会话发送消息")
-    _, execution = _begin_conversation_run(db, background_tasks, conv, payload.actor_no, payload.content)
+    _, execution = _begin_conversation_run(
+        db, background_tasks, conv, payload.actor_no, payload.content,
+        attachment_ids=payload.attachment_ids,
+    )
     response.headers["Deprecation"] = "true"
     response.headers["X-DWP-Execution-ID"] = execution.id
     return _conversation_out(db, conv)
@@ -525,6 +555,7 @@ def start_conversation_run(
         raise HTTPException(status_code=403, detail="无权向该会话发送消息")
     user_message, execution = _begin_conversation_run(
         db, background_tasks, conv, payload.actor_no, payload.content,
+        attachment_ids=payload.attachment_ids,
     )
     return schemas.ConversationRunOut(
         execution_id=execution.id,
@@ -557,10 +588,24 @@ def retry_conversation_run(
     ))
     if trigger is None or original.conversation_generation != conv.generation:
         raise HTTPException(status_code=409, detail="原始问题已被清空，无法重新执行")
+    if trigger.attachment_ids:
+        available = db.scalars(select(models.ConversationAttachment).where(
+            models.ConversationAttachment.id.in_(trigger.attachment_ids),
+            models.ConversationAttachment.conversation_id == conversation_id,
+            models.ConversationAttachment.generation == conv.generation,
+            models.ConversationAttachment.deleted.is_(False),
+            models.ConversationAttachment.status == "ready",
+        )).all()
+        if len(available) != len(set(trigger.attachment_ids)):
+            raise HTTPException(status_code=409, detail="原执行使用的附件已删除或失效，无法重新执行")
     user_message, execution = _begin_conversation_run(
         db, background_tasks, conv, conv.owner_human_no, trigger.content,
         retry_of_execution_id=original.id,
     )
+    if trigger.attachment_ids:
+        user_message.attachment_ids = list(trigger.attachment_ids)
+        db.add(user_message)
+        db.commit()
     return schemas.ConversationRunOut(
         execution_id=execution.id, trigger_message_seq=user_message.seq,
         conversation=_conversation_out(db, conv),
@@ -809,6 +854,22 @@ def clear_conversation(
     if conv.owner_human_no != actor_no:
         raise HTTPException(status_code=403, detail="无权清空该会话")
     execution_events.cancel_for_conversation(db, conversation_id)
+    db.query(models.ConversationAttachment).filter(
+        models.ConversationAttachment.conversation_id == conversation_id,
+        models.ConversationAttachment.generation == conv.generation,
+    ).update({
+        models.ConversationAttachment.deleted: True,
+        models.ConversationAttachment.status: "deleted",
+        models.ConversationAttachment.updated_at: datetime.now(),
+    }, synchronize_session=False)
+    attachment_ids = select(models.ConversationAttachment.id).where(
+        models.ConversationAttachment.conversation_id == conversation_id,
+        models.ConversationAttachment.generation == conv.generation,
+    )
+    db.query(models.AttachmentProcessingJob).filter(
+        models.AttachmentProcessingJob.attachment_id.in_(attachment_ids),
+        models.AttachmentProcessingJob.status.in_(["pending", "processing"]),
+    ).update({models.AttachmentProcessingJob.status: "failed"}, synchronize_session=False)
     conv.generation += 1
     conv.updated_at = datetime.now()
     db.add(conv)

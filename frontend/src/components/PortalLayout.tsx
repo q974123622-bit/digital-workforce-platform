@@ -1,4 +1,4 @@
-import { AppstoreOutlined, BulbOutlined, LogoutOutlined, MessageOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, BulbOutlined, CommentOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { Avatar, Dropdown, Tooltip } from 'antd';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -6,8 +6,7 @@ import BrandMark from './ui/BrandMark';
 import ThemeSwitcher from './ui/ThemeSwitcher';
 
 const NAV_ITEMS = [
-  { to: '/workplace', icon: <MessageOutlined />, label: '消息' },
-  { to: '/directory', icon: <TeamOutlined />, label: '同事' },
+  { to: '/workplace', icon: <CommentOutlined />, label: '协作' },
   { to: '/plugins', icon: <BulbOutlined />, label: '插件' },
   { to: '/me', icon: <UserOutlined />, label: '我的' },
 ];
@@ -18,7 +17,7 @@ export default function PortalLayout() {
   const canAdmin = account.roles.some((role) => ['agent_admin', 'security_admin', 'platform_admin'].includes(role));
 
   return (
-    <div className="portal-shell flex min-h-[100dvh] overflow-hidden bg-page">
+    <div className="portal-shell flex h-[100dvh] min-h-0 overflow-hidden bg-page">
       {/* 左侧 64px 垂直导航栏（移动端隐藏） */}
       <aside className="portal-rail hidden w-[72px] shrink-0 flex-col items-center border-r border-line bg-surface py-4 md:flex">
         <NavLink to="/workplace" className="brand-home mb-6 flex flex-col items-center gap-1.5" title="数字员工工作台">
@@ -87,7 +86,7 @@ export default function PortalLayout() {
       </aside>
 
       {/* 主内容区（移动端底部留出导航高度） */}
-      <main id="main-content" className="min-w-0 flex-1 pb-14 md:pb-0">
+      <main id="main-content" className="portal-content min-h-0 min-w-0 flex-1 overflow-y-auto pb-14 md:pb-0">
         <Outlet />
       </main>
 

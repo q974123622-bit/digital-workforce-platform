@@ -58,6 +58,7 @@ class EmployeeOut(BaseModel):
     max_data_level: str
     allowed_domains: list[str]
     grants: list[GrantOut] = []
+    avatar_url: str | None = None
 
 
 class EmployeeRuntimeOut(BaseModel):
@@ -477,6 +478,7 @@ class ConversationMessageOut(BaseModel):
     role: str
     content: str
     tool_cards: list = []
+    attachment_ids: list[str] = []
     seq: int
 
 
@@ -504,6 +506,26 @@ class ConversationSummaryOut(BaseModel):
 class ConversationSendIn(BaseModel):
     actor_no: str
     content: str
+    attachment_ids: list[str] = []
+
+
+class ConversationAttachmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    attachment_id: str = Field(validation_alias="id")
+    conversation_id: str
+    filename: str
+    file_type: str
+    mime_type: str
+    size: int
+    status: str
+    processing_hint: str | None = None
+    error_code: str = ""
+    page_count: int | None = None
+    sheet_count: int | None = None
+    chunk_count: int = 0
+    message_seq: int | None = None
+    created_at: datetime
 
 
 class AgentExecutionOut(BaseModel):
@@ -576,6 +598,10 @@ class ClearConversationOut(BaseModel):
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=8, max_length=200)
+
+
+class KeyLoginIn(BaseModel):
+    access_key: str = Field(min_length=12, max_length=200)
 
 
 class AccountOut(BaseModel):

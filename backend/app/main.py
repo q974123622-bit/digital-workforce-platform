@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .database import Base, engine, ensure_schema_compatibility
-from .routers import access, agents, audit, auth, chat, directory, employees, internal, knowledge, memory, plugin_governance, plugins, policies, teams, workplace
+from .routers import access, agents, attachments, audit, auth, chat, directory, employees, internal, knowledge, memory, plugin_governance, plugins, policies, teams, workplace
 from .seed import seed_if_empty
 from .services import config, execution_events, runtime_manager
 
@@ -21,8 +21,11 @@ async def lifespan(_: FastAPI):
     recovery_db = SessionLocal()
     try:
         execution_events.fail_orphaned_executions(recovery_db)
+        from .services import attachments as attachment_service
+        attachment_service.cleanup_orphans(recovery_db)
     finally:
         recovery_db.close()
+    attachment_service.recover_pending_jobs()
     if config.get("DWP_HARNESS_ENABLED") == "1":
         db = SessionLocal()
         try:
@@ -116,3 +119,4 @@ app.include_router(internal.router)
 app.include_router(workplace.workplace_router, prefix=API_PREFIX)
 app.include_router(workplace.skills_router, prefix=API_PREFIX)
 app.include_router(workplace.conversations_router, prefix=API_PREFIX)
+app.include_router(attachments.router, prefix=API_PREFIX)

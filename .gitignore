@@ -21,6 +21,8 @@ venv/
 
 # 数据库与本地状态
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 *.log
 
@@ -28,6 +30,7 @@ venv/
 backend/sandbox-workspaces/
 backend/harness-workspaces/
 backend/artifacts/
+backend/attachments/
 
 # PDF 生成中间文件（最终产物在 output/pdf/）
 tmp/

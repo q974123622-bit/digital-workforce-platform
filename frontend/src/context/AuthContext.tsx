@@ -6,9 +6,8 @@ import { api, AUTH_EXPIRED_EVENT } from '../api/client';
 interface AuthContextValue {
   account: Account | null;
   checking: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (accessKey: string) => Promise<Account>;
   logout: () => Promise<void>;
-  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -32,22 +31,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, expire);
   }, []);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const reply = await api.login(username, password);
+  const login = useCallback(async (accessKey: string) => {
+    const reply = await api.login(accessKey);
     setAccount(reply.account);
+    return reply.account;
   }, []);
 
   const logout = useCallback(async () => {
-    await api.logout();
-    setAccount(null);
+    try { await api.logout(); }
+    finally { setAccount(null); }
   }, []);
 
-  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
-    await api.changePassword(currentPassword, newPassword);
-    setAccount((current) => current ? { ...current, must_change_password: false } : current);
-  }, []);
-
-  const value = useMemo(() => ({ account, checking, login, logout, changePassword }), [account, checking, login, logout, changePassword]);
+  const value = useMemo(() => ({ account, checking, login, logout }), [account, checking, login, logout]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

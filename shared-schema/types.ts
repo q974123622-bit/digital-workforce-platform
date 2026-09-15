@@ -39,6 +39,7 @@ export interface Employee {
   max_data_level: string;
   allowed_domains: string[];
   grants: Grant[];
+  avatar_url?: string | null;
 }
 
 export interface AccessRequest {
@@ -279,7 +280,25 @@ export interface ConversationMessage {
   role: 'user' | 'assistant';
   content: string;
   tool_cards: unknown[];
+  attachment_ids?: string[];
   seq: number;
+}
+
+export interface ConversationAttachment {
+  attachment_id: string;
+  conversation_id: string;
+  filename: string;
+  file_type: string;
+  mime_type: string;
+  size: number;
+  status: 'pending' | 'processing' | 'ready' | 'failed' | 'ocr_required' | 'conversion_required' | 'deleted';
+  processing_hint: string | null;
+  error_code: string;
+  page_count: number | null;
+  sheet_count: number | null;
+  chunk_count: number;
+  message_seq: number | null;
+  created_at: string;
 }
 
 export interface Conversation {

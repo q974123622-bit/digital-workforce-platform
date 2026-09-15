@@ -33,6 +33,7 @@ class DigitalEmployee(Base):
     internet: Mapped[str] = mapped_column(String, default="deny")
     max_data_level: Mapped[str] = mapped_column(String, default="L1")
     allowed_domains: Mapped[list] = mapped_column(JSON, default=list)
+    avatar_url: Mapped[str | None] = mapped_column(String, nullable=True)
 class Plugin(Base):
     __tablename__ = "plugin"
 
@@ -293,8 +294,57 @@ class ConversationMessage(Base):
     role: Mapped[str] = mapped_column(String, default="user")  # user | assistant
     content: Mapped[str] = mapped_column(String, default="")
     tool_cards: Mapped[list] = mapped_column(JSON, default=list)
+    attachment_ids: Mapped[list] = mapped_column(JSON, default=list)
     seq: Mapped[int] = mapped_column(default=0)
     generation: Mapped[int] = mapped_column(default=0, index=True)
+
+
+class ConversationAttachment(Base):
+    __tablename__ = "conversation_attachment"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True)
+    owner_human_no: Mapped[str] = mapped_column(String, index=True)
+    generation: Mapped[int] = mapped_column(default=0, index=True)
+    message_seq: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    filename: Mapped[str] = mapped_column(String)
+    file_type: Mapped[str] = mapped_column(String)
+    mime_type: Mapped[str] = mapped_column(String, default="application/octet-stream")
+    size: Mapped[int] = mapped_column(default=0)
+    sha256: Mapped[str] = mapped_column(String)
+    storage_path: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="pending", index=True)
+    processing_hint: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_code: Mapped[str] = mapped_column(String, default="")
+    page_count: Mapped[int | None] = mapped_column(nullable=True)
+    sheet_count: Mapped[int | None] = mapped_column(nullable=True)
+    chunk_count: Mapped[int] = mapped_column(default=0)
+    deleted: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class AttachmentChunk(Base):
+    __tablename__ = "attachment_chunk"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    attachment_id: Mapped[str] = mapped_column(String, index=True)
+    chunk_no: Mapped[int] = mapped_column(default=0)
+    content: Mapped[str] = mapped_column(String, default="")
+    location: Mapped[str] = mapped_column(String, default="")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class AttachmentProcessingJob(Base):
+    __tablename__ = "attachment_processing_job"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    attachment_id: Mapped[str] = mapped_column(String, index=True)
+    status: Mapped[str] = mapped_column(String, default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(default=0)
+    error_summary: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class ConversationMemoryState(Base):
@@ -411,6 +461,7 @@ class Account(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String)
+    login_key_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     human_employee_no: Mapped[str] = mapped_column(String, index=True)
     roles: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String, default="active")

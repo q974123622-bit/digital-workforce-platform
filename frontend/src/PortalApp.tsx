@@ -8,7 +8,6 @@ import NotFoundPage from './components/NotFoundPage';
 import { LoadingState } from './components/PageState';
 
 const WorkplacePage = lazy(() => import('./pages/workplace/WorkplacePage'));
-const DirectoryPage = lazy(() => import('./pages/DirectoryPage'));
 const PluginCenter = lazy(() => import('./pages/PluginCenter'));
 const MemoryPage = lazy(() => import('./pages/MemoryPage'));
 const MePage = lazy(() => import('./pages/MePage'));
@@ -22,7 +21,7 @@ function AuthenticatedPortal() {
         <Route element={<PortalLayout />}>
           <Route path="/" element={<Navigate to="/workplace" replace />} />
           <Route path="/workplace" element={<WorkplacePage />} />
-          <Route path="/directory" element={<DirectoryPage />} />
+          <Route path="/directory" element={<Navigate to="/workplace?view=directory" replace />} />
           <Route path="/plugins" element={<PluginCenter />} />
           <Route path="/memories" element={<MemoryPage />} />
           <Route path="/me" element={<MePage />} />

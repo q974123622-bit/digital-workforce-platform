@@ -61,6 +61,7 @@ def _to_out(db: Session, emp: models.DigitalEmployee) -> schemas.EmployeeOut:
         max_data_level=emp.max_data_level,
         allowed_domains=emp.allowed_domains or [],
         grants=_grants_for(db, emp.employee_no),
+        avatar_url=emp.avatar_url,
     )
 
 

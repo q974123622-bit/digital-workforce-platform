@@ -21,7 +21,7 @@ from ..services.policy import DECISION_ALLOW, DECISION_DENY, ResourceRef, evalua
 from ..services.runtime_adapter import DockerHarnessRuntimeAdapter, RuntimeResult
 from ..services.sandbox_manager import SandboxManager
 from ..services.sandbox_policy import from_identity
-from ..services import execution_events
+from ..services import attachments as attachment_service, execution_events
 from ..services.external_mcp_adapter import qieman_adapter, xyzq_adapter
 from ..services.external_mcp_client import ExternalMcpError
 
@@ -43,6 +43,26 @@ class AgentDelegateToolIn(BaseModel):
 
     target_agent_id: str
     question: str
+
+
+class AttachmentSearchToolIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attachment_id: str
+    query: str
+    top_k: int = 5
+
+
+class AttachmentReadToolIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attachment_id: str
+    chunk_ids: list[int]
+
+
+class SpreadsheetRangeToolIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attachment_id: str
+    sheet: str
+    range: str
 
 
 def _claims(authorization: str | None = Header(default=None)) -> HarnessClaims:
@@ -231,6 +251,56 @@ async def agent_tools_mcp(
         return {"jsonrpc": "2.0", "result": {}}
     elif method == "tools/list":
         tools = []
+        attachment_catalog = attachment_service.attachment_catalog(db, claims.trace_id)
+        if attachment_catalog:
+            allowed_ids = [item["attachment_id"] for item in attachment_catalog]
+            tools.extend([
+                {
+                    "name": "list_attachments",
+                    "description": "列出本次任务明确选择且已解析完成的会话附件。",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+                {
+                    "name": "search_attachment",
+                    "description": "按问题检索附件内容片段；先检索再按 chunk_id 精读。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "attachment_id": {"type": "string", "enum": allowed_ids},
+                            "query": {"type": "string"},
+                            "top_k": {"type": "integer", "minimum": 1, "maximum": 8},
+                        },
+                        "required": ["attachment_id", "query"],
+                    },
+                },
+                {
+                    "name": "read_attachment",
+                    "description": "读取 search_attachment 返回的指定内容片段，单次最多八段。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "attachment_id": {"type": "string", "enum": allowed_ids},
+                            "chunk_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 8},
+                        },
+                        "required": ["attachment_id", "chunk_ids"],
+                    },
+                },
+            ])
+            spreadsheet_ids = [item["attachment_id"] for item in attachment_catalog if item["file_type"] == "xlsx"]
+            if spreadsheet_ids:
+                tools.append({
+                    "name": "read_spreadsheet_range",
+                    "description": "读取 XLSX 指定工作表范围，单次最多 200 个单元格。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "attachment_id": {"type": "string", "enum": spreadsheet_ids},
+                            "sheet": {"type": "string"},
+                            "range": {"type": "string", "description": "例如 A1:F20"},
+                        },
+                        "required": ["attachment_id", "sheet", "range"],
+                    },
+                })
         if _has_knowledge_tool(db, claims):
             subject = resolve_identity(db, claims.employee_id)
             allowed = (
@@ -325,6 +395,33 @@ async def agent_tools_mcp(
                 # 的 MCP 回调（tools/list、search_knowledge）无法被处理而超时失败。
                 data = await asyncio.to_thread(
                     _agent_delegate, db, claims, AgentDelegateToolIn.model_validate(arguments)
+                )
+                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
+            elif tool_name == "list_attachments":
+                data = {"attachments": attachment_service.attachment_catalog(db, claims.trace_id)}
+                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
+            elif tool_name == "search_attachment":
+                payload = AttachmentSearchToolIn.model_validate(arguments)
+                data = attachment_service.search_attachment(
+                    db, trace_id=claims.trace_id, requester=claims.requester_human_no,
+                    employee_id=claims.employee_id, attachment_id=payload.attachment_id,
+                    query=payload.query, top_k=payload.top_k,
+                )
+                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
+            elif tool_name == "read_attachment":
+                payload = AttachmentReadToolIn.model_validate(arguments)
+                data = attachment_service.read_attachment(
+                    db, trace_id=claims.trace_id, requester=claims.requester_human_no,
+                    employee_id=claims.employee_id, attachment_id=payload.attachment_id,
+                    chunk_ids=payload.chunk_ids,
+                )
+                result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
+            elif tool_name == "read_spreadsheet_range":
+                payload = SpreadsheetRangeToolIn.model_validate(arguments)
+                data = attachment_service.read_spreadsheet_range(
+                    db, trace_id=claims.trace_id, requester=claims.requester_human_no,
+                    employee_id=claims.employee_id, attachment_id=payload.attachment_id,
+                    sheet=payload.sheet, cell_range=payload.range,
                 )
                 result = {"content": [{"type": "text", "text": __import__("json").dumps(data, ensure_ascii=False)}]}
             else:

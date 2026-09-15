@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
-from . import config, execution_events, runtime_manager
+from . import attachments as attachment_service, config, execution_events, runtime_manager
 from .chat import ChatResult, ToolCard, knowledge_display_name
 from .harness_token import issue_token
 from .identity import resolve_identity
@@ -51,7 +51,9 @@ SKILL_ROUTE_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def _route_skill_content(db: Session, employee_id: str, message: str) -> dict | None:
+def _route_skill_content(
+    db: Session, employee_id: str, message: str, attachment_catalog: list[dict] | None = None,
+) -> dict | None:
     """按关键词规则将任务路由到已授权技能，返回 {name, content} 或 None。"""
     skills: list[dict] = []
     for skill in db.query(models.Skill).filter(models.Skill.status == "active").all():
@@ -68,7 +70,11 @@ def _route_skill_content(db: Session, employee_id: str, message: str) -> dict | 
     if not skills:
         return None
     best, best_score = None, 0
-    message_lower = message.lower()
+    metadata_hint = " ".join(
+        f"{item.get('filename', '')} {item.get('file_type', '')}"
+        for item in (attachment_catalog or [])
+    )
+    message_lower = f"{message} {metadata_hint}".lower()
     for skill in skills:
         keywords = SKILL_ROUTE_KEYWORDS.get(skill["name"], [skill["name"]])
         score = sum(1 for kw in keywords if kw.lower() in message_lower)
@@ -81,6 +87,7 @@ def _prompt(
     *, employee: models.DigitalEmployee, profile: models.AgentProfile, requester: str,
     message: str, history: list[dict], knowledge: list[dict], depth: int,
     plugins: list[dict], routed_skill: dict | None = None,
+    attachments: list[dict] | None = None,
 ) -> str:
     can_delegate = profile.identity_kind == "human_twin" and depth == 0
     authorized = [{"id": kb["id"], "name": kb["name"]} for kb in knowledge]
@@ -98,6 +105,7 @@ def _prompt(
         "authorized_knowledge_bases": authorized,
         "recent_conversation": five_complete_rounds(history),
         "enabled_plugins": enabled,
+        "attachments": attachments or [],
         "goal": message,
         "limits": {
             "knowledge_searches": 5,
@@ -118,6 +126,12 @@ def _prompt(
         )
     else:
         playbook_lead = ""
+    attachment_lead = (
+        "本任务包含会话附件。先调用 list_attachments 查看目录，再按需使用 search_attachment、"
+        "read_attachment 或 read_spreadsheet_range；不得假装已经读取，也不要要求用户把全文粘贴进消息。"
+        "引用附件结论时使用“[文件名 · 第N页/工作表!范围/片段位置]”格式，只能引用工具实际返回的位置。"
+        if attachments else ""
+    )
     return (
         "你是企业内部的真实数字同事，请在本轮内自主完成任务。先理解问题，再判断是否需要检索知识库；"
         "证据不足时可顺序检索其他已授权知识库，但最多五次。只能使用工具目录中出现的工具，"
@@ -125,7 +139,7 @@ def _prompt(
         "检索知识库必须调用工具目录中名为 search_knowledge 的工具；"
         "knowledge_base_id 参数必须原样复制 authorized_knowledge_bases 中某一项的 id 值，"
         "禁止自行编造、猜测，或用知识库名称代替 id。"
-        + playbook_lead +
+        + playbook_lead + attachment_lead +
         "工具失败、无权限或证据不足时必须明确说明。最终直接给用户一份简洁、可核验的中文答复，"
         "不要输出内部思考过程、令牌或配置。\n\nTASK_ENVELOPE:\n"
         + json.dumps(envelope, ensure_ascii=False)
@@ -161,7 +175,8 @@ def run_agent(
         )
     knowledge = accessible_knowledge_bases(db, subject, requester_human_no)
     plugins = effective_plugins(db, employee_id, requester_human_no)
-    routed_skill = _route_skill_content(db, employee_id, message)
+    attachment_catalog = attachment_service.attachment_catalog(db, task_trace)
+    routed_skill = _route_skill_content(db, employee_id, message, attachment_catalog)
     if routed_skill is not None and execution is not None:
         # 前置路由命中：在轨迹中显式记录技能来源，保证可审计（SOP 已注入任务上下文）。
         execution_events.emit(
@@ -173,7 +188,7 @@ def run_agent(
     task = _prompt(
         employee=employee, profile=profile, requester=requester_human_no,
         message=message, history=history or [], knowledge=knowledge, depth=depth,
-        plugins=plugins, routed_skill=routed_skill,
+        plugins=plugins, routed_skill=routed_skill, attachments=attachment_catalog,
     )
     token = issue_token(
         employee_id=employee_id,

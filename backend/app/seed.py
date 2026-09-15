@@ -8,7 +8,7 @@ from sqlalchemy import select
 from . import models
 from .database import DATABASE_URL, Base, SessionLocal, engine, ensure_schema_compatibility
 from .services import config
-from .services.auth import hash_password
+from .services.auth import hash_password, verify_password
 from .services.external_mcp_adapter import QIEMAN_PLUGIN_ID, XYZQ_PLUGIN_ID
 
 SEED_PATH = Path(__file__).resolve().parents[2] / "mock-data" / "seed.json"
@@ -140,9 +140,20 @@ def ensure_mvp_seed(db) -> None:
             "responsibilities": ["回答证券投资类咨询", "解读投资规则与市场资讯", "提供开户及业务办理指引"],
         },
     }
+    avatar_urls = {
+        "DT-E10281": "/avatars/dt-e10281.webp",
+        "DT-E20999": "/avatars/dt-e20999.webp",
+        "AI-GENERAL": "/avatars/ai-general.webp",
+        "AI-INVESTMENT": "/avatars/ai-investment.webp",
+        "AI-RESEARCH": "/avatars/ai-research.webp",
+        "AI-FUND": "/avatars/ai-fund.webp",
+        "AI-XYZQ": "/avatars/ai-xyzq.webp",
+    }
     # 知识问答 MVP 保留岗位型数字员工 + 真人分身；历史 VE/RPA 演示员工已从种子数据移除。
     active_role_employee_ids = set(employee_specs)
     for existing in db.query(models.DigitalEmployee).all():
+        if existing.employee_no in avatar_urls:
+            existing.avatar_url = avatar_urls[existing.employee_no]
         if existing.type != "twin" and existing.employee_no not in active_role_employee_ids:
             existing.status = "inactive"
         elif existing.type == "twin":
@@ -155,6 +166,7 @@ def ensure_mvp_seed(db) -> None:
                 department=spec["department"], role_prompt=spec["persona"], runtime_type="harness",
                 runtime_ref=f"dwp-harness-{employee_id.lower()}", location="remote", internet="deny",
                 max_data_level="L2", allowed_domains=spec["domains"],
+                avatar_url=avatar_urls.get(employee_id),
             ))
         else:
             employee = db.get(models.DigitalEmployee, employee_id)
@@ -357,13 +369,28 @@ def ensure_mvp_seed(db) -> None:
         "E20999": ("E20999", ["user"], employee_password, "active"),
         "admin": ("SYS-ADMIN", ["agent_admin", "security_admin", "platform_admin"], admin_password, "active"),
     }
+    login_keys = {
+        "E10281": _secret_value("DWP_LOGIN_KEY_E10281", "DWP_LOGIN_KEY_E10281_FILE", "/run/secrets/login_key_e10281", "").strip(),
+        "E20999": _secret_value("DWP_LOGIN_KEY_E20999", "DWP_LOGIN_KEY_E20999_FILE", "/run/secrets/login_key_e20999", "").strip(),
+        "admin": _secret_value("DWP_LOGIN_KEY_ADMIN", "DWP_LOGIN_KEY_ADMIN_FILE", "/run/secrets/login_key_admin", "").strip(),
+    }
+    if os.getenv("DWP_REQUIRE_AUTH", "1") == "1":
+        missing = [name for name, value in login_keys.items() if len(value) < 12]
+        if missing:
+            raise RuntimeError("访问密钥未配置或长度不足 12 个字符：" + ", ".join(missing))
+        if len(set(login_keys.values())) != len(login_keys):
+            raise RuntimeError("三个账号的访问密钥不能重复")
     for username, (human_no, roles, password, status) in account_specs.items():
         account = db.scalar(select(models.Account).where(models.Account.username == username))
         if account is None:
             account = models.Account(username=username, password_hash=hash_password(password),
-                                     human_employee_no=human_no, must_change_password=True)
+                                     human_employee_no=human_no, must_change_password=False)
             db.add(account)
+        access_key = login_keys.get(username, "")
+        if access_key and not verify_password(access_key, account.login_key_hash or ""):
+            account.login_key_hash = hash_password(access_key)
         account.human_employee_no = human_no; account.roles = roles; account.status = status
+        account.must_change_password = False
     for account in db.query(models.Account).all():
         if account.username not in account_specs:
             account.status = "inactive"

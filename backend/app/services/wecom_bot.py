@@ -37,13 +37,8 @@ from . import config
 from .wecom_adapter import BotExecutionContext, handle_bot_message, run_execution, start_execution
 
 logger = logging.getLogger(__name__)
-# root logger 默认级别为 WARNING 且无 handler，会吞掉 INFO 日志；
-# 这里显式提升 wecom_bot 日志可见性，便于联调观察订阅/DRY-RUN 输出。
-if not logger.handlers:
-    _handler = logging.StreamHandler()
-    _handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
-    logger.addHandler(_handler)
-    logger.propagate = False
+# 交由应用根日志器统一输出，避免模块私有 handler 造成重复日志，
+# 同时确保测试、集中采集与审计侧能够捕获断连事件。
 logger.setLevel(logging.INFO)
 
 

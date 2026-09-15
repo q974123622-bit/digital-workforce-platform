@@ -5,10 +5,11 @@ import {
   SearchOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Empty, Input } from 'antd';
+import { Button, Empty, Input } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import type { Employee } from '@dwp/shared-schema';
 import AgentProfile from './AgentProfile';
+import AgentAvatar from '../../components/ui/AgentAvatar';
 
 type DirectoryFilter = 'all' | 'twin' | `department:${string}`;
 type MobilePane = 'departments' | 'people' | 'detail';
@@ -38,6 +39,7 @@ function normalizeEmployee(employee: Employee): DirectoryEntry {
     kind: employee.type === 'twin' ? 'twin' : employee.type === 'rpa' ? 'automation' : 'digital_employee',
     status: employee.status,
     source: employee,
+    avatarUrl: employee.avatar_url ?? undefined,
   };
 }
 
@@ -48,11 +50,7 @@ const KIND_LABEL: Record<DirectoryEntry['kind'], string> = {
 };
 
 function DirectoryAvatar({ entry, size = 42 }: { entry: DirectoryEntry; size?: number }) {
-  return (
-    <Avatar size={size} shape="square" className={`directory-avatar ${entry.kind}`}>
-      {entry.name.slice(0, 1)}
-    </Avatar>
-  );
+  return <AgentAvatar employee={entry.source} size={size} className={`directory-avatar ${entry.kind}`} />;
 }
 
 export default function Directory({

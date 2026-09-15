@@ -334,3 +334,99 @@ body, .portal-rail, .chat-workspace, .address-book, .address-book-departments,
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* 协作工作台：会话与同事共用同一个二级栏。 */
+.workspace-section-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--dwp-border-light);
+  background: var(--dwp-surface);
+}
+
+.workspace-section-switch button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dwp-text-secondary);
+  cursor: pointer;
+  transition: background-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.workspace-section-switch button:hover { background: var(--dwp-surface-subtle); color: var(--dwp-text); }
+.workspace-section-switch button:active { transform: translateY(1px); }
+.workspace-section-switch button.active { background: var(--dwp-brand-soft); color: var(--dwp-brand); font-weight: 600; }
+.workspace-section-switch button:focus-visible,
+.avatar-button:focus-visible { outline: 2px solid var(--dwp-brand); outline-offset: 2px; }
+
+.avatar-button {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.agent-avatar {
+  overflow: hidden;
+  border: 1px solid var(--dwp-border);
+  background: var(--dwp-surface-subtle);
+  color: var(--dwp-brand);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--dwp-text) 8%, transparent);
+}
+
+.agent-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.colleague-list { scrollbar-gutter: stable; }
+.colleague-row {
+  position: relative;
+  min-height: 62px;
+  appearance: none;
+  border: 0;
+  border-radius: 10px;
+  outline: 0;
+  background: transparent;
+  color: var(--dwp-text);
+  box-shadow: none;
+  cursor: pointer;
+  transition: background-color 180ms var(--dwp-ease), transform 180ms var(--dwp-ease);
+}
+.colleague-row::after {
+  position: absolute;
+  right: 10px;
+  bottom: 0;
+  left: 64px;
+  height: 1px;
+  background: color-mix(in srgb, var(--dwp-border-light) 76%, transparent);
+  content: '';
+  transition: opacity 160ms var(--dwp-ease);
+}
+.colleague-row:last-child::after,
+.colleague-row:hover::after,
+.colleague-row:focus-visible::after { opacity: 0; }
+.colleague-row:hover {
+  background: color-mix(in srgb, var(--dwp-brand-soft) 48%, var(--dwp-surface));
+  transform: translateX(2px);
+}
+.colleague-row.is-twin { background: color-mix(in srgb, var(--dwp-brand-soft) 24%, transparent); }
+.colleague-row.is-twin:hover { background: color-mix(in srgb, var(--dwp-brand-soft) 62%, var(--dwp-surface)); }
+.colleague-row:active { transform: translateX(2px) scale(.99); }
+.colleague-row:focus-visible {
+  background: var(--dwp-surface-subtle);
+  outline: 2px solid var(--dwp-focus);
+  outline-offset: -2px;
+}
+.colleague-row .address-book-presence {
+  box-shadow: 0 0 0 3px var(--dwp-surface), 0 0 0 4px color-mix(in srgb, var(--dwp-success) 18%, transparent);
+}
+
+/* 普通业务页由内容区滚动，工作台内部仍使用各自的消息滚动容器。 */
+.portal-content { overscroll-behavior: contain; }
+.plugin-page .ant-tabs-content-holder,
+.plugin-page .ant-tabs-content,
+.plugin-page .ant-tabs-tabpane { min-height: 0; overflow: visible; }
+.plugin-detail-drawer .ant-drawer-body { overflow-y: auto; overscroll-behavior: contain; }

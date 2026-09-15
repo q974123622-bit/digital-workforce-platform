@@ -31,7 +31,7 @@ export default function PluginCenter() {
   };
 
   return (
-    <div className="page-shell space-y-5">
+    <div className="plugin-page page-shell min-h-full space-y-5 pb-24 md:pb-10">
       <div className="page-heading">
         <div>
           <Typography.Title level={2} className="!mb-1 !text-[26px]">插件中心</Typography.Title>

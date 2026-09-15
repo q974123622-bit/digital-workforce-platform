@@ -45,7 +45,7 @@ export default function PluginCatalog({
           key: 'enabled',
           label: `已启用（${effective.length}）`,
           children: (
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="plugin-catalog-grid grid gap-3 pb-6 md:grid-cols-2">
               {effective.map((item) => (
                 <article
                   key={item.plugin_id}
@@ -81,7 +81,7 @@ export default function PluginCatalog({
           key: 'available',
           label: `可添加（${available.length}）`,
           children: (
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="plugin-catalog-grid grid gap-3 pb-6 md:grid-cols-2">
               {available.map((item) => (
                 <article
                   key={item.plugin_id ?? item.id}
@@ -116,7 +116,7 @@ export default function PluginCatalog({
           key: 'submissions',
           label: `我的提交（${submissions.length}）`,
           children: (
-            <div className="space-y-2">
+            <div className="space-y-2 pb-6">
               {submissions.map((item) => (
                 <div key={item.id} className="flex items-center gap-3 rounded-container border border-line bg-surface p-3">
                   <PluginIcon pluginType={item.plugin_type} />

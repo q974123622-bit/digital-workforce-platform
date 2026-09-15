@@ -76,8 +76,13 @@ def ensure_schema_compatibility() -> None:
             )
 
     additions = {
+        "digital_employee": {"avatar_url": "VARCHAR"},
+        "account": {"login_key_hash": "VARCHAR"},
         "conversation": {"generation": "INTEGER NOT NULL DEFAULT 0"},
-        "conversation_message": {"generation": "INTEGER NOT NULL DEFAULT 0"},
+        "conversation_message": {
+            "generation": "INTEGER NOT NULL DEFAULT 0",
+            "attachment_ids": "JSON NOT NULL DEFAULT '[]'",
+        },
         "agent_execution": {
             "conversation_generation": "INTEGER NOT NULL DEFAULT 0",
             "retry_of_execution_id": "VARCHAR",

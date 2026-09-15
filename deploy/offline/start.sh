@@ -6,8 +6,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 image_archive="images/dwp-ai-employee-platform-images-linux-amd64.tar"
 secret_file="secrets/llm_api_key"
 signing_secret_file="secrets/harness_signing_secret"
-employee_password_file="secrets/employee_initial_password"
-admin_password_file="secrets/admin_initial_password"
+employee_one_key_file="secrets/login_key_e10281"
+employee_two_key_file="secrets/login_key_e20999"
+admin_key_file="secrets/login_key_admin"
 image_tag="${DWP_IMAGE_TAG:-0.3.0-offline}"
 dsh_image="${DWP_DSH_IMAGE:-dwp-dsh:rc6}"
 required_images=("dwp-backend:${image_tag}" "dwp-frontend:${image_tag}" "$dsh_image")
@@ -34,7 +35,7 @@ available_kb="$(df -Pk "$docker_root" | awk 'NR == 2 {print $4}')"
 [ "$available_kb" -ge 6291456 ] || fail "Docker 数据目录至少需要 6 GiB 可用空间"
 
 umask 077
-mkdir -p secrets data backups
+mkdir -p secrets data/artifacts data/attachments backups
 for employee_id in AI-GENERAL AI-INVESTMENT AI-RESEARCH AI-FUND DT-E10281 DT-E20999; do
   mkdir -p "harness/$employee_id/dsh-home" "harness/$employee_id/workspace"
 done
@@ -124,20 +125,21 @@ if [ ! -s "$signing_secret_file" ]; then
 fi
 chmod 600 "$signing_secret_file"
 
-prompt_password() {
+prompt_login_key() {
   local path="$1" label="$2" first second
   if [ ! -s "$path" ]; then
-    read -rsp "请输入${label}初始密码（至少 10 位，输入不回显）: " first; echo
-    read -rsp "请再次输入${label}初始密码: " second; echo
-    [ "$first" = "$second" ] || fail "两次输入的${label}密码不一致"
-    [ "${#first}" -ge 10 ] || fail "${label}密码至少需要 10 个字符"
+    read -rsp "请输入${label}访问密钥（至少 12 位，输入不回显）: " first; echo
+    read -rsp "请再次输入${label}访问密钥: " second; echo
+    [ "$first" = "$second" ] || fail "两次输入的${label}密钥不一致"
+    [ "${#first}" -ge 12 ] || fail "${label}密钥至少需要 12 个字符"
     printf '%s' "$first" > "$path"
     unset first second
   fi
   chmod 600 "$path"
 }
-prompt_password "$employee_password_file" "员工账号"
-prompt_password "$admin_password_file" "管理员账号"
+prompt_login_key "$employee_one_key_file" "张三"
+prompt_login_key "$employee_two_key_file" "陈晓萌"
+prompt_login_key "$admin_key_file" "管理员"
 
 missing_image=0
 for image in "${required_images[@]}"; do

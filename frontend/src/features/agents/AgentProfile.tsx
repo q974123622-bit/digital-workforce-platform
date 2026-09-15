@@ -1,8 +1,9 @@
-import { CommentOutlined, RobotOutlined, ToolOutlined } from '@ant-design/icons';
-import { Avatar, Button, Empty, Space, Tag, Typography } from 'antd';
+import { CommentOutlined, ToolOutlined } from '@ant-design/icons';
+import { Button, Empty, Space, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import type { EffectiveCapabilities, Employee } from '@dwp/shared-schema';
 import { api } from '../../api/client';
+import AgentAvatar from '../../components/ui/AgentAvatar';
 
 const { Text } = Typography;
 
@@ -29,9 +30,7 @@ export default function AgentProfile({ employee, onOpenChat }: { employee: Emplo
   return (
     <div className="agent-profile space-y-7">
       <div className="agent-profile-identity">
-        <Avatar size={72} shape="square" className={`directory-avatar ${employee.type === 'twin' ? 'twin' : employee.type === 'rpa' ? 'automation' : 'digital_employee'}`}>
-          {employee.type === 'rpa' ? <RobotOutlined /> : employee.name.slice(0, 1)}
-        </Avatar>
+        <AgentAvatar employee={employee} size={72} className={`directory-avatar ${employee.type === 'twin' ? 'twin' : employee.type === 'rpa' ? 'automation' : 'digital_employee'}`} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="agent-profile-name">{employee.name}</span>

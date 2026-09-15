@@ -9,6 +9,10 @@ os.environ["DWP_REQUIRE_AUTH"] = "0"
 # 固定初始密码：避免容器 /run/secrets 的真实密码覆盖测试默认密码，导致登录 401。
 os.environ["DWP_EMPLOYEE_INITIAL_PASSWORD"] = "Demo@123456"
 os.environ["DWP_ADMIN_INITIAL_PASSWORD"] = "Demo@123456"
+os.environ["DWP_LOGIN_KEY_E10281"] = "test-key-e10281"
+os.environ["DWP_LOGIN_KEY_E20999"] = "test-key-e20999"
+os.environ["DWP_LOGIN_KEY_ADMIN"] = "test-key-admin00"
+os.environ["DWP_ENABLE_LEGACY_PASSWORD_LOGIN"] = "1"
 
 import pytest
 from fastapi.testclient import TestClient

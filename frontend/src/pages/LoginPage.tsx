@@ -1,4 +1,4 @@
-import { CheckCircleFilled, LockOutlined, SafetyCertificateOutlined, UserOutlined } from '@ant-design/icons';
+import { CheckCircleFilled, KeyOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Alert, Button, Form, Input, Typography } from 'antd';
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
@@ -12,11 +12,15 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const submit = async (values: { username: string; password: string }) => {
+  const submit = async (values: { accessKey: string }) => {
     setLoading(true);
     setError('');
     try {
-      await login(values.username, values.password);
+      const account = await login(values.accessKey);
+      const isAdmin = account.roles.some((role) => ['agent_admin', 'security_admin', 'platform_admin'].includes(role));
+      const onAdminPage = window.location.pathname.startsWith('/admin');
+      if (isAdmin && !onAdminPage) window.location.assign('/admin/');
+      if (!isAdmin && onAdminPage) window.location.assign('/workplace');
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -48,23 +52,20 @@ export default function LoginPage() {
           <span className="grid h-11 w-11 place-items-center rounded-[12px] bg-brand-soft text-xl text-brand"><SafetyCertificateOutlined /></span>
           <div>
             <Title level={3} className="!mb-0 !text-ink">欢迎回来</Title>
-            <Text type="secondary">使用公司账号进入数字员工工作台</Text>
+            <Text type="secondary">输入访问密钥，系统会自动识别你的身份</Text>
           </div>
         </div>
         {error && <Alert className="mb-4" type="error" showIcon message={error} />}
         <Form layout="vertical" onFinish={submit}>
-          <Form.Item label="账号" name="username" rules={[{ required: true, message: '请输入账号' }]}>
-            <Input size="large" prefix={<UserOutlined />} autoComplete="username" placeholder="员工工号或管理员账号" />
-          </Form.Item>
-          <Form.Item label="密码" name="password" rules={[{ required: true, message: '请输入密码' }]}>
-            <Input.Password size="large" prefix={<LockOutlined />} autoComplete="current-password" />
+          <Form.Item label="访问密钥" name="accessKey" rules={[{ required: true, message: '请输入访问密钥' }, { min: 12, message: '访问密钥至少 12 个字符' }]}>
+            <Input.Password size="large" prefix={<KeyOutlined />} autoComplete="off" placeholder="请输入你的访问密钥" />
           </Form.Item>
           <Button className="mt-2" type="primary" htmlType="submit" size="large" block loading={loading}>
-            登录
+            进入工作台
           </Button>
         </Form>
         <Text type="secondary" className="mt-5 block text-center text-xs">
-          当前为内部测试环境，所有知识访问均记录审计轨迹
+          密钥仅用于本次登录，不会保存在浏览器中
         </Text>
       </div>
       </section>

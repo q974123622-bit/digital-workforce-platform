@@ -2,6 +2,7 @@ import { EditOutlined, SearchOutlined, TeamOutlined } from '@ant-design/icons';
 import { Avatar, Button, Empty, Input, Tag } from 'antd';
 import { useMemo } from 'react';
 import type { ConversationSummary, Employee } from '@dwp/shared-schema';
+import AgentAvatar from '../../components/ui/AgentAvatar';
 
 export interface ContactMeta {
   label: string;
@@ -21,23 +22,25 @@ const formatTime = (iso: string) => {
 export default function ConversationList({
   conversations,
   twin,
+  employees,
   selectedId,
   keyword,
   onKeywordChange,
   onSelect,
   onOpenTwin,
   onNewChat,
-  metaOf,
+  onOpenProfile,
 }: {
   conversations: ConversationSummary[];
   twin: Employee | null;
+  employees: Employee[];
   selectedId: string | null;
   keyword: string;
   onKeywordChange: (value: string) => void;
   onSelect: (id: string) => void;
   onOpenTwin: () => void;
   onNewChat: () => void;
-  metaOf: (employeeNo: string) => ContactMeta;
+  onOpenProfile: (employeeNo: string) => void;
 }) {
   const twinConv = useMemo(
     () =>
@@ -59,14 +62,7 @@ export default function ConversationList({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-line-light px-3 pb-3 pt-4">
-        <div className="mb-3 flex items-center justify-between px-1">
-          <div>
-            <div className="text-base font-semibold text-ink">消息</div>
-            <div className="text-[11px] text-ink-tertiary">企业知识与协作</div>
-          </div>
-          <Button type="text" shape="circle" icon={<EditOutlined />} aria-label="发起会话" onClick={onNewChat} />
-        </div>
+      <div className="border-b border-line-light px-3 pb-3 pt-3">
         <div className="flex items-center gap-2">
           <Input
             allowClear
@@ -75,6 +71,7 @@ export default function ConversationList({
             value={keyword}
             onChange={(e) => onKeywordChange(e.target.value)}
           />
+          <Button type="text" shape="circle" icon={<EditOutlined />} aria-label="发起会话" onClick={onNewChat} />
         </div>
       </div>
       <div className="flex-1 overflow-y-auto px-2 py-2">
@@ -84,9 +81,9 @@ export default function ConversationList({
             onClick={() => twinConv ? onSelect(twinConv.id) : onOpenTwin()}
             className={`conversation-row mb-1 flex w-full cursor-pointer items-center gap-3 rounded-container px-2.5 py-2.5 text-left transition-colors ${selectedId === twinConv?.id ? 'active bg-brand-soft' : 'hover:bg-surface-subtle'}`}
           >
-            <Avatar size={36} style={{ background: 'var(--dwp-brand-soft)', color: 'var(--dwp-brand)' }}>
-              {twin.name.slice(0, 1)}
-            </Avatar>
+            <span role="button" tabIndex={0} className="avatar-button" aria-label="查看人物资料" onClick={(event) => { event.stopPropagation(); onOpenProfile(twin.employee_no); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onOpenProfile(twin.employee_no); } }}>
+              <AgentAvatar employee={twin} size={36} />
+            </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="truncate text-sm font-medium text-ink">{twin.name}</span>
@@ -105,7 +102,7 @@ export default function ConversationList({
         {visibleConvs.map((conv) => {
           const isGroup = conv.kind === 'group';
           const participant = conv.participants[0];
-          const meta = isGroup ? null : metaOf(participant?.employee_no ?? '');
+          const employee = employees.find((item) => item.employee_no === participant?.employee_no) ?? (twin?.employee_no === participant?.employee_no ? twin : null);
           return (
             <button
               key={conv.id}
@@ -120,9 +117,9 @@ export default function ConversationList({
                   <TeamOutlined />
                 </Avatar>
               ) : (
-                <Avatar size={36} style={{ background: meta?.bg, color: meta?.color }}>
-                  {meta?.emoji}
-                </Avatar>
+                <span role="button" tabIndex={0} className="avatar-button" aria-label="查看人物资料" onClick={(event) => { event.stopPropagation(); if (participant) onOpenProfile(participant.employee_no); }} onKeyDown={(event) => { if (participant && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); event.stopPropagation(); onOpenProfile(participant.employee_no); } }}>
+                  <AgentAvatar employee={employee} name={participant?.name} size={36} />
+                </span>
               )}
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-2">

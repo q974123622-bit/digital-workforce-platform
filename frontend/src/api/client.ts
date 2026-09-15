@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   ChatReply,
   Conversation,
+  ConversationAttachment,
   ConversationSummary,
   Employee,
   KnowledgeBase,
@@ -83,13 +84,11 @@ function qs(params?: Record<string, string | undefined>): string {
 
 export const api = {
   health: () => request<{ status: string }>('/health', { absolute: true }),
-  login: (username: string, password: string) =>
-    request<LoginReply>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })
+  login: (accessKey: string) =>
+    request<LoginReply>('/auth/key-login', { method: 'POST', body: JSON.stringify({ access_key: accessKey }) })
       .then((reply) => { authExpiredNotified = false; return reply; }),
   me: () => request<Account>('/auth/me'),
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
-  changePassword: (currentPassword: string, newPassword: string) =>
-    request<void>('/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }),
   getMyPlugins: () => request<{ effective: UnifiedPlugin[]; available: UnifiedPlugin[] }>('/my/plugins'),
   getMyPluginDetail: (pluginId: string) => request<PluginSafeDetail>(`/my/plugins/${encodeURIComponent(pluginId)}`),
   getMyPluginSubmissions: () => request<PluginSubmission[]>('/my/plugins/submissions'),
@@ -181,16 +180,31 @@ export const api = {
   }) => request<Conversation>('/conversations', { method: 'POST', body: JSON.stringify(payload) }),
   getConversation: (conversationId: string) =>
     request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}`),
-  sendConversationMessage: (conversationId: string, actorNo: string, content: string) =>
+  sendConversationMessage: (conversationId: string, actorNo: string, content: string, attachmentIds: string[] = []) =>
     request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ actor_no: actorNo, content }),
+      body: JSON.stringify({ actor_no: actorNo, content, ...(attachmentIds.length ? { attachment_ids: attachmentIds } : {}) }),
     }),
-  startConversationRun: (conversationId: string, actorNo: string, content: string) =>
+  startConversationRun: (conversationId: string, actorNo: string, content: string, attachmentIds: string[] = []) =>
     request<ConversationRunReply>(`/conversations/${encodeURIComponent(conversationId)}/runs`, {
       method: 'POST',
-      body: JSON.stringify({ actor_no: actorNo, content }),
+      body: JSON.stringify({ actor_no: actorNo, content, ...(attachmentIds.length ? { attachment_ids: attachmentIds } : {}) }),
     }),
+  uploadConversationAttachment: (conversationId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<ConversationAttachment>(`/conversations/${encodeURIComponent(conversationId)}/attachments`, {
+      method: 'POST', body: form,
+    });
+  },
+  listConversationAttachments: (conversationId: string) =>
+    request<ConversationAttachment[]>(`/conversations/${encodeURIComponent(conversationId)}/attachments`),
+  getConversationAttachment: (conversationId: string, attachmentId: string) =>
+    request<ConversationAttachment>(`/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}`),
+  deleteConversationAttachment: (conversationId: string, attachmentId: string) =>
+    request<void>(`/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' }),
+  retryConversationAttachment: (conversationId: string, attachmentId: string) =>
+    request<ConversationAttachment>(`/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}/retry`, { method: 'POST' }),
   getActiveConversationRun: (conversationId: string) =>
     request<AgentExecution | null>(`/conversations/${encodeURIComponent(conversationId)}/runs/active`),
   getLatestConversationRun: (conversationId: string) =>

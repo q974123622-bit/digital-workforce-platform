@@ -99,11 +99,13 @@ services:
       DWP_TEAM_BACKEND: builtin
       DWP_REQUIRE_AUTH: "1"
       DWP_ARTIFACT_ROOT: /data/artifacts
+      DWP_ATTACHMENT_ROOT: /data/attachments
     secrets:
       - llm_api_key
       - harness_signing_secret
-      - employee_initial_password
-      - admin_initial_password
+      - login_key_e10281
+      - login_key_e20999
+      - login_key_admin
       - qieman_api_key
     volumes:
       - ./data:/data
@@ -147,10 +149,12 @@ secrets:
     file: ./secrets/llm_api_key
   harness_signing_secret:
     file: ./secrets/harness_signing_secret
-  employee_initial_password:
-    file: ./secrets/employee_initial_password
-  admin_initial_password:
-    file: ./secrets/admin_initial_password
+  login_key_e10281:
+    file: ./secrets/login_key_e10281
+  login_key_e20999:
+    file: ./secrets/login_key_e20999
+  login_key_admin:
+    file: ./secrets/login_key_admin
   qieman_api_key:
     file: ./secrets/qieman_api_key
 

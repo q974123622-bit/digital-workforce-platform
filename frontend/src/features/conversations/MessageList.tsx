@@ -1,9 +1,11 @@
 import { Button } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { Conversation, ConversationMessage } from '@dwp/shared-schema';
+import type { Conversation, ConversationAttachment, ConversationMessage, Employee } from '@dwp/shared-schema';
+import { FileTextOutlined } from '@ant-design/icons';
 import MarkdownText from '../../components/MarkdownText';
 import CitationList from '../knowledge/CitationList';
+import AgentAvatar from '../../components/ui/AgentAvatar';
 
 /**
  * 消息列表：单独滚动、自动滚动仅在贴近底部时跟随，上滚后显示「回到底部」。
@@ -14,11 +16,19 @@ export default function MessageList({
   streamingLength,
   renderMessageExtra,
   emptyState,
+  employeeOf,
+  onOpenProfile,
+  attachmentOf,
+  onOpenAttachment,
 }: {
   conversation: Conversation;
   streamingLength: number;
   renderMessageExtra: (msg: ConversationMessage) => ReactNode;
   emptyState: ReactNode;
+  employeeOf: (employeeNo: string) => Employee | null;
+  onOpenProfile: (employeeNo: string) => void;
+  attachmentOf: (attachmentId: string) => ConversationAttachment | undefined;
+  onOpenAttachment: (attachmentId: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrolledUp, setScrolledUp] = useState(false);
@@ -55,12 +65,33 @@ export default function MessageList({
             <div key={msg.id} className="message-row mx-auto mb-5 w-full max-w-[960px]">
               <div className={`flex gap-3 ${mine ? 'justify-end' : 'justify-start'}`}>
                 {!mine && (
-                  <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-[10px] border border-line bg-brand-soft text-sm font-semibold text-brand">
-                    {msg.participant_name.slice(0, 1)}
-                  </span>
+                  <button type="button" className="avatar-button mt-0.5 shrink-0" aria-label={`查看${msg.participant_name}的资料`} onClick={() => onOpenProfile(msg.participant_no)}>
+                    <AgentAvatar employee={employeeOf(msg.participant_no)} name={msg.participant_name} size={36} />
+                  </button>
                 )}
                 <div className={`max-w-[760px] ${mine ? 'items-end' : 'items-start'}`}>
                   {!mine && <div className="mb-1 text-xs font-medium text-ink-secondary">{msg.participant_name}</div>}
+                  {(msg.attachment_ids ?? []).length > 0 && (
+                    <div className={`mb-2 flex flex-wrap gap-2 ${mine ? 'justify-end' : 'justify-start'}`}>
+                      {(msg.attachment_ids ?? []).map((attachmentId) => {
+                        const attachment = attachmentOf(attachmentId);
+                        return (
+                          <button
+                            key={attachmentId}
+                            type="button"
+                            className="flex max-w-[300px] items-center gap-2 rounded-control border border-line bg-surface px-3 py-2 text-left transition-colors hover:border-brand"
+                            onClick={() => onOpenAttachment(attachmentId)}
+                          >
+                            <FileTextOutlined className="shrink-0 text-brand" />
+                            <span className="min-w-0">
+                              <span className="block truncate text-xs font-medium text-ink">{attachment?.filename ?? '文件已删除'}</span>
+                              <span className="block text-[10px] text-ink-tertiary">{attachment ? attachment.file_type.toUpperCase() : attachmentId}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div
                     className={`message-bubble rounded-bubble px-4 py-3 text-[15px] leading-[1.75] ${
                       mine

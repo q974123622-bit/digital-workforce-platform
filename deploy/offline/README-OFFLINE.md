@@ -41,7 +41,7 @@ chmod +x start.sh stop.sh status.sh backup.sh verify.sh
 ./start.sh
 ```
 
-首次启动会要求输入模型网关 Base URL、模型名、模型 API Key、员工初始密码和管理员初始密码，并自动生成 Harness HMAC 签名密钥。Base URL 和模型名写入权限为 `600` 的本机 `config.env`；Secret 只写入本机 `secrets/`，不会进入镜像。张三、陈晓萌和管理员首次登录后都必须修改初始密码。
+首次启动会要求输入模型网关 Base URL、模型名、模型 API Key，以及张三、陈晓萌和管理员各自的访问密钥，并自动生成 Harness HMAC 签名密钥。Base URL 和模型名写入权限为 `600` 的本机 `config.env`；Secret 只写入本机 `secrets/`，不会进入镜像。登录页只需输入访问密钥，系统会直接识别身份。
 
 启动完成后访问：
 
@@ -121,8 +121,10 @@ Coding Plan Key 只需替换 `secrets/llm_api_key`，并在 `config.env` 修改 
 - 员工工作区：`harness/<员工ID>/`
 - 模型 Key：`secrets/llm_api_key`
 - Harness 签名密钥：`secrets/harness_signing_secret`
-- 员工初始密码：`secrets/employee_initial_password`
-- 管理员初始密码：`secrets/admin_initial_password`
+- 张三访问密钥：`secrets/login_key_e10281`
+- 陈晓萌访问密钥：`secrets/login_key_e20999`
+- 管理员访问密钥：`secrets/login_key_admin`
 - 插件制品和 MockMemory：`data/artifacts/`、`data/dwp.db`
+- 会话附件与解析结果：`data/attachments/`、`data/dwp.db`
 
 发布 ZIP 不包含 `.env`、真实 Key、数据库、日志、内部地址、认证信息或本机工作区数据。

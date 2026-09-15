@@ -389,3 +389,15 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 - `POST /api/v1/admin/memory/jobs/{job_id}/retry`
 
 所有员工接口都从登录 Cookie 读取真实身份，不接受正文覆盖身份；管理员接口要求独立管理员角色。
+
+登录使用 `POST /api/v1/auth/key-login`，请求体为 `{ "access_key": "..." }`。访问密钥直接解析为张三、陈晓萌或管理员身份，成功后沿用 HttpOnly 会话 Cookie。旧 `/auth/login` 与 `/auth/change-password` 默认停用，仅可通过部署兼容开关临时启用。
+
+## 会话附件接口
+
+- `POST /api/v1/conversations/{conversation_id}/attachments`：multipart 上传，字段名 `file`。
+- `GET /api/v1/conversations/{conversation_id}/attachments`：列出当前会话 generation 的附件与解析状态。
+- `GET|DELETE /api/v1/conversations/{conversation_id}/attachments/{attachment_id}`：安全元信息或软删除。
+- `POST /api/v1/conversations/{conversation_id}/attachments/{attachment_id}/retry`：重新执行本地解析。
+- `POST /api/v1/conversations/{conversation_id}/runs` 可附带 `attachment_ids`，仅接受已解析完成且属于当前登录员工、会话和 generation 的文件。
+
+首版支持 Markdown、TXT、DOCX、文本型 PDF、XLSX、CSV；`.doc/.xls` 返回 `CONVERSION_REQUIRED`，扫描 PDF 返回 `OCR_REQUIRED`。Harness 通过 `list_attachments`、`search_attachment`、`read_attachment`、`read_spreadsheet_range` 按需读取，不把全文写入消息或 TaskEnvelope。

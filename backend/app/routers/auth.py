@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,11 +28,34 @@ def _account_out(db: Session, account: models.Account) -> schemas.AccountOut:
 
 @router.post("/login", response_model=schemas.LoginOut)
 def login(payload: schemas.LoginIn, response: Response, db: Session = Depends(get_db)):
+    if os.getenv("DWP_ENABLE_LEGACY_PASSWORD_LOGIN", "0") != "1":
+        raise HTTPException(status_code=404, detail="密码登录已停用，请使用访问密钥")
     account = db.scalar(select(models.Account).where(models.Account.username == payload.username.strip()))
     if account is None or not verify_password(payload.password, account.password_hash):
         raise HTTPException(status_code=401, detail="账号或密码错误")
     if account.status != "active":
         raise HTTPException(status_code=403, detail="账号已停用")
+    token, session = issue_session(db, account)
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=12 * 60 * 60,
+        path="/",
+    )
+    return schemas.LoginOut(account=_account_out(db, account), expires_at=session.expires_at)
+
+
+@router.post("/key-login", response_model=schemas.LoginOut)
+def key_login(payload: schemas.KeyLoginIn, response: Response, db: Session = Depends(get_db)):
+    accounts = db.scalars(select(models.Account).where(models.Account.login_key_hash.is_not(None))).all()
+    if not accounts:
+        raise HTTPException(status_code=503, detail="访问密钥尚未配置")
+    account = next((row for row in accounts if verify_password(payload.access_key, row.login_key_hash or "")), None)
+    if account is None or account.status != "active":
+        raise HTTPException(status_code=401, detail="访问密钥无效或账号已停用")
     token, session = issue_session(db, account)
     response.set_cookie(
         SESSION_COOKIE,
@@ -65,6 +90,8 @@ def change_password(
     account: models.Account = Depends(current_account),
     db: Session = Depends(get_db),
 ):
+    if os.getenv("DWP_ENABLE_LEGACY_PASSWORD_LOGIN", "0") != "1":
+        raise HTTPException(status_code=404, detail="密码登录已停用")
     if not verify_password(payload.current_password, account.password_hash):
         raise HTTPException(status_code=400, detail="当前密码不正确")
     if payload.current_password == payload.new_password:

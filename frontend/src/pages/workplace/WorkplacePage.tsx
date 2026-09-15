@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import {
   CheckCircleOutlined,
@@ -36,6 +37,7 @@ import {
 } from 'antd';
 import type {
   Conversation,
+  ConversationAttachment,
   AgentExecution,
   AgentExecutionDetail,
   ConversationSummary,
@@ -58,6 +60,8 @@ import ExecutionSummary from '../../features/executions/ExecutionSummary';
 import ExecutionDetails from '../../features/executions/ExecutionDetails';
 import type { ExecutionStep } from '../../features/executions/ExecutionDetails';
 import CitationPreview from '../../features/knowledge/CitationPreview';
+import ColleagueList from '../../features/agents/ColleagueList';
+import AgentAvatar from '../../components/ui/AgentAvatar';
 
 const { Text, Paragraph } = Typography;
 
@@ -144,12 +148,13 @@ function restoreExecution(detail: AgentExecutionDetail): LiveExecution {
   };
 }
 
-function TaskCard({ task, workerName, metaOf, onApprove, acting }: {
+function TaskCard({ task, workerName, metaOf, onApprove, acting, onOpenProfile }: {
   task: TaskRun;
   workerName: (employeeNo: string) => string;
   metaOf: (employeeNo: string) => ContactMeta;
   onApprove: (task: TaskRun, approve: boolean) => void;
   acting: boolean;
+  onOpenProfile?: (employeeNo: string) => void;
 }) {
   const [expanded, setExpanded] = useState(task.status !== 'completed');
   const meta = TASK_STATUS[task.status] ?? TASK_STATUS.pending;
@@ -181,9 +186,9 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: {
             return (
               <div key={`${sub.worker_no}-${index}`} className="rounded-control bg-surface-subtle p-2.5">
                 <Space size={8}>
-                  <Avatar size={22} style={{ background: workerMeta.bg, color: workerMeta.color, fontSize: 11 }}>
-                    {workerMeta.emoji}
-                  </Avatar>
+                  <span role="button" tabIndex={0} className="avatar-button" aria-label={`查看${workerName(sub.worker_id)}的资料`} onClick={() => onOpenProfile?.(sub.worker_id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onOpenProfile?.(sub.worker_id); }}>
+                    <Avatar size={22} style={{ background: workerMeta.bg, color: workerMeta.color, fontSize: 11 }}>{workerMeta.emoji}</Avatar>
+                  </span>
                   <Text strong>{workerName(sub.worker_id)}</Text>
                   <Text type="secondary" style={{ fontSize: 12 }}>{sub.summary}</Text>
                   <Tag icon={subMeta.icon} color={subMeta.color}>{subMeta.label}</Tag>
@@ -214,6 +219,7 @@ function TaskCard({ task, workerName, metaOf, onApprove, acting }: {
 export default function WorkplacePage() {
   const { actor } = useCurrentUser();
   const actorNo = actor.employee_no;
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const homeFetcher = useCallback(() => api.getWorkplace(actorNo), [actorNo]);
   const { data: home, loading, error, reload } = useAsyncData<WorkplaceHome>(homeFetcher);
@@ -226,8 +232,11 @@ export default function WorkplacePage() {
   useEffect(() => { void refreshConversations().catch(() => undefined); }, [refreshConversations]);
 
   const [keyword, setKeyword] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => searchParams.get('conversation'));
+  const [sideView, setSideView] = useState<'messages' | 'directory'>(() => searchParams.get('view') === 'directory' ? 'directory' : 'messages');
   const [selected, setSelected] = useState<Conversation | null>(null);
+  const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
+  const [attachmentOpenId, setAttachmentOpenId] = useState<string>();
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [pendingAfterSeq, setPendingAfterSeq] = useState<number | null>(null);
@@ -248,9 +257,9 @@ export default function WorkplacePage() {
   // 移动端：会话列表 / 聊天区一次只显示一个。
   const [mobileView, setMobileView] = useState<'list' | 'chat'>('list');
 
-  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(() => Boolean(searchParams.get('profile')));
   const [citationOpen, setCitationOpen] = useState(false);
-  const [capabilityEmployeeNo, setCapabilityEmployeeNo] = useState<string>();
+  const [capabilityEmployeeNo, setCapabilityEmployeeNo] = useState<string | undefined>(() => searchParams.get('profile') ?? undefined);
   const [effectiveCapabilities, setEffectiveCapabilities] = useState<EffectiveCapabilities>();
   const [capabilityLoading, setCapabilityLoading] = useState(false);
   const [capabilityError, setCapabilityError] = useState<string>();
@@ -261,8 +270,20 @@ export default function WorkplacePage() {
   const [memberNos, setMemberNos] = useState<string[]>([]);
 
   useEffect(() => {
-    setSelectedId(null); setSelected(null); setInput(''); setPendingAfterSeq(null);
+    const nextConversation = searchParams.get('conversation');
+    const nextView = searchParams.get('view') === 'directory' ? 'directory' : 'messages';
+    const nextProfile = searchParams.get('profile');
+    setSelectedId((current) => current === nextConversation ? current : nextConversation);
+    setSideView(nextView);
+    setCapabilityEmployeeNo(nextProfile ?? undefined);
+    setProfileOpen(Boolean(nextProfile));
+  }, [searchParams]);
+
+  useEffect(() => {
+    setSelectedId(searchParams.get('conversation')); setSelected(null); setInput(''); setPendingAfterSeq(null);
     setLiveExecution(null); setSavedExecutions([]);
+  // actorNo 变化代表真实登录身份变化，此时才重置会话状态。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actorNo]);
 
   useEffect(() => {
@@ -271,6 +292,23 @@ export default function WorkplacePage() {
     api.getConversation(selectedId).then((conv) => { if (active) setSelected(conv); }).catch(() => { if (active) setSelected(null); });
     return () => { active = false; };
   }, [selectedId]);
+
+  const refreshAttachments = useCallback(async () => {
+    if (!selectedId) { setAttachments([]); return; }
+    const rows = await api.listConversationAttachments(selectedId);
+    setAttachments(rows);
+  }, [selectedId]);
+
+  useEffect(() => {
+    void refreshAttachments().catch(() => setAttachments([]));
+  }, [refreshAttachments]);
+
+  const attachmentProcessing = attachments.some((item) => ['pending', 'processing'].includes(item.status));
+  useEffect(() => {
+    if (!attachmentProcessing) return;
+    const timer = window.setInterval(() => void refreshAttachments().catch(() => undefined), 1000);
+    return () => window.clearInterval(timer);
+  }, [attachmentProcessing, refreshAttachments]);
 
   // 页面重开恢复历史执行轨迹与进行中任务。
   useEffect(() => {
@@ -431,6 +469,27 @@ export default function WorkplacePage() {
     return { label: employeeNo, emoji: '同', color: 'var(--dwp-text-secondary)', bg: 'var(--dwp-surface-subtle)' };
   }, [twin, employees]);
 
+  const updateLocationState = useCallback((changes: Record<string, string | null>) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      Object.entries(changes).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  const openProfile = useCallback((employeeNo: string) => {
+    setCapabilityEmployeeNo(employeeNo);
+    setProfileOpen(true);
+    updateLocationState({ profile: employeeNo });
+  }, [updateLocationState]);
+
+  const selectConversation = useCallback((id: string) => {
+    setSelectedId(id);
+    setSideView('messages');
+    setMobileView('chat');
+    updateLocationState({ conversation: id, view: 'messages' });
+  }, [updateLocationState]);
+
   const openDirect = async (employeeNo: string) => {
     let existing = conversations.find((conv) => conv.kind === 'direct' && conv.participants.some((p) => p.employee_no === employeeNo));
     try {
@@ -441,26 +500,32 @@ export default function WorkplacePage() {
         setConversations(latest);
         existing = latest.find((conv) => conv.kind === 'direct' && conv.participants.some((p) => p.employee_no === employeeNo));
       }
-      if (existing) { setSelectedId(existing.id); return; }
+      if (existing) { selectConversation(existing.id); return; }
       const conv = await api.createConversation({ actor_no: actorNo, kind: 'direct', participant_employee_nos: [employeeNo] });
       await refreshConversations();
-      setSelectedId(conv.id);
+      selectConversation(conv.id);
     } catch (err) { message.error(`发起会话失败：${(err as Error).message}`); }
   };
 
   const send = async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
     if (!text || sending || (liveExecution && executionIsActive(liveExecution.status)) || !selectedId) return;
+    const pendingAttachments = attachments.filter((item) => item.message_seq === null && item.status !== 'deleted');
+    if (pendingAttachments.some((item) => item.status !== 'ready')) {
+      message.warning('请等待附件解析完成，或移除暂不可用的附件');
+      return;
+    }
     setInput('');
     setSending(true);
     setChatError(undefined);
+    const attachmentIds = pendingAttachments.map((item) => item.attachment_id);
     setSelected((prev) => {
       if (!prev) return prev;
       const lastSeq = prev.messages.reduce((max, m) => Math.max(max, m.seq), 0);
-      return { ...prev, messages: [...prev.messages, { id: -Date.now(), conversation_id: prev.id, participant_no: actorNo, participant_name: actor.name, role: 'user', content: text, tool_cards: [], seq: lastSeq + 1 }] };
+      return { ...prev, messages: [...prev.messages, { id: -Date.now(), conversation_id: prev.id, participant_no: actorNo, participant_name: actor.name, role: 'user', content: text, tool_cards: [], attachment_ids: attachmentIds, seq: lastSeq + 1 }] };
     });
     try {
-      const run = await api.startConversationRun(selectedId, actorNo, text);
+      const run = await api.startConversationRun(selectedId, actorNo, text, attachmentIds);
       setSelected(run.conversation);
       setPendingAfterSeq(null);
       executionEventIds.current.clear();
@@ -468,11 +533,43 @@ export default function WorkplacePage() {
       const primary = run.conversation.participants[0]?.employee_no ?? '';
       setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), lastStepAt: Date.now(), expanded: true, steps: [], answers: {} });
       await refreshConversations();
+      await refreshAttachments();
     } catch (err) {
       setInput(text);
       setChatError((err as Error).message);
       setSelected((prev) => prev ? { ...prev, messages: prev.messages.filter((m) => m.id >= 0) } : prev);
     } finally { setSending(false); }
+  };
+
+  const uploadFiles = async (files: File[]) => {
+    if (!selectedId) { message.warning('请先打开一个会话'); return; }
+    const queued = attachments.filter((item) => item.message_seq === null && item.status !== 'deleted').length;
+    if (queued + files.length > 5) { message.warning('单次消息最多添加 5 个文件'); return; }
+    for (const file of files) {
+      try {
+        const row = await api.uploadConversationAttachment(selectedId, file);
+        setAttachments((current) => [...current.filter((item) => item.attachment_id !== row.attachment_id), row]);
+      } catch (err) {
+        message.error(`${file.name} 上传失败：${(err as Error).message}`);
+      }
+    }
+    await refreshAttachments().catch(() => undefined);
+  };
+
+  const removeAttachment = async (attachment: ConversationAttachment) => {
+    if (!selectedId) return;
+    try {
+      await api.deleteConversationAttachment(selectedId, attachment.attachment_id);
+      await refreshAttachments();
+    } catch (err) { message.error(`移除失败：${(err as Error).message}`); }
+  };
+
+  const retryAttachment = async (attachment: ConversationAttachment) => {
+    if (!selectedId) return;
+    try {
+      const row = await api.retryConversationAttachment(selectedId, attachment.attachment_id);
+      setAttachments((current) => current.map((item) => item.attachment_id === row.attachment_id ? row : item));
+    } catch (err) { message.error(`重试失败：${(err as Error).message}`); }
   };
 
   const retryExecution = async (executionId: string) => {
@@ -521,6 +618,7 @@ export default function WorkplacePage() {
     try {
       await api.clearConversation(selectedId, actorNo);
       setPendingAfterSeq(null); setLiveExecution(null); setSavedExecutions([]);
+      setAttachments([]); setAttachmentOpenId(undefined);
       const conv = await api.getConversation(selectedId); setSelected(conv); await refreshConversations();
     } catch (err) { message.error(`清空失败：${(err as Error).message}`); }
   };
@@ -530,7 +628,7 @@ export default function WorkplacePage() {
     try {
       const conv = await api.createConversation({ actor_no: actorNo, kind: 'direct', title: undefined, participant_employee_nos: selectedNos });
       setNewChatOpen(false); setSelectedNos([]);
-      await refreshConversations(); setSelectedId(conv.id);
+      await refreshConversations(); selectConversation(conv.id);
     } catch (err) { message.error(`创建会话失败：${(err as Error).message}`); }
   };
 
@@ -588,7 +686,7 @@ export default function WorkplacePage() {
     return (
       <div className="ml-12 mt-1.5 max-w-[760px]">
         {tasks.map((task) => (
-          <TaskCard key={task.id} task={task} workerName={workerName} metaOf={metaOf} onApprove={handleApprove} acting={acting} />
+          <TaskCard key={task.id} task={task} workerName={workerName} metaOf={metaOf} onApprove={handleApprove} acting={acting} onOpenProfile={openProfile} />
         ))}
         {messageExecution && (
           <div className="mt-1.5">
@@ -620,26 +718,32 @@ export default function WorkplacePage() {
   };
 
   const showList = mobileView === 'list' || selectedId === null;
-  const handleSelectConversation = (id: string) => {
-    setSelectedId(id);
-    setMobileView('chat');
-  };
+  const handleSelectConversation = selectConversation;
 
   return (
     <div className="flex h-full">
       {/* 会话列表 288px（移动端一次只显示一个） */}
-      <aside className={`w-full shrink-0 border-r border-line bg-surface md:w-[304px] ${showList ? 'flex' : 'hidden'} md:flex`}>
-        <ConversationList
-          conversations={conversations}
-          twin={twin}
-          selectedId={selectedId}
-          keyword={keyword}
-          onKeywordChange={setKeyword}
-          onSelect={handleSelectConversation}
-          onOpenTwin={() => { setMobileView('chat'); void openDirect(twin!.employee_no); }}
-          onNewChat={() => setNewChatOpen(true)}
-          metaOf={metaOf}
-        />
+      <aside className={`w-full shrink-0 flex-col border-r border-line bg-surface md:w-[304px] ${showList ? 'flex' : 'hidden'} md:flex`}>
+        <div className="workspace-section-switch" role="tablist" aria-label="协作内容">
+          <button type="button" role="tab" aria-selected={sideView === 'messages'} className={sideView === 'messages' ? 'active' : ''} onClick={() => { setSideView('messages'); updateLocationState({ view: 'messages' }); }}>会话</button>
+          <button type="button" role="tab" aria-selected={sideView === 'directory'} className={sideView === 'directory' ? 'active' : ''} onClick={() => { setSideView('directory'); updateLocationState({ view: 'directory' }); }}>同事</button>
+        </div>
+        {sideView === 'messages' ? (
+          <ConversationList
+            conversations={conversations}
+            twin={twin}
+            employees={employees}
+            selectedId={selectedId}
+            keyword={keyword}
+            onKeywordChange={setKeyword}
+            onSelect={handleSelectConversation}
+            onOpenTwin={() => { setMobileView('chat'); void openDirect(twin!.employee_no); }}
+            onNewChat={() => setNewChatOpen(true)}
+            onOpenProfile={openProfile}
+          />
+        ) : (
+          <ColleagueList twin={twin} employees={employees} onOpenChat={(no) => void openDirect(no)} onOpenProfile={openProfile} />
+        )}
       </aside>
 
       {/* 聊天区 */}
@@ -651,7 +755,9 @@ export default function WorkplacePage() {
               {isGroup ? (
                 <Avatar size={36} style={{ background: 'var(--dwp-surface-subtle)', color: 'var(--dwp-text-secondary)' }}><TeamOutlined /></Avatar>
               ) : (
-                <Avatar size={36} style={{ background: selectedMeta.bg, color: selectedMeta.color }}>{selectedMeta.emoji}</Avatar>
+                <button type="button" className="avatar-button" aria-label={`查看${selectedTitle}的资料`} onClick={() => openProfile(selected.participants[0]?.employee_no ?? '')}>
+                  <AgentAvatar employee={[twin, ...employees].find((item) => item?.employee_no === selected.participants[0]?.employee_no)} name={selectedTitle ?? undefined} size={36} />
+                </button>
               )}
               <div className="min-w-0 flex-1">
                 <div className="truncate text-base font-semibold text-ink">{selectedTitle}</div>
@@ -664,7 +770,7 @@ export default function WorkplacePage() {
                 <Button type="text" icon={<FileSearchOutlined />} onClick={() => setCitationOpen(true)} aria-label="来源与依据" />
               </Tooltip>
               {!isGroup && (
-                <Button type="text" aria-label="资料" icon={<CommentOutlined />} onClick={() => { setCapabilityEmployeeNo(selected.participants[0]?.employee_no); setProfileOpen(true); }}>
+                <Button type="text" aria-label="资料" icon={<CommentOutlined />} onClick={() => openProfile(selected.participants[0]?.employee_no ?? '')}>
                   资料
                 </Button>
               )}
@@ -690,6 +796,10 @@ export default function WorkplacePage() {
               conversation={selected}
               streamingLength={streamedLength}
               renderMessageExtra={renderMessageExtra}
+              employeeOf={(employeeNo) => [twin, ...employees].find((item) => item?.employee_no === employeeNo) ?? null}
+              onOpenProfile={openProfile}
+              attachmentOf={(attachmentId) => attachments.find((item) => item.attachment_id === attachmentId)}
+              onOpenAttachment={setAttachmentOpenId}
               emptyState={
                 <div className="mx-auto flex h-full max-w-[520px] flex-col items-center justify-center px-6 text-center">
                   <div className="grid h-16 w-16 place-items-center rounded-[18px] border border-line bg-surface text-2xl text-brand shadow-sm">{isGroup ? <TeamOutlined /> : <RobotOutlined />}</div>
@@ -707,6 +817,10 @@ export default function WorkplacePage() {
                 sending={sending}
                 disabled={Boolean(liveExecution && executionIsActive(liveExecution.status))}
                 placeholder={isGroup ? '描述一个任务，我来拆解安排给同事们…' : '发消息…'}
+                attachments={attachments.filter((item) => item.message_seq === null && item.status !== 'deleted')}
+                onFiles={(files) => void uploadFiles(files)}
+                onRemoveAttachment={(item) => void removeAttachment(item)}
+                onRetryAttachment={(item) => void retryAttachment(item)}
               />
               {chatError && <div className="mt-1.5 text-xs text-danger">发送失败：{chatError}，消息已保留在输入框</div>}
             </div>
@@ -735,11 +849,10 @@ export default function WorkplacePage() {
         <Paragraph type="secondary">首版一次只与一位数字员工对话；你的数字分身会在需要时自主向专业数字员工求助。</Paragraph>
         <div className="max-h-80 overflow-y-auto">
           {([twin, ...employees].filter((e): e is Employee => e !== null)).map((emp) => {
-            const meta = metaOf(emp.employee_no);
             const checked = selectedNos.includes(emp.employee_no);
             return (
               <div key={emp.employee_no} className="flex cursor-pointer items-center gap-3 rounded-control px-2 py-2 hover:bg-surface-subtle" onClick={() => setSelectedNos([emp.employee_no])}>
-                <Avatar size={34} style={{ background: meta.bg, color: meta.color }}>{meta.emoji}</Avatar>
+                <span className="avatar-button" role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); openProfile(emp.employee_no); }}><AgentAvatar employee={emp} size={34} /></span>
                 <div className="min-w-0 flex-1">
                   <div className="text-sm text-ink">{emp.name}</div>
                   <div className="text-xs text-ink-secondary">{emp.department}</div>
@@ -761,10 +874,9 @@ export default function WorkplacePage() {
         okButtonProps={{ disabled: memberNos.length === 0 }}
       >
         {addableMembers.length === 0 ? <Empty description="没有可添加的数字员工" /> : addableMembers.map((emp) => {
-          const meta = metaOf(emp.employee_no);
           return (
             <div key={emp.employee_no} className="flex cursor-pointer items-center gap-3 rounded-control px-2 py-2 hover:bg-surface-subtle" onClick={() => setMemberNos((prev) => prev.includes(emp.employee_no) ? prev.filter((n) => n !== emp.employee_no) : [...prev, emp.employee_no])}>
-              <Avatar size={34} style={{ background: meta.bg, color: meta.color }}>{meta.emoji}</Avatar>
+              <span className="avatar-button" role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); openProfile(emp.employee_no); }}><AgentAvatar employee={emp} size={34} /></span>
               <div className="min-w-0 flex-1">
                 <div className="text-sm text-ink">{emp.name}</div>
                 <div className="text-xs text-ink-secondary">{emp.role_prompt || emp.department}</div>
@@ -779,7 +891,7 @@ export default function WorkplacePage() {
       <Drawer
         title="同事资料"
         open={profileOpen}
-        onClose={() => { setProfileOpen(false); setCapabilityEmployeeNo(undefined); }}
+        onClose={() => { setProfileOpen(false); setCapabilityEmployeeNo(undefined); updateLocationState({ profile: null }); }}
         width={440}
         extra={capabilityEmployee?.type === 'twin' ? (
           <Button type="primary" size="small" icon={<UploadOutlined />} onClick={() => setSkillModalOpen(true)}>添加工作方法</Button>
@@ -788,15 +900,14 @@ export default function WorkplacePage() {
         {capabilityEmployee && (
           <>
             <div className="flex items-center gap-3">
-              <Avatar size={56} style={{ background: metaOf(capabilityEmployee.employee_no).bg, color: metaOf(capabilityEmployee.employee_no).color, fontSize: 24 }}>
-                {metaOf(capabilityEmployee.employee_no).emoji}
-              </Avatar>
+              <AgentAvatar employee={capabilityEmployee} size={64} />
               <div>
                 <div className="text-lg font-semibold text-ink">{capabilityEmployee.name}</div>
                 <Text type="secondary" style={{ fontSize: 12 }}>{capabilityEmployee.department} · {metaOf(capabilityEmployee.employee_no).label}</Text>
               </div>
             </div>
             <Paragraph className="mt-3 rounded-control bg-surface-subtle p-3">{capabilityEmployee.role_prompt || '（尚未配置职责与擅长方向）'}</Paragraph>
+            <Button className="mb-1" type="primary" icon={<CommentOutlined />} onClick={() => { setProfileOpen(false); updateLocationState({ profile: null }); void openDirect(capabilityEmployee.employee_no); }}>发消息</Button>
             {capabilityLoading && <LoadingState rows={4} />}
             {capabilityError && <Alert type="error" showIcon message="能力状态加载失败" description={capabilityError} />}
             {effectiveCapabilities && (
@@ -851,6 +962,33 @@ export default function WorkplacePage() {
 
       {/* 引用预览侧栏 */}
       <CitationPreview cards={lastAssistantCards} open={citationOpen} onClose={() => setCitationOpen(false)} />
+
+      <Drawer
+        title="文件详情"
+        open={Boolean(attachmentOpenId)}
+        onClose={() => setAttachmentOpenId(undefined)}
+        width={420}
+      >
+        {(() => {
+          const item = attachments.find((row) => row.attachment_id === attachmentOpenId);
+          if (!item) return <Empty description="文件已删除或不再属于当前会话" />;
+          return (
+            <div className="space-y-4">
+              <div className="rounded-container border border-line bg-surface-subtle p-4">
+                <div className="break-all text-base font-semibold text-ink">{item.filename}</div>
+                <div className="mt-1 text-xs text-ink-secondary">{item.file_type.toUpperCase()} · {(item.size / 1024).toFixed(1)} KiB</div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div><div className="text-xs text-ink-tertiary">处理状态</div><div className="mt-1 text-ink">{item.status === 'ready' ? '解析完成' : item.processing_hint || item.status}</div></div>
+                <div><div className="text-xs text-ink-tertiary">内容规模</div><div className="mt-1 text-ink">{item.page_count != null ? `${item.page_count} 页` : item.sheet_count != null ? `${item.sheet_count} 个工作表` : `${item.chunk_count} 个片段`}</div></div>
+                <div><div className="text-xs text-ink-tertiary">会话关联</div><div className="mt-1 text-ink">{item.message_seq == null ? '待发送' : `第 ${item.message_seq} 条消息`}</div></div>
+                <div><div className="text-xs text-ink-tertiary">上传时间</div><div className="mt-1 text-ink">{new Date(item.created_at).toLocaleString()}</div></div>
+              </div>
+              <Alert type="info" showIcon message="按需读取" description="数字员工只会在回答当前问题时按需搜索和读取相关片段，文件全文不会一次性塞入模型上下文。" />
+            </div>
+          );
+        })()}
+      </Drawer>
 
       {/* 添加个人工作方法弹窗 */}
       <Modal

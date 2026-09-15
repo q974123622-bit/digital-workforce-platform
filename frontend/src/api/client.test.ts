@@ -18,7 +18,7 @@ describe('API authentication recovery', () => {
       .mockResolvedValueOnce(reply(true, 200, { account: { username: 'E10281' } }))
       .mockResolvedValue(reply(false, 401, { error: { message: '登录已过期' } }));
     vi.stubGlobal('fetch', fetchMock);
-    await api.login('E10281', 'temporary-password');
+    await api.login('temporary-access-key');
 
     const onExpired = vi.fn();
     window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
