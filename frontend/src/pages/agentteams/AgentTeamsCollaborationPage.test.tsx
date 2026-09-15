@@ -784,6 +784,54 @@ describe('AgentTeams collaboration page', () => {
     expect(chart).toHaveTextContent('修订自：AT-WORKER-V1');
   });
 
+  it('shows Leader recovery and unrecoverable decisions on the task tree', () => {
+    const failedWorker = {
+      ...workerNode,
+      id: 'AT-WORKER-V1',
+      parent_task_id: 'AT-LEADER',
+      status: 'failed' as const,
+      title: '首次材料核查',
+    };
+    const recovery = {
+      ...workerNode,
+      id: 'AT-WORKER-V2',
+      parent_task_id: 'AT-LEADER',
+      status: 'assigned' as const,
+      revision_of_task_id: 'AT-WORKER-V1',
+      title: '恢复材料核查',
+    };
+    const blockedWorker = {
+      ...workerNode,
+      id: 'AT-WORKER-BLOCKED',
+      parent_task_id: 'AT-LEADER',
+      status: 'failed' as const,
+      title: '无法恢复的核查',
+    };
+    const blockedEvent: AgentTaskEvent = {
+      ...completedEvents[0],
+      id: 90,
+      task_id: blockedWorker.id,
+      event_seq: 90,
+      event_type: 'task.blocked',
+      summary: 'Leader reported the Worker task as unrecoverable',
+      detail: { feedback: '没有可用的替代执行人' },
+    };
+
+    render(
+      <TaskTree
+        nodes={[rootNode, failedWorker, recovery, blockedWorker]}
+        events={[blockedEvent]}
+        messages={[]}
+        selectedId={recovery.id}
+        onSelect={() => undefined}
+      />,
+    );
+
+    expect(within(screen.getByRole('button', { name: /选择任务 首次材料核查/ })).getByText('已由 Leader 重规划')).toBeInTheDocument();
+    expect(within(screen.getByRole('button', { name: /选择任务 恢复材料核查/ })).getByText('Leader 恢复任务')).toBeInTheDocument();
+    expect(within(screen.getByRole('button', { name: /选择任务 无法恢复的核查/ })).getByText('Leader 判定无法恢复')).toBeInTheDocument();
+  });
+
   it('keeps persisted hierarchy separate from serial dependencies when nodes arrive out of order', () => {
     const mixedNodes = [
       roleChangeNodes[0],

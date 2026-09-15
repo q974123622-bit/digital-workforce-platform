@@ -97,7 +97,17 @@ const displayProgress = (node: AgentTaskNode) => node.status === 'completed'
   ? 100
   : Math.max(0, Math.min(100, node.progress));
 
-const nodeStatus = (node: AgentTaskNode) => {
+const nodeStatus = (
+  node: AgentTaskNode,
+  replannedNodeIds: Set<string>,
+  unrecoverableNodeIds: Set<string>,
+) => {
+  if (unrecoverableNodeIds.has(node.id)) {
+    return { label: 'Leader 判定无法恢复', color: 'error' };
+  }
+  if (replannedNodeIds.has(node.id)) {
+    return { label: '已由 Leader 重规划', color: 'blue' };
+  }
   if (node.status === 'reviewing') {
     return {
       label: node.node_kind === 'team_assignment' ? '待 Manager 验收' : '待 Leader 验收',
@@ -107,8 +117,18 @@ const nodeStatus = (node: AgentTaskNode) => {
   return STATUS_META[node.status] ?? { label: node.status, color: 'default' };
 };
 
-export function TaskTree({ nodes, graph, messages = [], selectedId, onSelect }: Props) {
+export function TaskTree({ nodes, graph, events = [], messages = [], selectedId, onSelect }: Props) {
   const nodeIds = new Set(nodes.map((node) => node.id));
+  const replannedNodeIds = new Set(
+    nodes
+      .map((node) => node.revision_of_task_id)
+      .filter((taskId): taskId is string => Boolean(taskId)),
+  );
+  const unrecoverableNodeIds = new Set(
+    events
+      .filter((event) => event.event_type === 'task.blocked' && typeof event.detail.feedback === 'string')
+      .map((event) => event.task_id),
+  );
   const children = new Map<string | null, AgentTaskNode[]>();
   const dependencyIdsByNode = new Map<string, string[]>();
   for (const edge of graph?.dependency_edges ?? []) {
@@ -128,7 +148,7 @@ export function TaskTree({ nodes, graph, messages = [], selectedId, onSelect }: 
   }
 
   const renderNode = (node: AgentTaskNode) => {
-    const status = nodeStatus(node);
+    const status = nodeStatus(node, replannedNodeIds, unrecoverableNodeIds);
     const isRoot = !node.parent_task_id;
     const nested = children.get(node.id) ?? [];
     const dependencies = dependencyIdsByNode.get(node.id) ?? [];
@@ -159,7 +179,10 @@ export function TaskTree({ nodes, graph, messages = [], selectedId, onSelect }: 
             <span>执行：{agentLabel(node.assignee_agent_id)}</span>
           </span>
           {node.revision_of_task_id && (
-            <span className="at-chart-meta">修订自：{node.revision_of_task_id}</span>
+            <span className="at-chart-meta">
+              <Tag color="blue" style={{ marginInlineEnd: 4 }}>Leader 恢复任务</Tag>
+              修订自：{node.revision_of_task_id}
+            </span>
           )}
           {node.status === 'blocked' && dependencies.length > 0 && (
             <span className="at-chart-meta">等待前置任务：{dependencies.join('、')}</span>
