@@ -1821,31 +1821,48 @@ class AgentTeamsCollaborationService:
         if root is None or run is None:
             raise CollaborationConflict("unknown_root_task")
         coordination = self._coordination(root) if root is not None else {"round": 0, "selected_skill_ids": []}
-        catalog, catalog_version = self._next_catalog_snapshot(db, root, run.team_id)
         summary_payload: dict[str, Any] = {
             "request": "task.summary",
             "parent_task_id": parent.id,
             "child_results": self._safe_child_results(db, parent.id),
             "audit_ids": self._completed_direct_child_audit_ids(db, parent.id),
-            "existing_child_task_keys": [
-                item.client_task_key for item in active_children
-            ],
             "current_round": coordination["round"],
             "thinking_enabled": self._task_thinking_enabled(root),
-            "team_capability_catalog": catalog,
-            "team_catalog_version": catalog_version,
-            "remaining_limits": {
-                "rounds": max(0, 1 + self.max_rounds - coordination["round"]),
-                "nodes": max(0, self.max_nodes - self._root_node_count(db, parent.root_task_id)),
-                "children": self.max_children,
-                "depth": max(0, self.max_depth - parent.depth),
-            },
         }
-        relationship_graph = self._team_relationship_graph(
-            db, run.team_id, parent.assignee_agent_id, catalog=catalog
-        )
-        if relationship_graph:
-            summary_payload["team_relationship_graph"] = relationship_graph
+        if parent.node_kind == "mission":
+            catalog, catalog_version = self._next_catalog_snapshot(db, root, run.team_id)
+            summary_payload.update({
+                "existing_child_task_keys": [
+                    item.client_task_key for item in active_children
+                ],
+                "team_capability_catalog": catalog,
+                "team_catalog_version": catalog_version,
+                "remaining_limits": {
+                    "rounds": max(0, 1 + self.max_rounds - coordination["round"]),
+                    "nodes": max(0, self.max_nodes - self._root_node_count(db, parent.root_task_id)),
+                    "children": self.max_children,
+                    "depth": max(0, self.max_depth - parent.depth),
+                },
+            })
+            relationship_graph = self._team_relationship_graph(
+                db, run.team_id, parent.assignee_agent_id, catalog=catalog
+            )
+            if relationship_graph:
+                summary_payload["team_relationship_graph"] = relationship_graph
+        else:
+            raw_criteria = dict(parent.input_payload or {}).get("acceptance_criteria")
+            acceptance_criteria = (
+                [self._safe_tool_text(item) for item in raw_criteria if isinstance(item, str) and item.strip()]
+                if isinstance(raw_criteria, list)
+                else [self._safe_tool_text(parent.instruction)]
+            )
+            summary_payload.update({
+                "context_scope": "department_summary",
+                "department_goal": self._safe_cross_agent_text(
+                    parent.instruction, _MAX_SUBTASK_INSTRUCTION_LENGTH
+                ),
+                "acceptance_criteria": acceptance_criteria,
+            })
         self._queue_outbound(
             db,
             root_task_id=parent.root_task_id,

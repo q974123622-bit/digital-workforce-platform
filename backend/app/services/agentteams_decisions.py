@@ -170,14 +170,19 @@ class WorkerDecision(_StrictModel):
 class ResultReviewDecision(_StrictModel):
     action: Literal["accept", "reject", "replan", "stop_blocked"]
     feedback: str = Field(min_length=1, max_length=512)
+
+
+class RecoveryPlanDecision(_StrictModel):
+    action: Literal["replan", "stop_blocked"]
+    feedback: str = Field(min_length=1, max_length=512)
     subtasks: list[PlannedSubtask] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
-    def action_payload_is_unambiguous(self) -> "ResultReviewDecision":
+    def action_payload_is_unambiguous(self) -> "RecoveryPlanDecision":
         if self.action == "replan" and not self.subtasks:
             raise ValueError("replan_requires_subtasks")
-        if self.action != "replan" and self.subtasks:
-            raise ValueError(f"{self.action}_contains_incompatible_subtasks")
+        if self.action == "stop_blocked" and self.subtasks:
+            raise ValueError("stop_blocked_contains_incompatible_subtasks")
         return self
 
 
@@ -259,9 +264,14 @@ class ResultReviewContext(_StrictModel):
         "INTERRUPTED",
     ] = "SUCCESS"
     evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
+
+
+class RecoveryPlanContext(_StrictModel):
+    reviewer_agent_id: str = Field(min_length=1)
+    task: dict[str, Any]
+    failure: dict[str, Any] = Field(default_factory=dict)
     current_dag: list[dict[str, Any]] = Field(default_factory=list)
-    team_capability_catalog: list[dict[str, Any]] = Field(default_factory=list)
-    team_relationship_graph: dict[str, Any] = Field(default_factory=dict)
+    direct_reports: list[dict[str, Any]] = Field(default_factory=list)
     remaining_recovery_attempts: int = Field(default=0, ge=0)
 
 
@@ -565,6 +575,21 @@ class AgentDecisionEngine:
                         _LEADER_CHILD_CAPABILITIES[assigned_leader_capability],
                     ),
                 }
+        prompt_context: dict[str, Any] = {
+            "current_agent_id": context.current_agent_id,
+            "task": context.task,
+            "professional_skills": [_skill_payload(skill) for skill in professional_skills],
+            "dependency_results": context.dependency_results,
+            "parent_chain_agent_ids": context.parent_chain_agent_ids,
+            "department_execution_contract": department_execution_contract,
+            "previous_tool_or_message_results": context.previous_results,
+        }
+        if department_execution_contract.get("required_action") != "complete":
+            prompt_context.update({
+                "safe_tool_catalog": context.safe_tool_catalog,
+                "current_team_capability_catalog": context.current_team_capability_catalog,
+                "team_relationship_graph": context.team_relationship_graph,
+            })
         messages = _messages(
             "You are an AgentTeams worker. Select exactly one action permitted by the supplied "
             "schema. Action payload contract: all other action-specific fields must be omitted. "
@@ -582,18 +607,7 @@ class AgentDecisionEngine:
             "Delegate recipients by capability from the supplied current-team catalog. Write task "
             "results as concise Chinese prose; do not use key=value syntax because it resembles "
             "secret configuration and will be safely redacted.",
-            {
-                "current_agent_id": context.current_agent_id,
-                "task": context.task,
-                "professional_skills": [_skill_payload(skill) for skill in professional_skills],
-                "safe_tool_catalog": context.safe_tool_catalog,
-                "current_team_capability_catalog": context.current_team_capability_catalog,
-                "dependency_results": context.dependency_results,
-                "parent_chain_agent_ids": context.parent_chain_agent_ids,
-                "team_relationship_graph": context.team_relationship_graph,
-                "department_execution_contract": department_execution_contract,
-                "previous_tool_or_message_results": context.previous_results,
-            },
+            prompt_context,
         )
 
         def validate(raw: dict[str, Any]) -> WorkerDecision:
@@ -611,25 +625,22 @@ class AgentDecisionEngine:
     def review_result(self, context: ResultReviewContext) -> ResultReviewDecision:
         messages = _messages(
             "You are the Team Leader result gate. Follow the AgentScope AgentTeams Leader loop: "
-            "inspect the subordinate result and evidence, then accept an effective result, replan "
-            "the complete bounded replacement DAG, or stop_blocked when recovery is impossible. "
+            "inspect only the current task specification, its acceptance criteria, the subordinate "
+            "result, and directly related Tool evidence. Accept an effective result, reject it for "
+            "same-Worker revision, request replan when the current execution path cannot solve the "
+            "task, or stop_blocked when recovery is impossible. "
             "The legacy reject action is allowed only for a submitted effective result that should "
             "be revised by the same Worker. Never accept BLOCKED, INTERRUPTED, or REVISION_NEEDED. "
-            "For replan, return every replacement subtask and its internal dependencies; assign only "
-            "to a direct report with the required capability. Every replacement client_task_key must "
-            "be new and must not reuse a key from current_department_dag. Return only "
-            "JSON matching the supplied schema. Write feedback in concise Simplified Chinese and "
+            "For replan, return only the replan intent and feedback; a separate recovery planning "
+            "step will load the department DAG and direct-report capabilities. Return only JSON "
+            "matching the supplied schema. Write feedback in concise Simplified Chinese and "
             "do not invent facts, evidence, URLs, credentials, or hidden system state.",
             {
                 "reviewer_agent_id": context.reviewer_agent_id,
                 "task": context.task,
                 "result_status": context.result_status,
                 "submitted_result": context.submitted_result,
-                "authorized_tool_evidence": context.evidence,
-                "current_department_dag": context.current_dag,
-                "current_team_capability_catalog": context.team_capability_catalog,
-                "team_relationship_graph": context.team_relationship_graph,
-                "remaining_recovery_attempts": context.remaining_recovery_attempts,
+                "direct_tool_evidence": context.evidence,
             },
         )
 
@@ -643,6 +654,38 @@ class AgentDecisionEngine:
         return self._structured_with_retry(
             messages,
             ResultReviewDecision,
+            validate,
+            error_code="decision_failed",
+        )
+
+    def plan_recovery(self, context: RecoveryPlanContext) -> RecoveryPlanDecision:
+        messages = _messages(
+            "You are a Team Leader planning recovery after a separate result review requested "
+            "replanning. Use only the current department DAG, direct reports and remaining budget. "
+            "Return a complete bounded replacement DAG or stop_blocked. Assign only direct reports, "
+            "use their advertised capabilities, use new client_task_key values, and keep dependencies "
+            "acyclic. Return only JSON matching the supplied schema and write feedback in concise "
+            "Simplified Chinese.",
+            {
+                "reviewer_agent_id": context.reviewer_agent_id,
+                "task": context.task,
+                "failure": context.failure,
+                "current_department_dag": context.current_dag,
+                "direct_reports": context.direct_reports,
+                "remaining_recovery_attempts": context.remaining_recovery_attempts,
+            },
+        )
+
+        def validate(raw: dict[str, Any]) -> RecoveryPlanDecision:
+            decision = RecoveryPlanDecision.model_validate(raw)
+            if not decision.feedback.strip() or not _contains_chinese(decision.feedback):
+                raise _DecisionValidationError("review_feedback_must_contain_chinese")
+            _validate_recovery_plan(context, decision)
+            return decision
+
+        return self._structured_with_retry(
+            messages,
+            RecoveryPlanDecision,
             validate,
             error_code="decision_failed",
         )
@@ -863,6 +906,14 @@ def _validate_result_review_decision(
         if context.result_status not in effective_statuses:
             raise _DecisionValidationError("interrupted_result_requires_replan_or_blocked")
         return
+    # Recovery policy and graph validity belong to the separate recovery-plan
+    # stage so routine acceptance never loads department-wide context.
+
+
+def _validate_recovery_plan(
+    context: RecoveryPlanContext,
+    decision: RecoveryPlanDecision,
+) -> None:
     if decision.action == "stop_blocked":
         return
     if context.remaining_recovery_attempts < 1:
@@ -891,7 +942,7 @@ def _validate_result_review_decision(
         raise _DecisionValidationError("required_subtask_required")
 
     capabilities_by_agent: dict[str, set[str]] = {}
-    for raw in context.team_capability_catalog:
+    for raw in context.direct_reports:
         agent_id = raw.get("agent_id") if isinstance(raw, dict) else None
         capabilities = raw.get("capabilities") if isinstance(raw, dict) else None
         if isinstance(agent_id, str) and isinstance(capabilities, list):
@@ -899,23 +950,10 @@ def _validate_result_review_decision(
                 capability for capability in capabilities if isinstance(capability, str)
             )
 
-    direct_reports: set[str] | None = None
-    if context.team_relationship_graph:
-        identity = context.team_relationship_graph.get("self")
-        if (
-            not isinstance(identity, dict)
-            or identity.get("agent_id") != context.reviewer_agent_id
-            or identity.get("level") not in {"leader", "manager"}
-        ):
-            raise _DecisionValidationError("invalid_team_relationship_graph")
-        direct_reports = {
-            item.get("agent_id")
-            for item in context.team_relationship_graph.get("direct_reports", [])
-            if isinstance(item, dict) and isinstance(item.get("agent_id"), str)
-        }
+    direct_reports = set(capabilities_by_agent)
 
     for item in decision.subtasks:
-        if direct_reports is not None and item.assignee_agent_id not in direct_reports:
+        if item.assignee_agent_id not in direct_reports:
             raise _DecisionValidationError("leader_must_delegate_to_worker")
         permitted = capabilities_by_agent.get(item.assignee_agent_id)
         if permitted is None:

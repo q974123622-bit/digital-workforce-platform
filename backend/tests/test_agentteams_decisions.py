@@ -11,6 +11,8 @@ from app.services.agentteams_decisions import (
     ManagerContext,
     ResultReviewDecision,
     ResultReviewContext,
+    RecoveryPlanDecision,
+    RecoveryPlanContext,
     SkillSelectionContext,
     TeamSelectionContext,
     WorkerContext,
@@ -131,6 +133,87 @@ def test_result_review_decision_is_typed_and_bounded(fake_llm, registry, action)
 
     assert decision.action == action
     assert decision.feedback
+
+
+def test_result_review_prompt_contains_only_current_task_result_and_direct_evidence(fake_llm, registry):
+    """A routine acceptance decision must not pay for recovery-only context."""
+    fake_llm.outputs = [{"action": "accept", "feedback": "任务要求和证据一致，可以验收。"}]
+    context = ResultReviewContext(
+        reviewer_agent_id="VE-0002",
+        task={
+            "task_id": "task-1",
+            "title": "核查入职材料",
+            "goal": "核验材料是否齐备。",
+            "acceptance_criteria": ["必须列出材料状态和证据编号。"],
+        },
+        submitted_result={"status": "SUCCESS", "summary": "材料齐备。"},
+        evidence=[{"tool": "hr.materials.read", "audit_id": 101, "summary": "两项材料齐备。"}],
+    )
+
+    AgentDecisionEngine(fake_llm, registry).review_result(context)
+
+    payload = json.loads(fake_llm.calls[0][1]["content"])
+    assert set(payload) == {
+        "reviewer_agent_id",
+        "task",
+        "result_status",
+        "submitted_result",
+        "direct_tool_evidence",
+    }
+    assert payload["task"]["acceptance_criteria"] == ["必须列出材料状态和证据编号。"]
+    assert "current_department_dag" not in payload
+    assert "current_team_capability_catalog" not in payload
+    assert "team_relationship_graph" not in payload
+    assert "remaining_recovery_attempts" not in payload
+
+
+def test_recovery_plan_loads_department_context_only_after_review_requests_replan(fake_llm, registry):
+    fake_llm.outputs = [
+        {
+            "action": "replan",
+            "feedback": "当前执行路径无法恢复，需要重新规划。",
+        },
+        {
+            "action": "replan",
+            "feedback": "改由直属材料专员重新核查。",
+            "subtasks": [{
+                "client_task_key": "materials-retry",
+                "title": "重新核查材料",
+                "goal": "重新取得材料证据。",
+                "required_capability": "hr.materials.read",
+                "assignee_agent_id": "VE-HR-MATERIAL",
+                "depends_on": [],
+                "required": True,
+                "reason": "原执行路径中断。",
+            }],
+        },
+    ]
+    engine = AgentDecisionEngine(fake_llm, registry)
+    review = engine.review_result(ResultReviewContext(
+        reviewer_agent_id="VE-0002",
+        task={"task_id": "task-1", "title": "核查材料", "goal": "核验证据", "acceptance_criteria": ["返回证据编号"]},
+        submitted_result={"status": "INTERRUPTED", "summary": "执行中断"},
+        result_status="INTERRUPTED",
+        evidence=[],
+    ))
+    assert review.action == "replan"
+    assert "current_department_dag" not in json.loads(fake_llm.calls[0][1]["content"])
+
+    planned = engine.plan_recovery(RecoveryPlanContext(
+        reviewer_agent_id="VE-0002",
+        task={"task_id": "task-1", "title": "核查材料", "goal": "核验证据", "acceptance_criteria": ["返回证据编号"]},
+        failure={"error_code": "worker_interrupted"},
+        current_dag=[{"client_task_key": "materials", "status": "failed"}],
+        direct_reports=[{"agent_id": "VE-HR-MATERIAL", "capabilities": ["hr.materials.read"]}],
+        remaining_recovery_attempts=1,
+    ))
+
+    assert planned.subtasks[0].assignee_agent_id == "VE-HR-MATERIAL"
+    recovery_payload = json.loads(fake_llm.calls[1][1]["content"])
+    assert set(recovery_payload) == {
+        "reviewer_agent_id", "task", "failure", "current_department_dag",
+        "direct_reports", "remaining_recovery_attempts",
+    }
 
 
 def test_manager_selects_a_registered_team_leader(fake_llm, registry):
@@ -384,9 +467,7 @@ def _recovery_context(**updates):
             "required_capability": "hr.materials.read",
             "assignee_agent_id": "VE-HR-MATERIAL",
         },
-        "submitted_result": {},
-        "result_status": "INTERRUPTED",
-        "evidence": [],
+        "failure": {"error_code": "worker_interrupted"},
         "current_dag": [
             {
                 "client_task_key": "materials",
@@ -397,7 +478,7 @@ def _recovery_context(**updates):
                 "depends_on": [],
             }
         ],
-        "team_capability_catalog": [
+        "direct_reports": [
             {
                 "agent_id": "VE-HR-MATERIAL",
                 "capabilities": ["hr.materials.read"],
@@ -407,24 +488,10 @@ def _recovery_context(**updates):
                 "capabilities": ["hr.training.read"],
             },
         ],
-        "team_relationship_graph": {
-            "self": {"agent_id": "VE-0002", "level": "leader"},
-            "reports_to": ["VE-0001"],
-            "direct_reports": [
-                {
-                    "agent_id": "VE-HR-MATERIAL",
-                    "capabilities": ["hr.materials.read"],
-                },
-                {
-                    "agent_id": "VE-HR-TRAINING",
-                    "capabilities": ["hr.training.read"],
-                },
-            ],
-        },
         "remaining_recovery_attempts": 2,
     }
     base.update(updates)
-    return ResultReviewContext(**base)
+    return RecoveryPlanContext(**base)
 
 
 def test_result_review_accepts_complete_recovery_graph(fake_llm, registry):
@@ -455,7 +522,7 @@ def test_result_review_accepts_complete_recovery_graph(fake_llm, registry):
         ],
     }]
 
-    decision = AgentDecisionEngine(fake_llm, registry).review_result(
+    decision = AgentDecisionEngine(fake_llm, registry).plan_recovery(
         _recovery_context()
     )
 
@@ -490,7 +557,7 @@ def test_result_review_retries_replan_that_reuses_a_current_dag_key(fake_llm, re
     }
     fake_llm.outputs = [reused, corrected]
 
-    decision = AgentDecisionEngine(fake_llm, registry).review_result(
+    decision = AgentDecisionEngine(fake_llm, registry).plan_recovery(
         _recovery_context()
     )
 
@@ -527,7 +594,7 @@ def test_result_review_rejects_replan_to_non_direct_report(fake_llm, registry):
         },
     ]
 
-    decision = AgentDecisionEngine(fake_llm, registry).review_result(
+    decision = AgentDecisionEngine(fake_llm, registry).plan_recovery(
         _recovery_context()
     )
 
@@ -537,16 +604,20 @@ def test_result_review_rejects_replan_to_non_direct_report(fake_llm, registry):
 
 def test_result_review_contract_rejects_accept_for_interrupted_result(fake_llm, registry):
     fake_llm.outputs = [
-        {"action": "accept", "feedback": "错误接受中断结果。", "subtasks": []},
+        {"action": "accept", "feedback": "错误接受中断结果。"},
         {
             "action": "stop_blocked",
             "feedback": "恢复次数已耗尽，向上级报告阻塞。",
-            "subtasks": [],
         },
     ]
 
     decision = AgentDecisionEngine(fake_llm, registry).review_result(
-        _recovery_context(remaining_recovery_attempts=0)
+        ResultReviewContext(
+            reviewer_agent_id="VE-0002",
+            task={"title": "核查材料", "goal": "核验证据", "acceptance_criteria": ["返回证据编号"]},
+            submitted_result={"summary": "执行中断"},
+            result_status="INTERRUPTED",
+        )
     )
 
     assert decision.action == "stop_blocked"
@@ -555,7 +626,7 @@ def test_result_review_contract_rejects_accept_for_interrupted_result(fake_llm, 
 
 def test_result_review_decision_requires_tasks_only_for_replan():
     with pytest.raises(ValueError):
-        ResultReviewDecision(
+        RecoveryPlanDecision(
             action="stop_blocked",
             feedback="向上级报告阻塞。",
             subtasks=[{

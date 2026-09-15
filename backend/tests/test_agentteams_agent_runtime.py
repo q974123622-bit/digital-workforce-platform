@@ -13,6 +13,7 @@ from app.services.agentteams_decisions import (
     FinalSummary,
     ManagerDecision,
     PlannedSubtask,
+    RecoveryPlanDecision,
     ResultReviewDecision,
     SkillSelection,
     WorkerDecision,
@@ -54,9 +55,11 @@ class FakeEngine:
         self.plans: list[ManagerDecision] = []
         self.work: list[WorkerDecision] = []
         self.reviews: list[ResultReviewDecision | Exception] = []
+        self.recoveries: list[RecoveryPlanDecision | Exception] = []
         self.plan_contexts = []
         self.worker_contexts = []
         self.review_contexts = []
+        self.recovery_contexts = []
 
     def select_skills(self, _context):
         return self.selections.pop(0)
@@ -72,6 +75,13 @@ class FakeEngine:
     def review_result(self, context):
         self.review_contexts.append(context)
         result = self.reviews.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def plan_recovery(self, context):
+        self.recovery_contexts.append(context)
+        result = self.recoveries.pop(0)
         if isinstance(result, Exception):
             raise result
         return result
@@ -243,7 +253,12 @@ def test_coordinator_reviews_a_submitted_result(tmp_path, action, expected_type)
     assert sent[-1].type == expected_type
     assert sent[-1].receiver == "platform"
     assert sent[-1].payload["feedback"] == expected_feedback
-    assert engine.review_contexts[0].task["assignee_agent_id"] == "VE-0003"
+    assert engine.review_contexts[0].task == {
+        "task_id": "worker-task-1",
+        "title": "核查审批记录",
+        "goal": "核对审批证据",
+        "acceptance_criteria": ["核对审批证据"],
+    }
 
 
 def test_review_decision_failure_rejects_for_revision_instead_of_failing_worker_node(tmp_path):
@@ -293,9 +308,13 @@ def test_recovery_request_reaches_leader_replan_decision_path(tmp_path):
         ResultReviewDecision(
             action="replan",
             feedback="原任务中断，重新派发材料核查。",
-            subtasks=[replacement],
         )
     ]
+    engine.recoveries = [RecoveryPlanDecision(
+        action="replan",
+        feedback="原任务中断，重新派发材料核查。",
+        subtasks=[replacement],
+    )]
     recovery_request = message(
         type="task.recovery.requested",
         sender="platform",
@@ -338,7 +357,13 @@ def test_recovery_request_reaches_leader_replan_decision_path(tmp_path):
     assert sent[-1].payload["subtasks"][0]["client_task_key"] == "materials-retry"
     context = engine.review_contexts[0]
     assert context.result_status == "INTERRUPTED"
-    assert context.remaining_recovery_attempts == 2
+    assert not hasattr(context, "remaining_recovery_attempts")
+    recovery_context = engine.recovery_contexts[0]
+    assert recovery_context.remaining_recovery_attempts == 2
+    assert recovery_context.direct_reports == [{
+        "agent_id": "VE-0003",
+        "capabilities": ["it.readiness.read"],
+    }]
 
 
 def test_recovery_decision_failure_reports_blocked_instead_of_failing_as_worker(tmp_path):
@@ -1761,6 +1786,27 @@ def test_pending_fails_closed_instead_of_pruning_tracking_to_fit(tmp_path):
     assert persisted["processed_event_ids"] == event_ids
     assert persisted["processed_idempotency_keys"] == idempotency_keys
     assert state_path.stat().st_size <= 16_384
+
+
+def test_save_state_keeps_runtime_memory_identical_to_bounded_durable_state(tmp_path):
+    """A long-lived Matrix process must not retain state that its restart would discard."""
+    subject, _, _, _ = runtime(tmp_path, role="hr")
+    subject._state["processed_event_ids"] = [
+        f"$event-{index:03d}-" + ("e" * 180) for index in range(256)
+    ]
+    subject._state["processed_idempotency_keys"] = [
+        f"key-{index:03d}-" + ("i" * 180) for index in range(256)
+    ]
+
+    subject._save_state()
+
+    persisted = json.loads(
+        (tmp_path / "state" / "VE-0002.json").read_text(encoding="utf-8")
+    )
+    assert subject._state == persisted
+    assert len(subject._state["processed_event_ids"]) < 256
+    assert len(subject._state["processed_idempotency_keys"]) < 256
+    assert subject._serialized_size(subject._state) <= 16_384
 
 
 def test_worker_rejects_stale_delegate_candidate_after_platform_catalog_refresh(tmp_path):

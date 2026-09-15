@@ -28,6 +28,7 @@ from .agentteams_decisions import (
     AgentDecisionEngine,
     ManagerContext,
     PlannedSubtask,
+    RecoveryPlanContext,
     ResultReviewContext,
     SkillSelectionContext,
     WorkerContext,
@@ -182,6 +183,7 @@ class AgentRuntime:
         sent, so a retry can replay the exact envelopes without another model
         call.
         """
+        had_pending_before_heartbeat = self._state.get("pending_outbox") is not None
         heartbeat_at = datetime.now(timezone.utc).isoformat()
         self._state.update({
             "agent_id": self.config.agent_id,
@@ -192,6 +194,10 @@ class AgentRuntime:
             ),
         })
         self._save_state()
+        if had_pending_before_heartbeat and self._state.get("pending_outbox") is None:
+            # `_save_state` has already discarded and counted a corrupt pending
+            # envelope. Do not advance Matrix past its source event in this pass.
+            return 0
         replayed = 0
         if self._state.get("pending_outbox"):
             replayed = self._replay_pending()
@@ -370,32 +376,29 @@ class AgentRuntime:
         decisions = self._decisions_for(
             self._thinking_enabled(message.payload.get("thinking_enabled"))
         )
+        instruction = self._text(message.payload.get("instruction", "task"))
+        raw_criteria = message.payload.get("acceptance_criteria")
+        acceptance_criteria = (
+            self._bounded_text_list(raw_criteria, 16)
+            if isinstance(raw_criteria, list)
+            else [instruction]
+        )
+        task_spec = {
+            "task_id": message.task_id,
+            "title": self._text(message.payload.get("title", "task"), 256),
+            "goal": instruction,
+            "acceptance_criteria": acceptance_criteria,
+        }
         self._visible_pause()
         decision = decisions.review_result(
             ResultReviewContext(
                 reviewer_agent_id=self.config.agent_id,
-                task={
-                    key: self._bounded_value(message.payload.get(key))
-                    for key in (
-                        "title", "instruction", "required_capability",
-                        "assignee_agent_id", "node_kind", "revision_of_task_id",
-                    )
-                    if key in message.payload
-                },
+                task=task_spec,
                 submitted_result=self._bounded_value(
                     message.payload.get("result", {})
                 ),
                 result_status=message.payload.get("result_status", "SUCCESS"),
                 evidence=self._bounded_value(message.payload.get("evidence", [])),
-                current_dag=self._bounded_value(message.payload.get("current_dag", [])),
-                team_capability_catalog=self._worker_team_capability_catalog(catalog),
-                team_relationship_graph=self._safe_relationship_graph(
-                    message.payload.get("team_relationship_graph", {}),
-                    catalog,
-                ),
-                remaining_recovery_attempts=message.payload.get(
-                    "remaining_recovery_attempts", 0
-                ),
             )
         )
         responses = self._reasoning_trace(
@@ -406,6 +409,33 @@ class AgentRuntime:
             sequence=0,
             action=decision.action,
         )
+        if decision.action == "replan":
+            relationship_graph = self._safe_relationship_graph(
+                message.payload.get("team_relationship_graph", {}), catalog,
+            )
+            report_ids = self._direct_report_ids(relationship_graph)
+            direct_reports = [
+                {"agent_id": agent_id, **self._bounded_value(catalog[agent_id])}
+                for agent_id in sorted(report_ids)
+                if agent_id in catalog
+            ]
+            self._visible_pause()
+            recovery = decisions.plan_recovery(RecoveryPlanContext(
+                reviewer_agent_id=self.config.agent_id,
+                task=task_spec,
+                failure=self._bounded_value(message.payload.get("failure", {})),
+                current_dag=self._bounded_value(message.payload.get("current_dag", [])),
+                direct_reports=direct_reports,
+                remaining_recovery_attempts=message.payload.get(
+                    "remaining_recovery_attempts", 0
+                ),
+            ))
+            responses.extend(self._reasoning_trace(
+                message, recovery, stage="recovery_plan", iteration=2,
+                sequence=len(responses), action=recovery.action,
+            ))
+            decision = recovery
+
         response_type = {
             "accept": "task.result.accepted",
             "reject": "task.result.rejected",
@@ -588,7 +618,11 @@ class AgentRuntime:
         context = state["tasks"].get(message.task_id)
         if not isinstance(context, dict):
             raise AgentDecisionError("decision_failed")
-        if evidence_kind in {"child.summary", "tool.result"}:
+        compact_department_summary = (
+            evidence_kind == "child.summary"
+            and message.payload.get("context_scope") == "department_summary"
+        )
+        if evidence_kind in {"child.summary", "tool.result"} and not compact_department_summary:
             catalog, version = self._fresh_team_catalog(message.payload, previous_version=context.get("team_catalog_version"))
             context["team_catalog"] = catalog
             context["team_catalog_version"] = version
@@ -1353,6 +1387,11 @@ class AgentRuntime:
                     or not stat.S_ISREG(final_metadata.st_mode)
                     or temporary_identity != (final_metadata.st_dev, final_metadata.st_ino)):
                 raise ValueError("invalid_runtime_config")
+            # The durable bounded document is the authoritative runtime state.
+            # Keeping the larger pre-bounded object in memory makes a long-lived
+            # Matrix process behave differently from the same process after a
+            # restart and can falsely reject an otherwise valid pending outbox.
+            self._state = deepcopy(safe)
         finally:
             if temporary.exists():
                 try:
@@ -1561,14 +1600,16 @@ class AgentRuntime:
         if not isinstance(safe, dict):
             return {"cursor": None, "processed_event_ids": [], "processed_idempotency_keys": [], "tasks": {}, "security": {}}
         safe["security"] = self._bounded_security_counts(bounded_input.get("security"))
-        if preserve_tracking:
-            # These values suppress reprocessing while the persisted cursor is
-            # intentionally old.  Pending recovery must retain every one, or
-            # reject the outbound batch rather than silently repeating work.
-            for key in ("processed_event_ids", "processed_idempotency_keys"):
-                raw = bounded_input.get(key)
-                if isinstance(raw, list):
-                    safe[key] = [self._safe_value(item) for item in raw[:_MAX_TRACKED]]
+        # `_safe_value` normally bounds generic lists from the front. Tracking
+        # lists are ordered logs, so their newest values are authoritative.
+        # Restore that order-specific representation before applying the byte
+        # budget below.
+        for key in ("processed_event_ids", "processed_idempotency_keys"):
+            raw = bounded_input.get(key)
+            if isinstance(raw, list):
+                safe[key] = [
+                    self._safe_value(item) for item in raw[-_MAX_TRACKED:]
+                ]
         def size() -> int:
             return self._serialized_size(safe)
         tasks = safe.get("tasks")

@@ -880,6 +880,50 @@ def test_leader_review_bundle_includes_authorized_tool_evidence(db_session):
     ]
 
 
+def test_department_summary_contains_only_department_goal_and_accepted_child_results(db_session):
+    """A department Leader must not receive the global Team catalog to summarize its own Workers."""
+    run, leader = _create_run(db_session)
+    _delegate(
+        db_session, run, "DT-E10281", leader.runtime_ref,
+        [_subtask("hr-department", "VE-0002")],
+    )
+    department = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id,
+        client_task_key="hr-department",
+    ).one()
+    _start_node(db_session, run, department)
+    _delegate(
+        db_session,
+        run,
+        "VE-0002",
+        db_session.get(models.DigitalEmployee, "VE-0002").runtime_ref,
+        [_subtask("materials", "VE-HR-MATERIAL")],
+        key="department-worker",
+        parent=department,
+    )
+    worker = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=department.id,
+        client_task_key="materials",
+    ).one()
+    _start_node(db_session, run, worker)
+    _submit_and_accept(
+        db_session, run, worker, key="materials-result",
+        payload={"result": "材料齐备", "audit_ids": [101]},
+    )
+
+    summary = db_session.query(models.AgentMessage).filter_by(
+        task_id=department.id,
+        message_type="task.summary",
+        direction="outbound",
+    ).one()
+    assert summary.payload["department_goal"] == department.instruction
+    assert summary.payload["acceptance_criteria"] == [department.instruction]
+    assert summary.payload["child_results"][0]["client_task_key"] == "materials"
+    assert "team_capability_catalog" not in summary.payload
+    assert "team_relationship_graph" not in summary.payload
+    assert "remaining_limits" not in summary.payload
+
+
 def test_parent_summary_normalizes_top_level_audit_ids_from_completed_direct_children(db_session):
     """Dropping the platform-owned summary audit list would strand department leads at completion."""
     run, leader = _create_run(db_session)
