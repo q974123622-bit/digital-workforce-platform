@@ -55,13 +55,20 @@ function Stop-AgentTeamsProcessTree {
     param([Parameter(Mandatory = $true)][int]$RootProcessId)
 
     if ($null -eq (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue)) {
+        # The wrapper may exit before its child closes redirected log handles.
+        # Do not leak that unrelated native exit code to callers performing
+        # best-effort cleanup in a finally block.
+        $global:LASTEXITCODE = 0
         return
     }
     # /T follows only descendants of this exact root PID; it never searches by
     # executable name, so unrelated Python/Node processes are untouched.
     & taskkill.exe /PID $RootProcessId /T /F 1>$null 2>$null
-    if ($LASTEXITCODE -ne 0 -and $null -ne (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue)) {
-        throw "Could not stop process tree rooted at PID $RootProcessId."
+    if ($LASTEXITCODE -ne 0) {
+        if ($null -ne (Get-Process -Id $RootProcessId -ErrorAction SilentlyContinue)) {
+            throw "Could not stop process tree rooted at PID $RootProcessId."
+        }
+        $global:LASTEXITCODE = 0
     }
 }
 
@@ -80,9 +87,20 @@ function Start-AgentTeamsFrontendProcess {
         [Parameter(Mandatory = $true)][string]$StandardErrorPath
     )
 
-    return Start-Process -FilePath 'pnpm.cmd' `
-        -ArgumentList (Get-AgentTeamsFrontendArguments -Port $Port) `
-        -WorkingDirectory $projectRoot `
+    $frontendRoot = Join-Path $projectRoot 'frontend'
+    $viteScriptPath = 'node_modules\vite\bin\vite.js'
+    $viteScript = Join-Path $frontendRoot $viteScriptPath
+    if (-not (Test-Path -LiteralPath $viteScript -PathType Leaf)) {
+        throw "Vite entrypoint not found at $viteScript. Frontend dependencies are not ready."
+    }
+    # Starting pnpm.cmd returns a short-lived cmd wrapper on Windows. Returning
+    # the real Node process keeps readiness and tree cleanup bound to the same
+    # service process, so Vite cannot be orphaned on port 4173.
+    # Use a path relative to WorkingDirectory because Windows Start-Process
+    # joins ArgumentList into a command line and does not quote paths for us.
+    return Start-Process -FilePath 'node.exe' `
+        -ArgumentList @($viteScriptPath, '--host', '127.0.0.1', '--port', [string]$Port) `
+        -WorkingDirectory $frontendRoot `
         -WindowStyle Hidden `
         -RedirectStandardOutput $StandardOutputPath `
         -RedirectStandardError $StandardErrorPath `
