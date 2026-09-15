@@ -277,6 +277,97 @@ def test_review_decision_failure_rejects_for_revision_instead_of_failing_worker_
     }
 
 
+def test_recovery_request_reaches_leader_replan_decision_path(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    replacement = PlannedSubtask(
+        client_task_key="materials-retry",
+        title="重新核查 HR 材料",
+        goal="重新读取并核验入职材料证据。",
+        required_capability="it.readiness.read",
+        assignee_agent_id="VE-0003",
+        depends_on=[],
+        required=True,
+        reason="原任务中断，需要重新取得证据。",
+    )
+    engine.reviews = [
+        ResultReviewDecision(
+            action="replan",
+            feedback="原任务中断，重新派发材料核查。",
+            subtasks=[replacement],
+        )
+    ]
+    recovery_request = message(
+        type="task.recovery.requested",
+        sender="platform",
+        receiver="VE-0002",
+        task_id="worker-task-1",
+        parent_task_id="leader-task-1",
+        payload={
+            "title": "核查 HR 入职材料",
+            "instruction": "核验材料证据",
+            "required_capability": "it.readiness.read",
+            "assignee_agent_id": "VE-0003",
+            "result_status": "INTERRUPTED",
+            "result": {},
+            "evidence": [],
+            "current_dag": [],
+            "team_capability_catalog": [{
+                "agent_id": "VE-0003",
+                "capabilities": ["it.readiness.read"],
+            }],
+            "team_relationship_graph": {
+                "self": {"agent_id": "VE-0002", "role": "HR负责人", "level": "leader"},
+                "reports_to": ["VE-0001"],
+                "direct_reports": [{
+                    "agent_id": "VE-0003",
+                    "role": "IT专员",
+                    "capabilities": ["it.readiness.read"],
+                }],
+            },
+            "remaining_recovery_attempts": 2,
+        },
+        key="recovery-request",
+    )
+    gateway.events = [event(recovery_request)]
+
+    assert subject.run_once() == 1
+
+    sent = sent_protocols(gateway)
+    assert sent[-1].type == "task.replan"
+    assert sent[-1].payload["feedback"] == "原任务中断，重新派发材料核查。"
+    assert sent[-1].payload["subtasks"][0]["client_task_key"] == "materials-retry"
+    context = engine.review_contexts[0]
+    assert context.result_status == "INTERRUPTED"
+    assert context.remaining_recovery_attempts == 2
+
+
+def test_recovery_decision_failure_reports_blocked_instead_of_failing_as_worker(tmp_path):
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.reviews = [AgentDecisionError("decision_failed")]
+    gateway.events = [event(message(
+        type="task.recovery.requested",
+        sender="platform",
+        receiver="VE-0002",
+        task_id="worker-task-1",
+        parent_task_id="leader-task-1",
+        payload={
+            "title": "核查 HR 入职材料",
+            "result_status": "INTERRUPTED",
+            "remaining_recovery_attempts": 1,
+        },
+        key="recovery-decision-failed",
+    ))]
+
+    assert subject.run_once() == 1
+
+    response = sent_protocols(gateway)[-1]
+    assert response.type == "task.blocked"
+    assert response.payload == {
+        "feedback": "恢复决策未完成，已向上级报告阻塞",
+        "reason_code": "decision_failed",
+    }
+
+
 def test_manager_selects_skill_then_delegates_without_invalid_root_ack(tmp_path):
     subject, gateway, engine, pauses = runtime(tmp_path)
     engine.selections = [

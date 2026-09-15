@@ -9,6 +9,7 @@ from app.services.agentteams_decisions import (
     AgentDecisionEngine,
     AgentDecisionError,
     ManagerContext,
+    ResultReviewDecision,
     ResultReviewContext,
     SkillSelectionContext,
     TeamSelectionContext,
@@ -373,6 +374,164 @@ def test_database_leader_delegates_to_every_registered_specialist(
         for task in decision.subtasks
     } == set(workers)
     assert len(fake_llm.calls) == 2
+
+
+def _recovery_context(**updates):
+    base = {
+        "reviewer_agent_id": "VE-0002",
+        "task": {
+            "title": "核查 HR 入职材料",
+            "required_capability": "hr.materials.read",
+            "assignee_agent_id": "VE-HR-MATERIAL",
+        },
+        "submitted_result": {},
+        "result_status": "INTERRUPTED",
+        "evidence": [],
+        "current_dag": [
+            {
+                "client_task_key": "materials",
+                "title": "核查 HR 入职材料",
+                "assignee_agent_id": "VE-HR-MATERIAL",
+                "required_capability": "hr.materials.read",
+                "status": "failed",
+                "depends_on": [],
+            }
+        ],
+        "team_capability_catalog": [
+            {
+                "agent_id": "VE-HR-MATERIAL",
+                "capabilities": ["hr.materials.read"],
+            },
+            {
+                "agent_id": "VE-HR-TRAINING",
+                "capabilities": ["hr.training.read"],
+            },
+        ],
+        "team_relationship_graph": {
+            "self": {"agent_id": "VE-0002", "level": "leader"},
+            "reports_to": ["VE-0001"],
+            "direct_reports": [
+                {
+                    "agent_id": "VE-HR-MATERIAL",
+                    "capabilities": ["hr.materials.read"],
+                },
+                {
+                    "agent_id": "VE-HR-TRAINING",
+                    "capabilities": ["hr.training.read"],
+                },
+            ],
+        },
+        "remaining_recovery_attempts": 2,
+    }
+    base.update(updates)
+    return ResultReviewContext(**base)
+
+
+def test_result_review_accepts_complete_recovery_graph(fake_llm, registry):
+    fake_llm.outputs = [{
+        "action": "replan",
+        "feedback": "原材料任务中断，改为材料复核后再由培训专员交叉确认。",
+        "subtasks": [
+            {
+                "client_task_key": "materials-retry",
+                "title": "重新核查 HR 材料",
+                "goal": "重新读取并核验入职材料证据。",
+                "required_capability": "hr.materials.read",
+                "assignee_agent_id": "VE-HR-MATERIAL",
+                "depends_on": [],
+                "required": True,
+                "reason": "原任务执行中断，需要重新取得证据。",
+            },
+            {
+                "client_task_key": "training-cross-check",
+                "title": "交叉确认培训记录",
+                "goal": "依据材料核查结果交叉确认培训记录。",
+                "required_capability": "hr.training.read",
+                "assignee_agent_id": "VE-HR-TRAINING",
+                "depends_on": ["materials-retry"],
+                "required": True,
+                "reason": "补充独立交叉验证。",
+            },
+        ],
+    }]
+
+    decision = AgentDecisionEngine(fake_llm, registry).review_result(
+        _recovery_context()
+    )
+
+    assert decision.action == "replan"
+    assert [item.client_task_key for item in decision.subtasks] == [
+        "materials-retry",
+        "training-cross-check",
+    ]
+
+
+def test_result_review_rejects_replan_to_non_direct_report(fake_llm, registry):
+    invalid = {
+        "action": "replan",
+        "feedback": "改派给团队外人员。",
+        "subtasks": [{
+            "client_task_key": "outside",
+            "title": "团队外复核",
+            "goal": "由团队外人员复核。",
+            "required_capability": "hr.materials.read",
+            "assignee_agent_id": "VE-OUTSIDE",
+            "depends_on": [],
+            "required": True,
+            "reason": "尝试改派。",
+        }],
+    }
+    fake_llm.outputs = [
+        invalid,
+        {
+            "action": "stop_blocked",
+            "feedback": "没有符合权限边界的直属员工可继续处理。",
+            "subtasks": [],
+        },
+    ]
+
+    decision = AgentDecisionEngine(fake_llm, registry).review_result(
+        _recovery_context()
+    )
+
+    assert decision.action == "stop_blocked"
+    assert len(fake_llm.calls) == 2
+
+
+def test_result_review_contract_rejects_accept_for_interrupted_result(fake_llm, registry):
+    fake_llm.outputs = [
+        {"action": "accept", "feedback": "错误接受中断结果。", "subtasks": []},
+        {
+            "action": "stop_blocked",
+            "feedback": "恢复次数已耗尽，向上级报告阻塞。",
+            "subtasks": [],
+        },
+    ]
+
+    decision = AgentDecisionEngine(fake_llm, registry).review_result(
+        _recovery_context(remaining_recovery_attempts=0)
+    )
+
+    assert decision.action == "stop_blocked"
+    assert len(fake_llm.calls) == 2
+
+
+def test_result_review_decision_requires_tasks_only_for_replan():
+    with pytest.raises(ValueError):
+        ResultReviewDecision(
+            action="stop_blocked",
+            feedback="向上级报告阻塞。",
+            subtasks=[{
+                "client_task_key": "unexpected",
+                "title": "不应创建",
+                "goal": "不应创建任务。",
+                "required_capability": "hr.materials.read",
+                "assignee_agent_id": "VE-HR-MATERIAL",
+                "depends_on": [],
+                "required": True,
+                "reason": "不兼容载荷。",
+            }],
+        )
 
 
 def test_department_lead_retries_delegate_outside_direct_reports(fake_llm, registry):

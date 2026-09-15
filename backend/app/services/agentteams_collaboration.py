@@ -296,7 +296,7 @@ class AgentTeamsCollaborationService:
             events = self._apply_result_rejected(db, node, message)
         elif message.type == "task.failed":
             self._authorize(db, run, node, matrix_sender, message, roles={"assignee"})
-            events = self._apply_failed(db, node, message)
+            events = self._apply_failed(db, run, node, message)
         elif message.type == "task.summary":
             self._authorize(db, run, node, matrix_sender, message, roles={"coordinator"})
             events = self._apply_summary(db, run, node, message)
@@ -643,7 +643,9 @@ class AgentTeamsCollaborationService:
             "thinking_enabled": self._task_thinking_enabled(
                 db.get(models.AgentTaskNode, node.root_task_id)
             ),
+            "result_status": "SUCCESS",
             "result": self._sanitize_tool_result_data(dict(message.payload)),
+            "evidence": self._review_tool_evidence(db, node),
         }
         review_digest = hashlib.sha256(
             message.idempotency_key.encode("utf-8", errors="ignore")
@@ -837,19 +839,181 @@ class AgentTeamsCollaborationService:
         return events
 
     def _apply_failed(
-        self, db: Session, node: models.AgentTaskNode, message: AgentProtocolMessage
+        self,
+        db: Session,
+        run: models.TaskRun,
+        node: models.AgentTaskNode,
+        message: AgentProtocolMessage,
     ) -> list[models.AgentTaskEvent]:
         self._transition(node, "failed")
         node.error_code = str(message.payload.get("error_code") or "failed")
         node.error_message = str(message.payload.get("error_message") or "")
         node.finished_at = datetime.now()
         events = [self._event_for_message(db, node, message, "task.failed", "task failed")]
+        if (
+            node.node_kind == "worker_task"
+            and node.parent_task_id is not None
+            and node.coordinator_agent_id != node.assignee_agent_id
+        ):
+            root = db.get(models.AgentTaskNode, node.root_task_id)
+            parent = db.get(models.AgentTaskNode, node.parent_task_id)
+            if root is None or parent is None or parent.root_task_id != node.root_task_id:
+                raise CollaborationConflict("invalid_parent_task")
+            catalog, catalog_version = self._next_catalog_snapshot(
+                db, root, run.team_id
+            )
+            recovery_payload: dict[str, Any] = {
+                "title": self._safe_cross_agent_text(
+                    node.title, _MAX_SUBTASK_TITLE_LENGTH
+                ),
+                "instruction": self._safe_cross_agent_text(
+                    node.instruction, _MAX_SUBTASK_INSTRUCTION_LENGTH
+                ),
+                "required_capability": self._safe_cross_agent_text(
+                    node.capability, _MAX_SUBTASK_CAPABILITY_LENGTH
+                ),
+                "assignee_agent_id": node.assignee_agent_id,
+                "node_kind": node.node_kind,
+                "revision_of_task_id": node.revision_of_task_id,
+                "result_status": "INTERRUPTED",
+                "result": self._sanitize_tool_result_data(
+                    dict(node.output_payload or {})
+                ),
+                "evidence": self._review_tool_evidence(db, node),
+                "failure": {
+                    "error_code": self._safe_tool_text(node.error_code),
+                    "error_message": self._safe_tool_text(node.error_message),
+                },
+                "current_dag": self._department_dag_payload(db, parent.id),
+                "thinking_enabled": self._task_thinking_enabled(root),
+                "team_capability_catalog": catalog,
+                "team_catalog_version": catalog_version,
+                "remaining_recovery_attempts": self._remaining_recovery_attempts(
+                    db, node
+                ),
+            }
+            relationship_graph = self._team_relationship_graph(
+                db,
+                run.team_id,
+                node.coordinator_agent_id,
+                catalog=catalog,
+            )
+            if relationship_graph:
+                recovery_payload["team_relationship_graph"] = relationship_graph
+            recovery_digest = hashlib.sha256(
+                message.idempotency_key.encode("utf-8", errors="ignore")
+            ).hexdigest()[:32]
+            self._queue_outbound(
+                db,
+                root_task_id=node.root_task_id,
+                task_id=node.id,
+                parent_task_id=node.parent_task_id,
+                message_type="task.recovery.requested",
+                sender_agent_id="platform",
+                receiver_agent_id=node.coordinator_agent_id,
+                body="Review the interrupted Worker task and decide the next graph shape.",
+                payload=recovery_payload,
+                idempotency_key=(
+                    f"{node.id}:task.recovery.requested:{recovery_digest}"
+                ),
+            )
+            events.append(
+                self._append_event(
+                    db,
+                    root_task_id=node.root_task_id,
+                    task_id=node.id,
+                    event_type="task.recovery.requested",
+                    actor_agent_id="platform",
+                    target_agent_id=node.coordinator_agent_id,
+                    summary="interrupted task returned to Leader for replanning",
+                    detail={
+                        "result_status": "INTERRUPTED",
+                        "error_code": self._safe_tool_text(node.error_code),
+                    },
+                )
+            )
+            return events
         if node.required:
             events.extend(self._propagate_required_failure(db, node, message.sender))
         else:
             events.extend(self._maybe_request_parent_summary(db, node, message.sender))
         events.extend(self._cancel_dependency_descendants(db, node, message.sender))
         return events
+
+    def _review_tool_evidence(
+        self, db: Session, node: models.AgentTaskNode
+    ) -> list[dict[str, Any]]:
+        messages = list(
+            db.scalars(
+                select(models.AgentMessage)
+                .where(
+                    models.AgentMessage.root_task_id == node.root_task_id,
+                    models.AgentMessage.task_id == node.id,
+                    models.AgentMessage.message_type == "tool.result",
+                    models.AgentMessage.sender_agent_id == "platform",
+                    models.AgentMessage.receiver_agent_id == node.assignee_agent_id,
+                    models.AgentMessage.direction == "outbound",
+                    models.AgentMessage.delivery_status.in_(["pending", "sent"]),
+                )
+                .order_by(models.AgentMessage.created_at, models.AgentMessage.id)
+            )
+        )
+        return self._bound_result_collection(
+            [
+                self._sanitize_tool_result_data(dict(item.payload or {}))
+                for item in messages
+            ]
+        )
+
+    def _department_dag_payload(
+        self, db: Session, parent_id: str
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for child in self._active_children(db, parent_id):
+            dependency_ids = list(
+                db.scalars(
+                    select(models.AgentTaskDependency.depends_on_task_id).where(
+                        models.AgentTaskDependency.task_id == child.id
+                    )
+                )
+            )
+            dependencies = [db.get(models.AgentTaskNode, item) for item in dependency_ids]
+            result.append(
+                {
+                    "client_task_key": self._safe_client_task_key(
+                        child.client_task_key
+                    ),
+                    "title": self._safe_tool_text(child.title),
+                    "assignee_agent_id": child.assignee_agent_id,
+                    "required_capability": self._safe_tool_text(child.capability),
+                    "status": child.status,
+                    "depends_on": [
+                        self._safe_client_task_key(item.client_task_key)
+                        for item in dependencies
+                        if item is not None
+                    ],
+                }
+            )
+        return result
+
+    def _remaining_recovery_attempts(
+        self, db: Session, node: models.AgentTaskNode
+    ) -> int:
+        chain_ids = {node.id}
+        current = node
+        while current.revision_of_task_id:
+            chain_ids.add(current.revision_of_task_id)
+            previous = db.get(models.AgentTaskNode, current.revision_of_task_id)
+            if previous is None:
+                break
+            current = previous
+        attempts = db.scalar(
+            select(func.count(models.AgentTaskNode.id)).where(
+                models.AgentTaskNode.root_task_id == node.root_task_id,
+                models.AgentTaskNode.revision_of_task_id.in_(chain_ids),
+            )
+        ) or 0
+        return max(0, self.max_rounds - attempts)
 
     def _apply_summary(
         self,

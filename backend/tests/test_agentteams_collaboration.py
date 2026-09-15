@@ -817,6 +817,68 @@ def test_required_children_trigger_parent_summarizing(db_session):
     assert summary_request.payload["existing_child_task_keys"] == ["policy"]
 
 
+def test_leader_review_bundle_includes_authorized_tool_evidence(db_session):
+    """Dropping the Tool evidence would make the Leader reject a verifiable result."""
+    run, leader = _create_run(db_session)
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("policy", "VE-0002")])
+    policy = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, policy)
+    db_session.add(
+        models.AgentMessage(
+            id="MSG-review-evidence",
+            root_task_id=run.id,
+            task_id=policy.id,
+            parent_task_id=policy.parent_task_id,
+            message_type="tool.result",
+            sender_agent_id="platform",
+            receiver_agent_id=policy.assignee_agent_id,
+            body="tool result",
+            payload={
+                "ok": True,
+                "audit_ids": [101],
+                "tool_name": "HR record check",
+                "data": {
+                    "evidence_ids": ["HR-RC-001"],
+                    "approval_status": "approved",
+                },
+            },
+            matrix_room_id="!room:test",
+            matrix_event_id="$review-evidence",
+            idempotency_key="review-evidence",
+            direction="outbound",
+            delivery_status="sent",
+        )
+    )
+    db_session.flush()
+
+    _apply_node_message(
+        db_session,
+        run,
+        policy,
+        type="task.result",
+        key="candidate-with-evidence",
+        payload={"result": "审批记录已核查", "audit_ids": [101]},
+    )
+
+    review_request = db_session.query(models.AgentMessage).filter_by(
+        task_id=policy.id,
+        message_type="task.result.submitted",
+        direction="outbound",
+    ).one()
+    assert review_request.payload["result_status"] == "SUCCESS"
+    assert review_request.payload["evidence"] == [
+        {
+            "audit_ids": [101],
+            "data": {
+                "approval_status": "approved",
+                "evidence_ids": ["HR-RC-001"],
+            },
+            "ok": True,
+            "tool_name": "HR record check",
+        }
+    ]
+
+
 def test_parent_summary_normalizes_top_level_audit_ids_from_completed_direct_children(db_session):
     """Dropping the platform-owned summary audit list would strand department leads at completion."""
     run, leader = _create_run(db_session)
@@ -1539,11 +1601,22 @@ def test_delegate_rejects_parent_chain_assignee_without_partial_tree(db_session)
     assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=hr.id).count() == 0
 
 
-def test_required_child_failure_marks_root_failed(db_session):
-    """Removing failure propagation would allow a root summary to hide a required failure."""
+def test_required_worker_failure_returns_to_leader_without_failing_root(db_session):
+    """Restoring direct failure propagation would bypass the upstream Leader recovery gate."""
     run, leader = _create_run(db_session)
-    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("required", "VE-0002")])
-    child = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _delegate(db_session, run, "DT-E10281", leader.runtime_ref, [_subtask("hr", "VE-0002")])
+    department = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).one()
+    _start_node(db_session, run, department)
+    _delegate(
+        db_session,
+        run,
+        "VE-0002",
+        db_session.get(models.DigitalEmployee, "VE-0002").runtime_ref,
+        [_subtask("required", "VE-HR-MATERIAL")],
+        key="leader-delegate",
+        parent=department,
+    )
+    child = db_session.query(models.AgentTaskNode).filter_by(parent_task_id=department.id).one()
     _start_node(db_session, run, child)
 
     _apply_node_message(
@@ -1556,11 +1629,21 @@ def test_required_child_failure_marks_root_failed(db_session):
     )
 
     root = db_session.get(models.AgentTaskNode, run.id)
-    assert root.status == "failed"
-    assert db_session.get(models.TaskRun, run.id).status == "failed"
-    assert db_session.query(models.AgentMessage).filter_by(
-        task_id=run.id, message_type="task.summary", direction="outbound"
-    ).count() == 0
+    assert child.status == "failed"
+    assert root.status == "waiting_children"
+    assert department.status == "waiting_children"
+    assert db_session.get(models.TaskRun, run.id).status == "planning"
+    recovery = db_session.query(models.AgentMessage).filter_by(
+        task_id=child.id,
+        message_type="task.recovery.requested",
+        direction="outbound",
+    ).one()
+    assert recovery.receiver_agent_id == child.coordinator_agent_id
+    assert recovery.payload["result_status"] == "INTERRUPTED"
+    assert recovery.payload["failure"] == {
+        "error_code": "evidence_missing",
+        "error_message": "",
+    }
 
 
 def test_failed_dependency_cancels_direct_and_recursive_dependents(db_session):

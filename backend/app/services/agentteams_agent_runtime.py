@@ -87,7 +87,7 @@ _SENSITIVE_TEXT = re.compile(r"(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+|\b(?:htt
 _OUTBOUND_TYPES = {
     "agent.message", "task.accepted", "task.progress", "task.delegate",
     "task.summary", "task.failed", "tool.request", "task.result",
-    "task.result.accepted", "task.result.rejected",
+    "task.result.accepted", "task.result.rejected", "task.replan", "task.blocked",
 }
 _SECURITY_COUNTER_NAMES = {
     "outbound_rejected", "parse_error", "pending_corrupt", "pending_empty_event_id",
@@ -333,7 +333,7 @@ class AgentRuntime:
         self, message: AgentProtocolMessage, event: MatrixEvent, state: dict[str, Any]
     ) -> list[AgentProtocolMessage]:
         if (
-            message.type == "task.result.submitted"
+            message.type in {"task.result.submitted", "task.recovery.requested"}
             and message.sender == "platform"
         ):
             return self._review_submitted_result(message)
@@ -354,6 +354,19 @@ class AgentRuntime:
     def _review_submitted_result(
         self, message: AgentProtocolMessage
     ) -> list[AgentProtocolMessage]:
+        raw_catalog = message.payload.get("team_capability_catalog", [])
+        catalog: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_catalog, list):
+            for item in raw_catalog:
+                if not isinstance(item, Mapping) or not isinstance(item.get("agent_id"), str):
+                    continue
+                capabilities = item.get("capabilities")
+                if isinstance(capabilities, list) and all(
+                    isinstance(value, str) for value in capabilities
+                ):
+                    catalog[item["agent_id"]] = {
+                        "capabilities": self._bounded_text_list(capabilities, 32)
+                    }
         decisions = self._decisions_for(
             self._thinking_enabled(message.payload.get("thinking_enabled"))
         )
@@ -372,6 +385,17 @@ class AgentRuntime:
                 submitted_result=self._bounded_value(
                     message.payload.get("result", {})
                 ),
+                result_status=message.payload.get("result_status", "SUCCESS"),
+                evidence=self._bounded_value(message.payload.get("evidence", [])),
+                current_dag=self._bounded_value(message.payload.get("current_dag", [])),
+                team_capability_catalog=self._worker_team_capability_catalog(catalog),
+                team_relationship_graph=self._safe_relationship_graph(
+                    message.payload.get("team_relationship_graph", {}),
+                    catalog,
+                ),
+                remaining_recovery_attempts=message.payload.get(
+                    "remaining_recovery_attempts", 0
+                ),
             )
         )
         responses = self._reasoning_trace(
@@ -382,17 +406,23 @@ class AgentRuntime:
             sequence=0,
             action=decision.action,
         )
-        response_type = (
-            "task.result.accepted"
-            if decision.action == "accept"
-            else "task.result.rejected"
-        )
+        response_type = {
+            "accept": "task.result.accepted",
+            "reject": "task.result.rejected",
+            "replan": "task.replan",
+            "stop_blocked": "task.blocked",
+        }[decision.action]
+        payload: dict[str, Any] = {"feedback": self._text(decision.feedback)}
+        if decision.action == "replan":
+            payload["subtasks"] = [
+                item.model_dump(mode="json") for item in decision.subtasks
+            ]
         responses.append(
             self._reply(
                 message,
                 response_type,
                 "platform",
-                {"feedback": self._text(decision.feedback)},
+                payload,
                 len(responses),
             )
         )
@@ -690,6 +720,17 @@ class AgentRuntime:
         self, source: AgentProtocolMessage, code: str
     ) -> AgentProtocolMessage:
         safe_code = self._safe_code(code)
+        if source.type == "task.recovery.requested":
+            return self._reply(
+                source,
+                "task.blocked",
+                "platform",
+                {
+                    "feedback": "恢复决策未完成，已向上级报告阻塞",
+                    "reason_code": safe_code,
+                },
+                99,
+            )
         if source.type == "task.result.submitted":
             return self._reply(
                 source,
