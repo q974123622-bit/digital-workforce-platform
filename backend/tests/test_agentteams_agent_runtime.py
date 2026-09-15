@@ -758,6 +758,70 @@ def test_department_lead_completes_from_authenticated_platform_summary_audit_ids
     assert result.payload["audit_ids"] == [101, 202]
 
 
+def test_department_lead_keeps_latest_child_summary_when_full_envelope_exceeds_evidence_budget(tmp_path):
+    """A large catalog/summary envelope must not erase the only completion evidence."""
+    subject, gateway, engine, _ = runtime(tmp_path, role="hr")
+    engine.selections = [SkillSelection(selected_skill_ids=["hr-onboarding-assistant"])]
+    engine.work = [
+        WorkerDecision(
+            action="delegate",
+            subtask=PlannedSubtask(
+                client_task_key="audit",
+                title="审计",
+                goal="复核",
+                required_capability="audit.evidence.read",
+                assignee_agent_id="VE-0005",
+                reason="取得直属子任务证据",
+            ),
+        ),
+        WorkerDecision(action="complete", result="已汇总直属专员证据"),
+    ]
+    assignment = message(
+        type="task.assign",
+        sender="VE-0001",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload=assign_payload(),
+    )
+    large_result = {
+        f"evidence_section_{index}": "证据内容" * 300
+        for index in range(8)
+    }
+    summary_payload = {
+        "request": "task.summary",
+        "audit_ids": [101, 202],
+        "child_results": [
+            {"client_task_key": "materials", "status": "completed", "result": large_result},
+            {"client_task_key": "training", "status": "completed", "result": large_result},
+        ],
+        "team_capability_catalog": manager_payload()["team_capability_catalog"],
+        "team_catalog_version": 2,
+        "remaining_limits": {"rounds": 3, "nodes": 20, "children": 5, "depth": 2},
+    }
+    summary = message(
+        type="task.summary",
+        sender="platform",
+        receiver="VE-0002",
+        parent_task_id="root-1",
+        payload=summary_payload,
+        key="large-canonical-child-summary",
+    )
+    gateway.events = [
+        event(assignment, event_id="$assign", sender=MXIDS["VE-0001"], ts=1),
+        event(summary, event_id="$summary", sender=MXIDS["platform"], ts=2),
+    ]
+
+    assert subject.run_once() == 2
+
+    result = sent_protocols(gateway)[-1]
+    assert result.type == "task.result"
+    assert result.payload["audit_ids"] == [101, 202]
+    latest_context = engine.worker_contexts[-1]
+    assert latest_context.previous_results
+    assert latest_context.previous_results[-1]["kind"] == "child.summary"
+    assert len(json.dumps(latest_context.previous_results, ensure_ascii=False)) <= 4096
+
+
 def test_department_lead_rejects_nested_or_textual_summary_audit_ids(tmp_path):
     """Recursively trusting model-visible child data would allow forged audit evidence."""
     subject, gateway, engine, _ = runtime(tmp_path, role="hr")

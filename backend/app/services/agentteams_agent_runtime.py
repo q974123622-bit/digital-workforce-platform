@@ -596,7 +596,11 @@ class AgentRuntime:
                 context["team_relationship_graph"] = self._safe_relationship_graph(
                     message.payload.get("team_relationship_graph"), catalog,
                 )
-        evidence = {"kind": evidence_kind, "value": self._bounded_value(message.payload)}
+        evidence = (
+            self._child_summary_evidence(message.payload)
+            if evidence_kind == "child.summary"
+            else {"kind": evidence_kind, "value": self._bounded_value(message.payload)}
+        )
         context["evidence"] = self._append_evidence(context.get("evidence", []), evidence)
         self._visible_pause()
         return self._worker_decide(message, state, context, 0)
@@ -1398,6 +1402,52 @@ class AgentRuntime:
         while len(values) > _MAX_EVIDENCE_ITEMS or len(json.dumps(values, ensure_ascii=False)) > _MAX_EVIDENCE_BYTES:
             values.pop(0)
         return values
+
+    def _child_summary_evidence(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep completed-child evidence while dropping routing/catalog metadata.
+
+        A task.summary envelope also carries the current team catalog, relationship
+        graph and limits. Those fields are refreshed into their dedicated runtime
+        context above and must not consume the small durable evidence budget.
+        """
+        value: dict[str, Any] = {}
+        audit_ids = payload.get("audit_ids")
+        if isinstance(audit_ids, list):
+            value["audit_ids"] = self._bounded_value(audit_ids[:16])
+        compact_results: list[dict[str, Any]] = []
+        child_results = payload.get("child_results")
+        if isinstance(child_results, list):
+            for raw in child_results[:5]:
+                if not isinstance(raw, Mapping):
+                    continue
+                compact: dict[str, Any] = {}
+                for key in ("client_task_key", "status"):
+                    item = raw.get(key)
+                    if isinstance(item, str) and item.strip():
+                        compact[key] = self._text(item, 128)
+                if raw.get("truncated") is True:
+                    compact["truncated"] = True
+                raw_result = raw.get("result")
+                if isinstance(raw_result, str) and raw_result.strip():
+                    compact["result"] = self._text(raw_result, 384)
+                elif isinstance(raw_result, Mapping):
+                    result: dict[str, Any] = {}
+                    narrative = raw_result.get("summary", raw_result.get("result"))
+                    if isinstance(narrative, str) and narrative.strip():
+                        result["summary"] = self._text(narrative, 384)
+                    child_audit_ids = raw_result.get("audit_ids")
+                    if isinstance(child_audit_ids, list):
+                        result["audit_ids"] = self._bounded_value(child_audit_ids[:16])
+                    approval_ref = raw_result.get("approval_ref")
+                    if self._safe_protocol_text(approval_ref):
+                        result["approval_ref"] = approval_ref
+                    if result:
+                        compact["result"] = result
+                if compact:
+                    compact_results.append(compact)
+        if compact_results:
+            value["child_results"] = compact_results
+        return {"kind": "child.summary", "value": value}
 
     def _visible_pause(self) -> None:
         self.pause(float(self.config.pause_seconds))
