@@ -82,7 +82,16 @@ def _delegate(db_session, run, sender, matrix_sender, subtasks, key="delegate-1"
 
 
 def _subtask(key, assignee, *, depends_on=None, required=True):
-    capabilities = {"VE-0002": "hr-employee-mcp", "VE-0003": "adp-onboarding", "RPA-0001": "weekly-report"}
+    capabilities = {
+        "VE-0002": "hr-employee-mcp",
+        "VE-0003": "adp-onboarding",
+        "VE-HR-MATERIAL": "agentteams-onboarding-materials",
+        "VE-HR-TRAINING": "agentteams-onboarding-training",
+        "VE-IT-ACCOUNT": "agentteams-it-accounts",
+        "VE-IT-DEVICE": "agentteams-it-devices",
+        "VE-AUDIT-REVIEW": "agentteams-onboarding-evidence",
+        "RPA-0001": "weekly-report",
+    }
     return {
         "client_task_key": key,
         "title": f"{key} task",
@@ -457,6 +466,101 @@ def test_platform_rejects_forged_non_direct_report_without_partial_tree(
         )
 
     assert db_session.query(models.AgentTaskNode).filter_by(parent_task_id=run.id).count() == 0
+
+
+def test_manager_cannot_delegate_directly_to_persisted_worker_without_partial_tree(
+    db_session,
+):
+    from app.services.agentteams_collaboration import (
+        AgentTeamsCollaborationService,
+        CollaborationConflict,
+    )
+
+    service = AgentTeamsCollaborationService(capability_catalog_source="database")
+    run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="严格三层任务",
+        instruction="必须先交给负责人",
+        material={},
+    )
+
+    with pytest.raises(CollaborationConflict, match="^manager_must_delegate_to_leader$"):
+        service.apply_message(
+            db_session,
+            matrix_sender=_matrix_sender("dwp-ve-0001"),
+            message=_protocol(
+                root_id=run.id,
+                task_id=run.id,
+                sender="VE-0001",
+                receiver="platform",
+                type="task.delegate",
+                key=f"{run.id}:skip-leader",
+                payload={"subtasks": [_subtask("direct-worker", "VE-HR-MATERIAL")]},
+            ),
+        )
+
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id
+    ).count() == 0
+
+
+def test_leader_cannot_delegate_to_another_leaders_worker_without_partial_tree(
+    db_session,
+):
+    from app.services.agentteams_collaboration import (
+        AgentTeamsCollaborationService,
+        CollaborationConflict,
+    )
+
+    service = AgentTeamsCollaborationService(capability_catalog_source="database")
+    run = service.create_task(
+        db_session,
+        team_id="TEAM-ONBOARD",
+        leader_agent_id="VE-0001",
+        title="严格三层任务",
+        instruction="按部门协作",
+        material={},
+    )
+    service.apply_message(
+        db_session,
+        matrix_sender=_matrix_sender("dwp-ve-0001"),
+        message=_protocol(
+            root_id=run.id,
+            task_id=run.id,
+            sender="VE-0001",
+            receiver="platform",
+            type="task.delegate",
+            key=f"{run.id}:hr-leader",
+            payload={"subtasks": [_subtask("hr-leader", "VE-0002")]},
+        ),
+    )
+    leader_node = db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=run.id,
+        assignee_agent_id="VE-0002",
+    ).one()
+    _start_node(db_session, run, leader_node)
+
+    with pytest.raises(CollaborationConflict, match="^leader_must_delegate_to_worker$"):
+        service.apply_message(
+            db_session,
+            matrix_sender=_matrix_sender("dwp-ve-0002"),
+            message=_protocol(
+                root_id=run.id,
+                task_id=leader_node.id,
+                parent_id=run.id,
+                sender="VE-0002",
+                receiver="platform",
+                type="task.delegate",
+                key=f"{run.id}:cross-department",
+                payload={"subtasks": [_subtask("it-worker", "VE-IT-ACCOUNT")]},
+            ),
+        )
+
+    assert db_session.query(models.AgentTaskNode).filter_by(
+        parent_task_id=leader_node.id
+    ).count() == 0
 
 
 def test_manager_delegate_creates_recursive_children(db_session):

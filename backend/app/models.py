@@ -117,6 +117,7 @@ class TeamMember(Base):
     team_id: Mapped[str] = mapped_column(String, index=True)
     employee_id: Mapped[str] = mapped_column(String)
     role: Mapped[str] = mapped_column(String, default="worker")
+    reports_to_employee_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
 
 class KnowledgeBase(Base):

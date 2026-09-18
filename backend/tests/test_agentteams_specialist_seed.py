@@ -9,6 +9,7 @@ from app.services.agentteams_runtime_config import (
     role_change_activation_input_schema,
     role_change_employee_ref_input_schema,
 )
+from app.services.agentteams_hierarchy import TeamHierarchy
 
 
 SPECIALIST_TO_PLUGIN = {
@@ -17,6 +18,60 @@ SPECIALIST_TO_PLUGIN = {
     "VE-IT-ACCOUNT": "agentteams-it-accounts",
     "VE-IT-DEVICE": "agentteams-it-devices",
 }
+
+
+def _persisted_hierarchy(db_session, team_id: str) -> TeamHierarchy:
+    team = db_session.get(models.Team, team_id)
+    members = db_session.query(models.TeamMember).filter_by(team_id=team_id).all()
+    parent_by_member = {
+        member.employee_id: member.reports_to_employee_id for member in members
+    }
+    relationships = {
+        member.employee_id: {
+            "role": member.role,
+            "reports_to": (
+                [member.reports_to_employee_id]
+                if member.reports_to_employee_id
+                else []
+            ),
+            "direct_reports": sorted(
+                employee_id
+                for employee_id, parent_id in parent_by_member.items()
+                if parent_id == member.employee_id
+            ),
+        }
+        for member in members
+    }
+    return TeamHierarchy.from_relationships(
+        manager_id=team.leader_employee_id,
+        member_ids=set(parent_by_member),
+        relationships=relationships,
+    )
+
+
+def test_managed_teams_seed_real_manager_leader_worker_hierarchies(db_session):
+    onboarding = _persisted_hierarchy(db_session, "TEAM-ONBOARD")
+    assert onboarding.direct_reports_of("VE-0001") == (
+        "VE-0002", "VE-0003", "VE-0005",
+    )
+    assert onboarding.direct_reports_of("VE-0002") == (
+        "VE-HR-MATERIAL", "VE-HR-TRAINING",
+    )
+    assert onboarding.direct_reports_of("VE-0003") == (
+        "VE-IT-ACCOUNT", "VE-IT-DEVICE",
+    )
+    assert onboarding.direct_reports_of("VE-0005") == ("VE-AUDIT-REVIEW",)
+
+    database = _persisted_hierarchy(db_session, "TEAM-DB-BENCH")
+    assert database.direct_reports_of("VE-0001") == (
+        "DB-OPS-LEAD", "DB-PERF-LEAD",
+    )
+    assert database.direct_reports_of("DB-OPS-LEAD") == (
+        "DB-LOCK-01", "DB-VACUUM-01", "DB-WRITE-01",
+    )
+    assert database.direct_reports_of("DB-PERF-LEAD") == (
+        "DB-INDEX-01", "DB-QUERY-01",
+    )
 
 
 def _tool(plugin_id: str, *, schema: dict | None = None) -> dict:

@@ -70,6 +70,14 @@ def ensure_schema_compatibility() -> None:
             connection.execute(
                 text("ALTER TABLE agent_task_node ADD COLUMN revision_of_task_id VARCHAR")
             )
+    team_member_columns = {
+        column["name"] for column in inspector.get_columns("team_member")
+    }
+    if team_member_columns and "reports_to_employee_id" not in team_member_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE team_member ADD COLUMN reports_to_employee_id VARCHAR")
+            )
 
 
 def get_db():
