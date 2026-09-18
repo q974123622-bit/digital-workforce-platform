@@ -25,6 +25,7 @@ const json = (body: unknown, status = 200) =>
 afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.removeItem('dwp.current-actor');
+  sessionStorage.clear();
 });
 
 const readyHealth: AgentCollaborationHealth = {
@@ -661,6 +662,45 @@ describe('AgentTeams collaboration API client', () => {
 });
 
 describe('AgentTeams collaboration page', () => {
+  it('shows the blocking loader only until the current actor finishes the first successful session load', async () => {
+    const firstHealth = deferred<AgentCollaborationHealth>();
+    const firstTasks = deferred<AgentCollaborationTask[]>();
+    mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': () => firstHealth.promise,
+      'GET /api/v1/agentteams-collaboration/tasks': () => firstTasks.promise,
+    });
+
+    const firstRender = renderPage();
+    expect(screen.getByText('正在读取协作环境与任务记录…')).toBeInTheDocument();
+
+    await act(async () => {
+      firstHealth.resolve(readyHealth);
+      firstTasks.resolve([]);
+    });
+    expect(await screen.findByText('协作环境已就绪')).toBeInTheDocument();
+    expect(sessionStorage.getItem('dwp.agentteams.initialized:E10281')).toBe('1');
+    firstRender.unmount();
+
+    const refreshedHealth = deferred<AgentCollaborationHealth>();
+    const refreshedTasks = deferred<AgentCollaborationTask[]>();
+    mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': () => refreshedHealth.promise,
+      'GET /api/v1/agentteams-collaboration/tasks': () => refreshedTasks.promise,
+    });
+
+    renderPage();
+
+    expect(screen.queryByText('正在读取协作环境与任务记录…')).not.toBeInTheDocument();
+    expect(screen.getByText('协作环境已就绪')).toBeInTheDocument();
+    expect(screen.getByLabelText('任务标题')).toBeInTheDocument();
+
+    await act(async () => {
+      refreshedHealth.resolve(readyHealth);
+      refreshedTasks.resolve([]);
+    });
+    expect(await screen.findByText('协作环境已就绪')).toBeInTheDocument();
+  });
+
   it('renders direct delegation as a hierarchy chart with compact Tool leaves', () => {
     const toolMessages: AgentMessage[] = [
       {
@@ -944,6 +984,30 @@ describe('AgentTeams collaboration page', () => {
     expect(instruction).not.toBeDisabled();
     expect(screen.getByLabelText('任务标题')).not.toBeDisabled();
     expect(screen.getByLabelText('补充材料（可选 JSON）')).not.toBeDisabled();
+  });
+
+  it('fills both editable fields when the finance reimbursement preset is selected', async () => {
+    mockPageApi({
+      'GET /api/v1/agentteams-collaboration/health': readyHealth,
+      'GET /api/v1/teams': teams,
+      'GET /api/v1/agentteams-collaboration/tasks': [],
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: '选择任务预设' }));
+    fireEvent.click(await screen.findByText('财务报销协同审核'));
+
+    const title = screen.getByLabelText('任务标题');
+    const instruction = screen.getByLabelText('任务说明');
+    expect(title).toHaveValue('财务报销协同审核');
+    expect(instruction).toHaveValue(
+      '审核李明的差旅报销单 EXP-2026-0915-001，核验发票、行程、预算与合规性；全部通过后生成模拟付款单。',
+    );
+
+    fireEvent.change(title, { target: { value: '李明差旅报销复核' } });
+    fireEvent.change(instruction, { target: { value: '仅复核该报销单，不连接真实支付系统。' } });
+    expect(title).toHaveValue('李明差旅报销复核');
+    expect(instruction).toHaveValue('仅复核该报销单，不连接真实支付系统。');
   });
 
   it('shows the server-reported local boundary and labels local message IDs as transport events', async () => {
@@ -1612,6 +1676,35 @@ describe('AgentTeams collaboration page', () => {
     expect(auditPanel?.querySelectorAll('.at-tool-row')).toHaveLength(1);
     expect(auditPanel).not.toHaveTextContent('工具调用：未提供');
     expect(auditPanel).not.toHaveTextContent('权限检查：未产生');
+  });
+
+  it('uses the finance decision wording for an expense reimbursement result', async () => {
+    const financeTask = {
+      ...completedTask,
+      title: '财务报销协同审核',
+      instruction: '审核差旅报销单并生成模拟付款单。',
+    };
+    const routes = completedTaskRoutes(financeTask);
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/graph'] = {
+      ...completedGraph,
+      selected_skill_ids: ['agentteams-expense-reimbursement'],
+    };
+    routes['GET /api/v1/agentteams-collaboration/tasks/AT-ROOT/result'] = {
+      ...completedResult,
+      summary: '报销审核与模拟制单已完成。',
+      node_results: [
+        {
+          ...rootNode,
+          output_payload: { readiness_decision: 'ready' },
+        },
+        workerNode,
+      ],
+    };
+    mockPageApi(routes);
+    renderPage();
+
+    expect(await screen.findByText('结论：报销审核通过')).toBeInTheDocument();
+    expect(screen.queryByText('结论：可以按期入职')).not.toBeInTheDocument();
   });
 
   it('keeps protocol message details out of the compact call tree', () => {

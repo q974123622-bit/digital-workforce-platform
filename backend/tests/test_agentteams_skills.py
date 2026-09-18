@@ -291,3 +291,61 @@ def test_each_project_skill_exposes_required_operational_invariants(
     assert len(skill.content) >= 160
     assert all(term in skill.content for term in required_terms)
     assert all(term not in skill.content for term in forbidden_terms)
+
+
+@pytest.mark.parametrize(
+    ("skill_id", "required_terms"),
+    [
+        ("agentteams-expense-reimbursement", ("财务负责人", "审计负责人", "AUD-EXP-001", "付款")),
+        ("finance-expense-coordination", ("direct_reports", "发票", "预算", "付款", "Leader")),
+        ("expense-invoice-verification", ("finance.expense.claim.read", "agentteams.finance.verify_claim", "Complete")),
+        ("expense-budget-verification", ("finance.expense.budget.read", "agentteams.finance.verify_budget", "Complete")),
+        ("expense-payment-preparation", ("finance.expense.payment.create", "AUD-EXP-001", "模拟付款单")),
+        ("audit-expense-review", ("audit.expense.review", "agentteams.audit.review_expense", "AUD-EXP-001")),
+    ],
+)
+def test_expense_skills_encode_hierarchy_and_evidence_contract(repo_root, skill_id, required_terms):
+    skill = ProjectSkillRegistry.from_root(repo_root).load([skill_id])[0]
+
+    assert skill.description.startswith("Use when")
+    assert skill.when_to_use
+    assert all(term in skill.content for term in required_terms)
+
+
+def test_expense_manager_skill_separates_blocking_evidence_from_optional_details(repo_root):
+    """Optional business details must not overturn a fully evidenced demo decision."""
+    skill = ProjectSkillRegistry.from_root(repo_root).load(["agentteams-expense-reimbursement"])[0]
+
+    assert "阻断性证据" in skill.content
+    assert "非阻断补充项" in skill.content
+    assert "结论必须判定为通过" in skill.content
+    assert "不得仅因" in skill.content
+    assert "收款方名称" in skill.content
+    assert "发票代码" in skill.content
+
+
+@pytest.mark.parametrize(
+    "skill_id",
+    (
+        "hr-onboarding-assistant",
+        "hr-role-change-assistant",
+        "it-service-assistant",
+        "it-role-change-assistant",
+        "audit-evidence-review",
+        "audit-role-change-review",
+        "audit-expense-review",
+        "finance-expense-coordination",
+    ),
+)
+def test_business_leader_skills_preserve_worker_owned_evidence_without_duplicate_delegation(
+    repo_root, skill_id,
+):
+    """Leader summaries identify child evidence without treating their own Tool silence as a gap."""
+    skill = ProjectSkillRegistry.from_root(repo_root).load([skill_id])[0]
+
+    assert "直属 Worker" in skill.content
+    assert "Leader 节点没有直接 Tool" in skill.content
+    assert "audit_id" in skill.content
+    assert "证据编号" in skill.content
+    assert "不得仅因" in skill.content
+    assert "重复派发" in skill.content

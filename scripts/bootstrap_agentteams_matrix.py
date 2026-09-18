@@ -13,9 +13,9 @@ import hmac
 import json
 import os
 from pathlib import Path
-import secrets
 import sys
 import tempfile
+import time
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
@@ -29,6 +29,8 @@ if str(BACKEND) not in sys.path:
 
 from app.services.agentteams_runtime_config import (
     demo_employee_ref_input_schema,
+    expense_payment_input_schema,
+    expense_ref_input_schema,
     require_safe_path,
     role_change_activation_input_schema,
     role_change_employee_ref_input_schema,
@@ -38,6 +40,7 @@ TEAM_ID = "TEAM-ONBOARD"
 ACCOUNT_NAMES = (
     "platform", "manager", "hr", "it", "audit",
     "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+    "finance", "finance_invoice", "finance_budget", "finance_payment",
 )
 
 
@@ -60,7 +63,11 @@ def _demo_tool(
 ROLE_IDENTITIES = {
     "manager": {
         "agent_id": "VE-0001",
-        "skills": ["agentteams-onboarding-readiness", "agentteams-role-change-readiness"],
+        "skills": [
+            "agentteams-onboarding-readiness",
+            "agentteams-role-change-readiness",
+            "agentteams-expense-reimbursement",
+        ],
         "tools": [],
     },
     "hr": {
@@ -75,8 +82,49 @@ ROLE_IDENTITIES = {
     },
     "audit": {
         "agent_id": "VE-0005",
-        "skills": ["audit-evidence-review", "audit-role-change-review"],
+        "skills": ["audit-evidence-review", "audit-role-change-review", "audit-expense-review"],
         "tools": [],
+    },
+    "finance": {
+        "agent_id": "VE-FIN-LEAD",
+        "skills": ["finance-expense-coordination"],
+        "tools": [],
+    },
+    "finance_invoice": {
+        "agent_id": "VE-FIN-INVOICE",
+        "skills": ["expense-invoice-verification"],
+        "tools": [
+            _demo_tool(
+                "agentteams.finance.verify_claim",
+                "agentteams-expense-claim",
+                "finance.expense.claim.read",
+                input_schema=expense_ref_input_schema(),
+            ),
+        ],
+    },
+    "finance_budget": {
+        "agent_id": "VE-FIN-BUDGET",
+        "skills": ["expense-budget-verification"],
+        "tools": [
+            _demo_tool(
+                "agentteams.finance.verify_budget",
+                "agentteams-expense-budget",
+                "finance.expense.budget.read",
+                input_schema=expense_ref_input_schema(),
+            ),
+        ],
+    },
+    "finance_payment": {
+        "agent_id": "VE-FIN-PAYMENT",
+        "skills": ["expense-payment-preparation"],
+        "tools": [
+            _demo_tool(
+                "agentteams.finance.prepare_payment",
+                "agentteams-expense-payment",
+                "finance.expense.payment.create",
+                input_schema=expense_payment_input_schema(),
+            ),
+        ],
     },
     "hr_material": {
         "agent_id": "VE-HR-MATERIAL",
@@ -113,27 +161,32 @@ ROLE_IDENTITIES = {
     },
     "audit_review": {
         "agent_id": "VE-AUDIT-REVIEW",
-        "skills": ["audit-evidence-review", "audit-role-change-review"],
+        "skills": ["audit-evidence-review", "audit-role-change-review", "audit-expense-review"],
         "tools": [
             _demo_tool("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read"),
             _demo_tool("agentteams.audit.review_role_change", "agentteams-role-change-audit", "audit.permission.review", input_schema=role_change_employee_ref_input_schema()),
+            _demo_tool("agentteams.audit.review_expense", "agentteams-expense-audit", "audit.expense.review", input_schema=expense_ref_input_schema()),
         ],
     },
 }
 TEAM_CATALOG = {
     "VE-0002": {"capabilities": ["hr.onboarding.coordinate", "hr.role_change.coordinate"]},
     "VE-0003": {"capabilities": ["it.onboarding.coordinate", "it.role_change.plan.coordinate", "it.role_change.activate.coordinate"]},
-    "VE-0005": {"capabilities": ["audit.onboarding.coordinate", "audit.role_change.coordinate"]},
+    "VE-0005": {"capabilities": ["audit.onboarding.coordinate", "audit.role_change.coordinate", "audit.expense.coordinate"]},
+    "VE-FIN-LEAD": {"capabilities": ["finance.expense.coordinate"]},
     "VE-HR-MATERIAL": {"capabilities": ["hr.materials.read", "hr.role_change.read"]},
     "VE-HR-TRAINING": {"capabilities": ["hr.training.read", "hr.role_change.read"]},
     "VE-IT-ACCOUNT": {"capabilities": ["it.accounts.read", "it.permission.plan"]},
     "VE-IT-DEVICE": {"capabilities": ["it.devices.read", "it.permission.plan", "it.permission.activate"]},
-    "VE-AUDIT-REVIEW": {"capabilities": ["audit.evidence.read", "audit.permission.review"]},
+    "VE-AUDIT-REVIEW": {"capabilities": ["audit.evidence.read", "audit.permission.review", "audit.expense.review"]},
+    "VE-FIN-INVOICE": {"capabilities": ["finance.expense.claim.read"]},
+    "VE-FIN-BUDGET": {"capabilities": ["finance.expense.budget.read"]},
+    "VE-FIN-PAYMENT": {"capabilities": ["finance.expense.payment.create"]},
 }
 TEAM_RELATIONSHIPS = {
     "VE-0001": {
         "role": "Manager", "reports_to": [],
-        "direct_reports": ["VE-0002", "VE-0003", "VE-0005"],
+        "direct_reports": ["VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD"],
     },
     "VE-0002": {
         "role": "HR负责人", "reports_to": ["VE-0001"],
@@ -144,11 +197,18 @@ TEAM_RELATIONSHIPS = {
         "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"],
     },
     "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
+    "VE-FIN-LEAD": {
+        "role": "财务负责人", "reports_to": ["VE-0001"],
+        "direct_reports": ["VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT"],
+    },
     "VE-HR-MATERIAL": {"role": "HR材料专员", "reports_to": ["VE-0002"], "direct_reports": []},
     "VE-HR-TRAINING": {"role": "HR培训专员", "reports_to": ["VE-0002"], "direct_reports": []},
     "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
     "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
     "VE-AUDIT-REVIEW": {"role": "审计专员", "reports_to": ["VE-0005"], "direct_reports": []},
+    "VE-FIN-INVOICE": {"role": "发票核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+    "VE-FIN-BUDGET": {"role": "预算核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+    "VE-FIN-PAYMENT": {"role": "付款制单专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
 }
 
 
@@ -303,6 +363,14 @@ class SynapseAdminClient:
     def close(self) -> None:
         self.client.close()
 
+    def account_password(self, name: str) -> str:
+        """Derive a restart-stable password inside the private local trust boundary."""
+        return hmac.new(
+            self.registration_secret.encode("utf-8"),
+            f"agentteams-local-account:{name}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
     def ensure_account(self, name: str, password: str) -> dict[str, str]:
         existing = self.known_accounts.get(name)
         if existing and self._whoami(existing["token"]) == existing["mxid"]:
@@ -317,7 +385,17 @@ class SynapseAdminClient:
                 self.registration_secret.encode("utf-8"), f"{nonce}\x00{name}\x00{password}\x00notadmin".encode("utf-8"), hashlib.sha1
             ).hexdigest()
             response = self.client.post(f"{self.base_url}/_synapse/admin/v1/register", json=payload)
-            data = response.json() if response.status_code == 200 else {}
+            data = response.json() if response.status_code in {200, 400} else {}
+            if response.status_code == 400 and data.get("errcode") == "M_USER_IN_USE":
+                login = self.client.post(
+                    f"{self.base_url}/_matrix/client/v3/login",
+                    json={
+                        "type": "m.login.password",
+                        "identifier": {"type": "m.id.user", "user": name},
+                        "password": password,
+                    },
+                )
+                data = login.json() if login.status_code == 200 else {}
             mxid, token = data.get("user_id"), data.get("access_token")
             if not isinstance(mxid, str) or not isinstance(token, str) or not mxid.startswith("@") or not token:
                 raise BootstrapError("matrix_account_registration_failed")
@@ -346,16 +424,32 @@ class SynapseAdminClient:
 
     def invite_and_join(self, room_id: str, identity: Mapping[str, str]) -> None:
         try:
-            invitation = self.client.post(
+            invitation = self._post_with_retry(
                 f"{self.base_url}/_matrix/client/v3/rooms/{room_id}/invite", headers=self._headers(self.known_accounts["platform"]["token"]), json={"user_id": identity["mxid"]},
             )
             if invitation.status_code not in {200, 403}:
                 raise BootstrapError("matrix_room_invite_failed")
-            joined = self.client.post(f"{self.base_url}/_matrix/client/v3/join/{room_id}", headers=self._headers(identity["token"]), json={})
+            joined = self._post_with_retry(f"{self.base_url}/_matrix/client/v3/join/{room_id}", headers=self._headers(identity["token"]), json={})
             if joined.status_code != 200:
                 raise BootstrapError("matrix_room_join_failed")
         except httpx.HTTPError as exc:
             raise BootstrapError("matrix_room_join_failed") from exc
+
+    def _post_with_retry(self, url: str, **kwargs: Any) -> httpx.Response:
+        response = None
+        for attempt in range(4):
+            response = self.client.post(url, **kwargs)
+            if response.status_code != 429 and response.status_code < 500:
+                return response
+            if attempt < 3:
+                retry_after = response.headers.get("Retry-After", "0.25")
+                try:
+                    delay = min(2.0, max(0.0, float(retry_after)))
+                except (TypeError, ValueError):
+                    delay = 0.25
+                time.sleep(delay)
+        assert response is not None
+        return response
 
     def joined_members(self, room_id: str, platform: Mapping[str, str]) -> set[str]:
         try:
@@ -382,7 +476,7 @@ class SynapseAdminClient:
 
 def bootstrap_matrix(matrix: Any, *, password_factory: Callable[[str], str] | None = None) -> dict[str, Any]:
     """Ensure all configured accounts share one private room and verify membership."""
-    make_password = password_factory or (lambda _name: secrets.token_urlsafe(32))
+    make_password = password_factory or matrix.account_password
     accounts = {name: matrix.ensure_account(name, make_password(name)) for name in ACCOUNT_NAMES}
     room_id = matrix.ensure_private_room(accounts["platform"], ["agentteams-onboard"])
     for name in ACCOUNT_NAMES:

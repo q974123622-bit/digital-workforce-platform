@@ -151,6 +151,7 @@ def test_matrix_bootstrap_registers_both_scenarios_and_all_role_change_tools():
     assert ROLE_IDENTITIES["manager"]["skills"] == [
         "agentteams-onboarding-readiness",
         "agentteams-role-change-readiness",
+        "agentteams-expense-reimbursement",
     ]
     assert ROLE_IDENTITIES["hr"]["tools"] == []
     assert ROLE_IDENTITIES["it"]["tools"] == []

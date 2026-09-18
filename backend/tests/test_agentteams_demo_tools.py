@@ -180,3 +180,77 @@ def test_domain_tool_output_never_contains_complete_fixture(db_session):
     assert "IT-A-001" not in rendered
     assert "AUD-A-001" not in rendered
     assert "mock://" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("employee_id", "plugin_id", "expected_key", "expected_evidence_id"),
+    [
+        ("VE-FIN-INVOICE", "agentteams-expense-claim", "claim", "EXP-INVOICE-001"),
+        ("VE-FIN-BUDGET", "agentteams-expense-budget", "budget", "EXP-BUDGET-001"),
+        ("VE-AUDIT-REVIEW", "agentteams-expense-audit", "review", "EXP-AUDIT-001"),
+        ("VE-FIN-PAYMENT", "agentteams-expense-payment", "payment", "PAY-EXP-001"),
+    ],
+)
+def test_expense_tools_return_only_the_authorized_domain_view(
+    db_session, employee_id, plugin_id, expected_key, expected_evidence_id,
+):
+    params = {"expense_id": "EXP-2026-0915-001"}
+    if plugin_id == "agentteams-expense-payment":
+        params["approval_ref"] = "AUD-EXP-001"
+
+    result = _invoke(db_session, employee_id, plugin_id, params)
+
+    assert result["ok"] is True
+    assert result["data"]["source"] == "demo"
+    assert result["data"]["expense_id"] == "EXP-2026-0915-001"
+    assert expected_evidence_id in result["data"]["evidence_ids"]
+    assert expected_key in result["data"]
+    assert {"claim", "budget", "review", "payment"}.difference({expected_key}).isdisjoint(
+        result["data"]
+    )
+    assert db_session.get(models.AuditEvent, result["audit_ids"][0]).decision == "allow"
+
+
+@pytest.mark.parametrize(
+    ("employee_id", "plugin_id", "params"),
+    [
+        ("VE-FIN-INVOICE", "agentteams-expense-claim", {"expense_id": "UNKNOWN"}),
+        (
+            "VE-FIN-BUDGET",
+            "agentteams-expense-budget",
+            {"expense_id": "EXP-2026-0915-001", "path": "C:/not-allowed.json"},
+        ),
+        ("VE-AUDIT-REVIEW", "agentteams-expense-audit", {"expense_id": None}),
+        (
+            "VE-FIN-PAYMENT",
+            "agentteams-expense-payment",
+            {"expense_id": "EXP-2026-0915-001"},
+        ),
+        (
+            "VE-FIN-PAYMENT",
+            "agentteams-expense-payment",
+            {"expense_id": "EXP-2026-0915-001", "approval_ref": "WRONG"},
+        ),
+    ],
+)
+def test_expense_tools_reject_untrusted_or_incomplete_parameters(
+    client, db_session, employee_id, plugin_id, params,
+):
+    response = client.post(
+        "/internal/gateway/invoke",
+        json={
+            "employee_id": employee_id,
+            "plugin_id": plugin_id,
+            "action": "execute",
+            "params": params,
+            "trace_id": f"TOOL-INVALID-{plugin_id}",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()["error"]
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["message"] == "工具参数不合法"
+    audit = db_session.get(models.AuditEvent, body["detail"]["audit_id"])
+    assert audit.decision == "deny"
+    assert audit.reason == "工具参数不合法"

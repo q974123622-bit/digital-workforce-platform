@@ -20,6 +20,11 @@ _ROLE_CHANGE_FIXTURE = (
 )
 _ROLE_CHANGE_EMPLOYEE_REF = "张明"
 _ROLE_CHANGE_APPROVAL_REF = "AUD-RC-001"
+_EXPENSE_FIXTURE = (
+    Path(__file__).resolve().parents[3] / "mock-data" / "agentteams" / "expense-li-ming.json"
+)
+_EXPENSE_ID = "EXP-2026-0915-001"
+_EXPENSE_APPROVAL_REF = "AUD-EXP-001"
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _DATABASE_SCENARIOS: DatabaseScenarioCatalog | None = None
 
@@ -225,6 +230,69 @@ def _mock_agentteams_role_change_it_activate(_plugin: models.Plugin, params: dic
     return _role_change_view(params, "it_activation", "activation", activation=True)
 
 
+def _validate_expense_input(params: dict) -> None:
+    if not isinstance(params, dict) or set(params) != {"expense_id"}:
+        raise AdapterInputError("invalid_params")
+    if params.get("expense_id") != _EXPENSE_ID:
+        raise AdapterInputError("invalid_expense_id")
+
+
+def _validate_expense_payment_input(params: dict) -> None:
+    if not isinstance(params, dict) or set(params) != {"expense_id", "approval_ref"}:
+        raise AdapterInputError("invalid_params")
+    if params.get("expense_id") != _EXPENSE_ID:
+        raise AdapterInputError("invalid_expense_id")
+    if params.get("approval_ref") != _EXPENSE_APPROVAL_REF:
+        raise AdapterInputError("invalid_approval_ref")
+
+
+def _expense_view(
+    params: dict, section_name: str, result_key: str, *, payment: bool = False,
+) -> dict:
+    (_validate_expense_payment_input if payment else _validate_expense_input)(params)
+    try:
+        fixture = json.loads(_EXPENSE_FIXTURE.read_text(encoding="utf-8"))
+        section = fixture[section_name]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RuntimeError("expense_demo_fixture_unavailable") from error
+    evidence_ids = section.get("evidence_ids") if isinstance(section, dict) else None
+    result = section.get(result_key) if isinstance(section, dict) else None
+    if (
+        not isinstance(evidence_ids, list)
+        or not evidence_ids
+        or not all(isinstance(item, str) and item for item in evidence_ids)
+        or not isinstance(result, dict)
+    ):
+        raise RuntimeError("expense_demo_fixture_unavailable")
+    response = {
+        "source": "demo",
+        "expense_id": _EXPENSE_ID,
+        "evidence_ids": list(evidence_ids),
+        result_key: dict(result),
+    }
+    for key in ("approval_ref", "payment_ref"):
+        value = section.get(key)
+        if isinstance(value, str) and value:
+            response[key] = value
+    return response
+
+
+def _mock_agentteams_expense_claim(_plugin: models.Plugin, params: dict) -> dict:
+    return _expense_view(params, "claim", "claim")
+
+
+def _mock_agentteams_expense_budget(_plugin: models.Plugin, params: dict) -> dict:
+    return _expense_view(params, "budget", "budget")
+
+
+def _mock_agentteams_expense_audit(_plugin: models.Plugin, params: dict) -> dict:
+    return _expense_view(params, "audit", "review")
+
+
+def _mock_agentteams_expense_payment(_plugin: models.Plugin, params: dict) -> dict:
+    return _expense_view(params, "payment", "payment", payment=True)
+
+
 def _database_catalog() -> DatabaseScenarioCatalog:
     global _DATABASE_SCENARIOS
     if _DATABASE_SCENARIOS is None:
@@ -271,6 +339,10 @@ _INPUT_VALIDATORS: dict[str, callable] = {
     "mock://agentteams/role-change/it-plan": _validate_role_change_input,
     "mock://agentteams/role-change/audit": _validate_role_change_input,
     "mock://agentteams/role-change/it-activate": _validate_role_change_activation_input,
+    "mock://agentteams/expense/claim": _validate_expense_input,
+    "mock://agentteams/expense/budget": _validate_expense_input,
+    "mock://agentteams/expense/audit": _validate_expense_input,
+    "mock://agentteams/expense/payment": _validate_expense_payment_input,
     "mock://agentteams/database-inspector": _validate_database_inspection_input,
 }
 
@@ -420,6 +492,10 @@ REGISTRY: dict[str, callable] = {
     "mock://agentteams/role-change/it-plan": _mock_agentteams_role_change_it_plan,
     "mock://agentteams/role-change/audit": _mock_agentteams_role_change_audit,
     "mock://agentteams/role-change/it-activate": _mock_agentteams_role_change_it_activate,
+    "mock://agentteams/expense/claim": _mock_agentteams_expense_claim,
+    "mock://agentteams/expense/budget": _mock_agentteams_expense_budget,
+    "mock://agentteams/expense/audit": _mock_agentteams_expense_audit,
+    "mock://agentteams/expense/payment": _mock_agentteams_expense_payment,
     "mock://agentteams/database-inspector": _mock_agentteams_database_inspector,
     "mock://kb/l1": _mock_kb_l1,
     "mock://kb/l2": _mock_kb_l2,

@@ -24,6 +24,10 @@ ONBOARDING_ROLES = {
     "it_account": "VE-IT-ACCOUNT",
     "it_device": "VE-IT-DEVICE",
     "audit_review": "VE-AUDIT-REVIEW",
+    "finance": "VE-FIN-LEAD",
+    "finance_invoice": "VE-FIN-INVOICE",
+    "finance_budget": "VE-FIN-BUDGET",
+    "finance_payment": "VE-FIN-PAYMENT",
 }
 DATABASE_ROLES = {
     "manager": "VE-0001",
@@ -70,7 +74,7 @@ def _strict_runtime_document(team_id="TEAM-ONBOARD") -> dict:
     }
     if team_id == "TEAM-ONBOARD":
         document["team_relationships"] = {
-            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD"]},
             "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
             "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
             "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
@@ -79,6 +83,10 @@ def _strict_runtime_document(team_id="TEAM-ONBOARD") -> dict:
             "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-AUDIT-REVIEW": {"role": "审计复核专员", "reports_to": ["VE-0005"], "direct_reports": []},
+            "VE-FIN-LEAD": {"role": "财务负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT"]},
+            "VE-FIN-INVOICE": {"role": "发票核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+            "VE-FIN-BUDGET": {"role": "预算核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+            "VE-FIN-PAYMENT": {"role": "付款制单专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
         }
     else:
         document["team_relationships"] = {
@@ -273,7 +281,7 @@ def test_strict_health_still_blocks_without_matrix(client, monkeypatch, tmp_path
     assert body["matrix"] == "not_configured"
 
 
-def test_strict_health_requires_nine_verified_identities_and_eight_fresh_agent_heartbeats(
+def test_strict_health_requires_thirteen_verified_identities_and_fresh_agent_heartbeats(
     client, db_session, monkeypatch, tmp_path, _isolated_strict_runtime
 ):
     monkeypatch.setenv("DWP_AGENTTEAMS_COLLAB_ENABLED", "1")

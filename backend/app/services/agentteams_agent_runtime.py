@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -40,27 +41,36 @@ from .agentteams_runtime_config import is_safe_agent_id, require_safe_path
 from .llm import LLMUnavailableError
 
 
+logger = logging.getLogger(__name__)
+
+
 Role = Literal[
     "manager", "hr", "it", "audit",
     "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+    "finance", "finance_invoice", "finance_budget", "finance_payment",
     "db_ops_lead", "db_perf_lead",
     "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 ]
 _ROLES = {
     "manager", "hr", "it", "audit",
     "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+    "finance", "finance_invoice", "finance_budget", "finance_payment",
     "db_ops_lead", "db_perf_lead",
     "db_write", "db_lock", "db_vacuum", "db_index", "db_query",
 }
 _ROLE_PROFESSIONAL_SKILLS = {
     "hr": {"hr-onboarding-assistant", "hr-role-change-assistant"},
     "it": {"it-service-assistant", "it-role-change-assistant"},
-    "audit": {"audit-evidence-review", "audit-role-change-review"},
+    "audit": {"audit-evidence-review", "audit-role-change-review", "audit-expense-review"},
+    "finance": {"finance-expense-coordination"},
+    "finance_invoice": {"expense-invoice-verification"},
+    "finance_budget": {"expense-budget-verification"},
+    "finance_payment": {"expense-payment-preparation"},
     "hr_material": {"hr-material-specialist"},
     "hr_training": {"hr-training-specialist"},
     "it_account": {"it-account-specialist"},
     "it_device": {"it-device-specialist"},
-    "audit_review": {"audit-evidence-review", "audit-role-change-review"},
+    "audit_review": {"audit-evidence-review", "audit-role-change-review", "audit-expense-review"},
     "db_ops_lead": {"agentteams-database-diagnosis"},
     "db_perf_lead": {"agentteams-database-diagnosis"},
     "db_write": {"db-write-investigation"},
@@ -103,6 +113,7 @@ _SECURITY_COUNTER_NAMES = {
     "outbound_rejected", "parse_error", "pending_corrupt", "pending_empty_event_id",
     "pending_send_exception", "spoofed_sender", "state_truncated",
 }
+_TRACKING_DIGEST_PREFIX = "b2:"
 
 
 def heartbeat_signature(agent_id: str, mxid: str, heartbeat_at: str, token: str) -> str:
@@ -137,6 +148,7 @@ class AgentRuntimeConfig:
     scenario_skill_ids: set[str] = field(default_factory=lambda: {
         "agentteams-onboarding-readiness",
         "agentteams-role-change-readiness",
+        "agentteams-expense-reimbursement",
         "agentteams-database-diagnosis",
     })
     professional_skill_ids: set[str] | None = None
@@ -227,7 +239,7 @@ class AgentRuntime:
         for event in events:
             if not isinstance(event.event_id, str) or not event.event_id:
                 continue
-            if event.event_id in self._state["processed_event_ids"]:
+            if self._tracking_contains(self._state["processed_event_ids"], event.event_id):
                 continue
             trial = deepcopy(self._state)
             self._active_pending = {
@@ -284,7 +296,14 @@ class AgentRuntime:
 
     def run_forever(self, stop_event: Any) -> None:
         while not stop_event.is_set():
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception as exc:
+                logger.warning(
+                    "agentteams_agent_poll_failed agent_id=%s error_type=%s",
+                    self.config.agent_id,
+                    exc.__class__.__name__,
+                )
             stop_event.wait(1.0)
 
     def close(self) -> None:
@@ -330,7 +349,7 @@ class AgentRuntime:
         if expected_mxid != event.sender:
             self._security(state, "spoofed_sender")
             return 0
-        if message.idempotency_key in state["processed_idempotency_keys"]:
+        if self._tracking_contains(state["processed_idempotency_keys"], message.idempotency_key):
             return 0
         if self._active_pending is not None:
             self._active_pending["source"] = self._pending_source(event, message)
@@ -881,14 +900,39 @@ class AgentRuntime:
                 preserve_tracking=True,
             )
             recovery = self._pending_recovery_state(pending, self._state)
-            if (
-                any(
-                    pending["trial_state"].get(key) != trial.get(key)
-                    for key in ("processed_event_ids", "processed_idempotency_keys")
+            pending_is_valid = (
+                self._tracking_state_matches(trial, pending["trial_state"])
+                and self._validated_pending_messages(pending) is not None
+                and self._serialized_size(recovery) <= _MAX_STATE_BYTES
+            )
+            if not pending_is_valid:
+                # Long-lived Matrix workers accumulate durable replay guards.
+                # Compact those guards to fixed-size cryptographic fingerprints
+                # before rejecting an otherwise valid response at the state
+                # budget.  This preserves duplicate detection without retaining
+                # unbounded caller-controlled key text.
+                compacted_trial = deepcopy(trial)
+                for key in ("processed_event_ids", "processed_idempotency_keys"):
+                    compacted_trial[key] = self._compact_tracking(compacted_trial.get(key))
+                pending["trial_state"] = self._bounded_state(
+                    {
+                        **{key: value for key, value in compacted_trial.items() if key != "pending_outbox"},
+                        "pending_outbox": None,
+                    },
+                    max_bytes=trial_budget,
+                    preserve_task_id=source.get("task_id") if isinstance(source, Mapping) else None,
+                    preserve_tracking=True,
                 )
-                or self._validated_pending_messages(pending) is None
-                or self._serialized_size(recovery) > _MAX_STATE_BYTES
-            ):
+                recovery = self._pending_recovery_state(pending, self._state)
+                pending_is_valid = (
+                    self._tracking_state_matches(trial, pending["trial_state"])
+                    and self._validated_pending_messages(pending) is not None
+                    and self._serialized_size(recovery) <= _MAX_STATE_BYTES
+                )
+                if pending_is_valid:
+                    for key in ("processed_event_ids", "processed_idempotency_keys"):
+                        trial[key] = list(pending["trial_state"][key])
+            if not pending_is_valid:
                 self._security(self._state, "outbound_rejected")
                 self._save_state()
                 return False
@@ -1482,10 +1526,55 @@ class AgentRuntime:
                     pass
 
     def _mark_processed(self, state, event_id) -> None:
-        state["processed_event_ids"] = self._trim([*state["processed_event_ids"], event_id])
+        values = state["processed_event_ids"]
+        stored = self._tracking_fingerprint(event_id) if self._tracking_is_compact(values) else event_id
+        state["processed_event_ids"] = self._trim([*values, stored])
 
     def _mark_idempotency(self, state, key) -> None:
-        state["processed_idempotency_keys"] = self._trim([*state["processed_idempotency_keys"], key])
+        values = state["processed_idempotency_keys"]
+        stored = self._tracking_fingerprint(key) if self._tracking_is_compact(values) else key
+        state["processed_idempotency_keys"] = self._trim([*values, stored])
+
+    @staticmethod
+    def _tracking_fingerprint(value: str) -> str:
+        if value.startswith(_TRACKING_DIGEST_PREFIX) and len(value) == 35:
+            return value
+        digest = hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
+        return f"{_TRACKING_DIGEST_PREFIX}{digest}"
+
+    @classmethod
+    def _tracking_contains(cls, values: Any, value: str) -> bool:
+        if not isinstance(values, list):
+            return False
+        return value in values or cls._tracking_fingerprint(value) in values
+
+    @staticmethod
+    def _tracking_is_compact(values: Any) -> bool:
+        return isinstance(values, list) and any(
+            isinstance(item, str) and item.startswith(_TRACKING_DIGEST_PREFIX)
+            for item in values
+        )
+
+    @classmethod
+    def _compact_tracking(cls, values: Any) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        return [
+            cls._tracking_fingerprint(item)
+            for item in values[-_MAX_TRACKED:]
+            if isinstance(item, str) and item
+        ]
+
+    @classmethod
+    def _tracking_state_matches(cls, expected: Mapping[str, Any], actual: Mapping[str, Any]) -> bool:
+        for key in ("processed_event_ids", "processed_idempotency_keys"):
+            expected_values = expected.get(key)
+            actual_values = actual.get(key)
+            if not isinstance(expected_values, list) or not isinstance(actual_values, list):
+                return False
+            if cls._compact_tracking(expected_values) != cls._compact_tracking(actual_values):
+                return False
+        return True
 
     def _security(self, state, name) -> None:
         if name not in _SECURITY_COUNTER_NAMES:

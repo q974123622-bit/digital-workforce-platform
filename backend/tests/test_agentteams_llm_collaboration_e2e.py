@@ -58,6 +58,10 @@ def test_matrix_verifier_uses_ten_real_format_events_without_exposing_tokens():
         "it_account": MatrixIdentity("@it-account:matrix.test", "it-account-secret", "VE-IT-ACCOUNT", (), ()),
         "it_device": MatrixIdentity("@it-device:matrix.test", "it-device-secret", "VE-IT-DEVICE", (), ()),
         "audit_review": MatrixIdentity("@audit-review:matrix.test", "audit-review-secret", "VE-AUDIT-REVIEW", (), ()),
+        "finance": MatrixIdentity("@finance:matrix.test", "finance-secret", "VE-FIN-LEAD", (), ()),
+        "finance_invoice": MatrixIdentity("@finance-invoice:matrix.test", "finance-invoice-secret", "VE-FIN-INVOICE", (), ()),
+        "finance_budget": MatrixIdentity("@finance-budget:matrix.test", "finance-budget-secret", "VE-FIN-BUDGET", (), ()),
+        "finance_payment": MatrixIdentity("@finance-payment:matrix.test", "finance-payment-secret", "VE-FIN-PAYMENT", (), ()),
     }
     runtime = StrictRuntimeConfig("https://matrix.test", "!task9:matrix.test", identities["platform"], {key: value for key, value in identities.items() if key != "platform"}, "TEAM-ONBOARD", {})
     sent: list[str] = []
@@ -92,6 +96,10 @@ def test_matrix_verifier_advances_each_cursor_and_accumulates_split_ping_batches
         "it_account": MatrixIdentity("@it-account:matrix.test", "it-account-secret", "VE-IT-ACCOUNT", (), ()),
         "it_device": MatrixIdentity("@it-device:matrix.test", "it-device-secret", "VE-IT-DEVICE", (), ()),
         "audit_review": MatrixIdentity("@audit-review:matrix.test", "audit-review-secret", "VE-AUDIT-REVIEW", (), ()),
+        "finance": MatrixIdentity("@finance:matrix.test", "finance-secret", "VE-FIN-LEAD", (), ()),
+        "finance_invoice": MatrixIdentity("@finance-invoice:matrix.test", "finance-invoice-secret", "VE-FIN-INVOICE", (), ()),
+        "finance_budget": MatrixIdentity("@finance-budget:matrix.test", "finance-budget-secret", "VE-FIN-BUDGET", (), ()),
+        "finance_payment": MatrixIdentity("@finance-payment:matrix.test", "finance-payment-secret", "VE-FIN-PAYMENT", (), ()),
     }
     runtime = StrictRuntimeConfig("https://matrix.test", "!task9:matrix.test", identities["platform"], {name: value for name, value in identities.items() if name != "platform"}, "TEAM-ONBOARD", {})
     sent: list[str] = []
@@ -136,6 +144,10 @@ def test_matrix_verifier_timeout_still_polls_every_account_after_cursor_snapshot
         "it_account": MatrixIdentity("@it-account:matrix.test", "it-account-secret", "VE-IT-ACCOUNT", (), ()),
         "it_device": MatrixIdentity("@it-device:matrix.test", "it-device-secret", "VE-IT-DEVICE", (), ()),
         "audit_review": MatrixIdentity("@audit-review:matrix.test", "audit-review-secret", "VE-AUDIT-REVIEW", (), ()),
+        "finance": MatrixIdentity("@finance:matrix.test", "finance-secret", "VE-FIN-LEAD", (), ()),
+        "finance_invoice": MatrixIdentity("@finance-invoice:matrix.test", "finance-invoice-secret", "VE-FIN-INVOICE", (), ()),
+        "finance_budget": MatrixIdentity("@finance-budget:matrix.test", "finance-budget-secret", "VE-FIN-BUDGET", (), ()),
+        "finance_payment": MatrixIdentity("@finance-payment:matrix.test", "finance-payment-secret", "VE-FIN-PAYMENT", (), ()),
     }
     runtime = StrictRuntimeConfig("https://matrix.test", "!task9:matrix.test", identities["platform"], {name: value for name, value in identities.items() if name != "platform"}, "TEAM-ONBOARD", {})
     polled: list[str] = []
@@ -951,6 +963,10 @@ def _strict_test_runtime_config(mxids):
         "it_account": ("VE-IT-ACCOUNT", "it-account-specialist", ("agentteams.it.lookup_accounts", "agentteams-it-accounts", "it.accounts.read")),
         "it_device": ("VE-IT-DEVICE", "it-device-specialist", ("agentteams.it.lookup_devices", "agentteams-it-devices", "it.devices.read")),
         "audit_review": ("VE-AUDIT-REVIEW", "audit-evidence-review", ("agentteams.audit.lookup_evidence", "agentteams-onboarding-evidence", "audit.evidence.read")),
+        "finance": ("VE-FIN-LEAD", "finance-expense-coordination", None),
+        "finance_invoice": ("VE-FIN-INVOICE", "expense-invoice-verification", None),
+        "finance_budget": ("VE-FIN-BUDGET", "expense-budget-verification", None),
+        "finance_payment": ("VE-FIN-PAYMENT", "expense-payment-preparation", None),
     }
     agents = {}
     team_catalog = {}
@@ -973,7 +989,7 @@ def _strict_test_runtime_config(mxids):
         "agents": agents,
         "team_catalog": team_catalog,
         "team_relationships": {
-            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD"]},
             "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
             "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
             "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
@@ -982,6 +998,10 @@ def _strict_test_runtime_config(mxids):
             "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-AUDIT-REVIEW": {"role": "审计复核专员", "reports_to": ["VE-0005"], "direct_reports": []},
+            "VE-FIN-LEAD": {"role": "财务负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT"]},
+            "VE-FIN-INVOICE": {"role": "发票核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+            "VE-FIN-BUDGET": {"role": "预算核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+            "VE-FIN-PAYMENT": {"role": "付款制单专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
         },
     }
 
@@ -996,6 +1016,10 @@ def test_fake_llm_drives_real_runtime_runner_gateway_policy_audit_state_machine(
         "VE-HR-TRAINING": "@hr-training:matrix.test", "VE-IT-ACCOUNT": "@it-account:matrix.test",
         "VE-IT-DEVICE": "@it-device:matrix.test",
         "VE-AUDIT-REVIEW": "@audit-review:matrix.test",
+        "VE-FIN-LEAD": "@finance:matrix.test",
+        "VE-FIN-INVOICE": "@finance-invoice:matrix.test",
+        "VE-FIN-BUDGET": "@finance-budget:matrix.test",
+        "VE-FIN-PAYMENT": "@finance-payment:matrix.test",
     }
     strict_config_path = tmp_path / "strict-runtime.json"
     strict_config_path.write_text(json.dumps(_strict_test_runtime_config(mxids)), encoding="utf-8")

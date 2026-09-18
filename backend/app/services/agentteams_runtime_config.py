@@ -22,6 +22,7 @@ from .agentteams_hierarchy import TeamHierarchy, TeamHierarchyError
 _ONBOARDING_ROLES = (
     "manager", "hr", "it", "audit",
     "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+    "finance", "finance_invoice", "finance_budget", "finance_payment",
 )
 _DATABASE_ROLES = (
     "manager", "db_ops_lead", "db_perf_lead",
@@ -71,6 +72,28 @@ _ROLE_CHANGE_ACTIVATION_INPUT_SCHEMA = {
     "additionalProperties": False,
 }
 
+_EXPENSE_ID = "EXP-2026-0915-001"
+_EXPENSE_APPROVAL_REF = "AUD-EXP-001"
+_EXPENSE_REF_INPUT_SCHEMA = {
+    "type": "object",
+    "required": ["expense_id"],
+    "properties": {
+        "expense_id": {"type": "string", "const": _EXPENSE_ID, "maxLength": 32},
+    },
+    "additionalProperties": False,
+}
+_EXPENSE_PAYMENT_INPUT_SCHEMA = {
+    "type": "object",
+    "required": ["expense_id", "approval_ref"],
+    "properties": {
+        "expense_id": {"type": "string", "const": _EXPENSE_ID, "maxLength": 32},
+        "approval_ref": {
+            "type": "string", "const": _EXPENSE_APPROVAL_REF, "maxLength": 32,
+        },
+    },
+    "additionalProperties": False,
+}
+
 
 def demo_employee_ref_input_schema() -> dict[str, Any]:
     """Return an isolated copy of the strict demo's single bounded input contract."""
@@ -85,6 +108,16 @@ def role_change_employee_ref_input_schema() -> dict[str, Any]:
 def role_change_activation_input_schema() -> dict[str, Any]:
     """Require the approval reference produced by the preceding audit task."""
     return deepcopy(_ROLE_CHANGE_ACTIVATION_INPUT_SCHEMA)
+
+
+def expense_ref_input_schema() -> dict[str, Any]:
+    """Return the strict contract for the fixed reimbursement claim."""
+    return deepcopy(_EXPENSE_REF_INPUT_SCHEMA)
+
+
+def expense_payment_input_schema() -> dict[str, Any]:
+    """Require the audit approval before creating a simulated payment."""
+    return deepcopy(_EXPENSE_PAYMENT_INPUT_SCHEMA)
 
 
 @dataclass(frozen=True)

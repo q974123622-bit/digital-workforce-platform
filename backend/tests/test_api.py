@@ -30,6 +30,7 @@ def test_seed_counts(client):
     assert {member["employee_id"] for member in teams_by_id["TEAM-ONBOARD"]["members"]} == {
         "VE-0001", "VE-0002", "VE-0003", "VE-0005",
         "VE-HR-MATERIAL", "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE", "VE-AUDIT-REVIEW",
+        "VE-FIN-LEAD", "VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT",
     }
 
 
@@ -160,6 +161,7 @@ def test_teams_and_knowledge(client):
     assert {m["employee_id"] for m in team["members"]} == {
         "VE-0001", "VE-0002", "VE-0003", "VE-0005",
         "VE-HR-MATERIAL", "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE", "VE-AUDIT-REVIEW",
+        "VE-FIN-LEAD", "VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT",
     }
 
     kb = client.get("/api/v1/knowledge-bases/KB-PUBLIC").json()

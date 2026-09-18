@@ -1635,6 +1635,32 @@ def test_role_is_behavior_only_and_two_team_identity_sets_are_valid(tmp_path):
         assert config.agent_id == agent_id
 
 
+@pytest.mark.parametrize(
+    ("role", "agent_id", "skill_id"),
+    (
+        ("finance", "VE-FIN-LEAD", "finance-expense-coordination"),
+        ("finance_invoice", "VE-FIN-INVOICE", "expense-invoice-verification"),
+        ("finance_budget", "VE-FIN-BUDGET", "expense-budget-verification"),
+        ("finance_payment", "VE-FIN-PAYMENT", "expense-payment-preparation"),
+    ),
+)
+def test_finance_roles_are_valid_runtime_identities(tmp_path, role, agent_id, skill_id):
+    mxid = f"@{role}:matrix.local"
+
+    config = AgentRuntimeConfig(
+        agent_id=agent_id,
+        role=role,
+        matrix_mxid=mxid,
+        matrix_token="matrix-token",
+        room_id="!room:matrix.local",
+        trusted_sender_mxids={"platform": "@platform:matrix.local", agent_id: mxid},
+        allowed_skill_ids={skill_id},
+        state_dir=tmp_path / role,
+    )
+
+    assert config.professional_skill_ids == {skill_id}
+
+
 def test_cli_rejects_non_contract_team_identity_for_a_manager(tmp_path):
     from scripts.run_agentteams_agent import load_runtime_config
 
@@ -2083,7 +2109,7 @@ def test_near_limit_state_preserves_restartable_pending_worker_assignment(tmp_pa
     assert state_path.stat().st_size <= 16_384
 
 
-def test_pending_fails_closed_instead_of_pruning_tracking_to_fit(tmp_path):
+def test_pending_compacts_tracking_without_losing_duplicate_protection(tmp_path):
     seeded, _, _, _ = runtime(tmp_path, role="hr")
     event_ids = [f"$historic-event-{index:02d}-" + ("e" * 480) for index in range(15)]
     idempotency_keys = [f"historic-key-{index:02d}-" + ("i" * 480) for index in range(15)]
@@ -2107,14 +2133,83 @@ def test_pending_fails_closed_instead_of_pruning_tracking_to_fit(tmp_path):
     )
     gateway.events = [event(assignment, event_id="$current", sender=MXIDS["VE-0001"])]
 
-    assert subject.run_once() == 0
-    assert gateway.send_attempts == 0
-    assert subject._state["security"]["outbound_rejected"] == 1
+    assert subject.run_once() == 1
+    assert gateway.send_attempts == 4
+    assert subject._state["security"].get("outbound_rejected", 0) == 0
     persisted = json.loads(state_path.read_text(encoding="utf-8"))
-    assert persisted["pending_outbox"] is None
-    assert persisted["processed_event_ids"] == event_ids
-    assert persisted["processed_idempotency_keys"] == idempotency_keys
+    assert persisted.get("pending_outbox") is None
+    assert persisted["processed_event_ids"] == []
+    assert len(persisted["processed_idempotency_keys"]) == len(idempotency_keys) + 1
     assert state_path.stat().st_size <= 16_384
+
+    gateway.sent.clear()
+    gateway.events = [
+        event(assignment, event_id="$current-replay", sender=MXIDS["VE-0001"])
+    ]
+    assert subject.run_once() == 0
+    assert gateway.sent == []
+    assert len(engine.worker_contexts) == 1
+
+
+def test_busy_leader_compacts_idempotency_history_without_dropping_replay_protection(tmp_path):
+    """A long-lived Leader must not reject a valid assignment forever at the state limit."""
+    seeded, _, _, _ = runtime(tmp_path, role="it")
+    seeded._state["tasks"]["historic-task"] = {
+        "kind": "worker",
+        "evidence": [
+            {"kind": "child.summary", "value": "历史部门汇总" * 32}
+            for _ in range(4)
+        ],
+    }
+    historic_keys = [
+        f"ATN-historic-{index:03d}:task.result.accepted:" + ("x" * 28)
+        for index in range(140)
+    ]
+    seeded._state["processed_idempotency_keys"] = historic_keys
+    seeded._save_state()
+    state_path = tmp_path / "state" / "VE-0003.json"
+    assert 12_000 < state_path.stat().st_size <= 16_384
+
+    gateway = FakeGateway()
+    engine = FakeEngine()
+    subject = AgentRuntime(seeded.config, gateway, engine, pause=lambda _: None)
+    engine.work = [WorkerDecision(
+        action="tool",
+        tool_name="query_onboarding_employee",
+        tool_arguments={"employee_ref": "张明"},
+    )]
+    assignment = message(
+        type="task.assign",
+        sender="VE-0001",
+        receiver="VE-0003",
+        task_id="current-it-task",
+        parent_task_id="root-1",
+        key="current-it-assignment",
+        payload={
+            **assign_payload(),
+            "required_capability": "it.readiness.read",
+        },
+    )
+    gateway.events = [
+        event(assignment, event_id="$current-it-assignment", sender=MXIDS["VE-0001"])
+    ]
+
+    assert subject.run_once() == 1
+    assert [item.type for item in sent_protocols(gateway)] == [
+        "task.accepted", "task.progress", "agent.message", "tool.request",
+    ]
+    assert subject._state["security"].get("outbound_rejected", 0) == 0
+    assert state_path.stat().st_size <= 16_384
+
+    # The same Matrix command can be replayed under a different event ID, but
+    # the durable idempotency history must still prevent duplicate execution.
+    gateway.sent.clear()
+    gateway.events = [
+        event(assignment, event_id="$current-it-assignment-replay", sender=MXIDS["VE-0001"])
+    ]
+    assert subject.run_once() == 0
+    assert gateway.sent == []
+    assert len(engine.worker_contexts) == 1
 
 
 def test_save_state_keeps_runtime_memory_identical_to_bounded_durable_state(tmp_path):
@@ -2189,6 +2284,35 @@ def test_run_forever_waits_after_empty_poll_and_default_visible_pause_is_disable
     subject.run_forever(StopAfterOnePoll())
     assert observed_waits == [1.0]
     assert subject.config.pause_seconds == 0.0
+
+
+def test_run_forever_retries_after_a_transient_poll_failure(tmp_path, monkeypatch):
+    subject, _, _, _ = runtime(tmp_path, role="it")
+    attempts = []
+    observed_waits = []
+
+    def flaky_poll():
+        attempts.append(len(attempts) + 1)
+        if len(attempts) == 1:
+            raise RuntimeError("transient poll failure")
+        return 0
+
+    class StopAfterTwoPolls:
+        checks = 0
+
+        def is_set(self):
+            self.checks += 1
+            return self.checks > 2
+
+        def wait(self, seconds):
+            observed_waits.append(seconds)
+
+    monkeypatch.setattr(subject, "run_once", flaky_poll)
+
+    subject.run_forever(StopAfterTwoPolls())
+
+    assert attempts == [1, 2]
+    assert observed_waits == [1.0, 1.0]
 
 
 def test_empty_poll_persists_a_safe_utc_heartbeat(tmp_path):

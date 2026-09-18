@@ -32,6 +32,7 @@ _SUPPORTED_IDENTITIES_BY_TEAM = {
     "TEAM-ONBOARD": frozenset({
         "platform", "manager", "hr", "it", "audit",
         "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+        "finance", "finance_invoice", "finance_budget", "finance_payment",
     }),
     "TEAM-DB-BENCH": frozenset({
         "platform", "manager", "db_ops_lead", "db_perf_lead",

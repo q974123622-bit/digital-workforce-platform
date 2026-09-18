@@ -234,6 +234,22 @@ class TeamSelectionDecision(_StrictModel):
         return self
 
 
+class _TeamSelectionChoice(_StrictModel):
+    """The model selects a Team; the server binds its registered Leader."""
+
+    action: Literal["delegate", "no_match"]
+    team_id: str | None = Field(default=None, min_length=1)
+    reason: str = Field(min_length=1, max_length=512)
+
+    @model_validator(mode="after")
+    def action_payload_is_unambiguous(self) -> "_TeamSelectionChoice":
+        if self.action == "delegate" and self.team_id is None:
+            raise ValueError("delegate_requires_team")
+        if self.action == "no_match" and self.team_id is not None:
+            raise ValueError("no_match_must_not_select_team")
+        return self
+
+
 class SkillSelectionContext(_StrictModel):
     user_goal: str = Field(min_length=1)
     runtime_skill_id: str = Field(min_length=1)
@@ -421,44 +437,55 @@ class AgentDecisionEngine:
         """Match a goal to a Team and address only its registered Leader.
 
         The rule follows AgentScope AgentTeams: check matching Teams first and
-        delegate to the Team Leader instead of reaching into the Team roster.
+        delegate to the server-registered Team Leader instead of trusting a
+        model-generated identity or reaching into the Team roster.
         """
         manager_skill = self.skills.load([context.manager_skill_id])[0]
         messages = _messages(
             "You are the existing AgentTeams Manager. Match the user goal against the supplied "
-            "Team catalog using Team name, description, capabilities, Team Leader and Worker roster. "
+            "Team catalog using Team name, description, capabilities, and registered Team Leader. "
             "Prefer a Team for complex or multi-skill work. If one Team matches, return action "
-            "delegate with exactly that team_id and its registered leader_agent_id. Never delegate "
-            "to a Team Worker. If no Team matches, return action no_match and omit both IDs. Return "
+            "delegate with exactly that team_id. The server binds its registered Leader; do not "
+            "return any Agent identity. If no Team matches, return action no_match and omit team_id. Return "
             "only JSON matching the supplied schema, do not invent IDs, and write reason in concise "
             "Simplified Chinese.",
             {
                 "user_goal": context.user_goal,
                 "manager_runtime_skill": _skill_payload(manager_skill),
-                "team_catalog": [item.model_dump() for item in context.team_catalog],
+                "team_catalog": [item.model_dump(exclude={"workers"}) for item in context.team_catalog],
             },
         )
 
-        def validate(raw: dict[str, Any]) -> TeamSelectionDecision:
-            decision = TeamSelectionDecision.model_validate(raw)
-            if not _contains_chinese(decision.reason):
+        def validate(raw: dict[str, Any]) -> _TeamSelectionChoice:
+            choice = _TeamSelectionChoice.model_validate(raw)
+            if not _contains_chinese(choice.reason):
                 raise _DecisionValidationError("team_selection_reason_must_contain_chinese")
-            if decision.action == "no_match":
-                return decision
+            if choice.action == "no_match":
+                return choice
             candidates = {item.team_id: item for item in context.team_catalog}
-            candidate = candidates.get(str(decision.team_id))
-            if candidate is None:
+            if candidates.get(str(choice.team_id)) is None:
                 raise _DecisionValidationError("unknown_team")
-            if decision.leader_agent_id != candidate.leader_agent_id:
-                raise _DecisionValidationError("invalid_team_leader")
-            return decision
+            return choice
 
-        return self._structured_with_retry(
+        choice = self._structured_with_retry(
             messages,
-            TeamSelectionDecision,
+            _TeamSelectionChoice,
             validate,
             error_code="team_selection_failed",
         )
+        candidate = (
+            next(item for item in context.team_catalog if item.team_id == choice.team_id)
+            if choice.action == "delegate"
+            else None
+        )
+        decision = TeamSelectionDecision(
+            action=choice.action,
+            team_id=choice.team_id,
+            leader_agent_id=candidate.leader_agent_id if candidate is not None else None,
+            reason=choice.reason,
+        )
+        decision._attach_reasoning(choice.reasoning_content)
+        return decision
 
     def plan(self, context: ManagerContext) -> ManagerDecision:
         manager_skill = self.skills.load([context.manager_skill_id])[0]

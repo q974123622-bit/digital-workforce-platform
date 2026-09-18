@@ -558,6 +558,19 @@ body {
   font-weight: 600;
 }
 
+.at-field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.at-field-label-row > label {
+  color: #344054;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .at-leader-text {
   margin-top: -2px;
 }
@@ -2408,31 +2421,34 @@ button.at-tree-manager:hover {
   content: '';
 }
 
-.at-chart-children::after {
-  position: absolute;
-  top: 18px;
-  left: 12.5%;
-  right: 12.5%;
-  border-top: 2px solid #9fbce9;
-  content: '';
-}
-
 .at-chart-children > .at-chart-node::before {
   position: absolute;
-  top: 0;
+  top: -20px;
   left: 50%;
-  height: 22px;
+  height: 40px;
   border-left: 2px solid #9fbce9;
   content: '';
 }
 
-.at-chart-children > .at-chart-node:only-child::after {
+.at-chart-children > .at-chart-node::after {
   position: absolute;
-  top: 18px;
-  left: 12.5%;
-  right: 12.5%;
-  border-top: 2px solid #fbfdff;
+  top: -20px;
+  left: 0;
+  right: 0;
+  border-top: 2px solid #9fbce9;
   content: '';
+}
+
+.at-chart-children > .at-chart-node:first-child::after {
+  left: 50%;
+}
+
+.at-chart-children > .at-chart-node:last-child::after {
+  right: 50%;
+}
+
+.at-chart-children > .at-chart-node:only-child::after {
+  display: none;
 }
 
 @media (max-width: 760px) {

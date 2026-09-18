@@ -23,7 +23,11 @@ _STRICT_DEMO_ROLE_PLUGINS = {
     "hr_training": ("VE-HR-TRAINING", ("agentteams-onboarding-training", "agentteams-role-change-hr")),
     "it_account": ("VE-IT-ACCOUNT", ("agentteams-it-accounts", "agentteams-role-change-it-plan")),
     "it_device": ("VE-IT-DEVICE", ("agentteams-it-devices", "agentteams-role-change-it-plan", "agentteams-role-change-it-activate")),
-    "audit_review": ("VE-AUDIT-REVIEW", ("agentteams-onboarding-evidence", "agentteams-role-change-audit")),
+    "audit_review": ("VE-AUDIT-REVIEW", ("agentteams-onboarding-evidence", "agentteams-role-change-audit", "agentteams-expense-audit")),
+    "finance": ("VE-FIN-LEAD", ()),
+    "finance_invoice": ("VE-FIN-INVOICE", ("agentteams-expense-claim",)),
+    "finance_budget": ("VE-FIN-BUDGET", ("agentteams-expense-budget",)),
+    "finance_payment": ("VE-FIN-PAYMENT", ("agentteams-expense-payment",)),
 }
 _STRICT_DATABASE_ROLE_PLUGINS = {
     "manager": ("VE-0001", ("agentteams-database-inspector",)),
@@ -443,7 +447,7 @@ def sync_strict_runtime_bindings(db, runtime, *, commit: bool = True) -> None:
             name=(
                 "AgentTeams 数据库诊断评测团队"
                 if frozenset(runtime.agents) == frozenset(_STRICT_DATABASE_ROLE_PLUGINS)
-                else "AgentTeams 入职协作团队"
+                else "AgentTeams 业务协作团队"
             ),
             leader_employee_id=manager_id,
             description="本地 Matrix 严格运行时的受控协作团队",
@@ -451,6 +455,8 @@ def sync_strict_runtime_bindings(db, runtime, *, commit: bool = True) -> None:
         db.add(team)
     else:
         team.leader_employee_id = manager_id
+        if frozenset(runtime.agents) == frozenset(_STRICT_DEMO_ROLE_PLUGINS):
+            team.name = "AgentTeams 业务协作团队"
 
     db.query(models.TeamMember).filter(
         models.TeamMember.team_id == runtime.team_id,

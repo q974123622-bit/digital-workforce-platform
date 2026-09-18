@@ -229,7 +229,6 @@ def test_manager_selects_a_registered_team_leader(fake_llm, registry):
     fake_llm.outputs = [{
         "action": "delegate",
         "team_id": "TEAM-DB-BENCH",
-        "leader_agent_id": "VE-0001",
         "reason": "任务需要数据库锁等待诊断能力。",
     }]
     context = TeamSelectionContext(
@@ -263,18 +262,43 @@ def test_manager_selects_a_registered_team_leader(fake_llm, registry):
     assert "数据库" in decision.reason
 
 
-def test_manager_retries_when_model_invents_a_team_or_worker_leader(fake_llm, registry):
+def test_manager_derives_registered_leader_without_exposing_worker_roster(fake_llm, registry):
+    fake_llm.outputs = [{
+        "action": "delegate",
+        "team_id": "TEAM-ONBOARD",
+        "reason": "该团队具备财务报销协作能力。",
+    }]
+    context = TeamSelectionContext(
+        user_goal="审核差旅报销并生成模拟付款单",
+        team_catalog=[{
+            "team_id": "TEAM-ONBOARD",
+            "name": "业务协作团队",
+            "description": "处理入职、岗位调整和财务报销任务",
+            "leader_agent_id": "VE-0001",
+            "leader_name": "Manager Agent",
+            "workers": [{"agent_id": "VE-FIN-LEAD", "name": "财务负责人", "role": "leader"}],
+            "capabilities": ["财务报销协作"],
+        }],
+    )
+
+    decision = AgentDecisionEngine(fake_llm, registry).select_team(context)
+
+    assert decision.leader_agent_id == "VE-0001"
+    request_payload = json.loads(fake_llm.calls[0][1]["content"])
+    assert "workers" not in request_payload["team_catalog"][0]
+    assert "VE-FIN-LEAD" not in fake_llm.calls[0][1]["content"]
+
+
+def test_manager_retries_when_model_invents_a_team(fake_llm, registry):
     fake_llm.outputs = [
         {
             "action": "delegate",
             "team_id": "TEAM-INVENTED",
-            "leader_agent_id": "VE-WORKER",
             "reason": "错误选择。",
         },
         {
             "action": "delegate",
             "team_id": "TEAM-ONBOARD",
-            "leader_agent_id": "VE-LEADER",
             "reason": "该团队负责入职任务。",
         },
     ]

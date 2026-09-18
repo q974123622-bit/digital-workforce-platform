@@ -6,6 +6,8 @@ from app import models, seed
 from app.services.adapters import run_adapter
 from app.services.agentteams_runtime_config import (
     demo_employee_ref_input_schema,
+    expense_payment_input_schema,
+    expense_ref_input_schema,
     role_change_activation_input_schema,
     role_change_employee_ref_input_schema,
 )
@@ -48,7 +50,7 @@ def _persisted_hierarchy(db_session, team_id: str) -> TeamHierarchy:
 def test_managed_teams_seed_real_manager_leader_worker_hierarchies(db_session):
     onboarding = _persisted_hierarchy(db_session, "TEAM-ONBOARD")
     assert onboarding.direct_reports_of("VE-0001") == (
-        "VE-0002", "VE-0003", "VE-0005",
+        "VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD",
     )
     assert onboarding.direct_reports_of("VE-0002") == (
         "VE-HR-MATERIAL", "VE-HR-TRAINING",
@@ -57,6 +59,9 @@ def test_managed_teams_seed_real_manager_leader_worker_hierarchies(db_session):
         "VE-IT-ACCOUNT", "VE-IT-DEVICE",
     )
     assert onboarding.direct_reports_of("VE-0005") == ("VE-AUDIT-REVIEW",)
+    assert onboarding.direct_reports_of("VE-FIN-LEAD") == (
+        "VE-FIN-BUDGET", "VE-FIN-INVOICE", "VE-FIN-PAYMENT",
+    )
 
     database = _persisted_hierarchy(db_session, "TEAM-DB-BENCH")
     assert database.direct_reports_of("VE-0001") == (
@@ -122,7 +127,21 @@ def _strict_onboarding_runtime():
             [
                 _tool("agentteams-onboarding-evidence"),
                 _tool("agentteams-role-change-audit", schema=role_change_schema),
+                _tool("agentteams-expense-audit", schema=expense_ref_input_schema()),
             ],
+        ),
+        "finance": ("VE-FIN-LEAD", []),
+        "finance_invoice": (
+            "VE-FIN-INVOICE",
+            [_tool("agentteams-expense-claim", schema=expense_ref_input_schema())],
+        ),
+        "finance_budget": (
+            "VE-FIN-BUDGET",
+            [_tool("agentteams-expense-budget", schema=expense_ref_input_schema())],
+        ),
+        "finance_payment": (
+            "VE-FIN-PAYMENT",
+            [_tool("agentteams-expense-payment", schema=expense_payment_input_schema())],
         ),
     }
     agents = {
@@ -134,7 +153,7 @@ def _strict_onboarding_runtime():
         for role, (agent_id, tools) in roles.items()
     }
     relationships = {
-        "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+        "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD"]},
         "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
         "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
         "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
@@ -143,6 +162,10 @@ def _strict_onboarding_runtime():
         "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
         "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
         "VE-AUDIT-REVIEW": {"role": "审计专员", "reports_to": ["VE-0005"], "direct_reports": []},
+        "VE-FIN-LEAD": {"role": "财务负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT"]},
+        "VE-FIN-INVOICE": {"role": "发票核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+        "VE-FIN-BUDGET": {"role": "预算核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+        "VE-FIN-PAYMENT": {"role": "付款制单专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
     }
     return SimpleNamespace(team_id="TEAM-ONBOARD", agents=agents, team_relationships=relationships)
 
@@ -195,6 +218,26 @@ def test_onboarding_specialists_have_isolated_seeded_tools_and_permissions(db_se
         )
     }
     assert set(SPECIALIST_TO_PLUGIN.values()) <= zhang_san_allows
+
+
+def test_expense_workers_have_only_their_seeded_business_tools(db_session):
+    expected = {
+        "VE-FIN-INVOICE": "agentteams-expense-claim",
+        "VE-FIN-BUDGET": "agentteams-expense-budget",
+        "VE-FIN-PAYMENT": "agentteams-expense-payment",
+        "VE-AUDIT-REVIEW": "agentteams-expense-audit",
+    }
+    personal_allows = {
+        (grant.employee_id, grant.plugin_id)
+        for grant in db_session.query(models.EmployeePluginGrant).filter(
+            models.EmployeePluginGrant.employee_id.in_(expected),
+            models.EmployeePluginGrant.action == "execute",
+            models.EmployeePluginGrant.decision_mode == "allow",
+        )
+    }
+
+    assert {(employee_id, plugin_id) for employee_id, plugin_id in expected.items()} <= personal_allows
+    assert db_session.get(models.Team, "TEAM-ONBOARD").name == "AgentTeams 业务协作团队"
 
 
 def test_onboarding_specialist_adapters_return_only_their_domain_evidence(db_session):

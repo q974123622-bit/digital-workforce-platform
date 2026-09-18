@@ -18,4 +18,8 @@ whenToUse: Coordinate two direct HR specialists and combine their evidence into 
 
 收到两个 `child_results` 后，合并专员返回的 Tool 证据编号、已确认项、缺失项和未知项，形成一次 HR 部门汇总并 Complete。没有被专员证据支持的事实仍为未知；把需要独立审计的证据留给 Manager 第二轮处理。
 
+## Leader 证据交接
+
+业务 Tool 由直属 Worker 调用，Leader 只验收并汇总。部门汇总必须逐项写明直属 Worker 的任务、`audit_id`、证据编号、Tool 已确认事实和未知项，并明确这些证据来自已验收的子任务。Leader 节点没有直接 Tool 记录属于正常的职责分工，不代表子任务证据缺失。所有必需子任务已验收且引用完整时，只 Complete 一次；不得仅因 Leader 节点没有直接 Tool 记录而 Reject、Replan 或重复派发同一核查。只有直属 Worker 证据确实缺失、冲突、失败或不满足验收标准时，才要求修订或重规划。
+
 只返回结构化动作和简要业务依据，不输出或伪造模型私有思维链。

@@ -1,0 +1,44 @@
+{
+  "claim": {
+    "evidence_ids": ["EXP-CLAIM-001", "EXP-INVOICE-001", "EXP-TRIP-001"],
+    "claim": {
+      "employee_name": "李明",
+      "purpose": "上海客户现场差旅",
+      "amount": "4860.00",
+      "currency": "CNY",
+      "invoice_total": "4860.00",
+      "invoice_status": "valid",
+      "trip_status": "matched"
+    }
+  },
+  "budget": {
+    "evidence_ids": ["EXP-BUDGET-001", "EXP-POLICY-001"],
+    "budget": {
+      "cost_center": "CC-SALES-2026",
+      "limit": "5000.00",
+      "requested": "4860.00",
+      "remaining_after_approval": "140.00",
+      "policy_status": "within_limit"
+    }
+  },
+  "audit": {
+    "evidence_ids": ["EXP-AUDIT-001"],
+    "approval_ref": "AUD-EXP-001",
+    "review": {
+      "duplicate_check": "clear",
+      "invoice_check": "passed",
+      "trip_check": "passed",
+      "decision": "approved"
+    }
+  },
+  "payment": {
+    "evidence_ids": ["PAY-EXP-001"],
+    "payment_ref": "PAY-EXP-001",
+    "payment": {
+      "amount": "4860.00",
+      "currency": "CNY",
+      "status": "simulated_created",
+      "approval_ref": "AUD-EXP-001"
+    }
+  }
+}

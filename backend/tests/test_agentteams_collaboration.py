@@ -275,7 +275,7 @@ def test_create_task_defaults_to_non_thinking_low_latency_mode(db_session):
 
 def _relationship_runtime():
     relationships = {
-        "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+        "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD"]},
         "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
         "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
         "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
@@ -284,6 +284,10 @@ def _relationship_runtime():
         "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
         "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
         "VE-AUDIT-REVIEW": {"role": "审计专员", "reports_to": ["VE-0005"], "direct_reports": []},
+        "VE-FIN-LEAD": {"role": "财务负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT"]},
+        "VE-FIN-INVOICE": {"role": "发票核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+        "VE-FIN-BUDGET": {"role": "预算核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+        "VE-FIN-PAYMENT": {"role": "付款制单专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
     }
     return SimpleNamespace(team_id="TEAM-ONBOARD", team_relationships=relationships)
 
@@ -364,6 +368,10 @@ def _relationship_catalog():
         "VE-IT-ACCOUNT": ["it.accounts.read"],
         "VE-IT-DEVICE": ["it.devices.read"],
         "VE-AUDIT-REVIEW": ["audit.evidence.read"],
+        "VE-FIN-LEAD": ["finance.expense.coordinate"],
+        "VE-FIN-INVOICE": ["finance.expense.claim.read"],
+        "VE-FIN-BUDGET": ["finance.expense.budget.read"],
+        "VE-FIN-PAYMENT": ["finance.expense.payment.create"],
     }
     return [
         {
@@ -416,11 +424,12 @@ def test_platform_projects_relationship_graph_into_submit_and_assign(
             {"agent_id": "VE-0002", "role": "HR负责人", "capabilities": ["hr.onboarding.coordinate"]},
             {"agent_id": "VE-0003", "role": "IT负责人", "capabilities": ["it.onboarding.coordinate"]},
             {"agent_id": "VE-0005", "role": "审计负责人", "capabilities": ["audit.evidence.read"]},
+            {"agent_id": "VE-FIN-LEAD", "role": "财务负责人", "capabilities": ["finance.expense.coordinate"]},
         ],
     }
     assert [
         item["agent_id"] for item in submit.payload["team_capability_catalog"]
-    ] == ["VE-0002", "VE-0003", "VE-0005"]
+    ] == ["VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD"]
 
     service.apply_message(
         db_session,
@@ -1638,6 +1647,10 @@ def test_team_capability_catalog_only_lists_active_runtime_bound_team_members(db
         "VE-IT-ACCOUNT",
         "VE-IT-DEVICE",
         "VE-AUDIT-REVIEW",
+        "VE-FIN-LEAD",
+        "VE-FIN-INVOICE",
+        "VE-FIN-BUDGET",
+        "VE-FIN-PAYMENT",
     }
     assert {"VE-0004", "VE-INACTIVE-TEST", "VE-UNBOUND-TEST"}.isdisjoint(catalog_ids)
     assert all(db_session.get(models.DigitalEmployee, agent_id).status == "active" for agent_id in catalog_ids)
@@ -1656,6 +1669,10 @@ def _strict_runtime_document(
         "hr_material": "VE-HR-MATERIAL", "hr_training": "VE-HR-TRAINING",
         "it_account": "VE-IT-ACCOUNT", "it_device": "VE-IT-DEVICE",
         "audit_review": "VE-AUDIT-REVIEW",
+        "finance": "VE-FIN-LEAD",
+        "finance_invoice": "VE-FIN-INVOICE",
+        "finance_budget": "VE-FIN-BUDGET",
+        "finance_payment": "VE-FIN-PAYMENT",
     }.items():
         agents[role] = {
             "agent_id": agent_id,
@@ -1679,9 +1696,13 @@ def _strict_runtime_document(
             "VE-IT-ACCOUNT": {"capabilities": ["it.accounts.read"]},
             "VE-IT-DEVICE": {"capabilities": ["it.devices.read"]},
             "VE-AUDIT-REVIEW": {"capabilities": ["audit.evidence.read"]},
+            "VE-FIN-LEAD": {"capabilities": ["finance.expense.coordinate"]},
+            "VE-FIN-INVOICE": {"capabilities": ["finance.expense.claim.read"]},
+            "VE-FIN-BUDGET": {"capabilities": ["finance.expense.budget.read"]},
+            "VE-FIN-PAYMENT": {"capabilities": ["finance.expense.payment.create"]},
         },
         "team_relationships": {
-            manager_agent_id: {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+            manager_agent_id: {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD"]},
             "VE-0002": {"role": "HR负责人", "reports_to": [manager_agent_id], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
             "VE-0003": {"role": "IT负责人", "reports_to": [manager_agent_id], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
             "VE-0005": {"role": "审计负责人", "reports_to": [manager_agent_id], "direct_reports": ["VE-AUDIT-REVIEW"]},
@@ -1690,6 +1711,10 @@ def _strict_runtime_document(
             "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-AUDIT-REVIEW": {"role": "审计专员", "reports_to": ["VE-0005"], "direct_reports": []},
+            "VE-FIN-LEAD": {"role": "财务负责人", "reports_to": [manager_agent_id], "direct_reports": ["VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT"]},
+            "VE-FIN-INVOICE": {"role": "发票核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+            "VE-FIN-BUDGET": {"role": "预算核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+            "VE-FIN-PAYMENT": {"role": "付款制单专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
         },
     }
 
@@ -1741,8 +1766,12 @@ def test_strict_team_catalog_uses_validated_runtime_not_legacy_grants(db_session
         "VE-HR-TRAINING": ["hr.training.read"],
         "VE-IT-ACCOUNT": ["it.accounts.read"],
         "VE-IT-DEVICE": ["it.devices.read"],
-        "VE-AUDIT-REVIEW": ["audit.evidence.read"],
-    }
+            "VE-AUDIT-REVIEW": ["audit.evidence.read"],
+            "VE-FIN-LEAD": ["finance.expense.coordinate"],
+            "VE-FIN-INVOICE": ["finance.expense.claim.read"],
+            "VE-FIN-BUDGET": ["finance.expense.budget.read"],
+            "VE-FIN-PAYMENT": ["finance.expense.payment.create"],
+        }
     assert "RPA-0001" not in {item["agent_id"] for item in catalog}
     assert "private-" not in json.dumps(catalog)
 

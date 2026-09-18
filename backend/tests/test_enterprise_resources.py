@@ -168,7 +168,7 @@ def test_all_resources_have_three_level_classification(client):
     kbs = client.get("/api/v1/knowledge-bases").json()
     plugins = client.get("/api/v1/plugins").json()
     assert len(kbs) == 9
-    assert len(plugins) == 24
+    assert len(plugins) == 28
     assert all(kb["data_level"] in {"L1", "L2", "L3"} for kb in kbs)
     assert all(p["data_level"] in {"L1", "L2", "L3"} for p in plugins)
     levels = {kb["id"]: kb["data_level"] for kb in kbs}

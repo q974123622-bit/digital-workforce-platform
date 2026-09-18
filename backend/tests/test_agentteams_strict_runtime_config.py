@@ -48,6 +48,7 @@ def test_onboarding_runtime_configuration_contains_department_relationship_graph
     assert set(document["agents"]) == {
         "manager", "hr", "it", "audit",
         "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+        "finance", "finance_invoice", "finance_budget", "finance_payment",
     }
     assert document["team_relationships"]["VE-0002"] == {
         "role": "HR负责人",
@@ -490,7 +491,7 @@ def _role_change_activation_schema() -> dict:
     }
 
 
-def test_runtime_config_has_nine_unique_identities_and_a_secret_free_public_view(tmp_path):
+def test_runtime_config_has_thirteen_unique_identities_and_a_secret_free_public_view(tmp_path):
     from app.services.agentteams_runtime_config import load_strict_runtime_config
 
     path = tmp_path / "runtime.json"
@@ -502,6 +503,7 @@ def test_runtime_config_has_nine_unique_identities_and_a_secret_free_public_view
     assert set(runtime.agents) == {
         "manager", "hr", "it", "audit",
         "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+        "finance", "finance_invoice", "finance_budget", "finance_payment",
     }
     public = runtime.public_view()
     assert "token" not in json.dumps(public)

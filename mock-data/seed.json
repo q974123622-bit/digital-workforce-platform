@@ -146,7 +146,11 @@
       "max_data_level": "L2",
       "allowed_domains": ["AUDIT_DEMO"]
     },
-    {"employee_no":"VE-AUDIT-REVIEW","name":"审计专员","type":"virtual","owner_human_no":"E10021","department":"审计部","role_prompt":"你是审计专员，只执行入职证据和岗位调整权限的独立审计并返回可追踪证据。","runtime_type":"agentteams","runtime_ref":"audit-review-worker","location":"remote","internet":"deny","max_data_level":"L2","allowed_domains":["AUDIT_DEMO"]},
+    {"employee_no":"VE-AUDIT-REVIEW","name":"审计专员","type":"virtual","owner_human_no":"E10021","department":"审计部","role_prompt":"你是审计专员，只执行入职、岗位调整和财务报销的独立审计并返回可追踪证据。","runtime_type":"agentteams","runtime_ref":"audit-review-worker","location":"remote","internet":"deny","max_data_level":"L2","allowed_domains":["AUDIT_DEMO","EXPENSE_DEMO"]},
+    {"employee_no":"VE-FIN-LEAD","name":"财务负责人","type":"virtual","owner_human_no":"E10281","department":"财务部","role_prompt":"你是财务负责人，只负责拆分报销核验与付款制单任务、验收直属员工结果并向 Manager 汇总。","runtime_type":"agentteams","runtime_ref":"finance-leader","location":"remote","internet":"deny","max_data_level":"L2","allowed_domains":["EXPENSE_DEMO"]},
+    {"employee_no":"VE-FIN-INVOICE","name":"发票核验专员","type":"virtual","owner_human_no":"E10281","department":"财务部","role_prompt":"你是发票核验专员，只核验指定报销单的发票、行程与金额证据。","runtime_type":"agentteams","runtime_ref":"finance-invoice-worker","location":"remote","internet":"deny","max_data_level":"L2","allowed_domains":["EXPENSE_DEMO"]},
+    {"employee_no":"VE-FIN-BUDGET","name":"预算核验专员","type":"virtual","owner_human_no":"E10281","department":"财务部","role_prompt":"你是预算核验专员，只核验指定报销单的预算余额和费用标准。","runtime_type":"agentteams","runtime_ref":"finance-budget-worker","location":"remote","internet":"deny","max_data_level":"L2","allowed_domains":["EXPENSE_DEMO"]},
+    {"employee_no":"VE-FIN-PAYMENT","name":"付款制单专员","type":"virtual","owner_human_no":"E10281","department":"财务部","role_prompt":"你是付款制单专员，只能在审计批准编号有效时生成模拟付款单，不连接真实支付系统。","runtime_type":"agentteams","runtime_ref":"finance-payment-worker","location":"remote","internet":"deny","max_data_level":"L2","allowed_domains":["EXPENSE_DEMO"]},
     {"employee_no":"DB-OPS-LEAD","name":"数据库运行诊断负责人","type":"virtual","owner_human_no":"E10281","department":"数据库平台组","role_prompt":"负责把运行诊断任务拆分给写入、锁和 Vacuum 专家，验收结果后汇总。","runtime_type":"agentteams","runtime_ref":"db-ops-leader","location":"remote","internet":"deny","max_data_level":"L2","allowed_domains":["DB_BENCHMARK"]},
     {"employee_no":"DB-PERF-LEAD","name":"数据库性能诊断负责人","type":"virtual","owner_human_no":"E10281","department":"数据库平台组","role_prompt":"负责把性能诊断任务拆分给索引和查询专家，验收结果后汇总。","runtime_type":"agentteams","runtime_ref":"db-perf-leader","location":"remote","internet":"deny","max_data_level":"L2","allowed_domains":["DB_BENCHMARK"]},
     {"employee_no":"DB-WRITE-01","name":"数据库写入诊断专家","type":"virtual","owner_human_no":"E10281","department":"数据库平台组","role_prompt":"负责写入吞吐、事务频率和 WAL 证据诊断。","runtime_type":"agentteams","runtime_ref":"db-write-investigator","location":"remote","internet":"deny","max_data_level":"L2","allowed_domains":["DB_BENCHMARK"]},
@@ -201,6 +205,10 @@
     {"id": "agentteams-role-change-it-plan", "name": "岗位调整IT权限计划查询", "type": "mcp", "endpoint_ref": "mock://agentteams/role-change/it-plan", "data_level": "L2", "status": "active", "description": "读取张明的虚构权限变更计划和待审计状态（Demo）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "input_schema": {"type": "object", "required": ["employee_ref"], "properties": {"employee_ref": {"type": "string", "const": "张明", "maxLength": 16}}, "additionalProperties": false}, "executor": {"primary": "adapter", "tool": "adapter", "adapter_ref": "mock://agentteams/role-change/it-plan", "fallback": "none"}}},
     {"id": "agentteams-role-change-audit", "name": "岗位调整权限审计复核", "type": "mcp", "endpoint_ref": "mock://agentteams/role-change/audit", "data_level": "L2", "status": "active", "description": "独立复核张明的虚构权限范围并返回批准编号（Demo）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "input_schema": {"type": "object", "required": ["employee_ref"], "properties": {"employee_ref": {"type": "string", "const": "张明", "maxLength": 16}}, "additionalProperties": false}, "executor": {"primary": "adapter", "tool": "adapter", "adapter_ref": "mock://agentteams/role-change/audit", "fallback": "none"}}},
     {"id": "agentteams-role-change-it-activate", "name": "岗位调整IT权限激活", "type": "mcp", "endpoint_ref": "mock://agentteams/role-change/it-activate", "data_level": "L2", "status": "active", "description": "仅在审计批准后执行张明的虚构权限激活（Demo）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "input_schema": {"type": "object", "required": ["employee_ref", "approval_ref"], "properties": {"employee_ref": {"type": "string", "const": "张明", "maxLength": 16}, "approval_ref": {"type": "string", "const": "AUD-RC-001", "maxLength": 32}}, "additionalProperties": false}, "executor": {"primary": "adapter", "tool": "adapter", "adapter_ref": "mock://agentteams/role-change/it-activate", "fallback": "none"}}},
+    {"id":"agentteams-expense-claim","name":"报销发票与行程核验","type":"mcp","endpoint_ref":"mock://agentteams/expense/claim","data_level":"L2","status":"active","description":"读取固定虚构报销单的发票、行程和金额证据。","runtime_meta":{"contract_version":"1.0","actions":["execute"],"input_schema":{"type":"object","required":["expense_id"],"properties":{"expense_id":{"type":"string","const":"EXP-2026-0915-001","maxLength":32}},"additionalProperties":false},"executor":{"primary":"adapter","tool":"adapter","adapter_ref":"mock://agentteams/expense/claim","fallback":"none"}}},
+    {"id":"agentteams-expense-budget","name":"报销预算与标准核验","type":"mcp","endpoint_ref":"mock://agentteams/expense/budget","data_level":"L2","status":"active","description":"读取固定虚构报销单的预算余额和费用标准。","runtime_meta":{"contract_version":"1.0","actions":["execute"],"input_schema":{"type":"object","required":["expense_id"],"properties":{"expense_id":{"type":"string","const":"EXP-2026-0915-001","maxLength":32}},"additionalProperties":false},"executor":{"primary":"adapter","tool":"adapter","adapter_ref":"mock://agentteams/expense/budget","fallback":"none"}}},
+    {"id":"agentteams-expense-audit","name":"报销独立合规审计","type":"mcp","endpoint_ref":"mock://agentteams/expense/audit","data_level":"L2","status":"active","description":"独立复核固定虚构报销单并返回审计批准编号。","runtime_meta":{"contract_version":"1.0","actions":["execute"],"input_schema":{"type":"object","required":["expense_id"],"properties":{"expense_id":{"type":"string","const":"EXP-2026-0915-001","maxLength":32}},"additionalProperties":false},"executor":{"primary":"adapter","tool":"adapter","adapter_ref":"mock://agentteams/expense/audit","fallback":"none"}}},
+    {"id":"agentteams-expense-payment","name":"报销模拟付款制单","type":"mcp","endpoint_ref":"mock://agentteams/expense/payment","data_level":"L2","status":"active","description":"仅在审计批准后为固定虚构报销单生成模拟付款单。","runtime_meta":{"contract_version":"1.0","actions":["execute"],"input_schema":{"type":"object","required":["expense_id","approval_ref"],"properties":{"expense_id":{"type":"string","const":"EXP-2026-0915-001","maxLength":32},"approval_ref":{"type":"string","const":"AUD-EXP-001","maxLength":32}},"additionalProperties":false},"executor":{"primary":"adapter","tool":"adapter","adapter_ref":"mock://agentteams/expense/payment","fallback":"none"}}},
     {"id":"agentteams-database-inspector","name":"数据库信号只读检查","type":"mcp","endpoint_ref":"mock://agentteams/database-inspector","data_level":"L2","status":"active","description":"读取本地确定性数据库评测快照，不连接真实数据库。","runtime_meta":{"contract_version":"1.0","actions":["read"],"input_schema":{"type":"object","required":["scenario_id","signal","filters","limit"],"properties":{"scenario_id":{"type":"string","enum":["bulk_writes","lock_contention","vacuum_pressure","index_anomaly","large_query"]},"signal":{"type":"string","enum":["statements","locks","indexes","vacuum","table_stats"]},"filters":{"type":"object","additionalProperties":{"type":"string"},"maxProperties":4},"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false},"executor":{"primary":"adapter","tool":"adapter","adapter_ref":"mock://agentteams/database-inspector","fallback":"none"}}},
     {"id": "rpa-report", "name": "报表机器人", "type": "rpa", "endpoint_ref": "mock://rpa/report", "data_level": "L3", "status": "active", "description": "自动生成报表（Mock，敏感）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "executor": {"primary": "harness", "tool": "adapter", "adapter_ref": "mock://rpa/report", "fallback": "demo_adapter"}}},
     {"id": "expense-claim", "name": "差旅报销流程", "type": "workflow", "endpoint_ref": "mock://workflow/expense-claim", "data_level": "L2", "status": "active", "description": "差旅报销申请与审批打款流程（Mock）", "runtime_meta": {"contract_version": "1.0", "actions": ["execute"], "executor": {"primary": "harness", "tool": "adapter", "adapter_ref": "mock://workflow/expense-claim", "fallback": "demo_adapter"}}},
@@ -237,6 +245,10 @@
     {"employee_id": "VE-IT-DEVICE", "plugin_id": "agentteams-role-change-it-plan", "action": "execute", "decision_mode": "allow", "grant_source": "seed"},
     {"employee_id": "VE-IT-DEVICE", "plugin_id": "agentteams-role-change-it-activate", "action": "execute", "decision_mode": "allow", "grant_source": "seed"},
     {"employee_id": "VE-AUDIT-REVIEW", "plugin_id": "agentteams-role-change-audit", "action": "execute", "decision_mode": "allow", "grant_source": "seed"},
+    {"employee_id":"VE-FIN-INVOICE","plugin_id":"agentteams-expense-claim","action":"execute","decision_mode":"allow","grant_source":"seed"},
+    {"employee_id":"VE-FIN-BUDGET","plugin_id":"agentteams-expense-budget","action":"execute","decision_mode":"allow","grant_source":"seed"},
+    {"employee_id":"VE-AUDIT-REVIEW","plugin_id":"agentteams-expense-audit","action":"execute","decision_mode":"allow","grant_source":"seed"},
+    {"employee_id":"VE-FIN-PAYMENT","plugin_id":"agentteams-expense-payment","action":"execute","decision_mode":"allow","grant_source":"seed"},
     {"employee_id":"VE-0001","plugin_id":"agentteams-database-inspector","action":"read","decision_mode":"allow","grant_source":"seed"},
     {"employee_id":"DB-WRITE-01","plugin_id":"agentteams-database-inspector","action":"read","decision_mode":"allow","grant_source":"seed"},
     {"employee_id":"DB-LOCK-01","plugin_id":"agentteams-database-inspector","action":"read","decision_mode":"allow","grant_source":"seed"},
@@ -261,6 +273,10 @@
     {"team_id": "TEAM-ONBOARD", "plugin_id": "agentteams-role-change-it-plan", "action": "execute", "decision_mode": "allow", "grant_source": "seed"},
     {"team_id": "TEAM-ONBOARD", "plugin_id": "agentteams-role-change-audit", "action": "execute", "decision_mode": "allow", "grant_source": "seed"},
     {"team_id": "TEAM-ONBOARD", "plugin_id": "agentteams-role-change-it-activate", "action": "execute", "decision_mode": "allow", "grant_source": "seed"},
+    {"team_id":"TEAM-ONBOARD","plugin_id":"agentteams-expense-claim","action":"execute","decision_mode":"allow","grant_source":"seed"},
+    {"team_id":"TEAM-ONBOARD","plugin_id":"agentteams-expense-budget","action":"execute","decision_mode":"allow","grant_source":"seed"},
+    {"team_id":"TEAM-ONBOARD","plugin_id":"agentteams-expense-audit","action":"execute","decision_mode":"allow","grant_source":"seed"},
+    {"team_id":"TEAM-ONBOARD","plugin_id":"agentteams-expense-payment","action":"execute","decision_mode":"allow","grant_source":"seed"},
     {"team_id": "TEAM-DB-BENCH", "plugin_id": "agentteams-database-inspector", "action": "read", "decision_mode": "allow", "grant_source": "seed"}
   ],
   "policies": [
@@ -282,19 +298,23 @@
   "teams": [
     {
       "id": "TEAM-ONBOARD",
-      "name": "新员工入职团队",
+      "name": "AgentTeams 业务协作团队",
       "leader_employee_id": "VE-0001",
       "description": "P0-lite 团队：处理新员工入职准备任务",
       "members": [
         {"employee_id": "VE-0001", "role": "manager", "reports_to_employee_id": null, "capabilities": []},
         {"employee_id": "VE-0002", "role": "leader", "reports_to_employee_id": "VE-0001", "capabilities": ["hr.onboarding.coordinate", "hr.role_change.coordinate"]},
         {"employee_id": "VE-0003", "role": "leader", "reports_to_employee_id": "VE-0001", "capabilities": ["it.onboarding.coordinate", "it.role_change.plan.coordinate", "it.role_change.activate.coordinate"]},
-        {"employee_id": "VE-0005", "role": "leader", "reports_to_employee_id": "VE-0001", "capabilities": ["audit.onboarding.coordinate", "audit.role_change.coordinate"]},
+        {"employee_id": "VE-0005", "role": "leader", "reports_to_employee_id": "VE-0001", "capabilities": ["audit.onboarding.coordinate", "audit.role_change.coordinate", "audit.expense.coordinate"]},
+        {"employee_id": "VE-FIN-LEAD", "role": "leader", "reports_to_employee_id": "VE-0001", "capabilities": ["finance.expense.coordinate"]},
         {"employee_id": "VE-HR-MATERIAL", "role": "worker", "reports_to_employee_id": "VE-0002"},
         {"employee_id": "VE-HR-TRAINING", "role": "worker", "reports_to_employee_id": "VE-0002"},
         {"employee_id": "VE-IT-ACCOUNT", "role": "worker", "reports_to_employee_id": "VE-0003"},
         {"employee_id": "VE-IT-DEVICE", "role": "worker", "reports_to_employee_id": "VE-0003"},
-        {"employee_id": "VE-AUDIT-REVIEW", "role": "worker", "reports_to_employee_id": "VE-0005"}
+        {"employee_id": "VE-AUDIT-REVIEW", "role": "worker", "reports_to_employee_id": "VE-0005"},
+        {"employee_id": "VE-FIN-INVOICE", "role": "worker", "reports_to_employee_id": "VE-FIN-LEAD"},
+        {"employee_id": "VE-FIN-BUDGET", "role": "worker", "reports_to_employee_id": "VE-FIN-LEAD"},
+        {"employee_id": "VE-FIN-PAYMENT", "role": "worker", "reports_to_employee_id": "VE-FIN-LEAD"}
       ]
     },
     {

@@ -98,10 +98,14 @@ def test_strict_runner_factory_uses_validated_runtime_identity_and_room(monkeypa
                 "it_account": {"agent_id": "VE-IT-ACCOUNT", "mxid": "@it-account:test", "token": "it-account-token", "allowed_skill_ids": ["it-account-skill"], "safe_tool_catalog": []},
                 "it_device": {"agent_id": "VE-IT-DEVICE", "mxid": "@it-device:test", "token": "it-device-token", "allowed_skill_ids": ["it-device-skill"], "safe_tool_catalog": []},
                 "audit_review": {"agent_id": "VE-AUDIT-REVIEW", "mxid": "@audit-review:test", "token": "audit-review-token", "allowed_skill_ids": ["audit-review-skill"], "safe_tool_catalog": []},
+                "finance": {"agent_id": "VE-FIN-LEAD", "mxid": "@finance:test", "token": "finance-token", "allowed_skill_ids": ["finance-skill"], "safe_tool_catalog": []},
+                "finance_invoice": {"agent_id": "VE-FIN-INVOICE", "mxid": "@finance-invoice:test", "token": "finance-invoice-token", "allowed_skill_ids": ["finance-invoice-skill"], "safe_tool_catalog": []},
+                "finance_budget": {"agent_id": "VE-FIN-BUDGET", "mxid": "@finance-budget:test", "token": "finance-budget-token", "allowed_skill_ids": ["finance-budget-skill"], "safe_tool_catalog": []},
+                "finance_payment": {"agent_id": "VE-FIN-PAYMENT", "mxid": "@finance-payment:test", "token": "finance-payment-token", "allowed_skill_ids": ["finance-payment-skill"], "safe_tool_catalog": []},
             },
             "team_catalog": {},
             "team_relationships": {
-                "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+                "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD"]},
                 "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
                 "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
                 "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
@@ -110,6 +114,10 @@ def test_strict_runner_factory_uses_validated_runtime_identity_and_room(monkeypa
                 "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
                 "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
                 "VE-AUDIT-REVIEW": {"role": "审计复核专员", "reports_to": ["VE-0005"], "direct_reports": []},
+                "VE-FIN-LEAD": {"role": "财务负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT"]},
+                "VE-FIN-INVOICE": {"role": "发票核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+                "VE-FIN-BUDGET": {"role": "预算核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+                "VE-FIN-PAYMENT": {"role": "付款制单专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
             },
         }), encoding="utf-8")
     calls = []

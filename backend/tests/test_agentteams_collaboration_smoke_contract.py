@@ -124,6 +124,10 @@ STRICT_HEALTH_ROLES = {
     "it_account": ("VE-IT-ACCOUNT", "it-account-specialist"),
     "it_device": ("VE-IT-DEVICE", "it-device-specialist"),
     "audit_review": ("VE-AUDIT-REVIEW", "audit-evidence-review"),
+    "finance": ("VE-FIN-LEAD", "finance-expense-coordination"),
+    "finance_invoice": ("VE-FIN-INVOICE", "expense-invoice-verification"),
+    "finance_budget": ("VE-FIN-BUDGET", "expense-budget-verification"),
+    "finance_payment": ("VE-FIN-PAYMENT", "expense-payment-preparation"),
 }
 
 
@@ -152,7 +156,7 @@ def _install_full_strict_health_runtime(db_session, monkeypatch, tmp_path):
         },
         "team_catalog": {},
         "team_relationships": {
-            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005"]},
+            "VE-0001": {"role": "Manager", "reports_to": [], "direct_reports": ["VE-0002", "VE-0003", "VE-0005", "VE-FIN-LEAD"]},
             "VE-0002": {"role": "HR负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-HR-MATERIAL", "VE-HR-TRAINING"]},
             "VE-0003": {"role": "IT负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-IT-ACCOUNT", "VE-IT-DEVICE"]},
             "VE-0005": {"role": "审计负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-AUDIT-REVIEW"]},
@@ -161,6 +165,10 @@ def _install_full_strict_health_runtime(db_session, monkeypatch, tmp_path):
             "VE-IT-ACCOUNT": {"role": "IT账号专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-IT-DEVICE": {"role": "IT设备专员", "reports_to": ["VE-0003"], "direct_reports": []},
             "VE-AUDIT-REVIEW": {"role": "审计复核专员", "reports_to": ["VE-0005"], "direct_reports": []},
+            "VE-FIN-LEAD": {"role": "财务负责人", "reports_to": ["VE-0001"], "direct_reports": ["VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT"]},
+            "VE-FIN-INVOICE": {"role": "发票核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+            "VE-FIN-BUDGET": {"role": "预算核验专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
+            "VE-FIN-PAYMENT": {"role": "付款制单专员", "reports_to": ["VE-FIN-LEAD"], "direct_reports": []},
         },
     }), encoding="utf-8")
     monkeypatch.setenv("DWP_AGENTTEAMS_RUNTIME_CONFIG", str(config_path))
@@ -250,6 +258,6 @@ def test_health_closes_every_constructed_gateway_when_membership_check_raises(
     assert response.status_code == 200
     body = response.json()
     assert body["ready_for_demo"] is False
-    assert len(FailingGateway.constructed) == 10
+    assert len(FailingGateway.constructed) == 14
     assert all(item.closed for item in FailingGateway.constructed)
     assert "secret" not in json.dumps(body).lower()

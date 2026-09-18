@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CloseCircleOutlined,
+  DownOutlined,
   ReloadOutlined,
   RobotOutlined,
   SendOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Card, Col, Empty, Input, Progress, Row, Space, Spin, Switch, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Dropdown, Empty, Input, Progress, Row, Space, Spin, Switch, Tag, Typography } from 'antd';
 import type {
   AgentCollaborationHealth,
   AgentCollaborationTask,
@@ -26,6 +27,20 @@ const LOCAL_DEMO_TITLE = '岗位调整评估';
 const LOCAL_DEMO_INSTRUCTION = '评估张明的岗位调整是否可以按期完成。';
 const DEFAULT_TASK_TITLE = '岗位调整评估';
 const DEFAULT_TASK_GOAL = '评估张明的岗位调整是否可以按期完成。';
+const TASK_PRESETS = [
+  {
+    key: 'onboarding',
+    label: '新员工入职评估',
+    title: '新员工入职评估',
+    instruction: '评估新员工A是否可以按期入职，核验HR材料、培训、IT账号、IT设备及独立审计结果。',
+  },
+  {
+    key: 'expense-reimbursement',
+    label: '财务报销协同审核',
+    title: '财务报销协同审核',
+    instruction: '审核李明的差旅报销单 EXP-2026-0915-001，核验发票、行程、预算与合规性；全部通过后生成模拟付款单。',
+  },
+] as const;
 
 const EMPTY_GRAPH: AgentTaskGraph = {
   nodes: [],
@@ -92,9 +107,19 @@ function payloadTextList(payload: Record<string, unknown>, key: string) {
     : [];
 }
 
-function readinessLabel(value: unknown, roleChange = false) {
-  if (value === 'ready') return roleChange ? '岗位调整可以按期完成' : '可以按期入职';
-  if (value === 'not_ready') return roleChange ? '岗位调整暂不能按期完成' : '暂不能按期入职';
+type DecisionScenario = 'onboarding' | 'role_change' | 'expense';
+
+function readinessLabel(value: unknown, scenario: DecisionScenario) {
+  if (value === 'ready') {
+    if (scenario === 'role_change') return '岗位调整可以按期完成';
+    if (scenario === 'expense') return '报销审核通过';
+    return '可以按期入职';
+  }
+  if (value === 'not_ready') {
+    if (scenario === 'role_change') return '岗位调整暂不能按期完成';
+    if (scenario === 'expense') return '报销审核未通过';
+    return '暂不能按期入职';
+  }
   if (value === 'incomplete') return '信息不足，暂无法判断';
   return '';
 }
@@ -111,12 +136,72 @@ interface LoadedTask {
   result: AgentFinalResult;
 }
 
+const INITIALIZED_SESSION_KEY_PREFIX = 'dwp.agentteams.initialized:';
+const INITIAL_SNAPSHOT_SESSION_KEY_PREFIX = 'dwp.agentteams.initial-snapshot:';
+
+interface InitialSessionSnapshot {
+  health: AgentCollaborationHealth;
+  tasks: AgentCollaborationTask[];
+  selectedTaskId: string | null;
+}
+
+function initializedSessionKey(actorNo: string) {
+  return `${INITIALIZED_SESSION_KEY_PREFIX}${actorNo}`;
+}
+
+function initialSnapshotSessionKey(actorNo: string) {
+  return `${INITIAL_SNAPSHOT_SESSION_KEY_PREFIX}${actorNo}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readInitialSessionSnapshot(actorNo: string): InitialSessionSnapshot | null {
+  try {
+    const raw = window.sessionStorage.getItem(initialSnapshotSessionKey(actorNo));
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed) || !isRecord(parsed.health) || !Array.isArray(parsed.tasks)) return null;
+    if (!parsed.tasks.every((task) => isRecord(task) && typeof task.id === 'string')) return null;
+    if (parsed.selectedTaskId !== null && typeof parsed.selectedTaskId !== 'string') return null;
+    return parsed as unknown as InitialSessionSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+function writeInitialSessionSnapshot(actorNo: string, snapshot: InitialSessionSnapshot) {
+  try {
+    window.sessionStorage.setItem(initialSnapshotSessionKey(actorNo), JSON.stringify(snapshot));
+  } catch {
+    // Session storage can be unavailable or full in restricted browser modes.
+  }
+}
+
+function hasInitializedInSession(actorNo: string) {
+  try {
+    return window.sessionStorage.getItem(initializedSessionKey(actorNo)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function markInitializedInSession(actorNo: string) {
+  try {
+    window.sessionStorage.setItem(initializedSessionKey(actorNo), '1');
+  } catch {
+    // Session storage can be unavailable in restricted browser modes.
+  }
+}
+
 export default function AgentTeamsCollaborationPage() {
   const { actor } = useCurrentUser();
   const actorNo = actor.employee_no;
-  const [health, setHealth] = useState<AgentCollaborationHealth | null>(null);
-  const [tasks, setTasks] = useState<AgentCollaborationTask[]>([]);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [initialSnapshot] = useState(() => readInitialSessionSnapshot(actorNo));
+  const [health, setHealth] = useState<AgentCollaborationHealth | null>(initialSnapshot?.health ?? null);
+  const [tasks, setTasks] = useState<AgentCollaborationTask[]>(initialSnapshot?.tasks ?? []);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(initialSnapshot?.selectedTaskId ?? null);
   const [selectedTask, setSelectedTask] = useState<AgentCollaborationTask | null>(null);
   const [graph, setGraph] = useState<AgentTaskGraph>(EMPTY_GRAPH);
   const [events, setEvents] = useState<AgentTaskEvent[]>([]);
@@ -124,11 +209,11 @@ export default function AgentTeamsCollaborationPage() {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [result, setResult] = useState<AgentFinalResult | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [title, setTitle] = useState('');
-  const [instruction, setInstruction] = useState('');
+  const [title, setTitle] = useState(DEFAULT_TASK_TITLE);
+  const [instruction, setInstruction] = useState(DEFAULT_TASK_GOAL);
   const [material, setMaterial] = useState('');
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => initialSnapshot === null);
   const [submitting, setSubmitting] = useState(false);
   const [actingTaskIds, setActingTaskIds] = useState<Set<string>>(() => new Set());
   const [loadError, setLoadError] = useState<string>();
@@ -137,6 +222,7 @@ export default function AgentTeamsCollaborationPage() {
   const taskSelectionVersionRef = useRef(0);
   const actorVersionRef = useRef(0);
   const selectedTaskActorRef = useRef(actorNo);
+  const selectedTaskIdRef = useRef<string | null>(initialSnapshot?.selectedTaskId ?? null);
   const selectTask = useCallback((taskId: string | null) => {
     if (taskId === selectedTaskId) return;
     taskSelectionVersionRef.current += 1;
@@ -156,11 +242,15 @@ export default function AgentTeamsCollaborationPage() {
     { title: '信息缺口', items: payloadTextList(finalPayload, 'unknowns') },
     { title: '后续操作', items: payloadTextList(finalPayload, 'next_actions') },
   ].filter((section) => section.items.length > 0), [finalPayload]);
-  const isRoleChangeScenario = (graph.selected_skill_ids ?? []).includes('agentteams-role-change-readiness');
+  const decisionScenario: DecisionScenario = (graph.selected_skill_ids ?? []).includes('agentteams-expense-reimbursement')
+    ? 'expense'
+    : (graph.selected_skill_ids ?? []).includes('agentteams-role-change-readiness')
+      ? 'role_change'
+      : 'onboarding';
 
   const loadInitial = useCallback(async () => {
     const actorVersion = actorVersionRef.current;
-    setLoading(true);
+    if (!readInitialSessionSnapshot(actorNo)) setLoading(true);
     setLoadError(undefined);
     try {
       const [nextHealth, nextTasks] = await Promise.all([
@@ -168,11 +258,22 @@ export default function AgentTeamsCollaborationPage() {
         api.listAgentTeamsTasks(actorNo),
       ]);
       if (actorVersionRef.current !== actorVersion) return;
+      const currentSelection = selectedTaskIdRef.current;
+      const nextSelectedTaskId = currentSelection && nextTasks.some((task) => task.id === currentSelection)
+        ? currentSelection
+        : nextTasks[0]?.id ?? null;
       setHealth(nextHealth);
       setTasks(nextTasks);
       setTitle((current) => current || DEFAULT_TASK_TITLE);
       setInstruction((current) => current || DEFAULT_TASK_GOAL);
-      setSelectedTaskId((current) => current ?? nextTasks[0]?.id ?? null);
+      selectedTaskIdRef.current = nextSelectedTaskId;
+      setSelectedTaskId(nextSelectedTaskId);
+      writeInitialSessionSnapshot(actorNo, {
+        health: nextHealth,
+        tasks: nextTasks,
+        selectedTaskId: nextSelectedTaskId,
+      });
+      markInitializedInSession(actorNo);
     } catch (error) {
       if (actorVersionRef.current === actorVersion) setLoadError(errorText(error));
     } finally {
@@ -219,10 +320,13 @@ export default function AgentTeamsCollaborationPage() {
   }, [actorNo]);
 
   useEffect(() => {
+    const snapshot = readInitialSessionSnapshot(actorNo);
     actorVersionRef.current += 1;
     taskSelectionVersionRef.current += 1;
-    setTasks([]);
-    setSelectedTaskId(null);
+    setHealth(snapshot?.health ?? null);
+    setTasks(snapshot?.tasks ?? []);
+    selectedTaskIdRef.current = snapshot?.selectedTaskId ?? null;
+    setSelectedTaskId(snapshot?.selectedTaskId ?? null);
     setSelectedTask(null);
     setGraph(EMPTY_GRAPH);
     setEvents([]);
@@ -235,7 +339,14 @@ export default function AgentTeamsCollaborationPage() {
     setLoadError(undefined);
     setFormError(undefined);
     setActionError(undefined);
+    setLoading(snapshot === null);
   }, [actorNo]);
+
+  useEffect(() => {
+    selectedTaskIdRef.current = selectedTaskId;
+    if (!health || !hasInitializedInSession(actorNo)) return;
+    writeInitialSessionSnapshot(actorNo, { health, tasks, selectedTaskId });
+  }, [actorNo, health, selectedTaskId, tasks]);
 
   useEffect(() => {
     void loadInitial();
@@ -438,7 +549,25 @@ export default function AgentTeamsCollaborationPage() {
             <Col xs={24} xl={8}>
               <Card title="提交协作任务" className="at-card" extra={<Tag color="blue">Manager 自动路由</Tag>}>
                 <div className="at-form-fields">
-                  <label htmlFor="agentteams-title">任务标题</label>
+                  <div className="at-field-label-row">
+                    <label htmlFor="agentteams-title">任务标题</label>
+                    <Dropdown
+                      trigger={['click']}
+                      menu={{
+                        items: TASK_PRESETS.map((preset) => ({ key: preset.key, label: preset.label })),
+                        onClick: ({ key }) => {
+                          const preset = TASK_PRESETS.find((item) => item.key === key);
+                          if (!preset) return;
+                          setTitle(preset.title);
+                          setInstruction(preset.instruction);
+                        },
+                      }}
+                    >
+                      <Button size="small" aria-label="选择任务预设">
+                        选择预设 <DownOutlined />
+                      </Button>
+                    </Dropdown>
+                  </div>
                   <Input id="agentteams-title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} />
                   <label htmlFor="agentteams-instruction">任务说明</label>
                   <Input.TextArea
@@ -530,9 +659,9 @@ export default function AgentTeamsCollaborationPage() {
             >
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
                 {statusTag(result?.status ?? selectedTask.status)}
-                {readinessLabel(finalPayload.readiness_decision, isRoleChangeScenario) && (
+                {readinessLabel(finalPayload.readiness_decision, decisionScenario) && (
                   <Typography.Text strong className="at-final-decision">
-                    结论：{readinessLabel(finalPayload.readiness_decision, isRoleChangeScenario)}
+                    结论：{readinessLabel(finalPayload.readiness_decision, decisionScenario)}
                   </Typography.Text>
                 )}
                 <Typography.Paragraph className="at-final-summary">

@@ -27,7 +27,7 @@ def test_capability_catalog_unifies_plugins_and_skills(client):
     resp = client.get("/api/v1/capabilities?actor_no=E10281")
     assert resp.status_code == 200
     rows = resp.json()
-    assert len(rows) == 28  # 24 plugins (including four specialists) + 4 user skills
+    assert len(rows) == 32  # 28 plugins (including expense tools) + 4 user skills
     plugin_ids = {row["id"] for row in rows if row["source_type"] == "plugin"}
     assert "agentteams-database-inspector" in plugin_ids
     assert {

@@ -261,6 +261,10 @@ def test_seed_installs_team_permissions_for_both_collaboration_scenarios(db_sess
         ("TEAM-ONBOARD", "agentteams-role-change-it-plan", "execute", "allow"),
         ("TEAM-ONBOARD", "agentteams-role-change-audit", "execute", "allow"),
         ("TEAM-ONBOARD", "agentteams-role-change-it-activate", "execute", "allow"),
+        ("TEAM-ONBOARD", "agentteams-expense-claim", "execute", "allow"),
+        ("TEAM-ONBOARD", "agentteams-expense-budget", "execute", "allow"),
+        ("TEAM-ONBOARD", "agentteams-expense-audit", "execute", "allow"),
+        ("TEAM-ONBOARD", "agentteams-expense-payment", "execute", "allow"),
         ("TEAM-DB-BENCH", "agentteams-database-inspector", "read", "allow"),
     } <= seeded
 

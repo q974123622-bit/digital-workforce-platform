@@ -15,7 +15,7 @@ $python = Join-Path $backend '.venv\Scripts\python.exe'
 . (Join-Path $PSScriptRoot 'agentteams_process_helpers.ps1')
 
 function Test-CommandAvailable([string]$Name) { return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue) }
-$AgentRoles = @('manager','hr','it','audit','hr_material','hr_training','it_account','it_device','audit_review')
+$AgentRoles = @('manager','hr','it','audit','hr_material','hr_training','it_account','it_device','audit_review','finance','finance_invoice','finance_budget','finance_payment')
 $AgentRoleApiKeyVariables = [ordered]@{
     manager = 'DEEPSEEK_API_KEY_MANAGER'
     hr = 'DEEPSEEK_API_KEY_HR'
@@ -26,6 +26,10 @@ $AgentRoleApiKeyVariables = [ordered]@{
     it_account = 'DEEPSEEK_API_KEY_IT'
     it_device = 'DEEPSEEK_API_KEY_IT'
     audit_review = 'DEEPSEEK_API_KEY_AUDIT'
+    finance = 'DEEPSEEK_API_KEY_MANAGER'
+    finance_invoice = 'DEEPSEEK_API_KEY_HR'
+    finance_budget = 'DEEPSEEK_API_KEY_HR'
+    finance_payment = 'DEEPSEEK_API_KEY_HR'
 }
 function Get-AgentRoles { return @($AgentRoles) }
 function ConvertFrom-AgentRoleApiKeyText([string]$Text) {
@@ -114,6 +118,10 @@ function Get-ExpectedArguments([string]$Name) {
         'it_account' { return @($agentScript,'--role','it_account','--config',$runtimeConfig) }
         'it_device' { return @($agentScript,'--role','it_device','--config',$runtimeConfig) }
         'audit_review' { return @($agentScript,'--role','audit_review','--config',$runtimeConfig) }
+        'finance' { return @($agentScript,'--role','finance','--config',$runtimeConfig) }
+        'finance_invoice' { return @($agentScript,'--role','finance_invoice','--config',$runtimeConfig) }
+        'finance_budget' { return @($agentScript,'--role','finance_budget','--config',$runtimeConfig) }
+        'finance_payment' { return @($agentScript,'--role','finance_payment','--config',$runtimeConfig) }
         'frontend' { return @((Join-Path $workspace 'frontend\node_modules\vite\bin\vite.js'),'--host','127.0.0.1','--port','4173') }
         default { throw 'invalid owned process name' }
     }

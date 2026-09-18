@@ -251,7 +251,7 @@ def test_strict_start_reports_only_missing_role_names_for_role_key_preflight():
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "hr,audit,hr_material,hr_training,it_account,it_device,audit_review"
+    assert completed.stdout.strip() == "hr,audit,hr_material,hr_training,it_account,it_device,audit_review,finance,finance_invoice,finance_budget,finance_payment"
 
 
 @pytest.mark.parametrize(
@@ -261,6 +261,10 @@ def test_strict_start_reports_only_missing_role_names_for_role_key_preflight():
         ("hr_training", "hr-training-specialist", "DEEPSEEK_API_KEY_HR"),
         ("it_account", "it-account-specialist", "DEEPSEEK_API_KEY_IT"),
         ("it_device", "it-device-specialist", "DEEPSEEK_API_KEY_IT"),
+        ("finance", "finance-expense-coordination", "DEEPSEEK_API_KEY_MANAGER"),
+        ("finance_invoice", "expense-invoice-verification", "DEEPSEEK_API_KEY_HR"),
+        ("finance_budget", "expense-budget-verification", "DEEPSEEK_API_KEY_HR"),
+        ("finance_payment", "expense-payment-preparation", "DEEPSEEK_API_KEY_HR"),
     ),
 )
 def test_specialist_runner_uses_its_single_skill_and_parent_department_key(role, skill_id, key_name):
@@ -272,11 +276,11 @@ def test_specialist_runner_uses_its_single_skill_and_parent_department_key(role,
         runner.resolve_role_api_key(role, {"DEEPSEEK_API_KEY": "legacy-shared"})
 
 
-def test_audit_review_runner_supports_both_business_scenarios_with_audit_key():
+def test_audit_review_runner_supports_all_business_scenarios_with_audit_key():
     runner = _run_agent_module()
 
     assert runner.role_skill_ids("audit_review") == {
-        "audit-evidence-review", "audit-role-change-review",
+        "audit-evidence-review", "audit-role-change-review", "audit-expense-review",
     }
     assert runner.resolve_role_api_key(
         "audit_review", {"DEEPSEEK_API_KEY_AUDIT": "audit-review-key"},
@@ -284,13 +288,13 @@ def test_audit_review_runner_supports_both_business_scenarios_with_audit_key():
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
-def test_start_lifecycle_exposes_exactly_nine_agents_and_reuses_department_key_variables():
+def test_start_lifecycle_exposes_all_thirteen_agents_and_reuses_department_key_variables():
     command = (
         "$ErrorActionPreference = 'Stop'; "
         f". '{START.as_posix()}'; "
         "$roles = @(Get-AgentRoles); "
-        "$keys = @{ manager='manager'; hr='hr'; it='it'; audit='audit'; hr_material='hm'; hr_training='ht'; it_account='ia'; it_device='id'; audit_review='ar' }; "
-        "$result = [ordered]@{ roles=$roles; hr_material=(Get-AgentRoleApiKeyEnvironment 'hr_material' $keys); hr_training=(Get-AgentRoleApiKeyEnvironment 'hr_training' $keys); it_account=(Get-AgentRoleApiKeyEnvironment 'it_account' $keys); it_device=(Get-AgentRoleApiKeyEnvironment 'it_device' $keys); audit_review=(Get-AgentRoleApiKeyEnvironment 'audit_review' $keys) }; "
+        "$keys = @{ manager='manager'; hr='hr'; it='it'; audit='audit'; hr_material='hm'; hr_training='ht'; it_account='ia'; it_device='id'; audit_review='ar'; finance='fm'; finance_invoice='fi'; finance_budget='fb'; finance_payment='fp' }; "
+        "$result = [ordered]@{ roles=$roles; hr_material=(Get-AgentRoleApiKeyEnvironment 'hr_material' $keys); hr_training=(Get-AgentRoleApiKeyEnvironment 'hr_training' $keys); it_account=(Get-AgentRoleApiKeyEnvironment 'it_account' $keys); it_device=(Get-AgentRoleApiKeyEnvironment 'it_device' $keys); audit_review=(Get-AgentRoleApiKeyEnvironment 'audit_review' $keys); finance=(Get-AgentRoleApiKeyEnvironment 'finance' $keys); finance_invoice=(Get-AgentRoleApiKeyEnvironment 'finance_invoice' $keys); finance_budget=(Get-AgentRoleApiKeyEnvironment 'finance_budget' $keys); finance_payment=(Get-AgentRoleApiKeyEnvironment 'finance_payment' $keys) }; "
         "$result | ConvertTo-Json -Compress -Depth 4"
     )
     completed = subprocess.run(
@@ -308,17 +312,22 @@ def test_start_lifecycle_exposes_exactly_nine_agents_and_reuses_department_key_v
         "roles": [
             "manager", "hr", "it", "audit",
             "hr_material", "hr_training", "it_account", "it_device", "audit_review",
+            "finance", "finance_invoice", "finance_budget", "finance_payment",
         ],
         "hr_material": {"DEEPSEEK_API_KEY_HR": "hm"},
         "hr_training": {"DEEPSEEK_API_KEY_HR": "ht"},
         "it_account": {"DEEPSEEK_API_KEY_IT": "ia"},
         "it_device": {"DEEPSEEK_API_KEY_IT": "id"},
         "audit_review": {"DEEPSEEK_API_KEY_AUDIT": "ar"},
+        "finance": {"DEEPSEEK_API_KEY_MANAGER": "fm"},
+        "finance_invoice": {"DEEPSEEK_API_KEY_HR": "fi"},
+        "finance_budget": {"DEEPSEEK_API_KEY_HR": "fb"},
+        "finance_payment": {"DEEPSEEK_API_KEY_HR": "fp"},
     }
 
 
 @pytest.mark.skipif(POWERSHELL_51 is None, reason="Windows PowerShell 5.1 is required")
-@pytest.mark.parametrize("role", ("hr_material", "hr_training", "it_account", "it_device", "audit_review"))
+@pytest.mark.parametrize("role", ("hr_material", "hr_training", "it_account", "it_device", "audit_review", "finance", "finance_invoice", "finance_budget", "finance_payment"))
 def test_start_and_stop_use_the_same_exact_specialist_argv(role):
     command = (
         "$ErrorActionPreference = 'Stop'; "
@@ -594,10 +603,11 @@ def test_bootstrap_produces_expanded_onboarding_identities_and_redacts_secrets(t
     assert runtime["agents"]["manager"]["allowed_skill_ids"] == [
         "agentteams-onboarding-readiness",
         "agentteams-role-change-readiness",
+        "agentteams-expense-reimbursement",
     ]
     assert runtime["agents"]["manager"]["safe_tool_catalog"] == []
-    assert all(runtime["agents"][role]["safe_tool_catalog"] == [] for role in ("manager", "hr", "it", "audit"))
-    assert all(runtime["agents"][role]["safe_tool_catalog"] for role in ("hr_material", "hr_training", "it_account", "it_device", "audit_review"))
+    assert all(runtime["agents"][role]["safe_tool_catalog"] == [] for role in ("manager", "hr", "it", "audit", "finance"))
+    assert all(runtime["agents"][role]["safe_tool_catalog"] for role in ("hr_material", "hr_training", "it_account", "it_device", "audit_review", "finance_invoice", "finance_budget", "finance_payment"))
     expected_schema = {
         "type": "object",
         "required": ["employee_ref"],
@@ -623,6 +633,7 @@ def test_bootstrap_produces_expanded_onboarding_identities_and_redacts_secrets(t
     assert set(runtime["team_catalog"]) == {
         "VE-0002", "VE-0003", "VE-0005", "VE-HR-MATERIAL",
         "VE-HR-TRAINING", "VE-IT-ACCOUNT", "VE-IT-DEVICE", "VE-AUDIT-REVIEW",
+        "VE-FIN-LEAD", "VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT",
     }
 
     from app.services.agentteams_runtime_config import load_strict_runtime_config
@@ -637,6 +648,116 @@ def test_bootstrap_produces_expanded_onboarding_identities_and_redacts_secrets(t
     assert "secret-" not in output
     assert "secret-" in rendered
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_bootstrap_adds_expense_team_hierarchy_and_least_privilege_tools():
+    bootstrap = _bootstrap_module()
+    credentials = {
+        name: {"mxid": f"@{name}:matrix.local", "token": f"secret-{name}"}
+        for name in bootstrap.ACCOUNT_NAMES
+    }
+
+    runtime = bootstrap.build_runtime_configuration(credentials, "!private:matrix.local")
+
+    assert "agentteams-expense-reimbursement" in runtime["agents"]["manager"]["allowed_skill_ids"]
+    assert runtime["team_relationships"]["VE-FIN-LEAD"] == {
+        "role": "财务负责人",
+        "reports_to": ["VE-0001"],
+        "direct_reports": ["VE-FIN-INVOICE", "VE-FIN-BUDGET", "VE-FIN-PAYMENT"],
+    }
+    assert "VE-FIN-LEAD" in runtime["team_relationships"]["VE-0001"]["direct_reports"]
+    assert runtime["agents"]["finance"]["safe_tool_catalog"] == []
+    assert [
+        tool["plugin_id"]
+        for tool in runtime["agents"]["finance_invoice"]["safe_tool_catalog"]
+    ] == ["agentteams-expense-claim"]
+    assert [
+        tool["plugin_id"]
+        for tool in runtime["agents"]["finance_budget"]["safe_tool_catalog"]
+    ] == ["agentteams-expense-budget"]
+    assert [
+        tool["plugin_id"]
+        for tool in runtime["agents"]["finance_payment"]["safe_tool_catalog"]
+    ] == ["agentteams-expense-payment"]
+    assert "agentteams-expense-audit" in {
+        tool["plugin_id"]
+        for tool in runtime["agents"]["audit_review"]["safe_tool_catalog"]
+    }
+
+
+def test_synapse_bootstrap_recovers_an_existing_account_with_stable_local_credentials():
+    bootstrap = _bootstrap_module()
+    subject = bootstrap.SynapseAdminClient("http://127.0.0.1:8008", "local-registration-secret")
+    password = subject.account_password("finance")
+
+    class Response:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class Client:
+        def get(self, _url):
+            return Response(200, {"nonce": "nonce-1"})
+
+        def post(self, url, **_kwargs):
+            if url.endswith("/_synapse/admin/v1/register"):
+                return Response(400, {"errcode": "M_USER_IN_USE"})
+            assert url.endswith("/_matrix/client/v3/login")
+            return Response(200, {"user_id": "@finance:matrix.local", "access_token": "recovered-token"})
+
+        def close(self):
+            pass
+
+    subject.client.close()
+    subject.client = Client()
+
+    assert subject.ensure_account("finance", password) == {
+        "mxid": "@finance:matrix.local",
+        "token": "recovered-token",
+    }
+
+
+def test_synapse_bootstrap_retries_rate_limited_room_invites(monkeypatch):
+    bootstrap = _bootstrap_module()
+    subject = bootstrap.SynapseAdminClient(
+        "http://127.0.0.1:8008",
+        "local-registration-secret",
+        known_accounts={"platform": {"mxid": "@platform:matrix.local", "token": "platform-token"}},
+    )
+    calls = []
+
+    class Response:
+        def __init__(self, status_code):
+            self.status_code = status_code
+            self.headers = {"Retry-After": "0"}
+
+        def json(self):
+            return {}
+
+    class Client:
+        def post(self, url, **_kwargs):
+            calls.append(url)
+            if url.endswith("/invite") and sum(item.endswith("/invite") for item in calls) == 1:
+                return Response(429)
+            return Response(200)
+
+        def close(self):
+            pass
+
+    subject.client.close()
+    subject.client = Client()
+    monkeypatch.setattr(bootstrap.time, "sleep", lambda _seconds: None)
+
+    subject.invite_and_join(
+        "!room:matrix.local",
+        {"mxid": "@finance:matrix.local", "token": "finance-token"},
+    )
+
+    assert sum(item.endswith("/invite") for item in calls) == 2
+    assert sum("/join/" in item for item in calls) == 1
 
 
 def test_bootstrap_refuses_a_reparse_runtime_ancestor_before_writing(tmp_path, monkeypatch):
@@ -689,10 +810,10 @@ def test_bootstrap_is_idempotent_and_verifies_private_membership():
 @pytest.mark.parametrize(
     ("team_id", "roles"),
     (
-        ("TEAM-ONBOARD", ("manager", "hr", "it", "audit", "hr_material", "hr_training", "it_account", "it_device", "audit_review")),
+        ("TEAM-ONBOARD", ("manager", "hr", "it", "audit", "hr_material", "hr_training", "it_account", "it_device", "audit_review", "finance", "finance_invoice", "finance_budget", "finance_payment")),
         ("TEAM-DB-BENCH", ("manager", "db_ops_lead", "db_perf_lead", "db_write", "db_lock", "db_vacuum", "db_index", "db_query")),
     ),
-    ids=("expanded-onboarding-9", "database-7"),
+    ids=("business-demo-13", "database-8"),
 )
 def test_matrix_verifier_accepts_each_supported_identity_topology(team_id, roles):
     from app.services.agentteams_runtime_config import MatrixIdentity, StrictRuntimeConfig
