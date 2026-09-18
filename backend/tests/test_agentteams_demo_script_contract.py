@@ -277,7 +277,7 @@ def test_frontend_helper_reaches_ipv4_http_and_cleans_its_temporary_tree():
                 f"$frontendProcess = Start-AgentTeamsFrontendProcess -Port {port} -StandardOutputPath '{stdout_path}' -StandardErrorPath '{stderr_path}'; "
                 f"$ready = Wait-AgentTeamsHttpReady -Uri 'http://127.0.0.1:{port}' -Process $frontendProcess -Attempts 40 -DelayMilliseconds 250; "
                 "if (-not $ready) { throw 'frontend did not become ready' }; "
-                f"$response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:{port}' -TimeoutSec 2; "
+                f"$response = Invoke-AgentTeamsLocalGet -Uri 'http://127.0.0.1:{port}' -TimeoutSeconds 5; "
                 "if ($response.StatusCode -ne 200) { throw 'unexpected frontend response' }; "
                 "[Console]::WriteLine('frontend-ipv4-ready') "
                 "} finally { "
