@@ -5,7 +5,7 @@
 
 内置规则 ID 与 mock-data/seed.json 的 policy 记录保持一致（种子用于展示与审计引用）。
 - POLICY-001  正式员工数字分身可访问内部知识库（L2）
-- POLICY-006  岗位数字员工可访问内部知识库（L2）
+- POLICY-006  岗位AI员工可访问内部知识库（L2）
 - POLICY-002  实习生数字分身访问内部知识库 DENY
 - POLICY-003  禁网（internet=deny）员工调用公网插件 DENY
 - POLICY-004  仅远程（location=remote）员工请求本地执行 DENY
@@ -27,8 +27,9 @@ DECISION_ALLOW = "allow"
 DECISION_DENY = "deny"
 DECISION_APPROVAL = "approval"
 
-# 插件类资源（需检查 employee_plugin_grant）；knowledge 走 data_level 分级规则 + AgentKnowledgeGrant，
-# 不查插件授权；sandbox 等执行资源只走规则
+# 插件类资源（需检查 AgentPluginBinding）；knowledge 走 data_level 分级规则 + AgentKnowledgeGrant，
+# 不查插件授权；sandbox 等执行资源只走规则。
+# skill 不在其中：技能是只读注入型能力，不进入网关执行。
 PLUGIN_RESOURCE_TYPES = {"mcp", "workflow", "rpa", "http"}
 
 
@@ -78,7 +79,7 @@ RULES: list[Rule] = [
         "远程 Sandbox 允许远程执行",
         lambda s, r, a: r.type == "sandbox" and r.id == "remote" and s.location == "remote",
     ),
-    # POLICY-HARNESS-001 远程数字员工允许调用 DeepSeek Harness 执行引擎
+    # POLICY-HARNESS-001 远程AI员工允许调用 DeepSeek Harness 执行引擎
     Rule(
         "POLICY-HARNESS-001", DECISION_ALLOW, 72,
         "远程执行允许调用 DeepSeek Harness",
@@ -96,10 +97,10 @@ RULES: list[Rule] = [
         "正式员工数字分身可访问内部知识库",
         lambda s, r, a: s.employee_type == "twin" and s.employment_type == "formal" and _is_internal_kb(r),
     ),
-    # POLICY-006 岗位数字员工可访问内部知识库（历史版本经 knowledge-lX 插件授权，现改为 Policy 直接分级）
+    # POLICY-006 岗位AI员工可访问内部知识库（历史版本经 knowledge-lX 插件授权，现改为 Policy 直接分级）
     Rule(
         "POLICY-006", DECISION_ALLOW, 55,
-        "岗位数字员工可访问内部知识库",
+        "岗位AI员工可访问内部知识库",
         lambda s, r, a: s.employee_type == "virtual" and _is_internal_kb(r) and a == "read",
     ),
     # POLICY-005 敏感操作审批
@@ -111,7 +112,7 @@ RULES: list[Rule] = [
     # P-DEFAULT-001 默认 L1 可读
     Rule(
         "P-DEFAULT-001", DECISION_ALLOW, 1,
-        "所有数字员工可读取 L1 知识",
+        "所有AI员工可读取 L1 知识",
         lambda s, r, a: r.type == "knowledge" and r.data_level == "L1" and a == "read",
     ),
 ]
@@ -120,6 +121,32 @@ RULES: list[Rule] = [
 def _best(matched: list[Rule]) -> Rule:
     # 同优先级下 Deny > Approval > Allow（规则匹配阶段已按 effect 分组，这里按优先级取最高）
     return max(matched, key=lambda r: r.priority)
+
+
+def _plugin_decision(db: Session, employee_id: str, plugin_id: str) -> tuple[str, str]:
+    """插件可用性的唯一授权真相：``AgentPluginBinding``。
+
+    返回 ``(decision, reason)``。无绑定、管理员未授权、AI员工未启用一律 deny；
+    否则由 ``decision_mode`` 决定 allow / approval / deny。
+
+    历史 ``EmployeePluginGrant`` 不再参与插件可用性判定（仅保留 L3 白名单语义），
+    否则会出现「管理端已授权、运行时被拒」的两套口径。
+    """
+    binding = db.scalar(select(models.AgentPluginBinding).where(
+        models.AgentPluginBinding.target_agent_id == employee_id,
+        models.AgentPluginBinding.plugin_id == plugin_id,
+    ))
+    if binding is None:
+        return DECISION_DENY, f"未授权插件：{plugin_id}（未绑定该AI员工）"
+    if not binding.admin_enabled:
+        return DECISION_DENY, f"未授权插件：{plugin_id}（管理员未授权）"
+    if not binding.employee_enabled:
+        return DECISION_DENY, f"未授权插件：{plugin_id}（AI员工未启用）"
+    if binding.decision_mode == DECISION_DENY:
+        return DECISION_DENY, f"插件授权为 deny：{plugin_id}"
+    if binding.decision_mode == DECISION_APPROVAL:
+        return DECISION_APPROVAL, f"插件授权为 approval：{plugin_id}"
+    return DECISION_ALLOW, f"插件授权为 allow：{plugin_id}"
 
 
 def evaluate(
@@ -153,33 +180,26 @@ def evaluate(
         best = _best(deny_rules)
         return EvaluationResult(DECISION_DENY, best.policy_id, best.reason)
 
-    # 插件授权检查（employee_plugin_grant）：无授权默认拒绝
-    grant = None
+    # 插件授权检查（AgentPluginBinding）：无绑定或未启用默认拒绝
+    plugin_decision: str | None = None
+    plugin_reason = ""
     if resource.type in PLUGIN_RESOURCE_TYPES:
-        grant = db.scalar(
-            select(models.EmployeePluginGrant).where(
-                models.EmployeePluginGrant.employee_id == subject.employee_id,
-                models.EmployeePluginGrant.plugin_id == resource.id,
-                models.EmployeePluginGrant.action == action,
-            )
-        )
-        if grant is None:
-            return EvaluationResult(DECISION_DENY, None, "未授权插件：默认拒绝")
-        if grant.decision_mode == DECISION_DENY:
-            return EvaluationResult(DECISION_DENY, None, f"插件授权为 deny：{resource.id}")
+        plugin_decision, plugin_reason = _plugin_decision(db, subject.employee_id, resource.id)
+        if plugin_decision == DECISION_DENY:
+            return EvaluationResult(DECISION_DENY, None, plugin_reason)
 
     approval_rules = [r for r in matched if r.effect == DECISION_APPROVAL]
     if approval_rules:
         best = _best(approval_rules)
         return EvaluationResult(DECISION_APPROVAL, best.policy_id, best.reason)
-    if grant is not None and grant.decision_mode == DECISION_APPROVAL:
-        return EvaluationResult(DECISION_APPROVAL, None, f"插件授权为 approval：{resource.id}")
+    if plugin_decision == DECISION_APPROVAL:
+        return EvaluationResult(DECISION_APPROVAL, None, plugin_reason)
 
     allow_rules = [r for r in matched if r.effect == DECISION_ALLOW]
     if allow_rules:
         best = _best(allow_rules)
         return EvaluationResult(DECISION_ALLOW, best.policy_id, best.reason)
-    if grant is not None and grant.decision_mode == DECISION_ALLOW:
-        return EvaluationResult(DECISION_ALLOW, None, f"插件授权为 allow：{resource.id}")
+    if plugin_decision == DECISION_ALLOW:
+        return EvaluationResult(DECISION_ALLOW, None, plugin_reason)
 
     return EvaluationResult(DECISION_DENY, None, "默认拒绝：无匹配策略")

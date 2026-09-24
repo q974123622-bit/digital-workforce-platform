@@ -15,14 +15,16 @@ import { Avatar, Badge, Button, Card, Empty, Input, Space, Spin, Tag, Typography
 import type { ChatReply, Workspace } from '@dwp/shared-schema';
 import { api } from '../api/client';
 import MarkdownText from '../components/MarkdownText';
+import { EMPLOYEE_TYPE_LABEL } from '../components/tags';
+import { copyText } from '../utils/clipboard';
 
 const { Text, Paragraph } = Typography;
 
 const ROLE_META: Record<string, { label: string; grad: string; color: string; emoji: string }> = {
-  formal_twin: { label: '正式员工 · 数字分身', grad: 'linear-gradient(135deg,#2f54eb 0%,#1d39c4 100%)', color: '#2f54eb', emoji: '⭐' },
-  intern_twin: { label: '实习生 · 数字分身', grad: 'linear-gradient(135deg,#13a8a8 0%,#0e7a7a 100%)', color: '#13a8a8', emoji: '🌱' },
-  virtual: { label: '虚拟员工', grad: 'linear-gradient(135deg,#722ed1 0%,#531dab 100%)', color: '#722ed1', emoji: '🤖' },
-  rpa: { label: 'RPA 自动化', grad: 'linear-gradient(135deg,#fa8c16 0%,#d46b08 100%)', color: '#fa8c16', emoji: '⚙️' },
+  formal_twin: { label: `正式员工 · ${EMPLOYEE_TYPE_LABEL.twin}`, grad: 'linear-gradient(135deg,#2f54eb 0%,#1d39c4 100%)', color: '#2f54eb', emoji: '⭐' },
+  intern_twin: { label: `实习生 · ${EMPLOYEE_TYPE_LABEL.twin}`, grad: 'linear-gradient(135deg,#13a8a8 0%,#0e7a7a 100%)', color: '#13a8a8', emoji: '🌱' },
+  virtual: { label: EMPLOYEE_TYPE_LABEL.virtual, grad: 'linear-gradient(135deg,#722ed1 0%,#531dab 100%)', color: '#722ed1', emoji: '🤖' },
+  rpa: { label: EMPLOYEE_TYPE_LABEL.rpa, grad: 'linear-gradient(135deg,#fa8c16 0%,#d46b08 100%)', color: '#fa8c16', emoji: '⚙️' },
 };
 
 function roleKey(w: Workspace): string {
@@ -39,6 +41,10 @@ const DECISION_TAG: Record<string, { color: string; text: string }> = {
 
 const SOURCE_LABEL: Record<string, string> = {
   internal: '真实知识库',
+  rag: '知识库检索',
+  demo: '演示数据',
+  mock: '演示数据',
+  unknown: '未知来源',
 };
 
 interface Msg {
@@ -58,6 +64,22 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  // 「已复制」原地回显：只可能同时存在一条，用消息下标记录当前回显项。
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const copyTimer = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+  }, []);
+
+  const copyMessage = (content: string, index: number) => {
+    void copyText(content).then((ok) => {
+      if (!ok) return;
+      setCopiedIndex(index);
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopiedIndex(null), 1500);
+    });
+  };
 
   useEffect(() => {
     api
@@ -105,7 +127,7 @@ export default function ChatPage() {
   if (!workspace) {
     return (
       <Card>
-        <Empty description="未找到该数字员工" />
+        <Empty description="未找到该 AI员工" />
         <Link to="/employees">返回员工列表</Link>
       </Card>
     );
@@ -209,9 +231,18 @@ export default function ChatPage() {
                 <Avatar size={30} icon={<RobotOutlined />} style={{ background: meta.color, flexShrink: 0 }} />
               )}
               <div className="msg-col">
-                <div className={`bubble ${m.error ? 'bubble-error' : ''}`}>
+                <div className={`bubble md-body ${m.error ? 'bubble-error' : ''}`}>
                   <MarkdownText text={m.content} />
                 </div>
+                {/* 该页走 api.chat，没有重跑语义，因此操作条只放「复制」。
+                    样式与工作台共用 product.css 的 .message-actions（hover 触发见 `.msg:hover` 规则）。 */}
+                {m.role === 'assistant' && !m.error && (
+                  <div className="message-actions">
+                    <Button type="text" size="small" onClick={() => copyMessage(m.content, i)}>
+                      {copiedIndex === i ? '已复制' : '复制'}
+                    </Button>
+                  </div>
+                )}
                 {m.cards && m.cards.length > 0 && (
                   <div className="tool-cards">
                     {m.cards.map((c, j) => (

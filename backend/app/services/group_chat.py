@@ -21,10 +21,11 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from . import config, execution_events
-from .chat import ChatOrchestrator
+from .chat import ChatOrchestrator, tool_card_dict
 from .harness_agent import run_agent
 from .identity import resolve_identity
 from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
+from .memory_service import conversation_history, conversation_transcript
 from .team_orchestrator import TeamTaskOrchestrator
 from .runtime_adapter import DockerHarnessRuntimeAdapter, NoopRuntimeAdapter
 
@@ -106,24 +107,15 @@ def _next_seq(db: Session, conversation_id: str, generation: int = 0) -> int:
     return (current or 0) + 1
 
 
-def _history_messages(db: Session, conversation_id: str, generation: int = 0) -> list[dict]:
+def _history_messages(
+    db: Session, conversation_id: str, generation: int = 0, *, with_speaker: bool = False,
+) -> list[dict]:
     """把会话消息转成模型上下文（source=demo）。
 
     一律不加「【名字】」前缀：UI 已按参与者展示姓名，前缀只会诱导模型模仿该格式。
+    with_speaker=True 时额外带 `speaker` 字段，仅供渲染成文本的路径使用（不要进 provider）。
     """
-    rows = db.scalars(
-        select(models.ConversationMessage)
-        .where(
-            models.ConversationMessage.conversation_id == conversation_id,
-            models.ConversationMessage.generation == generation,
-        )
-        .order_by(models.ConversationMessage.seq)
-    ).all()
-    out: list[dict] = []
-    for row in rows:
-        role = "user" if row.role == "user" else "assistant"
-        out.append({"role": role, "content": row.content, "source": "demo"})
-    return out
+    return conversation_history(db, conversation_id, generation, with_speaker=with_speaker)
 
 
 def append_user_message(
@@ -157,7 +149,11 @@ def _assert_execution_writable(
         raise ExecutionCancelled("会话已清空")
     if execution_id:
         execution = db.get(models.AgentExecution, execution_id)
-        if execution is None or execution.status == "cancelled" or execution.conversation_generation != generation:
+        if execution is None or execution.conversation_generation != generation:
+            raise ExecutionCancelled("执行已取消")
+        # 取消状态必须以库为准：worker 会话长期持有取消前的旧对象，
+        # 只看内存状态会让「停止」之后仍然把答复写进会话。
+        if execution_events.is_cancelled(db, execution_id):
             raise ExecutionCancelled("执行已取消")
 
 
@@ -211,7 +207,7 @@ def member_replies(
                 "【协作空间】你正在与同事协作完成一条任务。以下是到目前为止的对话记录，"
                 f"请结合自己的职责给出你的专业部分。当前成员：{', '.join(member_names.values())}。"
                 "不要复述或引用其他人已经说过的内容；回复直接以内容开头，"
-                "不要写任何人的名字或【】前缀，不要使用任何 Markdown 符号。"
+                "不要写任何人的名字或【】前缀。"
             )
         try:
             employee = db.get(models.DigitalEmployee, employee_no)
@@ -226,6 +222,8 @@ def member_replies(
                         execution.trace_id if execution is not None else
                         f"T-HAR-{conversation.id}-{employee_no}-{uuid4().hex[:8]}"
                     ),
+                    # 令牌带上会话标识：委派给岗位员工时对方也能看到本会话上文。
+                    conversation_id=conversation.id,
                 )
             else:
                 result = orchestrator.handle_message(
@@ -239,17 +237,7 @@ def member_replies(
                     trace_id=f"T-GRP-{conversation.id}-{employee_no}",
                     requester_human_no=actor_no,
                 )
-            cards = [
-                {
-                    "plugin_id": card.plugin_id,
-                    "name": card.name,
-                    "decision": card.decision,
-                    "source": card.source,
-                    "policy_id": card.policy_id,
-                    "reason": card.reason,
-                }
-                for card in result.tool_cards
-            ]
+            cards = [tool_card_dict(card) for card in result.tool_cards]
             _assert_execution_writable(db, conversation, execution_id, run_generation)
             appended.append(
                 _append(
@@ -322,28 +310,34 @@ def classify_task_request(
     roster = "、".join(
         f"{p['name']}（{p['employee_no']}）" for p in _participant_names(db, conversation)
     )
+    # 结合最近对话：否则「再改一下」「还是按刚才的口径」这类延续性指令永远判不出任务。
+    transcript = conversation_transcript(
+        db, conversation.id, conversation.generation, exclude_current=content,
+    )
     persona = ChatOrchestrator(provider or DeepSeekProvider())._system_prompt(db, subject)
+    system_content = (
+        f"{persona}\n"
+        "【任务判断】你是协作空间的组织者。判断用户消息是需要同事们协作执行的任务，"
+        "还是普通闲聊。任务的特征：包含具体待办事项、需要查询/整理/执行/开通/生成等动作。"
+    )
+    if transcript:
+        system_content += (
+            "若用户消息在延续上文（如「再改一下」「还是按刚才的口径」），同样算任务。"
+            "最近对话的「说话人：内容」格式仅为历史记录，不要模仿该格式。"
+        )
+    system_content += '只输出 JSON：{"action":"task"} 或 {"action":"chat"}，不要输出其他内容。'
+    user_content = f"协作空间成员：{roster}"
+    if transcript:
+        user_content += f"\n最近对话：\n{transcript}"
+    user_content += f"\n用户消息：{content}"
     prompt = [
-        {
-            "role": "system",
-            "content": (
-                f"{persona}\n"
-                "【任务判断】你是协作空间的组织者。判断用户消息是需要同事们协作执行的任务，"
-                "还是普通闲聊。任务的特征：包含具体待办事项、需要查询/整理/执行/开通/生成等动作。"
-                '只输出 JSON：{"action":"task"} 或 {"action":"chat"}，不要输出其他内容。'
-            ),
-            "source": "demo",
-        },
-        {
-            "role": "user",
-            "content": f"协作空间成员：{roster}\n用户消息：{content}",
-            "source": "demo",
-        },
+        {"role": "system", "content": system_content, "source": "demo"},
+        {"role": "user", "content": user_content, "source": "demo"},
     ]
     try:
         raw = (provider or DeepSeekProvider()).structured_output(prompt, {"type": "object"})
         return raw.get("action") == "task"
-    except (LLMUnavailableError, Exception):
+    except Exception:  # noqa: BLE001 - 判定失败按闲聊处理
         return False
 
 
@@ -514,7 +508,7 @@ def process_conversation_async(
                 execution_events.emit(
                     db, execution.id, event_type="agent_started", stage="agent_started",
                     status="running", actor_employee_id=execution.primary_employee_id,
-                    title="数字员工已受理任务", detail="正在分析任务并确认可用能力",
+                    title="AI员工已受理任务", detail="正在分析任务并确认可用能力",
                 )
             process_conversation(
                 db,
@@ -531,7 +525,7 @@ def process_conversation_async(
             db.commit()
             if execution_id:
                 execution = db.get(models.AgentExecution, execution_id)
-                if execution is None or execution.status == "cancelled":
+                if execution is None or execution_events.is_cancelled(db, execution_id):
                     return
                 answers = db.scalars(
                     select(models.ConversationMessage).where(

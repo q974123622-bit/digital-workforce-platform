@@ -1,29 +1,27 @@
 import { FileSearchOutlined } from '@ant-design/icons';
 import { Alert, Drawer, Empty, Tag, Typography } from 'antd';
-import type { Citation, ToolCard } from '@dwp/shared-schema';
-import { extractCitations } from './CitationList';
+import type { ToolCard } from '@dwp/shared-schema';
+import { collectKnowledgeSources, sourceLabel } from './CitationList';
+import type { KnowledgeSourceFallback } from './CitationList';
 
 const { Text } = Typography;
 
-const SOURCE_LABEL: Record<string, string> = {
-  internal: '内部知识库',
-  unknown: '未知来源',
-};
-
 /**
- * 引用预览侧栏：从来源卡片打开，展示文档名、知识库、来源类型与版本。
+ * 引用预览侧栏：从来源行打开，展示知识库、检索人、命中文档与来源类型。
  * 因审计不落盘命中正文，一律明确提示「仅提供检索依据」，不展示原文。
  */
 export default function CitationPreview({
   cards,
+  fallback = [],
   open,
   onClose,
 }: {
   cards: ToolCard[] | unknown[];
+  fallback?: KnowledgeSourceFallback[];
   open: boolean;
   onClose: () => void;
 }) {
-  const citations: Citation[] = open ? extractCitations(cards) : [];
+  const sources = open ? collectKnowledgeSources(cards, fallback) : [];
   return (
     <Drawer
       title={
@@ -42,29 +40,33 @@ export default function CitationPreview({
         message="仅提供检索依据"
         description="为保护知识内容安全，此处只展示来源元数据，不展示命中原文。"
       />
-      {citations.length === 0 ? (
+      {sources.length === 0 ? (
         <Empty description="暂无来源记录" />
       ) : (
         <div className="space-y-3">
-          {citations.map((cite) => (
-            <div key={cite.citation_id} className="rounded-container border border-line p-4">
+          {sources.map((row) => (
+            <div key={row.key} className="rounded-container border border-line p-4">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="font-medium text-ink">
-                    {cite.document_title || cite.knowledge_base_name}
-                  </div>
+                  <div className="font-medium text-ink">{row.name}</div>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    {cite.knowledge_base_name && cite.document_title
-                      ? `${cite.knowledge_base_name} · `
-                      : ''}
-                    {SOURCE_LABEL[cite.source] ?? cite.source}
+                    {sourceLabel(row.source)}
+                    {row.agentLabel ? ` · 由 ${row.agentLabel} 检索` : ''}
+                    {row.hitCount ? ` · 命中 ${row.hitCount} 条` : ''}
                   </Text>
                 </div>
-                <Tag color="blue">{SOURCE_LABEL[cite.source] ?? cite.source}</Tag>
+                <Tag color="blue">{sourceLabel(row.source)}</Tag>
               </div>
-              {cite.version && (
+              {row.documents.length > 0 && (
+                <div className="mt-2 space-y-0.5">
+                  {row.documents.map((doc, index) => (
+                    <div key={`${row.key}-${index}`} className="text-xs text-ink-secondary">· {doc}</div>
+                  ))}
+                </div>
+              )}
+              {row.version && (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  版本：{cite.version}
+                  版本：{row.version}
                 </Text>
               )}
             </div>

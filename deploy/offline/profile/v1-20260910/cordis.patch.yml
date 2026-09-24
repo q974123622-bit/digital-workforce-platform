@@ -1,0 +1,85 @@
+# Knowledge-only Agent profile. Platform tools are supplied over authenticated MCP.
+#
+# Model routing: the platform's model gateway exposes a qwen model through the
+# OpenAI-compatible DeepSeek route. The DSH base bundle hard-codes
+# `deepseek-v4-flash` as the default, so override it from the environment and pin
+# the only reasoning effort the gateway accepts (its legal set is
+# xhigh/medium/low; DSH only emits off/low/high/max, so `low` is the intersection).
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official
+    model: !!js process.env.DEEPSEEK_MODEL
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    reasoningEffort: low
+    # dsh 默认 maxTokens=256000，几乎占满模型 262144 上下文窗口，任何超过
+    # ~6K tokens 的 prompt 都会触发 CONTEXT_WINDOW_EXCEEDED；16K 对长任务又太紧
+    # （长答复/多步推理会被截断），折中取 64K 输出，预演 ops/dsh-canary.sh 里用
+    # stderr 的 context_window 关键字回归验证。
+    maxTokens: 65536
+    models:
+      - id: !!js process.env.DEEPSEEK_MODEL
+# tool-bash / tool-fs / tool-fs-search / tool-todo / tool-goal 是「本地干活」的能力面：
+# SkillHub 技能的 SKILL.md 大量是 `python scripts/...` 这类命令行用法，脚本就是技能的
+# 实际执行体；文件检索与待办/目标清单则让长任务能自己找文件、自己记进度。
+# 权限模式由 compose 的 DSH_PERMISSION_MODE=workspace-write + working_dir=/workspace
+# 约束，只允许在 /workspace 内读写与执行（技能包投放目录 /workspace/skills/<slug>/）。
+# 其余工具保持禁用；新增的启用态 tool-* 会被 ops/baseline/contract.json 的
+# enabled_tool_allowlist 捕获，不会静默放开。
+- id: tool-bash
+  disabled: false
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: false
+- id: tool-fs-search
+  disabled: false
+- id: tool-skill
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-todo
+  disabled: false
+- id: tool-goal
+  disabled: false
+- id: tool-ralph
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: system-prompt
+  config:
+    persona: >-
+      你是企业内部的AI员工。严格遵循任务中提供的身份、授权目录与任务信封。
+      平台能力（知识库检索、会话附件、技能、向同事委派）只能调用工具目录中出现的工具，不得猜测知识库内容，也不得访问工具目录之外的平台资源。
+      同时你有一套本地工作工具可以自由使用：执行 bash 命令、读写文件、检索文件内容、维护待办与目标清单。
+      处理表格或文件时写脚本用 python3 计算，不要逐格读取，也不要凭印象给出数字。
+      已授权技能的说明与脚本位于 /workspace/skills/<技能标识>/：需要执行时先读该目录下的 SKILL.md，再按说明在 /workspace 内运行脚本（如 python3 scripts/xxx.py）。
+      只允许在 /workspace 内读写与执行，不得访问容器内其他路径，不得对外发起网络请求；脚本产出的结果要按任务要求回传。
+- insert:
+    - id: dwp-platform-tools
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: dwp
+        transport: streamable-http
+        url: !!js process.env.DWP_PLATFORM_TOOL_URL
+        # 必须 >= 后端超时链：delegation_slot_wait(120) + max(role 900, twin 1200) + 缓冲
+        # 见 backend/app/services/config.py 顶部的不变量；ops/dsh-contract-check.js 会校验。
+        toolCallTimeoutMs: 1500000
+        headers:
+          Authorization: !!js '`Bearer ${process.env.DWP_AGENT_TOOL_TOKEN}`'
+- id: agent-default-model
+  config:
+    provider: deepseek-official
+    model: ascend-qwen3.6-27b

@@ -7,15 +7,9 @@ import {
 } from '@ant-design/icons';
 import { Alert, Button, Drawer, Empty, Skeleton, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
-import { api, type PluginSafeDetail } from '../../api/client';
-
-const CATEGORY_LABELS: Record<string, string> = {
-  knowledge: '知识库 MCP',
-  cloud_information: '云端资讯 MCP',
-  fund: '基金 MCP',
-  internal_system: '企业内部系统 MCP',
-  other: '其他 MCP',
-};
+import { api, type PluginMarketState, type PluginSafeDetail } from '../../api/client';
+import { formatServerTime } from '../../utils/serverTime';
+import { MCP_CATEGORY_LABELS, pluginSourceMeta } from './pluginMeta';
 
 const DEPLOYMENT_LABELS: Record<string, string> = {
   instruction: '受控指令',
@@ -32,7 +26,11 @@ const STATUS_LABELS: Record<string, string> = {
   draft: '草稿',
   healthy: '正常',
   ready: '就绪',
+  running: '运行中',
+  unavailable: '不可用',
   mock: 'Mock',
+  not_configured: '未接入',
+  unknown: '未知',
 };
 
 function displayStatus(value: string | null | undefined) {
@@ -43,16 +41,22 @@ export default function PluginDetailDrawer({
   pluginId,
   admin = false,
   enabled,
+  marketState,
   refreshToken = 0,
   onClose,
   onToggle,
+  onRequest,
 }: {
   pluginId: string | null;
   admin?: boolean;
   enabled?: boolean;
+  /** 市场货架上的六态；未提供时按授权字段回落推断。 */
+  marketState?: PluginMarketState;
   refreshToken?: number;
   onClose: () => void;
   onToggle?: (pluginId: string, enabled: boolean) => void;
+  /** 未授权时提供「申请使用」入口；缺省时按钮置灰。 */
+  onRequest?: (pluginId: string) => void;
 }) {
   const [detail, setDetail] = useState<PluginSafeDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -76,10 +80,51 @@ export default function PluginDetailDrawer({
 
   const category = useMemo(() => {
     if (!detail) return '';
-    return detail.plugin_type === 'skill'
-      ? 'Skill · 工作方法'
-      : CATEGORY_LABELS[detail.mcp_category ?? 'other'] ?? 'MCP · 业务工具';
+    if (detail.plugin_type === 'skill') {
+      return detail.skill_category ? `Skill · ${detail.skill_category}` : 'Skill · 工作方法';
+    }
+    return `${MCP_CATEGORY_LABELS[detail.mcp_category ?? 'other'] ?? '其他'} MCP`;
   }, [detail]);
+
+  // 真实运行时未接入（state=not_configured/unknown/pending）时不得显示为可用。
+  // `running` 是 External MCP（含 URL 自助接入）探测成功后的真实状态。
+  const runtimeConnected = ['ready', 'busy', 'running'].includes(detail?.runtime?.state ?? '');
+
+  // 底部操作区与市场卡片保持同一套状态语义：未授权时给出「申请使用」而不是死按钮。
+  const state: PluginMarketState | null = detail
+    ? marketState ?? (enabled ? 'enabled' : detail.authorization.admin_enabled ? 'granted' : 'requestable')
+    : null;
+  const footerNote = (() => {
+    switch (state) {
+      case 'blocked': return '管理员已禁止该插件';
+      case 'pending': return '申请已提交，等待管理员审批';
+      case 'own_draft': return '尚未发布，先提交新版本';
+      case 'enabled':
+      case 'granted': return '管理员已授权使用';
+      case 'requestable': return '管理员尚未授权，可提交使用申请';
+      default: return '管理员尚未授权';
+    }
+  })();
+  const footerAction = (() => {
+    if (!detail) return null;
+    if (state === 'blocked') return <Button disabled title="管理员已禁止该插件">不可申请</Button>;
+    if (state === 'pending') return <Button disabled title="申请已提交，等待管理员审批">申请中</Button>;
+    if (state === 'own_draft') return <Button disabled title="请先提交新版本并通过审核">尚未发布</Button>;
+    if (detail.authorization.admin_enabled) {
+      return (
+        <Button
+          type={enabled ? 'default' : 'primary'}
+          onClick={() => onToggle?.(detail.plugin_id, !enabled)}
+        >
+          {enabled ? '停用插件' : '启用插件'}
+        </Button>
+      );
+    }
+    if (onRequest) {
+      return <Button type="primary" onClick={() => onRequest(detail.plugin_id)}>申请使用</Button>;
+    }
+    return <Button disabled>管理员尚未授权</Button>;
+  })();
 
   return (
     <Drawer
@@ -88,18 +133,10 @@ export default function PluginDetailDrawer({
       width={500}
       open={Boolean(pluginId)}
       onClose={onClose}
-      footer={detail && !admin && onToggle ? (
+      footer={detail && !admin && (onToggle || onRequest) ? (
         <div className="flex items-center justify-between gap-3">
-          <Typography.Text type="secondary" className="!text-xs">
-            {detail.authorization.admin_enabled ? '管理员已授权使用' : '管理员尚未授权'}
-          </Typography.Text>
-          <Button
-            type={enabled ? 'default' : 'primary'}
-            disabled={!detail.authorization.admin_enabled}
-            onClick={() => onToggle(detail.plugin_id, !enabled)}
-          >
-            {enabled ? '停用插件' : '启用插件'}
-          </Button>
+          <Typography.Text type="secondary" className="!text-xs">{footerNote}</Typography.Text>
+          {footerAction}
         </div>
       ) : undefined}
     >
@@ -112,8 +149,12 @@ export default function PluginDetailDrawer({
               {detail.plugin_type === 'skill' ? <FileMarkdownOutlined /> : <CloudServerOutlined />}
             </span>
             <div className="min-w-0">
-              <div className="mb-1 text-xs font-medium text-ink-tertiary">{category}</div>
+              <div className="mb-1 flex items-center gap-2 text-xs font-medium text-ink-tertiary">
+                <span>{category}</span>
+                {detail.featured && <Tag color="gold" className="!mr-0">精选</Tag>}
+              </div>
               <Typography.Title level={3} className="!mb-2 !text-[24px]">{detail.name}</Typography.Title>
+              {/* 货架卡片折叠三行，这里展示简介全文 */}
               <Typography.Paragraph className="!mb-0 !leading-7 !text-ink-secondary">
                 {detail.description}
               </Typography.Paragraph>
@@ -124,13 +165,26 @@ export default function PluginDetailDrawer({
             <div className="plugin-detail-section-title">基本信息</div>
             <dl className="plugin-detail-facts">
               <div><dt>插件类型</dt><dd>{detail.plugin_type === 'skill' ? 'Skill' : 'MCP'}</dd></div>
+              <div><dt>来源</dt><dd>{pluginSourceMeta(detail.source).label}</dd></div>
               <div><dt>使用范围</dt><dd>{detail.scope === 'shared' ? '企业共享' : '仅个人'}</dd></div>
+              {detail.plugin_type === 'skill' && (
+                <div><dt>业务分类</dt><dd>{detail.skill_category || '尚未标注'}</dd></div>
+              )}
               <div><dt>当前版本</dt><dd>{detail.current_version ? `v${detail.current_version}` : '尚未发布'}</dd></div>
               <div><dt>数据等级</dt><dd>{detail.version?.data_level ?? '尚未标注'}</dd></div>
               <div><dt>部署方式</dt><dd>{DEPLOYMENT_LABELS[detail.version?.deployment_mode ?? ''] ?? '尚未检查'}</dd></div>
               <div><dt>有效状态</dt><dd>{detail.authorization.effective ? '当前可用' : '尚未生效'}</dd></div>
             </dl>
           </section>
+
+          {detail.version?.review_status === 'rejected' && (
+            <Alert
+              type="warning"
+              showIcon
+              message="该版本已被驳回"
+              description={detail.version.review_note || '管理员未填写驳回原因，请修改后重新提交。'}
+            />
+          )}
 
           {detail.plugin_type === 'skill' && (
             <section>
@@ -161,10 +215,14 @@ export default function PluginDetailDrawer({
             <div className="flex flex-wrap gap-2">
               <Tag color={detail.authorization.admin_enabled ? 'success' : 'default'}>管理员{detail.authorization.admin_enabled ? '已授权' : '未授权'}</Tag>
               <Tag color={detail.authorization.employee_enabled ? 'blue' : 'default'}>员工{detail.authorization.employee_enabled ? '已启用' : '未启用'}</Tag>
-              <Tag color={detail.runtime?.health === 'healthy' ? 'success' : 'default'}>Runtime {displayStatus(detail.runtime?.health)}</Tag>
+              {/* 未接入真实运行时就不显示「正常」：state=not_configured/unknown 一律如实标注。 */}
+              <Tag color={runtimeConnected ? 'success' : 'default'}>
+                Runtime {runtimeConnected ? '已接入' : '未接入真实运行时'}
+              </Tag>
             </div>
             <div className="mt-3 text-xs text-ink-tertiary">
-              最近检查：{detail.runtime?.updated_at ? new Date(detail.runtime.updated_at).toLocaleString() : '尚未检查'}
+              最近检查：{detail.runtime?.updated_at ? formatServerTime(detail.runtime.updated_at) : '尚未检查'}
+              {!runtimeConnected && detail.runtime ? ` · 原始状态：${displayStatus(detail.runtime.state)}` : ''}
             </div>
           </section>
 
@@ -193,7 +251,7 @@ export default function PluginDetailDrawer({
                       </Tag>
                     </div>
                   ))}
-                  {!detail.bindings?.length && <Typography.Text type="secondary">尚未授权给数字员工</Typography.Text>}
+                  {!detail.bindings?.length && <Typography.Text type="secondary">尚未授权给AI员工</Typography.Text>}
                 </div>
               </section>
             </>

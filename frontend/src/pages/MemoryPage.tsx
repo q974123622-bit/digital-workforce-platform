@@ -30,7 +30,7 @@ export default function MemoryPage() {
       <div className="page-heading">
         <div>
           <Typography.Title level={2} className="!mb-1 !text-[26px]">我的记忆</Typography.Title>
-          <Typography.Text type="secondary">由你掌控数字员工记住的偏好、事实与工作约定</Typography.Text>
+          <Typography.Text type="secondary">由你掌控AI员工记住的偏好、事实与工作约定</Typography.Text>
         </div>
         <div className="rounded-full bg-brand-soft px-3 py-1.5 text-xs font-medium text-brand">最近 5 轮自动作为短期上下文</div>
       </div>
@@ -43,7 +43,7 @@ export default function MemoryPage() {
             className="w-64"
             options={agents.map((value) => ({
               value,
-              label: value.startsWith('DT-') ? '我的数字分身' : value === 'AI-GENERAL' ? 'AI员工平台' : '投资分析AI员工',
+              label: value.startsWith('DT-') ? '我的分身' : value === 'AI-GENERAL' ? 'AI员工平台' : '投资分析AI员工',
             }))}
           />
         </Space>

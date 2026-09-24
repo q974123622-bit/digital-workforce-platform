@@ -18,7 +18,7 @@ function Stop-Port([int]$port) {
 }
 
 Write-Host "======================================================"
-Write-Host " 数字员工平台 Demo · 一键启动"
+Write-Host " AI员工平台 Demo · 一键启动"
 Write-Host "======================================================"
 
 # 1) venv 检查（不存在则创建并装依赖）
@@ -84,9 +84,9 @@ if (-not $NoReset) {
     Write-Host "[4/6] 跳过重置（-NoReset）"
 }
 
-# Docker 模式必须在服务启动前为每个启用的数字员工/分身创建或复用独立实例。
+# Docker 模式必须在服务启动前为每个启用的AI员工/分身创建或复用独立实例。
 if ($Docker) {
-    Write-Host "      校验并拉起每个数字员工/分身的 Harness 实例 ..."
+    Write-Host "      校验并拉起每个AI员工/分身的 Harness 实例 ..."
     Push-Location $backend
     & $venvPy -m app.services.runtime_manager ensure-all
     Pop-Location

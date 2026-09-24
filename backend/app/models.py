@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Index, String, text
+from sqlalchemy import JSON, DateTime, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -51,10 +51,18 @@ class Plugin(Base):
     owner_human_no: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     mcp_category: Mapped[str | None] = mapped_column(String, nullable=True)
     current_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 技能业务分类（19 类词表之一，来自 tags 映射或管理员人工标注）。
+    skill_category: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 运营推荐位：为真时在员工货架置顶并打「精选」标。
+    featured: Mapped[bool] = mapped_column(default=False)
 
 
 class PluginVersion(Base):
     __tablename__ = "plugin_version"
+    # 同一插件内版本号必须唯一：否则 publish/rollback 无法定位版本，
+    # 且 ``submit_zip`` 的任意 version 会造成同名版本互相覆盖。
+    # 索引名与 database.ensure_schema_compatibility 中创建的一致，避免重复建索引。
+    __table_args__ = (Index("uq_plugin_version", "plugin_id", "version", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     plugin_id: Mapped[str] = mapped_column(String, index=True)
@@ -122,6 +130,42 @@ class McpRuntimeInstance(Base):
     state: Mapped[str] = mapped_column(String, default="mock")
     health: Mapped[str] = mapped_column(String, default="unknown")
     last_error: Mapped[str] = mapped_column(String, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class McpCredential(Base):
+    """自助接入 MCP 的鉴权凭据（只存密文与掩码，明文永不落库）。
+
+    ``plugin_id`` 与 ``plugin.id`` 一一对应；非敏感运行信息（地址、头名、超时、
+    工具前缀、探测结果）放在 ``Plugin.runtime_meta``，本表只承载密钥。
+    """
+
+    __tablename__ = "mcp_credential"
+
+    plugin_id: Mapped[str] = mapped_column(String, primary_key=True)
+    header_name: Mapped[str] = mapped_column(String, default="x-api-key")
+    secret_ciphertext: Mapped[str] = mapped_column(String, default="")
+    secret_hint: Mapped[str] = mapped_column(String, default="")
+    updated_by: Mapped[str] = mapped_column(String, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class McpUserCredential(Base):
+    """按人存储的 MCP 用户级凭据（如兴证e家的 ``X-MCP-JWT``）。
+
+    ``McpCredential`` 是「一插件一密钥」的应用级凭据；用户级凭据按人签发、会过期，
+    因此单独建表，主键 ``(plugin_id, human_no)``。明文永不落库，接口只回掩码。
+    """
+
+    __tablename__ = "mcp_user_credential"
+
+    plugin_id: Mapped[str] = mapped_column(String, primary_key=True)
+    human_no: Mapped[str] = mapped_column(String, primary_key=True)
+    header_name: Mapped[str] = mapped_column(String, default="X-MCP-JWT")
+    secret_ciphertext: Mapped[str] = mapped_column(String, default="")
+    secret_hint: Mapped[str] = mapped_column(String, default="")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_by: Mapped[str] = mapped_column(String, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -196,6 +240,30 @@ class KnowledgeBase(Base):
     description: Mapped[str] = mapped_column(String, default="")
     status: Mapped[str] = mapped_column(String, default="active")
     doc_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 双后端映射：{"rest": 751, "verag": 623}（远端库在某一环境不存在时对应键缺失）。
+    # 远端库 ID 落库而不再放环境变量，才能表达「一个平台库挂两条通道」。
+    engine_map: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class KnowledgeSourceHealth(Base):
+    """知识源/MCP 工具的最近一次可达性探测结果。
+
+    ``source`` 取值：``rest`` / ``verag`` / ``mcp:<plugin_id>``；
+    ``state`` 取值：``available`` / ``unavailable`` / ``unknown``。
+    该表是「不可达即摘除工具、目录保留但置灰」的唯一判据，定时探测与
+    管理端手动重测都写这里。
+    """
+
+    __tablename__ = "knowledge_source_health"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source: Mapped[str] = mapped_column(String, unique=True, index=True)
+    state: Mapped[str] = mapped_column(String, default="unknown")
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(String, default="")
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class ChatSession(Base):
@@ -268,6 +336,34 @@ class Skill(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class SkillHubImport(Base):
+    """SkillHub 技能导入记录：幂等判据与导入结果留痕。
+
+    同一个 ``(slug, version, sha256)`` 只导入一次；``status`` 为
+    ``imported`` / ``skipped`` / ``failed``，失败原因写入 ``message`` 供管理端展示。
+    """
+
+    __tablename__ = "skillhub_import"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String, index=True)
+    # 批量导入批次号：同一次批量导入的所有记录共享，供前端轮询进度。
+    batch_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    version: Mapped[str] = mapped_column(String, default="")
+    source: Mapped[str] = mapped_column(String, default="")
+    display_name: Mapped[str] = mapped_column(String, default="")
+    category: Mapped[str] = mapped_column(String, default="")
+    plugin_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    sha256: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="pending")
+    message: Mapped[str] = mapped_column(String, default="")
+    file_count: Mapped[int] = mapped_column(Integer, default=0)
+    instruction_chars: Mapped[int] = mapped_column(Integer, default=0)
+    imported_by: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class Conversation(Base):
     """职场会话：私聊（direct）与协作群聊（group）统一承载。"""
 
@@ -279,6 +375,7 @@ class Conversation(Base):
     owner_human_no: Mapped[str] = mapped_column(String, index=True)
     participants: Mapped[list] = mapped_column(JSON, default=list)
     generation: Mapped[int] = mapped_column(default=0)
+    hidden_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
@@ -297,6 +394,9 @@ class ConversationMessage(Base):
     attachment_ids: Mapped[list] = mapped_column(JSON, default=list)
     seq: Mapped[int] = mapped_column(default=0)
     generation: Mapped[int] = mapped_column(default=0, index=True)
+    # 就地重跑后，被新回答取代的旧回复不删除，只标记作废：模型上下文不再读取它，
+    # 界面折叠成「上一版回复」供回看。
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ConversationAttachment(Base):
@@ -450,6 +550,31 @@ class AgentExecutionEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class ToolInputRequest(Base):
+    """MCP 工具缺参/缺鉴权时的「待补全」记录（气泡补全的事实来源）。
+
+    与执行状态机刻意解耦：执行仍按原样跑完（模型会说明「需要补充什么」），补全状态
+    独立存在本表，避免改动 ``AgentExecution`` 的活跃态唯一索引与 SSE 语义。
+    ``submitted_values`` 只记掩码与非敏感值，敏感值一律不落库。
+    """
+
+    __tablename__ = "tool_input_request"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True)
+    execution_id: Mapped[str] = mapped_column(String, index=True)
+    trace_id: Mapped[str] = mapped_column(String, default="")
+    plugin_id: Mapped[str] = mapped_column(String, default="")
+    tool_name: Mapped[str] = mapped_column(String, default="")
+    fields: Mapped[list] = mapped_column(JSON, default=list)
+    reason: Mapped[str] = mapped_column(String, default="")
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending | submitted | expired | cancelled
+    submitted_values: Mapped[dict] = mapped_column(JSON, default=dict)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 # ---- Knowledge-first MVP: identity, colleague directory and bounded delegation ----
 
 
@@ -557,4 +682,7 @@ class DelegationRun(Base):
     reason: Mapped[str] = mapped_column(String, default="")
     status: Mapped[str] = mapped_column(String, default="planned")
     evidence: Mapped[list] = mapped_column(JSON, default=list)
+    # 失败原因。没有它时委派失败只能看到 status=failed + evidence=[]，无法区分
+    # 「目标员工正忙」「目标无权访问该知识库」「容器异常」等情况。
+    error: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

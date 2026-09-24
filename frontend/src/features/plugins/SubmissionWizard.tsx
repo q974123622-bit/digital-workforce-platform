@@ -14,10 +14,21 @@ const MCP_CATEGORIES = [
   { value: 'other', label: '其他' },
 ];
 
-/** 分步上传表单：选择类型 → 文件与基本信息 → 确认提交；切换类型时重置依赖字段。 */
-export default function SubmissionWizard({ onDone }: { onDone: () => void }) {
-  const [step, setStep] = useState(0);
-  const [pluginType, setPluginType] = useState<PluginType>('skill');
+export interface PluginTarget {
+  plugin_id: string;
+  name: string;
+  plugin_type: PluginType;
+  scope: string;
+}
+
+/** 分步上传表单：选择类型 → 文件与基本信息 → 确认提交；切换类型时重置依赖字段。
+ *
+ * 传入 ``targetPlugin`` 时进入「为已有插件提交新版本」模式：跳过类型选择、
+ * 预填名称与范围，并把 ``plugin_id`` 一并提交，后端复用同一插件而不新建。
+ */
+export default function SubmissionWizard({ onDone, targetPlugin }: { onDone: () => void; targetPlugin?: PluginTarget }) {
+  const [step, setStep] = useState(targetPlugin ? 1 : 0);
+  const [pluginType, setPluginType] = useState<PluginType>(targetPlugin?.plugin_type ?? 'skill');
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [form] = Form.useForm();
 
@@ -36,7 +47,7 @@ export default function SubmissionWizard({ onDone }: { onDone: () => void }) {
 
   const next = async () => {
     if (step === 1) {
-      await form.validateFields(['name', 'plugin_type']);
+      await form.validateFields(targetPlugin ? ['name', 'plugin_type', 'version'] : ['name', 'plugin_type']);
       if (pluginType === 'mcp') await form.validateFields(['mcp_category', 'deployment_mode']);
       const file = files[0]?.originFileObj;
       if (!file) { message.error('请选择 ZIP 文件'); return; }
@@ -97,8 +108,22 @@ export default function SubmissionWizard({ onDone }: { onDone: () => void }) {
       )}
 
       {step === 1 && (
-        <Form form={form} layout="vertical" initialValues={{ plugin_type: pluginType, scope: 'personal', deployment_mode: pluginType === 'skill' ? 'instruction' : undefined, data_level: 'L1', version: '1.0.0' }}>
+        <Form form={form} layout="vertical" initialValues={{
+          plugin_type: pluginType,
+          plugin_id: targetPlugin?.plugin_id,
+          name: targetPlugin?.name,
+          scope: targetPlugin?.scope ?? 'personal',
+          deployment_mode: pluginType === 'skill' ? 'instruction' : undefined,
+          data_level: 'L1',
+          version: targetPlugin ? '' : '1.0.0',
+        }}>
           <Form.Item name="plugin_type" hidden><Input /></Form.Item>
+          <Form.Item name="plugin_id" hidden><Input /></Form.Item>
+          {targetPlugin && (
+            <div className="mb-3 rounded-control bg-surface-subtle px-3 py-2 text-xs text-ink-secondary">
+              为已有插件「{targetPlugin.name}」提交新版本，版本号不能与历史版本重复。
+            </div>
+          )}
           <Form.Item name="name" label="插件名称" rules={[{ required: true, message: '请输入插件名称' }]}>
             <Input placeholder="例如：报销制度速答" maxLength={100} />
           </Form.Item>
@@ -120,7 +145,13 @@ export default function SubmissionWizard({ onDone }: { onDone: () => void }) {
               </Form.Item>
             </div>
           )}
-          <Form.Item name="version" label="版本"><Input /></Form.Item>
+          <Form.Item
+            name="version" label="版本"
+            rules={targetPlugin ? [{ required: true, message: '请输入新版本号' }] : undefined}
+            tooltip="仅支持字母、数字、点、下划线和连字符，最长 32 位"
+          >
+            <Input placeholder="例如：1.1.0" />
+          </Form.Item>
           <Upload beforeUpload={() => false} accept=".zip" maxCount={1} fileList={files} onChange={({ fileList }) => setFiles(fileList)}>
             <Button icon={<AppstoreAddOutlined />}>选择 ZIP 文件</Button>
           </Upload>

@@ -22,6 +22,20 @@ from app.main import app
 from app.seed import load_seed, seed_data
 
 
+@pytest.fixture(autouse=True)
+def _reset_knowledge_source_cache():
+    """知识源健康状态有进程内 TTL 缓存，而每个用例都会重建数据库。
+
+    缓存按引擎对象标识缓存，跨用例复用同一引擎 → 必须每例清空，否则上一个用例
+    写入的「不可达」状态会串到下一个用例。
+    """
+    from app.services import knowledge_source_health
+
+    knowledge_source_health.invalidate_cache()
+    yield
+    knowledge_source_health.invalidate_cache()
+
+
 @pytest.fixture()
 def db_session():
     Base.metadata.drop_all(bind=engine)

@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -6,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .database import Base, engine, ensure_schema_compatibility
-from .routers import access, agents, attachments, audit, auth, chat, directory, employees, internal, knowledge, memory, plugin_governance, plugins, policies, teams, workplace
+from .routers import access, agents, attachments, audit, auth, chat, directory, employees, internal, knowledge, knowledge_sources, mcp_onboarding, memory, plugin_governance, plugins, policies, skillhub, teams, workplace
 from .seed import seed_if_empty
 from .services import config, execution_events, runtime_manager
 
@@ -32,14 +34,24 @@ async def lifespan(_: FastAPI):
             runtime_manager.ensure_all_active(db)
         finally:
             db.close()
+    # 知识源可达性定时探测：可插拔，未启用（DWP_KB_SOURCE_PROBE_ENABLED=0）时直接返回，
+    # 探测失败也只记 warning，绝不影响启动。
+    from .services import knowledge_source_health
+
+    probe_task = asyncio.create_task(knowledge_source_health.run_probe_loop())
     # 企微机器人长连接：可插拔，未启用时自动空操作（见 wecom_bot.managed_lifespan）。
     from .services import wecom_bot
 
-    async with wecom_bot.managed_lifespan():
-        yield
+    try:
+        async with wecom_bot.managed_lifespan():
+            yield
+    finally:
+        probe_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await probe_task
 
 
-app = FastAPI(title="数字员工平台 Demo API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AI员工平台 Demo API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -106,6 +118,9 @@ app.include_router(plugins.router, prefix=API_PREFIX)
 app.include_router(plugins.capabilities_router, prefix=API_PREFIX)
 app.include_router(plugin_governance.my_router, prefix=API_PREFIX)
 app.include_router(plugin_governance.admin_router, prefix=API_PREFIX)
+# MCP 自助接入：探测 / AI 简介草稿 / 登记（管理端登记即发布，员工端进审核队列）。
+app.include_router(mcp_onboarding.my_router, prefix=API_PREFIX)
+app.include_router(mcp_onboarding.admin_router, prefix=API_PREFIX)
 app.include_router(memory.my_router, prefix=API_PREFIX)
 app.include_router(memory.admin_router, prefix=API_PREFIX)
 app.include_router(policies.router, prefix=API_PREFIX)
@@ -114,6 +129,10 @@ app.include_router(access.router, prefix=API_PREFIX)
 app.include_router(teams.router, prefix=API_PREFIX)
 app.include_router(teams.tasks_router, prefix=API_PREFIX)
 app.include_router(knowledge.router, prefix=API_PREFIX)
+# 知识源治理：数据源状态 / 手动重测 / 知识库独占分配（管理端）。
+app.include_router(knowledge_sources.admin_router, prefix=API_PREFIX)
+app.include_router(knowledge_sources.my_router, prefix=API_PREFIX)
+app.include_router(skillhub.admin_router, prefix=API_PREFIX)
 app.include_router(chat.router, prefix=API_PREFIX)
 app.include_router(internal.router)
 app.include_router(workplace.workplace_router, prefix=API_PREFIX)

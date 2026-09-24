@@ -89,21 +89,23 @@ def test_legacy_office_requires_conversion_plugin(client, monkeypatch, tmp_path)
     assert response.json()["error_code"] == "CONVERSION_REQUIRED"
 
 
-def test_clear_conversation_invalidates_attachments(client, monkeypatch, tmp_path):
+def test_clear_conversation_invalidates_attachments(client, db_session, monkeypatch, tmp_path):
     monkeypatch.setenv("DWP_ATTACHMENT_ROOT", str(tmp_path))
     conversation_id = _login_and_conversation(client)
     uploaded = client.post(
         f"/api/v1/conversations/{conversation_id}/attachments",
         files={"file": ("notes.txt", b"hello", "text/plain")},
     ).json()
-    response = client.delete(f"/api/v1/conversations/{conversation_id}?actor_no=E10281")
+    response = client.post(f"/api/v1/conversations/{conversation_id}/clear?actor_no=E10281")
     assert response.status_code == 200
+    # 物理清除：附件行、解析片段与磁盘文件都必须消失。
+    assert db_session.get(models.ConversationAttachment, uploaded["attachment_id"]) is None
     detail = client.get(
         f"/api/v1/conversations/{conversation_id}/attachments/{uploaded['attachment_id']}"
     )
-    assert detail.status_code == 200
-    assert detail.json()["status"] == "deleted"
+    assert detail.status_code == 404
     assert client.get(f"/api/v1/conversations/{conversation_id}/attachments").json() == []
+    assert not (tmp_path / "E10281" / conversation_id).exists()
 
 
 def test_rejects_spoofed_pdf_and_oversized_file(client, monkeypatch, tmp_path):

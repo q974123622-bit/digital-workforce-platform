@@ -1,8 +1,23 @@
+# ============================================================================
+# 【已废弃 / DEPRECATED】2026-09-17 起 dsh 框架改为「三层可插拔」结构：
+#
+#   L0 底座镜像  dwp-dsh:rc6        冻结复用，只提供 node 运行时 + 灾备兜底 dsh
+#   L1 框架层    deploy/offline/runtime/dsh-<version>/   换目录即换 dsh 版本
+#   L2 Profile   deploy/offline/profile/<rev>/           换目录即换插件开关
+#
+# 本文件仅保留为开发机演示的历史兼容路径，不再用于版本升级。
+#   新增/升级 dsh 版本：deploy/offline/ops/dsh-install-runtime.sh <version>
+#   切换生效版本：      deploy/offline/ops/dsh-switch.sh --all <version>
+#   改 Profile：        deploy/offline/profile/<rev>/（不要改 docker/dsh-profile/，那是历史备份）
+# ============================================================================
 FROM node:22-slim
 
-RUN npm install -g @deepseek-ai/dsh@0.1.0-rc.6
+# 公网 npm 可能被阻断，使用内网可达的软件源
+RUN npm install -g @deepseek-ai/dsh@0.1.0-rc.6 \
+      --registry https://mirrors.huaweicloud.com/repository/npm/
 
-COPY docker/dsh-profile /opt/dwp/profile
+# Profile 真源已迁移到 deploy/offline/profile/<rev>
+COPY deploy/offline/profile/v1-20260910 /opt/dwp/profile
 
 # The platform profile disables shell, filesystem, workflow and subagent tools.
 ENV DSH_PERMISSION_MODE=read-only

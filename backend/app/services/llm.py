@@ -9,16 +9,45 @@ import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
+
+from .prompt_shared import SafeModeViolation, assert_safemode
 
 DEEPSEEK_API_KEY = "DEEPSEEK_API_KEY"
 DEEPSEEK_BASE_URL = "DEEPSEEK_BASE_URL"
 DEEPSEEK_MODEL = "DEEPSEEK_MODEL"
 DEEPSEEK_CHAT_COMPLETIONS_PATH = "DEEPSEEK_CHAT_COMPLETIONS_PATH"
+# 运维 CLI 用的密钥文件兜底（容器 entrypoint 会把它的值 export 成 DEEPSEEK_API_KEY，
+# 但 `docker exec ... python -m tools.x` 起的新进程拿不到那份 export）。
+DEEPSEEK_API_KEY_FILE = "DEEPSEEK_API_KEY_FILE"
+DEFAULT_API_KEY_FILE = "/run/secrets/llm_api_key"
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "v4-flash"  # 演示环境指定模型；可用环境变量覆盖为 deepseek-chat 等
+
+
+def ensure_api_key(*, allow_secret_file: bool = False) -> str:
+    """确保 ``DEEPSEEK_API_KEY`` 可用，返回来源：``env`` / ``secret_file`` / ``missing``。
+
+    环境变量永远优先。``allow_secret_file=True`` 只给运维 CLI 用：它们以 ``docker exec``
+    起独立进程，拿不到容器 entrypoint 注入的环境变量，而密钥文件本来就以只读方式挂在
+    容器里。**只读取、不回显、不落盘**，也仍然不会进入 Prompt 或日志。
+    """
+    if os.environ.get(DEEPSEEK_API_KEY):
+        return "env"
+    if not allow_secret_file:
+        return "missing"
+    path = Path(os.environ.get(DEEPSEEK_API_KEY_FILE) or DEFAULT_API_KEY_FILE)
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "missing"
+    if not value:
+        return "missing"
+    os.environ[DEEPSEEK_API_KEY] = value
+    return "secret_file"
 
 
 class LLMUnavailableError(Exception):
@@ -55,10 +84,15 @@ class LLMProvider(ABC):
 
 
 def _assert_safemode(messages: list[dict]) -> None:
-    """SAFEMODE：所有消息必须带 source=demo，否则拒发。"""
-    for msg in messages:
-        if msg.get("source") != "demo":
-            raise LLMUnavailableError("SAFEMODE 拒绝发送：存在非 demo 来源的 prompt 段")
+    """SAFEMODE：所有消息必须带 source=demo，否则拒发。
+
+    规则本身在 `prompt_shared`（与 Harness 主链路共用），这里只做异常类型适配，
+    保证调用方仍按 LLMUnavailableError 处理。
+    """
+    try:
+        assert_safemode(messages)
+    except SafeModeViolation as exc:
+        raise LLMUnavailableError(str(exc)) from exc
 
 
 class DeepSeekProvider(LLMProvider):

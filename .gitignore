@@ -64,3 +64,32 @@ release/
 deploy/offline/secrets/
 deploy/offline/data/
 deploy/offline/backups/
+# 真实部署配置（含模型网关/知识引擎凭据与登录 Key），只提交 config.env.example
+deploy/offline/config.env
+# Harness 运行时目录（dsh-home 会话、profile 自举产物、node_modules），由 start.sh 生成
+deploy/offline/harness/
+
+# dsh 可插拔框架：框架层（runtime）体积大且可由 ops/dsh-install-runtime.sh 重新生成
+# 只保留每个版本的 MANIFEST.json（版本/来源/校验值）与 ops/baseline 下的门禁基线
+deploy/offline/runtime/*/lib/
+deploy/offline/runtime/*/bin/
+deploy/offline/runtime/current
+deploy/offline/runtime/*/GATE.json
+
+# dsh 运维脚本的运行态产物
+deploy/offline/ops/logs/
+deploy/offline/ops/state/
+deploy/offline/ops/baseline/*.latest.txt
+deploy/offline/ops/baseline/*.stderr.txt
+deploy/offline/ops/baseline/canary-*.txt
+deploy/offline/ops/baseline/gate-*.json
+
+# 离线镜像 tar（体积大，单独传输）
+deploy/offline/images/
+
+# 元数据生成过程中的 mktemp 残留（正常路径会被 mv 掉）
+deploy/offline/profile/*/MANIFEST.json.*
+deploy/offline/runtime/*/MANIFEST.json.*
+
+# 含真实密钥的对接清单（xlsx），禁止提交
+docs/*含密钥*

@@ -16,7 +16,9 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from .. import models, schemas
 from .gateway import write_audit
-from .llm import LLMProvider, LLMUnavailableError
+from .llm import LLMProvider
+from .memory_service import conversation_transcript
+from .plugin_governance import effective_plugins
 from .runtime_adapter import RuntimeAdapter
 from .subtask_executor import GatewaySubtaskExecutor, SubtaskExecutor
 
@@ -189,18 +191,28 @@ class TeamTaskOrchestrator:
         plugins_by_id = {p.id: p for p in plugins}
         executable: dict[str, list[str]] = {}
         for member in members:
-            grants = db.scalars(
-                select(models.EmployeePluginGrant).where(
-                    models.EmployeePluginGrant.employee_id == member.employee_no
-                )
-            ).all()
-            ids = [g.plugin_id for g in grants if g.decision_mode in ("allow", "approval")]
-            executable[member.employee_no] = [pid for pid in ids if pid in plugin_names]
+            # 与员工端目录、网关判定同源：AgentPluginBinding 是插件可用性的唯一授权真相。
+            # 技能（plugin_type='skill'）由 prompt 注入，不作为「可执行插件」出现在协作拆解里。
+            items = effective_plugins(db, member.employee_no, conversation.owner_human_no)
+            executable[member.employee_no] = [
+                item["plugin_id"] for item in items
+                if item["plugin_type"] != "skill" and item["plugin_id"] in plugin_names
+            ]
 
         roster = "\n".join(
             f"- {m.employee_no} {m.name}（{m.department}），可执行插件："
             f"{'、'.join(plugin_names.get(pid, pid) for pid in executable.get(m.employee_no, [])) or '无'}"
             for m in members
+        )
+        # 结合最近对话拆解：否则「再改一下」「还是按刚才的口径」这类指代无法消解。
+        transcript = conversation_transcript(
+            db, conversation.id, conversation.generation, exclude_current=request,
+        )
+        history_lead = (
+            "若用户请求在延续上文（如「再改一下」「还是按刚才的口径」），"
+            "请结合最近对话理解其真实意图再拆解。"
+            "最近对话的「说话人：内容」格式仅为历史记录，不要模仿该格式。"
+            if transcript else ""
         )
         prompt = [
             {
@@ -210,12 +222,19 @@ class TeamTaskOrchestrator:
                     '只输出 JSON：{"subtasks":[{"worker_id":"成员工号","summary":"子任务说明","plugin_ids":["插件ID"]}]}。'
                     "规则：worker_id 必须来自成员列表；plugin_ids 只从该成员的可执行插件中选 1 个；"
                     "summary 用一句话描述要完成的事，不要编造不存在的成员或插件。"
+                    "summary 必须与该插件的实际功能语义一致（例如「报销」只能选报销相关插件，"
+                    "不得指向入职、开通账号等其他流程）；若某成员的可执行插件与子任务语义不匹配，"
+                    "请换用语义匹配的成员，或不要为该子任务指派插件，绝不可以用语义无关的插件凑数。"
+                    + history_lead
                 ),
                 "source": "demo",
             },
             {
                 "role": "user",
-                "content": f"用户请求：{request}\n成员与可执行插件：\n{roster}",
+                "content": (
+                    (f"最近对话：\n{transcript}\n" if transcript else "")
+                    + f"用户请求：{request}\n成员与可执行插件：\n{roster}"
+                ),
                 "source": "demo",
             },
         ]
@@ -245,7 +264,7 @@ class TeamTaskOrchestrator:
                 )
             if subtasks:
                 return subtasks
-        except (LLMUnavailableError, Exception):
+        except Exception:  # noqa: BLE001 - LLM 不可用时降级为单子任务模板
             pass
 
         # 兜底：第一个有可执行插件的成员执行一个子任务
@@ -478,16 +497,17 @@ class TeamTaskOrchestrator:
     def _llm_summarize(self, run: models.TaskRun) -> str | None:
         try:
             detail = "\n".join(
-                f"- {s['worker_no']} {s['summary']}: {s.get('result') or '（无结果）'}" for s in run.subtasks
+                f"- [{s.get('status', 'unknown')}] {s['worker_no']} {s['summary']}: {s.get('result') or '（无结果）'}"
+                for s in run.subtasks
             )
             resp = self.provider.chat(
                 [
                     {
                         "role": "system",
                         "content": (
-                            "你是团队 Leader，请用不超过 80 字汇总以下子任务执行结果。"
-                            "演示环境中这些子任务均已执行完成，请用完成态描述（如「已完成」「已就绪」），"
-                            "不要使用「待完成」「进行中」等未完成表述；全部为虚构演示数据。"
+                            "你是团队 Leader，请用不超过 80 字客观汇总以下子任务的实际执行状态。"
+                            "必须按 status 如实描述：已完成的写「已完成」，未完成/失败的如实说明，"
+                            "不得把未完成描述为已完成，也不得美化或掩盖失败。全部为虚构演示数据。"
                         ),
                         "source": "demo",
                     },
@@ -495,7 +515,7 @@ class TeamTaskOrchestrator:
                 ]
             )
             return resp.content.strip() or None
-        except (LLMUnavailableError, Exception):
+        except Exception:  # noqa: BLE001 - 汇总失败时回退模板拼接
             return None
 
     # ---------- 工具 ----------

@@ -77,6 +77,12 @@ describe('Employees', () => {
     expect(await screen.findByText('张三的数字分身')).toBeInTheDocument();
     expect(screen.getByText('新员工入职助手')).toBeInTheDocument();
     expect(screen.getByText('共 2 名')).toBeInTheDocument();
+
+    // 分身与AI员工拆成上下两块，各带标题与计数
+    expect(document.querySelectorAll('.list-section')).toHaveLength(2);
+    expect(document.querySelector('.list-section--twin')).toHaveTextContent('我的分身');
+    expect(screen.getByRole('heading', { name: /我的分身/ })).toHaveTextContent('1');
+    expect(screen.getAllByRole('heading', { name: /AI员工/ })).toHaveLength(2);
   });
 
   it('输入关键字后客户端过滤', async () => {
@@ -88,6 +94,8 @@ describe('Employees', () => {
 
     await waitFor(() => expect(screen.queryByText('新员工入职助手')).not.toBeInTheDocument());
     expect(screen.getByText('张三的数字分身')).toBeInTheDocument();
+    // AI员工段为空时整段收起，不留下空表格
+    expect(document.querySelectorAll('.list-section--employees')).toHaveLength(0);
   });
 
   it('加载失败时展示错误态并支持重试', async () => {

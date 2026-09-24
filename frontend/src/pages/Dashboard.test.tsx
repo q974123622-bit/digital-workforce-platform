@@ -18,18 +18,20 @@ const agents: AgentProfile[] = [
     department: '人力资源部', responsibilities: [], knowledge_domains: [], accepts_tasks: [],
     delegation_policy: 'bounded_single', fallback_employee_id: null, persona_status: 'active', persona_version: 1,
     runtime_engine: 'harness', runtime_state: 'ready', container_name: 'harness-ve-0001', knowledge_base_ids: [],
+    runtime_image: 'dwp-dsh:rc6', runtime_version: '0.1.5-rc.1', runtime_profile_rev: 'v1-20260910',
   },
   {
     employee_id: 'VE-0002', display_name: 'IT 助理', identity_kind: 'role_employee', owner_human_no: 'E10021',
     department: 'IT 部', responsibilities: [], knowledge_domains: [], accepts_tasks: [],
     delegation_policy: 'none', fallback_employee_id: null, persona_status: 'active', persona_version: 1,
     runtime_engine: 'harness', runtime_state: 'crashed', container_name: 'harness-ve-0002', knowledge_base_ids: [],
+    runtime_image: 'dwp-dsh:rc6', runtime_version: '0.1.5-rc.1', runtime_profile_rev: 'v1-20260910',
   },
 ];
 
 const knowledgeBases: KnowledgeBase[] = [
-  { id: 'KB-1', name: '公开制度知识库', level: 'L1', domain: '制度', description: '', status: 'active', doc_path: null },
-  { id: 'KB-2', name: '内部流程知识库', level: 'L2', domain: '流程', description: '', status: 'disconnected', doc_path: null },
+  { id: 'KB-1', name: '公开制度知识库', level: 'L1', domain: '制度', description: '', status: 'active', doc_path: null, available: true },
+  { id: 'KB-2', name: '内部流程知识库', level: 'L2', domain: '流程', description: '', status: 'active', doc_path: null, available: false, unavailable_reason: '数据源不可达' },
 ];
 
 const audit: AuditEvent[] = [
@@ -70,8 +72,8 @@ describe('Dashboard', () => {
     renderDashboard();
 
     expect(await screen.findByText('待审核插件')).toBeInTheDocument();
-    expect(screen.getByText('不可用数字员工')).toBeInTheDocument();
-    expect(screen.getByText('知识连接异常')).toBeInTheDocument();
+    expect(screen.getByText('不可用AI员工')).toBeInTheDocument();
+    expect(screen.getByText('知识源异常')).toBeInTheDocument();
     expect(screen.getByText('记忆同步积压')).toBeInTheDocument();
     expect(await screen.findByText('最近审计动态')).toBeInTheDocument();
     expect(screen.getByText(/已授权/)).toBeInTheDocument();

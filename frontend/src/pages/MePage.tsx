@@ -1,5 +1,5 @@
-import { BulbOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
-import { Avatar, Descriptions, Tag, Typography } from 'antd';
+import { BulbOutlined, LogoutOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { Avatar, Button, Descriptions, Tag, Typography } from 'antd';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import ThemeSwitcher from '../components/ui/ThemeSwitcher';
@@ -8,19 +8,23 @@ const { Title, Text } = Typography;
 
 const ROLE_LABEL: Record<string, string> = {
   user: '员工',
-  agent_admin: '数字员工管理员',
+  agent_admin: 'AI员工管理员',
   security_admin: '安全管理员',
   platform_admin: '平台管理员',
 };
 
 export default function MePage() {
-  const { account } = useAuth();
+  const { account, logout } = useAuth();
   if (!account) return null;
   return (
     <div className="page-shell mx-auto max-w-[880px] px-4 py-6">
       <div className="profile-hero rounded-[16px] border border-line bg-surface p-6 sm:p-8">
         <div className="flex items-center gap-4">
-          <Avatar size={56} style={{ background: 'var(--dwp-brand)', fontSize: 24 }}>
+          <Avatar
+            size={56}
+            src={account.avatar_url ?? undefined}
+            style={{ background: 'var(--dwp-brand)', fontSize: 24 }}
+          >
             {account.name.slice(0, 1)}
           </Avatar>
           <div className="min-w-0">
@@ -56,7 +60,7 @@ export default function MePage() {
           </span>
           <div>
             <div className="font-medium text-ink">我的记忆</div>
-            <div className="text-xs text-ink-secondary">查看与管理数字员工为我保存的长期记忆</div>
+            <div className="text-xs text-ink-secondary">查看与管理AI员工为我保存的长期记忆</div>
           </div>
         </Link>
         <Link
@@ -71,6 +75,16 @@ export default function MePage() {
             <div className="text-xs text-ink-secondary">管理已启用的插件与我的提交</div>
           </div>
         </Link>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-4 rounded-container border border-line bg-surface p-5">
+        <div className="min-w-0">
+          <div className="font-medium text-ink">退出当前账号</div>
+          <div className="text-xs text-ink-secondary">退出后需重新输入访问密钥登录</div>
+        </div>
+        <Button icon={<LogoutOutlined />} onClick={() => void logout()}>
+          退出登录
+        </Button>
       </div>
     </div>
   );

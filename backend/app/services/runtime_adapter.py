@@ -26,7 +26,7 @@ class RuntimeResult:
 
 @dataclass(frozen=True)
 class HarnessExecutionContext:
-    """一次数字员工 Harness 执行的完整、可审计上下文。"""
+    """一次AI员工 Harness 执行的完整、可审计上下文。"""
 
     task_id: str
     employee_id: str
@@ -150,10 +150,15 @@ class HarnessRuntimeAdapter(RuntimeAdapter):
 
 
 class DockerHarnessRuntimeAdapter(RuntimeAdapter):
-    """Execute inside the employee's stable Harness container."""
+    """Execute inside the employee's stable Harness container.
 
-    def __init__(self, image: str = "dwp-dsh:rc6", timeout: int = 120):
-        self.image = image
+    镜像（L0 底座）与 dsh 版本（L1 框架层）都由容器自身的挂载决定：
+    底座镜像来自 DWP_HARNESS_IMAGE，框架版本来自容器 /opt/dsh-runtime 挂载，
+    因此这里只需保证镜像名与 compose 一致即可（见 deploy/offline/versions.env）。
+    """
+
+    def __init__(self, image: str | None = None, timeout: int = 120):
+        self.image = image or os.getenv("DWP_HARNESS_IMAGE") or "dwp-dsh:rc6"
         self.timeout = timeout
 
     def run(
@@ -187,7 +192,12 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
             return RuntimeResult(mode="harness", ok=False, result=f"Harness 容器不可用：{exc.__class__.__name__}")
 
         if proc.returncode != 0:
-            return RuntimeResult(mode="harness", ok=False, result=(proc.stderr or proc.stdout or "").strip()[:500])
+            detail = (proc.stderr or proc.stdout or "").strip()[:500]
+            if not detail:
+                # 进程被信号杀死 / OOM / 容器内异常退出时可能既无 stdout 也无 stderr；
+                # 保留退出码，避免上层只看到一句无信息量的「Harness 执行失败」。
+                detail = f"Harness 退出码 {proc.returncode} 且无输出（进程可能被终止或异常退出）"
+            return RuntimeResult(mode="harness", ok=False, result=detail)
         output = proc.stdout.strip()
         if not output:
             return RuntimeResult(mode="harness", ok=False, result="Harness 未返回内容")

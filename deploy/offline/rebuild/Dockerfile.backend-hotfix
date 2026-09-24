@@ -3,5 +3,12 @@ FROM dwp-backend:${DWP_IMAGE_TAG}
 
 # Reuse the packaged Python runtime and installed dependencies. This supports
 # offline changes to application code, adapters and mock data.
+# 注意：基础镜像里可能残留已从仓库删除的旧模块（adapters/embedding/rag_knowledge_adapter/
+# kb_index/agentteams_*/colleague_orchestrator/memory_worker 等），只 COPY 会留下孤儿文件与
+# 过期 __pycache__。先清空 app/ 再整目录覆盖，保证镜像内 app/** 与仓库逐文件一致。
+# mock-data 不能这样清空：其 kb/ 目录只存在于基础镜像中（仓库 .gitignore 掉了）。
+RUN rm -rf /app/backend/app /app/backend/tools
 COPY backend/app /app/backend/app
+# 运维工具（知识库目录核对、知识源可达性自检）：与 app 一样整目录覆盖，避免残留旧脚本。
+COPY backend/tools /app/backend/tools
 COPY mock-data /app/mock-data

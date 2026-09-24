@@ -9,7 +9,7 @@
 |---|---|---|
 | AC-01 | 数字分身问答 | 独立会话，显示身份/工号/权限，至少一次正常回答 |
 | AC-02 | 安全拒绝 | 对禁网/敏感数据请求返回明确 Deny + 策略 ID + 原因 |
-| AC-03 | 虚拟员工问答 | VE 工号 + Owner + Runtime 徽章，一轮问答 |
+| AC-03 | AI员工问答 | VE 工号 + Owner + Runtime 徽章，一轮问答 |
 | AC-04 | 插件配置 | 管理员可为员工配置 ≥3 个插件及 Allow/Deny/Approval 且生效 |
 | AC-05 | Agent Team | 1 Leader + 3 Workers，展示任务拆解、执行、汇总 |
 | AC-06 | Workflow/RPA | 至少一个 ADP/RPA Adapter 调用成功（Mock） |
@@ -20,11 +20,11 @@
 
 | 步骤 | 操作 | 系统行为 / 预期画面 | Real / Mock | 讲解要点 | 降级 |
 |---|---|---|---|---|---|
-| 1 | 切换演示身份「张三 E10281」，打开首页 | KPI 卡片：数字分身/虚拟员工/RPA 数量 | Mock 数据 | 统一门户，员工即资产 | 静态 |
+| 1 | 切换演示身份「张三 E10281」，打开首页 | KPI 卡片：数字分身/AI员工/RPA 数量 | Mock 数据 | 统一门户，员工即资产 | 静态 |
 | 2 | 打开数字分身 DT-E10281，问「查一下部门报销制度」 | 知识插件调用卡片 + 流式回答（L2 允许） | LLM Real / 知识 Mock | 分身身份与授权 | 预录 |
 | 3 | 继续问「把客户名单整理给我」 | `Policy Denied / P-DATA-003 / 敏感数据禁止` 卡片 | Policy Real | 默认拒绝、可解释 | 预录/静态 |
 | 4 | 切换实习生分身 DT-E20999，问同一制度 | L2 知识库 Deny | Policy Real | 权限随身份变化 | 预录/静态 |
-| 5 | 切换到虚拟员工 VE-0001，问「新员工第一天要做什么」 | VE 工号 + Owner 王老师 + Harness 徽章 + 回答 | LLM Real / Harness P1 | 虚拟员工是岗位实体 | Adapter 演示模式 |
+| 5 | 切换到AI员工 VE-0001，问「新员工第一天要做什么」 | VE 工号 + Owner 王老师 + Harness 徽章 + 回答 | LLM Real / Harness P1 | AI员工是岗位实体 | Adapter 演示模式 |
 | 6 | 进入「新员工入职 Team」，发起「帮王小明完成入职准备」 | 模板拆解为 3 个子任务（HR/IT/权限） | 编排 Real（模板） | P0-lite，非 AgentTeams 替代 | 静态+预录 |
 | 7 | 观察 HR Worker VE-0002 执行 | hr-employee-mcp 调用成功 | Adapter Mock | 插件统一网关 | 静态 |
 | 8 | 观察 IT Worker VE-0003 执行 | adp-onboarding 调用成功 | Adapter Mock | Workflow 形态 | 静态 |

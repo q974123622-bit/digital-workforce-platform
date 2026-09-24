@@ -11,6 +11,23 @@ from ..services.auth import SESSION_COOKIE, current_account, hash_password, issu
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _human_avatar_url(db: Session, employee_no: str) -> str | None:
+    """登录人的头像：复用本人数字分身的演示头像。
+
+    ``human_employee`` 不存头像，演示头像资产只挂在 ``digital_employee.avatar_url``
+    上（``frontend/public/avatars/``）；分身与本人是同一形象，直接复用可避免再维护一份
+    自然人头像。管理端账号（如 ``SYS-ADMIN``）没有分身，返回 None，前端回退姓名首字。
+    """
+    twin = db.scalar(
+        select(models.DigitalEmployee).where(
+            models.DigitalEmployee.type == "twin",
+            models.DigitalEmployee.owner_human_no == employee_no,
+            models.DigitalEmployee.status == "active",
+        ).order_by(models.DigitalEmployee.employee_no)
+    )
+    return twin.avatar_url if twin is not None else None
+
+
 def _account_out(db: Session, account: models.Account) -> schemas.AccountOut:
     human = db.get(models.HumanEmployee, account.human_employee_no)
     if human is None:
@@ -23,6 +40,7 @@ def _account_out(db: Session, account: models.Account) -> schemas.AccountOut:
         employment_type=human.employment_type,
         roles=account.roles or [],
         must_change_password=account.must_change_password,
+        avatar_url=_human_avatar_url(db, human.employee_no),
     )
 
 

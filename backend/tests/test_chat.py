@@ -120,14 +120,18 @@ def test_chat_endpoint_returns_internal_source_label(client, monkeypatch):
     monkeypatch.setattr("app.routers.employees.run_agent", lambda *_args, **_kwargs: result)
     response = client.post("/api/v1/employees/AI-GENERAL/chat", json={"message": "查询 VPN。"})
     assert response.status_code == 200
-    assert response.json()["tool_cards"][0] == {
+    card = response.json()["tool_cards"][0]
+    assert {
         "plugin_id": "knowledge:KB-IT-SERVICE",
         "name": "IT 服务知识库",
         "decision": "allow",
         "source": "internal",
         "policy_id": "POLICY-001",
         "reason": None,
-    }
+    }.items() <= card.items()
+    # 来源展示用的新字段必须透传到 HTTP 层，否则前端拿不到库/文档/检索人。
+    for field in ("agent_employee_id", "agent_employee_name", "knowledge_base_id", "hit_count", "citation"):
+        assert field in card
 
 
 def test_chat_endpoint_intern_deny(db_session):

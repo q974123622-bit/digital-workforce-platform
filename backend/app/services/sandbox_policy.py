@@ -24,7 +24,7 @@ class SandboxPolicy:
 
 
 def from_identity(identity: EmployeeIdentity) -> SandboxPolicy:
-    """从数字员工绑定的环境配置构建 Sandbox Policy（配置来源：digital_employee 内嵌字段）。"""
+    """从AI员工绑定的环境配置构建 Sandbox Policy（配置来源：digital_employee 内嵌字段）。"""
     return SandboxPolicy(
         runtime_location="remote_only" if identity.location == "remote" else "local",
         internet_access="deny" if identity.internet == "deny" else "allow",

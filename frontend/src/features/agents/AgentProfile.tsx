@@ -4,13 +4,17 @@ import { useEffect, useState } from 'react';
 import type { EffectiveCapabilities, Employee } from '@dwp/shared-schema';
 import { api } from '../../api/client';
 import AgentAvatar from '../../components/ui/AgentAvatar';
+import { EMPLOYEE_TYPE_LABEL } from '../../components/tags';
+import { deployStateMeta } from '../plugins/pluginMeta';
+import { formatServerTime } from '../../utils/serverTime';
 
 const { Text } = Typography;
 
+/** 类型展示口径复用 tags.tsx 的唯一来源 */
 const TYPE_LABEL: Record<string, string> = {
-  twin: '我的数字分身',
-  virtual: '数字员工',
-  rpa: '自动化小助手',
+  twin: EMPLOYEE_TYPE_LABEL.twin,
+  virtual: EMPLOYEE_TYPE_LABEL.virtual,
+  rpa: EMPLOYEE_TYPE_LABEL.rpa,
 };
 
 export default function AgentProfile({ employee, onOpenChat }: { employee: Employee; onOpenChat: (no: string) => void }) {
@@ -77,20 +81,37 @@ export default function AgentProfile({ employee, onOpenChat }: { employee: Emplo
             </Space>
             {caps.capabilities.filter((c) => c.authorized).length === 0 && <Empty description="暂未授权能力" />}
             <div className="space-y-2">
-              {caps.capabilities.filter((c) => c.authorized).map((item) => (
-                <div key={item.id} className="agent-profile-capability">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-ink">{item.name}</div>
-                    <div className="text-xs text-ink-secondary">{item.description}</div>
-                    {item.example_prompts[0] && (
-                      <div className="mt-1 text-xs text-ink-tertiary">示例：{item.example_prompts[0]}</div>
-                    )}
+              {caps.capabilities.filter((c) => c.authorized).map((item) => {
+                // 技能比插件多一层投放态：技能包要真落到容器工作区才算可用。
+                const deploy = item.kind === 'skill' ? deployStateMeta(item.deploy_state) : null;
+                return (
+                  <div key={item.id} className="agent-profile-capability">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-ink">{item.name}</div>
+                      <div className="text-xs text-ink-secondary">{item.description}</div>
+                      {deploy && (
+                        <div className="mt-1 text-xs text-ink-tertiary">
+                          投放：{deploy.label}
+                          {item.deploy_detail ? `，${item.deploy_detail}` : ''}
+                          {item.deployed_at ? `（${formatServerTime(item.deployed_at)}）` : ''}
+                        </div>
+                      )}
+                      {item.example_prompts[0] && (
+                        <div className="mt-1 text-xs text-ink-tertiary">示例：{item.example_prompts[0]}</div>
+                      )}
+                    </div>
+                    <Space size={4} wrap>
+                      {deploy && <Tag color={deploy.color}>{deploy.label}</Tag>}
+                      <Tag color={item.status === 'available' ? 'success' : item.status === 'approval' ? 'warning' : item.status === 'source_unavailable' ? 'default' : 'error'}>
+                        {item.status === 'available' ? '可用'
+                          : item.status === 'approval' ? '需审批'
+                          : item.status === 'source_unavailable' ? '数据源不可用'
+                          : '环境未就绪'}
+                      </Tag>
+                    </Space>
                   </div>
-                  <Tag color={item.status === 'available' ? 'success' : item.status === 'approval' ? 'warning' : 'error'}>
-                    {item.status === 'available' ? '可用' : item.status === 'approval' ? '需审批' : '环境未就绪'}
-                  </Tag>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </>
         ) : (

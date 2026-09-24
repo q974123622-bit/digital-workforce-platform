@@ -65,7 +65,7 @@ describe('App', () => {
         </CurrentUserProvider>
       </MemoryRouter>,
     );
-    expect(screen.getByText('数字员工平台')).toBeInTheDocument();
+    expect(screen.getByText('AI员工平台')).toBeInTheDocument();
     expect(screen.getAllByText('我的职场').length).toBeGreaterThan(0);
     expect(await screen.findByText('你好，张三')).toBeInTheDocument();
   });

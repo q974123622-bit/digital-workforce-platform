@@ -1,0 +1,14 @@
+{
+  "rev": "v1-20260910",
+  "layer": "L2-profile",
+  "mount_target": "/opt/dwp/profile",
+  "created_at": "2026-09-23T08:54:09Z",
+  "files": {
+    "cordis.yml":        { "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570", "note": "空列表占位；dsh 运行时会在文件头追加注释，故只做语义比对" },
+    "cordis.patch.yml":  { "sha256": "71782da64ce88d1a1440e2421bc7af6cea449b9d3ef404e6250e3649b3e4ec3c" },
+    "package.json":      { "sha256": "1f94e0196c04c3662722adf7fde1e128a1394ccd1befb5e9a375c26159b2066c" }
+  },
+  "cordis_semantic": "[]",
+  "disabled_tools": [ "tool-pwsh", "tool-jobs", "tool-skill", "tool-subagent-control", "tool-subagent-list-agents", "tool-subagent", "tool-subagent-fork", "tool-workflow", "tool-ralph", "tool-web" ],
+  "bundles": [ "@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless" ]
+}

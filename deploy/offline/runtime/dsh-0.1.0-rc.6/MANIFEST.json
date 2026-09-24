@@ -1,0 +1,15 @@
+{
+  "version": "0.1.0-rc.6",
+  "dir": "dsh-0.1.0-rc.6",
+  "layer": "L1-runtime",
+  "source": "image:dwp-dsh:rc6",
+  "base_image": "dwp-dsh:rc6",
+  "node_version": "v22.23.2",
+  "entrypoint": "bin/dsh -> ../lib/node_modules/@deepseek-ai/dsh/lib/bin.js",
+  "mount_target": "/opt/dsh-runtime",
+  "installed_at": "2026-09-17T06:13:12Z",
+  "installed_by": "ops/dsh-install-runtime.sh",
+  "tree_sha256": "67a49e2c9274c33e40be9582fa60c1c95ab12da6eb505b525318b4a5bbfeace9",
+  "size_bytes": 257800011,
+  "gate": { "preflight": "pending" }
+}

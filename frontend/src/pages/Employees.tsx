@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Avatar, Button, Input, Select, Space, Table, Typography } from 'antd';
+import { Avatar, Button, Empty, Input, Select, Space, Table, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { Employee } from '@dwp/shared-schema';
 import { api } from '../api/client';
-import { EmploymentTag, LevelTag, StatusBadge, TypeTag, TYPE_META } from '../components/tags';
+import { EMPLOYEE_TYPE_LABEL, EmploymentTag, LevelTag, StatusBadge, TypeTag } from '../components/tags';
 import { ErrorState } from '../components/PageState';
 import { useAsyncData } from '../hooks/useAsyncData';
 
@@ -35,7 +35,7 @@ export default function Employees() {
     return rows.filter((employee) => {
       const matchKeyword =
         !kw ||
-        [employee.name, employee.employee_no, employee.department, TYPE_META[employee.type]?.label].some((value) =>
+        [employee.name, employee.employee_no, employee.department, EMPLOYEE_TYPE_LABEL[employee.type]].some((value) =>
           (value ?? '').toLowerCase().includes(kw),
         );
       const matchStatus = !status || employee.status === status;
@@ -81,13 +81,22 @@ export default function Employees() {
     [],
   );
 
+  const twinRows = useMemo(() => filtered.filter((employee) => employee.type === 'twin'), [filtered]);
+  const employeeRows = useMemo(() => filtered.filter((employee) => employee.type !== 'twin'), [filtered]);
+  const showTwinSection = type === undefined || type === 'twin';
+  const showEmployeeSection = type === undefined || type !== 'twin';
+
+  const renderTable = (rows: Employee[]) => (
+    <Table rowKey="employee_no" loading={loading} columns={columns} dataSource={rows} pagination={false} />
+  );
+
   if (error) return <ErrorState onRetry={reload} />;
 
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <Typography.Title level={3} style={{ margin: 0 }}>
-          数字员工
+          AI员工
         </Typography.Title>
         <Space wrap>
           <Input.Search
@@ -120,9 +129,9 @@ export default function Employees() {
             value={type}
             onChange={setType}
             options={[
-              { value: 'twin', label: '数字分身' },
-              { value: 'virtual', label: '虚拟员工' },
-              { value: 'rpa', label: 'RPA' },
+              { value: 'twin', label: EMPLOYEE_TYPE_LABEL.twin },
+              { value: 'virtual', label: EMPLOYEE_TYPE_LABEL.virtual },
+              { value: 'rpa', label: EMPLOYEE_TYPE_LABEL.rpa },
             ]}
           />
           <Typography.Text type="secondary" className="tabular-nums">
@@ -130,7 +139,28 @@ export default function Employees() {
           </Typography.Text>
         </Space>
       </div>
-      <Table rowKey="employee_no" loading={loading} columns={columns} dataSource={filtered} pagination={false} />
+      {filtered.length ? (
+        <>
+          {showTwinSection && !!twinRows.length && (
+            <section className="list-section list-section--twin" aria-label="我的分身">
+              <div className="list-section-head" role="heading" aria-level={3}><span>我的分身</span><b>{twinRows.length}</b></div>
+              <div className="list-section-body">{renderTable(twinRows)}</div>
+            </section>
+          )}
+          {showEmployeeSection && !!employeeRows.length && (
+            <section className="list-section list-section--employees" aria-label="AI员工">
+              <div className="list-section-head" role="heading" aria-level={3}><span>AI员工</span><b>{employeeRows.length}</b></div>
+              <div className="list-section-body">{renderTable(employeeRows)}</div>
+            </section>
+          )}
+        </>
+      ) : (
+        <section className="list-section list-section--employees">
+          <div className="list-section-body" style={{ padding: '26px 0' }}>
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有找到相关员工" />
+          </div>
+        </section>
+      )}
     </div>
   );
 }

@@ -49,7 +49,7 @@ class Chain:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="数字员工平台黄金链路联调")
+    parser = argparse.ArgumentParser(description="AI员工平台黄金链路联调")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="后端地址")
     args = parser.parse_args()
     chain = Chain(args.base_url)

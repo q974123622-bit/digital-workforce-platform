@@ -6,7 +6,7 @@ import LoginPage from '../pages/LoginPage';
 export default function AuthGate({ children, admin = false }: { children: ReactNode; admin?: boolean }) {
   const { account, checking } = useAuth();
   if (checking) {
-    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-page text-ink-secondary"><Spin /><span className="text-sm">正在加载数字员工工作台</span></div>;
+    return <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-page text-ink-secondary"><Spin /><span className="text-sm">正在加载AI员工工作台</span></div>;
   }
   if (!account) return <LoginPage />;
   if (admin && !account.roles.some((role) => ['agent_admin', 'security_admin', 'platform_admin'].includes(role))) {

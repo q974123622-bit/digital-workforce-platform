@@ -68,3 +68,16 @@ def test_internal_error_and_audit_do_not_leak_content():
     assert "secret question" not in summary
     assert "secret content" not in summary
     assert '"hit_count": 1' in summary
+    # 只保留文档标题（元数据），用于前端展示到「文档级」来源。
+    assert '"title": "secret.pdf"' in summary
+
+
+def test_result_summary_keeps_at_most_five_document_titles():
+    summary = _result_summary({
+        "source": "internal", "knowledge_base_id": "KB-X", "query": "q",
+        "hits": [{"title": f"doc-{index}.pdf", "snippet": "body"} for index in range(8)],
+    })
+    assert '"hit_count": 8' in summary
+    assert "doc-4.pdf" in summary
+    assert "doc-5.pdf" not in summary
+    assert "body" not in summary

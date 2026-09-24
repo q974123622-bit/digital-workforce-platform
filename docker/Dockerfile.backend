@@ -10,6 +10,8 @@ COPY backend/requirements.txt ./requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY backend/app ./app
+# 运维工具（知识库目录核对、知识源可达性自检），供容器内 `python -m tools.<name>` 调用。
+COPY backend/tools ./tools
 COPY mock-data /app/mock-data
 COPY docker/backend-entrypoint.sh /usr/local/bin/dwp-entrypoint
 

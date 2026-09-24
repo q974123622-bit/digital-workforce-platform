@@ -140,6 +140,51 @@ DWP_QIEMAN_MCP_TIMEOUT=20
 docker compose exec backend python -c "from app.services.external_mcp_adapter import QiemanMcpAdapter; print('tools:', len(QiemanMcpAdapter().list_tools(force=True)))"
 ```
 
+### 4.2 兴证e家员工服务 External MCP（内网，双鉴权头）
+
+`services/external_mcp_adapter.py` 内置 `ehome_adapter`（插件 `xyzq-ehome-mcp`，工具前缀
+`ehome__`），连接兴证e家员工服务（会议室 / 餐卡 / 考勤休假 / 通讯录 / 资讯 / OA 送审等
+查询类工具，共 17 个）。
+
+配置（`config.env` / `secrets`）：
+
+```dotenv
+DWP_EHOME_MCP_URL=http://10.32.253.43/ehome/mcp/claw
+# DWP_EHOME_MCP_API_KEY=   # 可选，优先级高于 secrets 文件
+DWP_EHOME_MCP_TIMEOUT=20
+```
+
+**双鉴权头**：
+
+| 头 | 级别 | 来源 |
+|---|---|---|
+| `X-MCP-API-KEY` | 应用级、静态、必需 | `secrets/ehome_mcp_api_key`（运维预置） |
+| `X-MCP-JWT` | 用户级、按人签发、会过期 | **员工本人在会话内的「需要补充信息」气泡里粘贴一次** |
+
+用户级令牌的边界：按 `(plugin_id, human_no)` 加密存储（复用 `mcp_credentials` 的
+HMAC-SHA256 流密码 + Encrypt-then-MAC），只回掩码；明文不落库、不进对话正文、不进执行事件、
+不进审计、不进 Prompt；平台解析 `exp` 判定过期，缺失/过期时重新弹气泡。到期前还会在
+**员工侧插件中心**常驻提醒（页头汇总 + 服务行内标注剩余天数与到期时间，提前天数由
+`DWP_MCP_CREDENTIAL_WARN_DAYS` 控制，默认 7 天），提醒接口只回状态与到期时间。详见
+`docs/SECURITY_BOUNDARY.md` 的「7.6 员工自助凭据」。
+
+运行机制：
+
+- `tools/list` 只用应用级 key 完成握手，不要求员工先提供令牌；
+- `tools/call` 前先做**事前预检**（缺用户级凭据/已过期 → 直接产出「待补全」，不发无效请求），
+  调用时按人注入两个头；服务端返回缺参文本时走**事后识别**（`Missing required header`、
+  `缺少请求参数`、`keyword 必填`）同样转成待补全；
+- 命中后落 `tool_input_request` 记录并 emit `input_required` 事件，前端在执行轨迹里弹出输入
+  气泡；用户填完提交 → 凭据加密存到本人名下 → 以「原提问 + 补充说明」**自动续跑一轮**；
+- seed 时仅当 `config.ehome_mcp_configured()`（URL + 应用级 key 均非空）才注册插件，并授权
+  AI-XYZQ / DT-E10281 / DT-E20999。
+
+连通性验证（只校验应用级鉴权，不需要用户令牌）：
+
+```bash
+docker compose exec backend python -m tools.check_ehome_mcp
+```
+
 ## 5. 内部 mem0
 
 首次运行：

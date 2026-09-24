@@ -1,33 +1,18 @@
-import ReactMarkdown from 'react-markdown';
+import { useMemo } from 'react';
+
+import { normalizeMarkdown } from './markdown/normalize';
+import { resolveMarkdownRenderer } from './markdown/variant';
+
+const Renderer = resolveMarkdownRenderer();
 
 /**
- * 压缩多余换行与空行，让回复更紧凑。
- * maxNewlines 控制连续换行最多保留几个（1 = 全部折成单换行；2 = 保留一个空行用于段落分隔）。
+ * 会话气泡内的 Markdown 渲染入口（薄壳）：
+ *   1) `normalizeMarkdown` 先修模型输出的缺陷（未闭合围栏、缺分隔行的表格、围栏外多余空行）；
+ *   2) 交给渲染器（当前为 `markdown/builtin`，切换方式见 `markdown/variant.ts`）。
+ *
+ * 归一化结果按 `text` 缓存：SSE 流式输出时父组件高频重渲染，不缓存会对同一条消息反复归一化。
  */
-export function compactLines(text: string, maxNewlines = 1): string {
-  return text
-    .replace(/\r\n?/g, '\n')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(new RegExp(`\\n{${maxNewlines + 1},}`, 'g'), '\n'.repeat(maxNewlines))
-    .replace(/^\n+|\n+$/g, '');
-}
-
-/** 轻量 Markdown 渲染：让模型回复中的 **加粗**、- 列表等以样式呈现，而不是裸符号。 */
 export default function MarkdownText({ text }: { text: string }) {
-  const compact = compactLines(text, 2);
-  return (
-    <ReactMarkdown
-      components={{
-        p: ({ children }) => <p style={{ margin: 0 }}>{children}</p>,
-        ul: ({ children }) => <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>{children}</ul>,
-        ol: ({ children }) => <ol style={{ margin: '4px 0 0', paddingLeft: 20 }}>{children}</ol>,
-        li: ({ children }) => <li style={{ margin: '2px 0' }}>{children}</li>,
-        h1: ({ children }) => <div style={{ margin: '4px 0 2px', fontSize: 14, fontWeight: 700 }}>{children}</div>,
-        h2: ({ children }) => <div style={{ margin: '4px 0 2px', fontSize: 14, fontWeight: 700 }}>{children}</div>,
-        h3: ({ children }) => <div style={{ margin: '4px 0 2px', fontSize: 14, fontWeight: 700 }}>{children}</div>,
-      }}
-    >
-      {compact}
-    </ReactMarkdown>
-  );
+  const normalized = useMemo(() => normalizeMarkdown(text), [text]);
+  return <Renderer text={normalized} />;
 }

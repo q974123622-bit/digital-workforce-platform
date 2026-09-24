@@ -1,12 +1,37 @@
 name: dwp-ai-employee-platform
 
+# ---------------------------------------------------------------------------
+# Harness 三层可插拔结构
+#
+#   L0 底座镜像   ${DWP_DSH_IMAGE}          冻结，提供 node + Python 运行时 + 灾备兜底 dsh
+#   L1 框架层     /opt/dsh-runtime  (:ro)   换目录即换 dsh 版本；靠 PATH 前置解析
+#   L2 Profile 层 /opt/dwp/profile  (:ro)   插件开关 / 模型路由 / MCP 通道
+#
+# 注意：
+#   - Compose 的 `<<:` 是浅合并：服务自带的 volumes 会整体替换 anchor 的 volumes，
+#     因此每个 harness 服务都必须显式列全 4 条挂载。
+#   - /opt/dwp/profile 挂载点路径不可更改（backend runtime_manager.py 硬编码引用）。
+#   - 每个服务用独立的 DWP_DSH_RUNTIME_<ID> 变量，实现按AI员工灰度。
+# ---------------------------------------------------------------------------
 x-harness-common: &harness-common
-  image: ${DWP_DSH_IMAGE:-dwp-dsh:rc6}
+  # 底座 = dwp-dsh:rc6 + Python 3.11（docker/Dockerfile.dsh-runtime，完全离线构建）。
+  # 技能脚本是 `python scripts/...` 形态，底座本身没有 python3，因此必须用带 Python 的 tag。
+  image: ${DWP_DSH_IMAGE:-dwp-dsh:rc6-py}
   pull_policy: never
   restart: unless-stopped
+  # 工作目录即沙箱根：dsh 的 sandbox-policy 以 process.cwd() 为 workspaceRoot，
+  # 技能包投放目录 /workspace/skills/<slug>/ 也因此落在沙箱内可写可执行。
+  working_dir: /workspace
   entrypoint: ["sh", "-c"]
   command:
     - >-
+      if [ ! -x /opt/dsh-runtime/bin/dsh ]; then
+      echo "FATAL: 未找到 /opt/dsh-runtime/bin/dsh；DWP_DSH_RUNTIME 挂载缺失或目录结构不对" >&2;
+      exit 1; fi;
+      if [ ! -f /opt/dwp/profile/cordis.yml ]; then
+      echo "FATAL: 未找到 /opt/dwp/profile/cordis.yml；DWP_PROFILE 挂载缺失" >&2;
+      exit 1; fi;
+      echo "dsh runtime = $$(readlink -f /opt/dsh-runtime/bin/dsh)";
       mkdir -p /dsh-home/profiles/dwp-knowledge-agent-v2 /workspace &&
       cp /opt/dwp/profile/cordis.yml /opt/dwp/profile/cordis.patch.yml
       /opt/dwp/profile/package.json /dsh-home/profiles/dwp-knowledge-agent-v2/ &&
@@ -14,7 +39,16 @@ x-harness-common: &harness-common
       while :; do sleep 3600 & wait $$!; done
   environment:
     DSH_HOME: /dsh-home
-    DSH_PERMISSION_MODE: read-only
+    # 技能脚本要能真跑，必须放开到可写工作区（read-only 下 tool-bash 无法执行）。
+    # 沙箱根 = working_dir = /workspace，容器内其他路径仍不可写；取值来自 dsh 的
+    # permission-presets（read-only / workspace-write / danger-full-access），
+    # 由 ops/baseline/contract.json 的 must_be_enabled 契约守住。
+    DSH_PERMISSION_MODE: ${DWP_DSH_PERMISSION_MODE:-workspace-write}
+    # docker exec 继承 compose environment（不继承 entrypoint 内 export），
+    # 因此 backend 侧 `exec_in_container(name, ["dsh", ...])` 能命中 runtime 目录里的新版 dsh。
+    PATH: /opt/dsh-runtime/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    # 堡垒机无外网：显式关闭遥测（取值来自 dsh-http-proxy，注意不是 off）
+    DSH_TELEMETRY_MODE: ${DWP_DSH_TELEMETRY_MODE:-DISABLED}
   networks:
     - dwp
   security_opt:
@@ -27,7 +61,11 @@ services:
     labels:
       dwp.managed: "true"
       dwp.employee_id: AI-GENERAL
+      dwp.dsh.runtime: "${DWP_DSH_RUNTIME_AI_GENERAL:-./runtime/current}"
+      dwp.dsh.profile: "${DWP_PROFILE_REV:-unknown}"
     volumes:
+      - ${DWP_DSH_RUNTIME_AI_GENERAL:-./runtime/current}:/opt/dsh-runtime:ro
+      - ./profile/current:/opt/dwp/profile:ro
       - ./harness/AI-GENERAL/dsh-home:/dsh-home
       - ./harness/AI-GENERAL/workspace:/workspace
 
@@ -37,7 +75,11 @@ services:
     labels:
       dwp.managed: "true"
       dwp.employee_id: AI-INVESTMENT
+      dwp.dsh.runtime: "${DWP_DSH_RUNTIME_AI_INVESTMENT:-./runtime/current}"
+      dwp.dsh.profile: "${DWP_PROFILE_REV:-unknown}"
     volumes:
+      - ${DWP_DSH_RUNTIME_AI_INVESTMENT:-./runtime/current}:/opt/dsh-runtime:ro
+      - ./profile/current:/opt/dwp/profile:ro
       - ./harness/AI-INVESTMENT/dsh-home:/dsh-home
       - ./harness/AI-INVESTMENT/workspace:/workspace
 
@@ -47,7 +89,11 @@ services:
     labels:
       dwp.managed: "true"
       dwp.employee_id: AI-RESEARCH
+      dwp.dsh.runtime: "${DWP_DSH_RUNTIME_AI_RESEARCH:-./runtime/current}"
+      dwp.dsh.profile: "${DWP_PROFILE_REV:-unknown}"
     volumes:
+      - ${DWP_DSH_RUNTIME_AI_RESEARCH:-./runtime/current}:/opt/dsh-runtime:ro
+      - ./profile/current:/opt/dwp/profile:ro
       - ./harness/AI-RESEARCH/dsh-home:/dsh-home
       - ./harness/AI-RESEARCH/workspace:/workspace
 
@@ -57,9 +103,27 @@ services:
     labels:
       dwp.managed: "true"
       dwp.employee_id: AI-FUND
+      dwp.dsh.runtime: "${DWP_DSH_RUNTIME_AI_FUND:-./runtime/current}"
+      dwp.dsh.profile: "${DWP_PROFILE_REV:-unknown}"
     volumes:
+      - ${DWP_DSH_RUNTIME_AI_FUND:-./runtime/current}:/opt/dsh-runtime:ro
+      - ./profile/current:/opt/dwp/profile:ro
       - ./harness/AI-FUND/dsh-home:/dsh-home
       - ./harness/AI-FUND/workspace:/workspace
+
+  harness-ai-xyzq:
+    <<: *harness-common
+    container_name: dwp-harness-ai-xyzq
+    labels:
+      dwp.managed: "true"
+      dwp.employee_id: AI-XYZQ
+      dwp.dsh.runtime: "${DWP_DSH_RUNTIME_AI_XYZQ:-./runtime/current}"
+      dwp.dsh.profile: "${DWP_PROFILE_REV:-unknown}"
+    volumes:
+      - ${DWP_DSH_RUNTIME_AI_XYZQ:-./runtime/current}:/opt/dsh-runtime:ro
+      - ./profile/current:/opt/dwp/profile:ro
+      - ./harness/AI-XYZQ/dsh-home:/dsh-home
+      - ./harness/AI-XYZQ/workspace:/workspace
 
   harness-dt-e10281:
     <<: *harness-common
@@ -67,7 +131,11 @@ services:
     labels:
       dwp.managed: "true"
       dwp.employee_id: DT-E10281
+      dwp.dsh.runtime: "${DWP_DSH_RUNTIME_DT_E10281:-./runtime/current}"
+      dwp.dsh.profile: "${DWP_PROFILE_REV:-unknown}"
     volumes:
+      - ${DWP_DSH_RUNTIME_DT_E10281:-./runtime/current}:/opt/dsh-runtime:ro
+      - ./profile/current:/opt/dwp/profile:ro
       - ./harness/DT-E10281/dsh-home:/dsh-home
       - ./harness/DT-E10281/workspace:/workspace
 
@@ -77,7 +145,11 @@ services:
     labels:
       dwp.managed: "true"
       dwp.employee_id: DT-E20999
+      dwp.dsh.runtime: "${DWP_DSH_RUNTIME_DT_E20999:-./runtime/current}"
+      dwp.dsh.profile: "${DWP_PROFILE_REV:-unknown}"
     volumes:
+      - ${DWP_DSH_RUNTIME_DT_E20999:-./runtime/current}:/opt/dsh-runtime:ro
+      - ./profile/current:/opt/dwp/profile:ro
       - ./harness/DT-E20999/dsh-home:/dsh-home
       - ./harness/DT-E20999/workspace:/workspace
 
@@ -91,11 +163,20 @@ services:
     env_file:
       - ./config.env
     environment:
+      # 容器自愈兜底与令牌提醒阈值都放 config.env（env_file 优先于这里的默认值）：
+      #   DWP_HARNESS_HOST_ROOT / DWP_DSH_RUNTIME_HOST / DWP_PROFILE_HOST / DWP_HARNESS_NETWORK
+      #   DWP_MCP_CREDENTIAL_WARN_DAYS
+      # 不在 environment 里写 ${VAR:-}，否则未设置时会把 config.env 的同名值覆盖成空串。
       DATABASE_URL: sqlite:////data/dwp.db
       DWP_HARNESS_ENABLED: "1"
       DWP_AGENT_EXECUTION_MODE: harness
       DWP_PLATFORM_TOOL_BASE_URL: http://backend:8000
-      DWP_HARNESS_IMAGE: ${DWP_DSH_IMAGE:-dwp-dsh:rc6}
+      DWP_HARNESS_IMAGE: ${DWP_DSH_IMAGE:-dwp-dsh:rc6-py}
+      # 运维页顶部「运行环境」汇总用（镜像名 + 交付版本 + dsh/profile 版本）。
+      # 逐员工的真实 dsh 版本取自容器标签（见 runtime_registry），这三个只作兜底展示。
+      DWP_IMAGE_TAG: ${DWP_IMAGE_TAG:-0.3.0-offline}
+      DWP_DSH_RUNTIME_VERSION: ${DWP_DSH_RUNTIME_VERSION:-}
+      DWP_PROFILE_REV: ${DWP_PROFILE_REV:-}
       DWP_TEAM_BACKEND: builtin
       DWP_REQUIRE_AUTH: "1"
       DWP_ARTIFACT_ROOT: /data/artifacts
@@ -107,6 +188,10 @@ services:
       - login_key_e20999
       - login_key_admin
       - qieman_api_key
+      # 兴证e家员工服务 MCP 的应用级 X-MCP-API-KEY（用户级 JWT 由员工在会话内补全）
+      - ehome_mcp_api_key
+      # 内部知识引擎 VeRAG MCP（生产环境通道）的 Bearer token
+      - verag_mcp_token
     volumes:
       - ./data:/data
       - ./backups:/backups
@@ -120,6 +205,8 @@ services:
       harness-ai-research:
         condition: service_started
       harness-ai-fund:
+        condition: service_started
+      harness-ai-xyzq:
         condition: service_started
       harness-dt-e10281:
         condition: service_started
@@ -157,6 +244,10 @@ secrets:
     file: ./secrets/login_key_admin
   qieman_api_key:
     file: ./secrets/qieman_api_key
+  ehome_mcp_api_key:
+    file: ./secrets/ehome_mcp_api_key
+  verag_mcp_token:
+    file: ./secrets/verag_mcp_token
 
 networks:
   dwp:

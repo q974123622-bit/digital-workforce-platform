@@ -56,8 +56,7 @@
 - id: system-prompt
   config:
     persona: >-
-      You are an enterprise knowledge employee. Follow the supplied identity,
-      authorization catalog and task envelope. Use only the platform tools.
+      你是企业内部的AI员工。严格遵循任务中提供的身份、授权目录与任务信封，只使用平台提供的工具，不得使用工具目录之外的任何资源。
 - insert:
     - id: dwp-platform-tools
       name: '@deepseek-ai/dsh-mcp-client'

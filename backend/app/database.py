@@ -62,6 +62,8 @@ def ensure_schema_compatibility() -> None:
         "owner_human_no": "VARCHAR",
         "mcp_category": "VARCHAR",
         "current_version": "VARCHAR",
+        "skill_category": "VARCHAR",
+        "featured": "BOOLEAN NOT NULL DEFAULT 0",
     }
     if plugin_columns:
         with engine.begin() as connection:
@@ -75,13 +77,53 @@ def ensure_schema_compatibility() -> None:
                 text("ALTER TABLE employee_plugin_grant ADD COLUMN grant_source VARCHAR NOT NULL DEFAULT ''")
             )
 
+    tables = set(inspector.get_table_names())
+    if "plugin_version" in tables:
+        with engine.begin() as connection:
+            # 旧库可能存在同一 (plugin_id, version) 的多行（早期 submit_zip 无唯一约束）。
+            # 建唯一索引前先把重复行收敛到 id 最大的一行，并把引用方指向保留行，
+            # 避免留下悬空的 plugin_version_id。
+            duplicates = connection.execute(text(
+                "SELECT COUNT(*) FROM plugin_version WHERE id NOT IN ("
+                "SELECT MAX(id) FROM plugin_version GROUP BY plugin_id, version)"
+            )).scalar() or 0
+            if duplicates:
+                for table in ("plugin_build_job", "mcp_runtime_instance", "plugin_review"):
+                    if table not in tables:
+                        continue
+                    connection.execute(text(
+                        f"UPDATE {table} SET plugin_version_id = ("
+                        "SELECT keep.id FROM plugin_version AS keep "
+                        "JOIN plugin_version AS dup "
+                        "ON dup.plugin_id = keep.plugin_id AND dup.version = keep.version "
+                        f"WHERE dup.id = {table}.plugin_version_id "
+                        "ORDER BY keep.id DESC LIMIT 1) "
+                        "WHERE plugin_version_id NOT IN ("
+                        "SELECT MAX(id) FROM plugin_version GROUP BY plugin_id, version)"
+                    ))
+                connection.execute(text(
+                    "DELETE FROM plugin_version WHERE id NOT IN ("
+                    "SELECT MAX(id) FROM plugin_version GROUP BY plugin_id, version)"
+                ))
+            connection.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_plugin_version "
+                "ON plugin_version(plugin_id, version)"
+            ))
+            print(f"[schema] plugin_version 唯一索引就绪（清理重复版本行 {duplicates} 条）")
+
     additions = {
         "digital_employee": {"avatar_url": "VARCHAR"},
         "account": {"login_key_hash": "VARCHAR"},
-        "conversation": {"generation": "INTEGER NOT NULL DEFAULT 0"},
+        # 知识库双后端映射：老库补齐该列后由 seed 回填，运行期只读。
+        "knowledge_base": {"engine_map": "JSON NOT NULL DEFAULT '{}'"},
+        "conversation": {
+            "generation": "INTEGER NOT NULL DEFAULT 0",
+            "hidden_at": "DATETIME",
+        },
         "conversation_message": {
             "generation": "INTEGER NOT NULL DEFAULT 0",
             "attachment_ids": "JSON NOT NULL DEFAULT '[]'",
+            "superseded_at": "DATETIME",
         },
         "agent_execution": {
             "conversation_generation": "INTEGER NOT NULL DEFAULT 0",
@@ -92,9 +134,18 @@ def ensure_schema_compatibility() -> None:
             "next_attempt_at": "DATETIME",
             "locked_at": "DATETIME",
         },
+        "delegation_run": {
+            "error": "VARCHAR NOT NULL DEFAULT ''",
+        },
+        "skillhub_import": {
+            "batch_id": "VARCHAR",
+        },
     }
     with engine.begin() as connection:
         for table_name, columns in additions.items():
+            if table_name not in tables:
+                # 极旧库可能还没有该表（create_all 已建表时不会走到这里）。
+                continue
             existing = {column["name"] for column in inspector.get_columns(table_name)}
             for name, ddl in columns.items():
                 if name not in existing:

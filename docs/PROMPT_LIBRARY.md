@@ -1,4 +1,4 @@
-# 数字员工平台 Codex Prompt 库
+# AI员工平台 Codex Prompt 库
 
 > 版本：v1.0（2026-08-18）
 > 用途：面向 Codex 的、按当前仓库实际状态生成的开发 Prompt 库。每个 Prompt 可直接复制到 Codex（桌面端新对话或 `codex exec`）执行。
@@ -16,7 +16,7 @@
 ### 0.2 通用上下文块（每个 Prompt 已内嵌，可自行调整角色）
 
 ```text
-你是数字员工平台 PoC 仓库的资深工程师（负责人角色：{ROLE}）。开始前先通读以下文件：
+你是AI员工平台 PoC 仓库的资深工程师（负责人角色：{ROLE}）。开始前先通读以下文件：
 - PLANS.md：任务清单、门禁（G1/G2/G3）、Acceptance Criteria
 - docs/ARCHITECTURE.md：五层架构、统一资源访问链、不变量
 - docs/API_CONTRACT.md：冻结契约（v1.1），实现以契约为准
@@ -54,7 +54,7 @@
 ## P1. T2-01 TeamTaskOrchestrator（P0，Owner A）
 
 ```text
-你是数字员工平台 PoC 仓库的资深后端工程师（负责人角色：A 正式员工/架构总装）。开始前先通读：
+你是AI员工平台 PoC 仓库的资深后端工程师（负责人角色：A 正式员工/架构总装）。开始前先通读：
 - PLANS.md 中 T2-01 条目与门禁说明
 - docs/API_CONTRACT.md §3.6（Team API）与 §7（TaskRunDto）
 - docs/ARCHITECTURE.md（L2 协作编排层与不变量）
@@ -105,7 +105,7 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 ## P2. T1-07 前端聊天页（P0，Owner C）
 
 ```text
-你是数字员工平台 PoC 仓库的前端工程师（负责人角色：C 实习生/前端）。开始前先通读：
+你是AI员工平台 PoC 仓库的前端工程师（负责人角色：C 实习生/前端）。开始前先通读：
 - docs/API_CONTRACT.md §3.1（Employee API）与 §3.5（Chat API、SSE 事件枚举）
 - docs/DEVELOPMENT_HANDOFF.md（启动方式、前端约束）
 - docs/SECURITY_BOUNDARY.md（前端只展示后端决策，不做权限判断）
@@ -127,7 +127,7 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 2. 聊天 UI（Ant Design）：消息列表、输入框、发送按钮、加载/错误态；
    回答区渲染 tool_cards 为工具卡片；policy_denied 渲染为醒目的 Deny 卡片
    （展示 policy_id 与 reason，样式参考 AntD Alert 或 Tag）。
-3. 会话历史：进入页面时加载已有消息；消息带身份标识（当前数字员工）。
+3. 会话历史：进入页面时加载已有消息；消息带身份标识（当前AI员工）。
 4. frontend/src 下新增组件测试（vitest）：给定 mock 响应渲染工具卡片与 Deny 卡片。
 
 约束：
@@ -152,7 +152,7 @@ pnpm --filter frontend build
 ## P3. T2-04 前端 Team 任务页（P1，Owner C）
 
 ```text
-你是数字员工平台 PoC 仓库的前端工程师（负责人角色：C 实习生/前端）。开始前先通读：
+你是AI员工平台 PoC 仓库的前端工程师（负责人角色：C 实习生/前端）。开始前先通读：
 - docs/API_CONTRACT.md §3.6（Team API：发起任务/任务详情/审批）
 - docs/ARCHITECTURE.md（L2 协作编排层）
 - docs/DEMO_SCENARIO.md 步骤 6-10（团队任务的演示预期）
@@ -188,7 +188,7 @@ pnpm --filter frontend build
 ## P4. T2-03 Sandbox Docker 真启动（P1，Owner B）
 
 ```text
-你是数字员工平台 PoC 仓库的安全/后端工程师（负责人角色：B 正式员工/安全与企业资源）。
+你是AI员工平台 PoC 仓库的安全/后端工程师（负责人角色：B 正式员工/安全与企业资源）。
 注意：负责人 B 对 Sandbox 概念较新，交付必须自解释、可逐步验收；不要引入超出本任务的设计。
 开始前先通读：
 - docs/SECURITY_BOUNDARY.md §7（Sandbox 边界：先 Policy 后执行；Docker 不可用自动 local 降级；Sandbox 不是权限来源）
@@ -251,7 +251,7 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 ## P5. T2-02 Harness 集成尝试（P1，Owner A/B）
 
 ```text
-你是数字员工平台 PoC 仓库的集成工程师（负责人角色：A/B 正式员工）。开始前先通读：
+你是AI员工平台 PoC 仓库的集成工程师（负责人角色：A/B 正式员工）。开始前先通读：
 - docs/API_CONTRACT.md §4（Runtime Adapter Interface：run(subject, task, context) -> RuntimeResult，
   mode = harness|demo|openclaw-stub|agentteams-stub）
 - docs/ARCHITECTURE.md（L3 Runtime 执行层）
@@ -289,7 +289,7 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 ## P6. T2-05 自动化测试扩展（P1，Owner D）
 
 ```text
-你是数字员工平台 PoC 仓库的测试工程师（负责人角色：D 实习生/Mock 与测试）。开始前先通读：
+你是AI员工平台 PoC 仓库的测试工程师（负责人角色：D 实习生/Mock 与测试）。开始前先通读：
 - docs/API_CONTRACT.md（全部接口）
 - PLANS.md T2-05 条目
 - backend/tests/ 现有用例（test_api / test_control_plane / test_enterprise_resources / test_chat）
@@ -326,7 +326,7 @@ pnpm --filter frontend build
 ## P7. T3-01 一键启动/重置脚本（P1，Owner D）
 
 ```text
-你是数字员工平台 PoC 仓库的脚本/基础设施工程师（负责人角色：D 实习生）。开始前先通读：
+你是AI员工平台 PoC 仓库的脚本/基础设施工程师（负责人角色：D 实习生）。开始前先通读：
 - README.md「快速开始」与 scripts/init_demo.ps1（现有实现）
 - docs/DEVELOPMENT_HANDOFF.md「当前如何启动」
 - PLANS.md T3-01 条目
@@ -361,7 +361,7 @@ Invoke-WebRequest http://127.0.0.1:8000/health
 ## P8. T3-02 黄金链路端到端验证（P0，Owner A）
 
 ```text
-你是数字员工平台 PoC 仓库的总集成人（负责人角色：A 正式员工/架构总装）。开始前先通读：
+你是AI员工平台 PoC 仓库的总集成人（负责人角色：A 正式员工/架构总装）。开始前先通读：
 - docs/DEMO_SCENARIO.md（10 步黄金链路与 AC-01~08）
 - PLANS.md T3-02 条目
 - docs/DEVELOPMENT_HANDOFF.md（问答冒烟三场景命令）
@@ -394,7 +394,7 @@ Invoke-WebRequest http://127.0.0.1:8000/health
 ## P9. T3-05 安全门禁复核（P0，Owner B）
 
 ```text
-你是数字员工平台 PoC 仓库的安全负责人（负责人角色：B 正式员工/安全与企业资源）。开始前先通读：
+你是AI员工平台 PoC 仓库的安全负责人（负责人角色：B 正式员工/安全与企业资源）。开始前先通读：
 - docs/SECURITY_BOUNDARY.md（全部，尤其 §8 仓库卫生与 §9 安全门禁）
 - docs/DEVELOPMENT_HANDOFF.md（Key 存放规则）
 - PLANS.md T3-05 条目
@@ -426,7 +426,7 @@ git status
 ## P10. T3-03/04/06 演示脚本与彩排（All）
 
 ```text
-你是数字员工平台 PoC 仓库的演示负责人（负责人角色：A 总装 + C 前端 + B 安全）。开始前先通读：
+你是AI员工平台 PoC 仓库的演示负责人（负责人角色：A 总装 + C 前端 + B 安全）。开始前先通读：
 - docs/DEMO_SCENARIO.md（10 步脚本、降级预案、当天 Checklist）
 - docs/SECURITY_BOUNDARY.md §6.5（演示话术：虚构数据 + P0-lite 声明）
 - PLANS.md T3-03/04/06 条目
@@ -455,7 +455,7 @@ git status
 ## P11. 契约变更 Prompt（需 A 批准，三处同步）
 
 ```text
-你是数字员工平台 PoC 仓库的架构负责人（负责人角色：A 正式员工）。本次是契约变更任务，必须谨慎。
+你是AI员工平台 PoC 仓库的架构负责人（负责人角色：A 正式员工）。本次是契约变更任务，必须谨慎。
 
 变更需求：{描述：例如新增字段/接口/状态值}
 影响面预估：{前端类型 / 后端 Schema / OpenAPI / 种子数据 / 测试}
@@ -486,7 +486,7 @@ pnpm --filter frontend typecheck
 ## P12. Bug 修复通用 Prompt
 
 ```text
-你是数字员工平台 PoC 仓库的工程师。请修复以下 Bug，并遵守仓库通用约束
+你是AI员工平台 PoC 仓库的工程师。请修复以下 Bug，并遵守仓库通用约束
 （先读 PLANS.md / docs/ARCHITECTURE.md / docs/API_CONTRACT.md / docs/SECURITY_BOUNDARY.md）。
 
 Bug 描述：{复现步骤 / 预期行为 / 实际行为 / 错误日志或报错码}
@@ -508,7 +508,7 @@ pnpm --filter frontend typecheck
 ## P13. Code Review 通用 Prompt
 
 ```text
-你是数字员工平台 PoC 仓库的资深 Reviewer（负责人角色：A/B 正式员工）。请对以下变更做 Code Review：
+你是AI员工平台 PoC 仓库的资深 Reviewer（负责人角色：A/B 正式员工）。请对以下变更做 Code Review：
 
 变更范围：{git diff 范围或文件清单}
 重点检查（按优先级）：
@@ -530,7 +530,7 @@ git diff --stat
 ## P14. Sprint 5 Secure Enterprise Integration（知识库 Adapter 安全接入 + 双模式切换）（Owner B，P0）
 
 ```text
-你是数字员工平台 PoC 仓库的安全与企业资源负责人（负责人角色：B 正式员工）。开始前先通读：
+你是AI员工平台 PoC 仓库的安全与企业资源负责人（负责人角色：B 正式员工）。开始前先通读：
 - docs/API_CONTRACT.md §5（Knowledge Adapter Interface）与 §6.3（Sandbox）
 - docs/SECURITY_BOUNDARY.md（数据分级、Secret/Config 边界、统一资源访问链、LLM 与外部服务边界）
 - docs/ARCHITECTURE.md（L5 隔离与资源层；统一资源访问链不可绕过）
@@ -625,7 +625,7 @@ $env:DWP_KB_MODE="mock"; .\.venv\Scripts\python.exe -m uvicorn app.main:app --po
 > 否则请使用 P17（先执行 P16 整理真实库）。
 
 ```text
-你是数字员工平台 PoC 仓库的 Mock 数据工程师（负责人 B 主责、D 配合）。开始前先读：
+你是AI员工平台 PoC 仓库的 Mock 数据工程师（负责人 B 主责、D 配合）。开始前先读：
 - mock-data/kb/ 现有 5 篇（格式与「虚构」声明样例）
 - backend/app/services/knowledge_adapter.py（Mock 解析规则：# 标题 → hits，只读文本）
 - mock-data/seed.json（knowledge_bases / employee_plugin_grants 结构）
@@ -687,7 +687,7 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 ## P16. 解压并整理真实知识库（Owner B，P0）
 
 ```text
-你是数字员工平台 PoC 仓库的文件整理工程师（负责人角色：B 正式员工）。开始前先读：
+你是AI员工平台 PoC 仓库的文件整理工程师（负责人角色：B 正式员工）。开始前先读：
 - .gitignore（secure-overlay/ 已忽略，真实数据只允许放这里）
 - docs/SECURITY_BOUNDARY.md（仓库卫生：真实数据不得入库）
 
@@ -731,7 +731,7 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 ## P17. 参考真实知识库生成模拟知识库（Owner B/D，P0，依赖 P16 + P18）
 
 ```text
-你是数字员工平台 PoC 仓库的 Mock 数据工程师（负责人 B 主责、D 配合）。开始前先读：
+你是AI员工平台 PoC 仓库的 Mock 数据工程师（负责人 B 主责、D 配合）。开始前先读：
 - secure-overlay/kb-real/SELECTED.json（P18 筛选结果：22 个代表性文件，本任务以此为准）
 - secure-overlay/kb-real/MANIFEST.json 与 organized/ 目录（真实知识库整理结果，仅作结构/主题参考）
 - backend/app/services/knowledge_adapter.py（Mock 解析规则：现为 # 标题 → hits，本次扩展为多格式解析）
@@ -797,7 +797,7 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 ## P18. 筛选真实知识库代表性文件（Owner B，P0，P17 的前置步骤）
 
 ```text
-你是数字员工平台 PoC 仓库的知识库筛选工程师（负责人角色：B 正式员工）。开始前先读：
+你是AI员工平台 PoC 仓库的知识库筛选工程师（负责人角色：B 正式员工）。开始前先读：
 - secure-overlay/kb-real/MANIFEST.json（整理清单：action / 分类 / 规范化文件名 / 版本说明）
 - secure-overlay/kb-real/organized/ 目录结构（只列目录与文件名，不读正文）
 
@@ -855,7 +855,7 @@ cd backend; .\.venv\Scripts\python.exe -m pytest tests -q
 ## P19. 企业知识库 RAG 检索改造（Qwen Embedding，Owner B，P0，依赖 P17）
 
 ```text
-你是数字员工平台 PoC 仓库的后端/检索工程师（负责人 B 正式员工）。开始前先读：
+你是AI员工平台 PoC 仓库的后端/检索工程师（负责人 B 正式员工）。开始前先读：
 - docs/API_CONTRACT.md §5（Knowledge Adapter Interface：search 统一签名与 hits 结构）
 - docs/SECURITY_BOUNDARY.md（Secret/Config 边界：API Key 只走环境变量；统一资源访问链）
 - docs/ARCHITECTURE.md（L5 隔离与资源层；业务模块禁止绕过 Gateway）

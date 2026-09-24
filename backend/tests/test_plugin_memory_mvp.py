@@ -4,7 +4,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from sqlalchemy import select
 
 from app import models
-from app.services.memory_service import five_complete_rounds
+from app.services.memory_service import five_complete_rounds, history_window
 
 
 def _login(client, username):
@@ -149,10 +149,104 @@ def test_zip_security_rejects_scripts_and_credentials(client):
     assert response.status_code == 422
 
 
-def test_five_rounds_window_keeps_last_five_pairs():
+def test_binding_partial_update_keeps_untouched_fields(client, db_session):
+    """只提交要改的字段：界面切一个开关不得静默重置审批策略/优先级/版本锁定。"""
+    db_session.add(models.Plugin(
+        id="test-mcp-plugin", name="测试 MCP", type="mcp", plugin_type="mcp",
+        status="active", current_version="1.0.0",
+    ))
+    # 版本锁定必须命中已发布版本，否则绑定会被拒绝（422）。
+    db_session.add(models.PluginVersion(
+        plugin_id="test-mcp-plugin", version="1.0.0", deployment_mode="external",
+        artifact_path="", sha256="test", manifest={"tools": []},
+        data_level="L1", review_status="approved", publish_status="published",
+        submitted_by="seed", reviewed_by="seed",
+    ))
+    db_session.commit()
+    _login(client, "admin")
+    created = client.post("/api/v1/admin/agent-plugin-bindings", json={
+        "plugin_id": "test-mcp-plugin", "target_agent_id": "AI-GENERAL",
+        "decision_mode": "approval", "priority": 7, "pinned_version": "1.0.0",
+    })
+    assert created.status_code == 201
+    binding_id = created.json()["id"]
+
+    updated = client.put(
+        f"/api/v1/admin/agent-plugin-bindings/{binding_id}", json={"admin_enabled": False},
+    )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["admin_enabled"] is False
+    assert body["decision_mode"] == "approval"
+    assert body["priority"] == 7
+    assert body["pinned_version"] == "1.0.0"
+
+    # 显式传 null 才表示清空版本锁定
+    cleared = client.put(
+        f"/api/v1/admin/agent-plugin-bindings/{binding_id}", json={"pinned_version": None},
+    )
+    assert cleared.json()["pinned_version"] is None
+    assert cleared.json()["decision_mode"] == "approval"
+
+    # 同一 (插件, AI员工) 不可重复绑定；解除授权后可再建
+    assert client.post("/api/v1/admin/agent-plugin-bindings", json={
+        "plugin_id": "test-mcp-plugin", "target_agent_id": "AI-GENERAL",
+    }).status_code == 409
+    assert client.delete(f"/api/v1/admin/agent-plugin-bindings/{binding_id}").status_code == 204
+    assert client.post("/api/v1/admin/agent-plugin-bindings", json={
+        "plugin_id": "test-mcp-plugin", "target_agent_id": "AI-GENERAL",
+    }).status_code == 201
+
+
+def test_binding_update_rejects_unknown_target_and_mode(client, db_session):
+    db_session.add(models.Plugin(id="test-mcp-plugin2", name="测试 MCP 2", type="mcp"))
+    db_session.commit()
+    _login(client, "admin")
+    created = client.post("/api/v1/admin/agent-plugin-bindings", json={
+        "plugin_id": "test-mcp-plugin2", "target_agent_id": "AI-GENERAL",
+    }).json()
+    url = f"/api/v1/admin/agent-plugin-bindings/{created['id']}"
+    assert client.put(url, json={"target_agent_id": "NOT-A-REAL-EMPLOYEE"}).status_code == 404
+    assert client.put(url, json={"decision_mode": "whatever"}).status_code == 422
+    # 校验失败不得留下半截修改
+    unchanged = db_session.get(models.AgentPluginBinding, created["id"])
+    db_session.refresh(unchanged)
+    assert unchanged.target_agent_id == "AI-GENERAL"
+    assert unchanged.decision_mode == "allow"
+
+
+def test_history_window_keeps_last_eight_rounds():
     history = []
-    for index in range(1, 7):
+    for index in range(1, 11):
         history += [{"role": "user", "content": f"q{index}"}, {"role": "assistant", "content": f"a{index}"}]
     history.append({"role": "user", "content": "current goal"})
     window = five_complete_rounds(history)
-    assert len(window) == 10 and window[0]["content"] == "q2" and window[-1]["content"] == "a6"
+    # 窗口放宽到 8 轮（16 条）：最早两轮被丢弃；末条与 goal 相同，剔除避免重复注入
+    assert len(window) == 16 and window[0]["content"] == "q3" and window[-1]["content"] == "a10"
+
+
+def test_history_window_keeps_every_reply_in_a_turn():
+    """一个 user 后跟多条 assistant（群聊多成员回复）不再被静默丢弃。"""
+    history = [
+        {"role": "user", "content": "帮我准备入职材料"},
+        {"role": "assistant", "content": "收到，我来准备。"},
+        {"role": "assistant", "content": "材料清单已生成。"},
+        {"role": "user", "content": "再补充一份体检指引"},
+        {"role": "assistant", "content": "已补充体检指引。"},
+    ]
+    window = five_complete_rounds(history)
+    assert [item["content"] for item in window] == [
+        "帮我准备入职材料", "收到，我来准备。", "材料清单已生成。",
+        "再补充一份体检指引", "已补充体检指引。",
+    ]
+
+
+def test_history_window_drops_earliest_turns_over_char_budget():
+    history = [
+        {"role": "user", "content": "旧" * 30},
+        {"role": "assistant", "content": "答" * 30},
+        {"role": "user", "content": "新问题"},
+        {"role": "assistant", "content": "新回答"},
+    ]
+    window = history_window(history, max_chars=10)
+    assert [item["content"] for item in window] == ["新问题", "新回答"]

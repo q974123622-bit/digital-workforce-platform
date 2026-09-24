@@ -5,6 +5,7 @@ import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type {
   Conversation,
+  ConversationSearchHit,
   ConversationSummary,
   Employee,
   Skill,
@@ -342,7 +343,9 @@ describe('WorkplacePage', () => {
 
     expect(await screen.findByText('张三的数字分身')).toBeInTheDocument();
     expect(screen.getByText('开始和我的分身聊聊吧')).toBeInTheDocument();
-    expect(screen.getByText('我的分身')).toBeInTheDocument();
+    // 分身身份由段头表达（会话行内的 Tag 被 .conversation-row .ant-tag 全局隐藏，已移除）。
+    expect(screen.getByRole('heading', { name: /我的分身/ })).toHaveTextContent('1');
+    expect(screen.getByRole('heading', { name: /AI员工/ })).toHaveTextContent('1');
     expect(screen.getByText('新员工入职助手')).toBeInTheDocument();
     expect(screen.getByText('你好呀，需要我帮忙吗？')).toBeInTheDocument();
   });
@@ -395,6 +398,12 @@ describe('WorkplacePage', () => {
     fireEvent.click(await screen.findByText('新员工入职助手'));
     expect(await screen.findByText('你好呀，需要我帮忙吗？')).toBeInTheDocument();
     expect(screen.getByText('你好')).toBeInTheDocument();
+
+    // 标题栏：类型徽章表达身份，副标题只留状态（类型不再重复出现）。
+    const headerBadge = view.container.querySelector('.type-badge--header');
+    expect(headerBadge).not.toBeNull();
+    expect(headerBadge).toHaveTextContent('AI员工');
+    expect(screen.getByText('当前可用')).toBeInTheDocument();
 
     const input = screen.getByPlaceholderText('发消息…');
     fireEvent.change(input, { target: { value: '帮我准备入职' } });
@@ -484,10 +493,10 @@ describe('WorkplacePage', () => {
             knowledge_base_id: 'KB-PUBLIC', target_employee_ids: [], example_prompts: ['请查询公共制度。'],
           },
           {
-            id: 'platform:delegate', name: '向数字员工求助', kind: 'delegation', source_type: 'platform_tool',
+            id: 'platform:delegate', name: '向AI员工求助', kind: 'delegation', source_type: 'platform_tool',
             description: '分身不会时向岗位员工委派一次', actions: ['delegate'], status: 'available', decision: 'allow',
             reason: '委派深度固定为 1', authorized: true, installed: true, healthy: true, data_level: null,
-            knowledge_base_id: null, target_employee_ids: ['AI-GENERAL'], example_prompts: ['请咨询数字员工。'],
+            knowledge_base_id: null, target_employee_ids: ['AI-GENERAL'], example_prompts: ['请咨询AI员工。'],
           },
         ],
       },
@@ -500,7 +509,7 @@ describe('WorkplacePage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '资料' }));
     expect(await screen.findByText('报销制度速答')).toBeInTheDocument();
     expect(await screen.findByText('公共知识')).toBeInTheDocument();
-    expect(screen.getByText('向数字员工求助')).toBeInTheDocument();
+    expect(screen.getByText('向AI员工求助')).toBeInTheDocument();
 
     // 添加个人工作方法
     fireEvent.click(screen.getByRole('button', { name: /添加工作方法/ }));
@@ -528,6 +537,162 @@ describe('WorkplacePage', () => {
       const body = (call as [RequestInfo | URL, RequestInit | undefined] | undefined)?.[1]?.body;
       expect(JSON.parse(String(body))).toEqual({ status: 'disabled' });
     });
+  });
+
+  it('工具缺凭据：执行轨迹里弹出补全气泡，提交后自动续跑', async () => {
+    const pendingRequest = {
+      id: 'TI-1', conversation_id: 'CONV-1', execution_id: 'EX-INPUT', trace_id: 'T-INPUT',
+      plugin_id: 'xyzq-ehome-mcp', tool_name: 'getEmpCardBalance',
+      fields: [{
+        key: 'X-MCP-JWT', label: '兴证e家用户令牌', kind: 'secret', required: true,
+        hint: '从兴证e家 App 复制你的个人令牌', source: 'user_secret', masked: '', reason: 'missing',
+      }],
+      reason: 'missing', status: 'pending', submitted_values: {}, resolved_at: null,
+      resolved_by: '', created_at: '2026-09-22T10:00:00',
+    };
+    // 提交后续跑会打开 SSE；jsdom 没有 EventSource，给个静默实现即可（本用例只关心提交与刷新）。
+    class SilentEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      readyState = 1;
+      withCredentials = true;
+      url = '';
+      constructor(url: string | URL) {
+        this.url = String(url);
+      }
+      addEventListener() {}
+      removeEventListener() {}
+      dispatchEvent() { return true; }
+      close() { this.readyState = 2; }
+    }
+    vi.stubGlobal('EventSource', SilentEventSource);
+    let submitted = false;
+    const fetchMock = stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [conv1Summary],
+      '/api/v1/conversations/CONV-1/runs/active': null,
+      '/api/v1/conversations/CONV-1/runs/history': [{
+        execution: {
+          id: 'EX-INPUT', conversation_id: 'CONV-1', trigger_message_seq: 1,
+          trace_id: 'T-INPUT', primary_employee_id: 'VE-0001', status: 'completed',
+          stage: 'completed', error_code: '', error_message: '', retryable: false,
+          started_at: '2026-09-22T10:00:00', updated_at: '2026-09-22T10:00:05',
+          completed_at: '2026-09-22T10:00:05',
+        },
+        events: [
+          {
+            event_seq: 1, event_type: 'queued', actor_employee_id: 'VE-0001', stage: 'queued',
+            status: 'queued', title: '任务已进入执行队列', detail: '', knowledge_base_id: null,
+            target_agent_id: null, hit_count: null, payload: {}, created_at: '2026-09-22T10:00:00',
+          },
+          {
+            event_seq: 2, event_type: 'input_required', actor_employee_id: 'VE-0001',
+            stage: 'external_mcp', status: 'running', title: '需要你补充信息',
+            detail: '兴证e家需要你补充：X-MCP-JWT', knowledge_base_id: null, target_agent_id: null,
+            hit_count: null, payload: { input_request_id: 'TI-1' }, created_at: '2026-09-22T10:00:03',
+          },
+        ],
+      }],
+      '/api/v1/conversations/CONV-1/input-requests': () => (
+        submitted
+          ? [{ ...pendingRequest, status: 'submitted', submitted_values: { 'X-MCP-JWT': '****hYB0' } }]
+          : [pendingRequest]
+      ),
+      '/api/v1/conversations/CONV-1': conv1,
+      '/api/v1/conversations/CONV-1/runs/EX-INPUT/input': () => {
+        submitted = true;
+        return { execution_id: 'EX-INPUT-2', trigger_message_seq: 3, conversation: conv1 };
+      },
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText('新员工入职助手'));
+
+    // 该执行已完成 → 轨迹默认折叠；补全气泡不能放在折叠区里，否则用户根本看不到。
+    expect(await screen.findByText('需要补充信息')).toBeInTheDocument();
+    expect(screen.getByText('X-MCP-JWT')).toBeInTheDocument();
+    expect(screen.getByText('从兴证e家 App 复制你的个人令牌')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText('粘贴你的个人凭据'), {
+      target: { value: 'jwt-value-from-employee' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '提交并继续' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) =>
+        String(url).endsWith('/api/v1/conversations/CONV-1/runs/EX-INPUT/input'),
+      );
+      expect(call).toBeTruthy();
+      const body = (call as [RequestInfo | URL, RequestInit | undefined] | undefined)?.[1]?.body;
+      expect(JSON.parse(String(body))).toEqual({
+        actor_no: 'E10281', request_id: 'TI-1', values: { 'X-MCP-JWT': 'jwt-value-from-employee' },
+      });
+    });
+    // 提交后刷新为已提交态，卡片收起为结果条（明文不回显）
+    expect(await screen.findByText('已补充 X-MCP-JWT · 已继续执行')).toBeInTheDocument();
+  });
+
+  it('补全气泡可以忽略：落库为 cancelled，刷新后不再弹出', async () => {
+    class SilentEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      readyState = 1;
+      withCredentials = true;
+      url = '';
+      constructor(url: string | URL) {
+        this.url = String(url);
+      }
+      addEventListener() {}
+      removeEventListener() {}
+      dispatchEvent() { return true; }
+      close() { this.readyState = 2; }
+    }
+    vi.stubGlobal('EventSource', SilentEventSource);
+    const fetchMock = stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [conv1Summary],
+      '/api/v1/conversations/CONV-1/runs/active': null,
+      '/api/v1/conversations/CONV-1/runs/history': [{
+        execution: {
+          id: 'EX-INPUT', conversation_id: 'CONV-1', trigger_message_seq: 1,
+          trace_id: 'T-INPUT', primary_employee_id: 'VE-0001', status: 'completed',
+          stage: 'completed', error_code: '', error_message: '', retryable: false,
+          started_at: '2026-09-22T10:00:00', updated_at: '2026-09-22T10:00:05',
+          completed_at: '2026-09-22T10:00:05',
+        },
+        events: [],
+      }],
+      '/api/v1/conversations/CONV-1/input-requests': [{
+        id: 'TI-9', conversation_id: 'CONV-1', execution_id: 'EX-INPUT', trace_id: 'T-INPUT',
+        plugin_id: 'xyzq-ehome-mcp', tool_name: 'getEmpCardBalance',
+        fields: [{
+          key: 'X-MCP-JWT', label: '兴证e家用户令牌', kind: 'secret', required: true,
+          hint: '从兴证e家 App 复制你的个人令牌', source: 'user_secret', masked: '', reason: 'missing',
+        }],
+        reason: 'missing', status: 'pending', submitted_values: {}, resolved_at: null,
+        resolved_by: '', created_at: '2026-09-22T10:00:00',
+      }],
+      '/api/v1/conversations/CONV-1': conv1,
+      '/api/v1/conversations/CONV-1/runs/EX-INPUT/input-requests/TI-9/ignore': {
+        id: 'TI-9', status: 'cancelled',
+      },
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText('新员工入职助手'));
+
+    expect(await screen.findByText('需要补充信息')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '忽略' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) =>
+        String(url).endsWith('/api/v1/conversations/CONV-1/runs/EX-INPUT/input-requests/TI-9/ignore'),
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call as [RequestInfo | URL, RequestInit | undefined] | undefined)?.[1]?.body)))
+        .toEqual({ actor_no: 'E10281' });
+    });
+    expect(await screen.findByText(/已忽略本次信息补充/)).toBeInTheDocument();
   });
 
   it('退役旧入口：不再暴露使用指南按钮', async () => {
@@ -657,10 +822,12 @@ describe('WorkplacePage', () => {
         return waitingConv;
       },
     });
-    renderPage();
+    const view = renderPage();
 
     fireEvent.click(await screen.findByText('新员工入职协作（3）'));
     await screen.findByText('打个招呼，开始今天的协作吧。');
+    // 群聊标题栏固定标注「协作空间」。
+    expect(view.container.querySelector('.type-badge--header')).toHaveTextContent('协作空间');
     fireEvent.change(screen.getByPlaceholderText('描述一个任务，我来拆解安排给同事们…'), {
       target: { value: '请持续执行入职协作测试' },
     });
@@ -698,5 +865,40 @@ describe('WorkplacePage', () => {
     expect(await screen.findByText('打个招呼，开始今天的协作吧。')).toBeInTheDocument();
     expect(screen.queryByText('整理新员工入职准备清单')).not.toBeInTheDocument();
   });
+
+  it('按消息正文搜索：命中片段 → 点击 → 打开会话并高亮那条消息', async () => {
+    const searchHit: ConversationSearchHit = {
+      conversation: conv1Summary,
+      matched_in: 'content',
+      match_count: 1,
+      match_seq: 2,
+      match_role: 'assistant',
+      match_speaker: '新员工入职助手',
+      snippet: '…需要我帮忙吗？…',
+    };
+    const fetchMock = stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [conv1Summary],
+      '&limit=20': [searchHit],
+      '/api/v1/conversations/CONV-1': conv1,
+    });
+    const view = renderPage();
+
+    fireEvent.change(await screen.findByPlaceholderText('搜索会话'), { target: { value: '帮忙' } });
+
+    // 250ms 防抖之后才会真的打检索接口，关键字按 URL 编码透传。
+    const hitMeta = await screen.findByText('1 处提到');
+    expect(screen.getByText('帮忙', { selector: 'mark' })).toBeInTheDocument();
+    const searchCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/conversations/search'));
+    expect(String(searchCall?.[0])).toContain('q=%E5%B8%AE%E5%BF%99');
+
+    // 命中行是 `div role="button"`，点行内文本（事件冒泡到行）。
+    fireEvent.click(hitMeta);
+
+    expect(await screen.findByText('你好呀，需要我帮忙吗？')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(view.container.querySelector('.message-row--focus')).toBeTruthy();
+    });
+  }, 10000);
 
 });

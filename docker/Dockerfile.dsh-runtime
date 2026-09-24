@@ -1,0 +1,86 @@
+# ============================================================================
+# harness 运行时镜像：dwp-dsh:rc6 + Python 3.11（**完全离线构建**）
+#
+# 为什么需要它
+#   SkillHub 技能的 SKILL.md 大量是 `python scripts/...`、`pandoc ...` 这类命令行用法，
+#   脚本就是技能的实际执行体；而 L0 底座镜像 dwp-dsh:rc6（node:22-slim，Debian 12）
+#   里只有 bash/node，没有 python3。
+#
+# 为什么不用 apt
+#   目标环境（内网/离线堡垒机）不保证有可用的 Debian 源。这里改为从本地已有的
+#   dwp-backend 镜像复制 Python 运行时（两者同为 Debian 12 bookworm，ABI 一致），
+#   构建过程不联网、不装包；底座缺的系统库（libsqlite3/libssl/libxslt…）在构建期
+#   自动探测并补齐，只复制「底座确实没有」的那几个，避免覆盖底座自带库。
+#
+# 构建（在仓库根目录执行）：
+#   docker build -f docker/Dockerfile.dsh-runtime -t dwp-dsh:rc6-py .
+#
+# 可调构建参数：
+#   PY_SOURCE_IMAGE            Python 来源镜像（默认 dwp-backend:0.4.0-offline）
+#   DSH_BASE_IMAGE             L0 底座镜像（默认 dwp-dsh:rc6）
+#   DWP_DSH_INCLUDE_SITE_PACKAGES
+#                              是否连同 site-packages 一起复制（默认 1）。
+#                              置 0 只带标准库，镜像更小但 `import lxml` 这类
+#                              第三方依赖会失败（技能脚本多数需要）。
+# ============================================================================
+ARG PY_SOURCE_IMAGE=dwp-backend:0.4.0-offline
+ARG DSH_BASE_IMAGE=dwp-dsh:rc6
+
+# ---- 探测阶段：记录底座镜像已自带哪些 .so（按 SONAME）----
+FROM ${DSH_BASE_IMAGE} AS baseprobe
+RUN ldconfig -p | awk '{print $1}' | sort -u > /base-libs.txt
+
+# ---- 导出阶段：把 Python 运行时整理成待复制的目录树 ----
+FROM ${PY_SOURCE_IMAGE} AS py
+ARG DWP_DSH_INCLUDE_SITE_PACKAGES=1
+COPY --from=baseprobe /base-libs.txt /tmp/base-libs.txt
+
+RUN set -eux; \
+    mkdir -p /py-export/bin /py-export/lib /py-export/syslibs; \
+    cp -a /usr/local/lib/python3.11 /py-export/lib/python3.11; \
+    if [ "${DWP_DSH_INCLUDE_SITE_PACKAGES}" != "1" ]; then \
+        rm -rf /py-export/lib/python3.11/site-packages; \
+        mkdir -p /py-export/lib/python3.11/site-packages; \
+    fi; \
+    find /py-export/lib/python3.11 -name '__pycache__' -type d -prune -exec rm -rf {} + ; \
+    cp -a /usr/local/lib/libpython3.11.so.1.0 /py-export/lib/; \
+    cp -a /usr/local/bin/python3.11 /py-export/bin/; \
+    python3 -V > /py-export/PYTHON_VERSION
+
+# 补齐底座缺少的系统库：只复制 SONAME 不在底座缓存里的，绝不覆盖底座自带库。
+RUN set -eux; \
+    ldd $(find /usr/local/lib/python3.11 -type f -name '*.so*') 2>/dev/null \
+        | awk '/=> \// {print $3}' | sort -u > /tmp/deps.txt; \
+    while read -r lib; do \
+        [ -n "$lib" ] || continue; \
+        name=$(basename "$lib"); \
+        if grep -qx "$name" /tmp/base-libs.txt; then continue; fi; \
+        cp -L "$lib" /py-export/syslibs/; \
+    done < /tmp/deps.txt; \
+    echo "== 需要补入底座的系统库 =="; ls /py-export/syslibs
+
+# ---- 目标镜像：L0 底座 + Python 运行时 ----
+FROM ${DSH_BASE_IMAGE}
+
+COPY --from=py /py-export/lib/python3.11 /usr/local/lib/python3.11
+COPY --from=py /py-export/lib/libpython3.11.so.1.0 /usr/local/lib/libpython3.11.so.1.0
+COPY --from=py /py-export/bin/python3.11 /usr/local/bin/python3.11
+COPY --from=py /py-export/PYTHON_VERSION /usr/local/share/dwp-python-version
+COPY --from=py /py-export/syslibs /usr/local/lib/dwp-python-deps
+
+RUN set -eux; \
+    ln -sf python3.11 /usr/local/bin/python3; \
+    ln -sf python3.11 /usr/local/bin/python; \
+    ln -sf libpython3.11.so.1.0 /usr/local/lib/libpython3.11.so; \
+    echo /usr/local/lib/dwp-python-deps > /etc/ld.so.conf.d/dwp-python.conf; \
+    ldconfig; \
+    # 自检：标准库与脚本常用扩展模块必须能导入，否则镜像直接构建失败（fail fast）
+    python3 -c "import sys, ssl, zlib, sqlite3, hashlib, json, decimal, unicodedata, \
+lzma, bz2, readline, ctypes, uuid, curses, dbm.gnu, multiprocessing, \
+xml.etree.ElementTree, xml.parsers.expat, socket, select, array, math, binascii, \
+datetime, fcntl, termios, resource, grp, pwd, mmap, subprocess, \
+zipfile, tarfile, shutil, pathlib, re, random, tempfile, logging, argparse; \
+print('python', sys.version.split()[0], 'stdlib ok')"
+
+# 保持底座镜像的入口约定；DSH_PERMISSION_MODE 由 compose 按需覆盖
+ENTRYPOINT ["dsh"]

@@ -48,9 +48,9 @@ Employee Identity
 |---|---|---|---|---|---|
 | GET | `/employees` | ✅ | 员工列表 | query: `type`(twin/virtual/rpa), `department` | `EmployeeDto[]` |
 | GET | `/employees/{employee_no}` | ✅ | 员工详情 | — | `EmployeeDto` |
-| POST | `/employees` | ✅ | 创建数字员工 | `EmployeeCreateDto` | 201 `EmployeeDto` |
-| PUT | `/employees/{employee_no}` | ✅ | 更新数字员工 | `EmployeeUpdateDto` | `EmployeeDto` |
-| DELETE | `/employees/{employee_no}` | ✅ | 删除数字员工 | — | 204 |
+| POST | `/employees` | ✅ | 创建AI员工 | `EmployeeCreateDto` | 201 `EmployeeDto` |
+| PUT | `/employees/{employee_no}` | ✅ | 更新AI员工 | `EmployeeUpdateDto` | `EmployeeDto` |
+| DELETE | `/employees/{employee_no}` | ✅ | 删除AI员工 | — | 204 |
 | PUT | `/employees/{employee_no}/plugins` | 📋 | 插件授权 | `{grants: [{plugin_id, action, decision_mode}]}` | 200 `{ok: true}` |
 | PUT | `/employees/{employee_no}/security` | 📋 | 安全配置 | `{location, internet, max_data_level, allowed_domains}` | 200 `{ok: true}` |
 | POST | `/employees/{employee_no}/chat` | ✅ | 单聊（Sprint 4，整段 JSON 返回，SSE 为弹性项） | `{message, session_id?}` | `{session_id, trace_id, message, tool_cards[], policy_denied?}` |
@@ -141,7 +141,7 @@ SSE 事件类型（固定枚举）：
 
 | 方法 | 路径 | 说明 | 关键请求 | 关键响应 |
 |---|---|---|---|---|
-| GET | `/workplace?actor_no=` | 职场聚合：本人信息 + 我的分身 + 可用数字员工（仅 virtual/rpa）+ 技能 + 最近会话 | — | `WorkplaceHomeDto` |
+| GET | `/workplace?actor_no=` | 职场聚合：本人信息 + 我的分身 + 可用AI员工（仅 virtual/rpa）+ 技能 + 最近会话 | — | `WorkplaceHomeDto` |
 | POST | `/skills` | 上传技能（文本/Markdown） | `{actor_no, name, description?, content?}` | 201 `SkillDto` |
 | GET | `/skills?actor_no=` | 我的技能列表 | — | `SkillDto[]` |
 | PUT | `/skills/{skill_id}?actor_no=` | 更新本人的技能（含 status 启停） | `{name?, description?, content?, status?}` | `SkillDto` |
@@ -157,7 +157,8 @@ SSE 事件类型（固定枚举）：
 | GET | `/conversations/{id}` | 会话详情（参与者 + 按 seq 消息） | — | `ConversationDto` |
 | POST | `/conversations/{id}/messages` | 统一发送入口：私聊单成员回复；群聊先由分身判断「任务/闲聊」——任务型走拆解→指派→Gateway 执行→审批→Leader 汇总，闲聊仅一位成员回复（点名某成员则那位回，否则分身回） | `{actor_no, content}` | `ConversationDto` |
 | POST | `/conversations/{id}/participants` | 添加群成员（仅 virtual/rpa） | `{employee_no}` | `ConversationDto` |
-| DELETE | `/conversations/{id}?actor_no=` | 清空会话（删除消息与协作任务，演示清洁用） | — | `{ok: true}` |
+| POST | `/conversations/{id}/clear?actor_no=` | 清空会话内容：物理删除消息、协作任务、执行轨迹（执行行+进度事件）、附件（附件行+解析片段+处理任务+磁盘文件）与会话记忆摘要，保留会话卡片，`generation` 自增作防御性隔离 | — | `{ok: true}` |
+| DELETE | `/conversations/{id}?actor_no=` | 删除会话卡片：执行与「清空」完全相同的内容物理清除，再置 `hidden_at` 使卡片从列表消失（详情/附件/执行接口返回 404）；私聊再次发起时复用原会话并恢复可见，群聊不可复活 | — | `{ok: true}` |
 
 `ConversationDto`：`{id, kind: direct|group, title, owner_human_no, participants: [{employee_no, name, role, employee_type}], messages: [{participant_no, participant_name, role, content, tool_cards, seq}], tasks: TaskRunDto[], updated_at}`；`TaskRunDto.trigger_message_seq` 用于任务卡片内联到触发消息之后。
 技能注入：分身（twin）对话 system prompt 自动追加「【你掌握的技能】」段落（仅本人可见，内容上限 4000 字符）。
@@ -361,6 +362,7 @@ Sandbox 请求：`{"employee_id", "task_id", "command", "mount_dir", "network", 
 | 2026-08-19 | v1.1 兼容扩展（Sprint 7）：新增 §3.8 职场 API（WorkplaceHomeDto / SkillDto / ConversationDto）；新接口显式传 actor_no；群聊消息走顺序编排并复用 Policy→Gateway→审计 | A | 本文件 / shared-schema / schemas / routers/workplace.py |
 | 2026-08-19 | v1.1 实现更新（Sprint 7 C 档）：`POST /conversations/{id}/messages` 群聊改为「分身判断任务/闲聊」；任务型接入 TeamTaskOrchestrator（拆解/指派/审批/汇总），闲聊单成员回复；ConversationDto 增加 tasks；新增 SubtaskExecutor 接口 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py |
 | 2026-08-19 | v1.1 实现更新（Sprint 7 会话管理）：TaskRunDto 增加 trigger_message_seq（任务卡内联）；移除分身受理气泡；子任务结果格式化为可读文本；同请求去重；新增 DELETE /conversations/{id} 清空会话；会话摘要预览显示最新任务状态 | A | 本文件 / shared-schema / schemas / services/team_orchestrator.py / services/group_chat.py / routers/workplace.py |
+| 2026-09-15 | 会话清除语义变更：「清空」迁至 `POST /conversations/{id}/clear` 并升级为物理清除（消息/任务/执行轨迹/事件/附件行/解析片段/处理任务/磁盘文件/会话记忆摘要）；`DELETE /conversations/{id}` 改为删除会话卡片（软隐藏 hidden_at，私聊可复活，群聊不可）；已隐藏会话的详情/附件/执行接口返回 404 | A | 本文件 / models.py / database.py / schemas.py / routers/workplace.py / routers/attachments.py / services/conversation_cleanup.py / services/attachments.py |
 # 统一插件与记忆接口（MVP）
 
 员工插件：

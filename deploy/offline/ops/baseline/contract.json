@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "description": "dsh 合成配置树安全契约（版本无关不变量）。升级门禁逐条比对；任何一条不通过即拒绝升级。",
+  "why_version_independent": "只约束「安全边界」与「关键通道」，不绑定具体版本的工具数量，因此上游新增工具不会误报，但新增的启用态工具会被 enabled_tool_allowlist 捕获。",
+
+  "top_level_min_entries": 70,
+
+  "must_be_disabled": [
+    "tool-pwsh",
+    "tool-jobs",
+    "tool-skill",
+    "tool-subagent-control",
+    "tool-subagent-list-agents",
+    "tool-subagent",
+    "tool-subagent-fork",
+    "tool-workflow",
+    "tool-ralph",
+    "tool-web"
+  ],
+
+  "dangling_patch_ids_allowlist": [
+    "tool-subagent-report",
+    "tool-str-replace-editor"
+  ],
+
+  "must_be_enabled": [
+    "dwp-platform-tools",
+    "approval",
+    "sandbox-policy",
+    "system-prompt",
+    "agent-default-model",
+    "llm-deepseek",
+    "session-telemetry-otel"
+  ],
+
+  "enabled_tool_allowlist": [
+    "tool-result-pruner",
+    "tool-bash",
+    "tool-fs",
+    "tool-fs-search",
+    "tool-todo",
+    "tool-goal"
+  ],
+
+  "enabled_tool_allowlist_why": "tool-bash/tool-fs 为「技能脚本可执行」而有意放开（2026-09-22）；tool-fs-search/tool-todo/tool-goal 为「本地干活」而放开（2026-09-23）：长任务需要自己找文件、自己记进度与目标。五项都是纯本地能力，无外部副作用，边界由 DSH_PERMISSION_MODE=workspace-write + working_dir=/workspace 约束，容器内其他路径不可写。tool-web（无外网）/tool-skill（需联网装包，且与平台文件复制投放两套机制冲突）/tool-jobs（后台进程跨轮存活，与 per-employee 锁冲突）/subagent 全家（共享 /workspace 会互相覆盖）继续禁用。新增的启用态 tool-* 仍会被本白名单捕获。",
+
+  "timeout_invariant": {
+    "harness_timeout_role": 900,
+    "harness_timeout_twin": 1200,
+    "delegation_slot_wait_seconds": 120,
+    "buffer_seconds": 180,
+    "note": "这五个数字（含 profile 的 toolCallTimeoutMs）互相约束，唯一真相是 backend/app/services/config.py 顶部的说明。门禁校验：profile 的 toolCallTimeoutMs/1000 >= delegation_slot_wait + max(role, twin) + buffer，否则被委派方的执行还没跑完、上游工具调用就先超时，表现为「委派静默失败、发起方仍返回 completed」。backend/tests/test_harness_timeouts.py 会校验本声明值与代码实际值一致。"
+  },
+
+  "model_binding": {
+    "entry": "agent-default-model",
+    "config_path": ["config", "model"],
+    "expected_env": "DEEPSEEK_MODEL",
+    "fallback": "ascend-qwen3.6-27b"
+  },
+
+  "mcp_channel": {
+    "entry": "dwp-platform-tools",
+    "require_name": "@deepseek-ai/dsh-mcp-client",
+    "require_transport": "streamable-http",
+    "require_config_keys": ["url", "headers", "toolCallTimeoutMs"]
+  },
+
+  "known_baseline": {
+    "dsh-0.1.0-rc.6": {
+      "top_level_count": 82,
+      "disabled_count": 19,
+      "note": "2026-09-17 实测：顶层 82 条目 / 19 项禁用 / 无重复 id / 唯一启用 tool-* 为 tool-result-pruner；独有的 2 项禁用（tool-subagent-report / tool-str-replace-editor）在 rc.1 被上游移除"
+    },
+    "dsh-0.1.5-rc.1": {
+      "top_level_count": 88,
+      "disabled_count": 12,
+      "note": "2026-09-23 实测：顶层 88 条目 / 12 项禁用 / 无重复 id / 启用的 tool-* 为 tool-result-pruner + tool-bash + tool-fs + tool-fs-search + tool-todo + tool-goal（技能脚本可执行 + 本地干活，有意放开）；patch 里两条悬空项（tool-subagent-report / tool-str-replace-editor）已删除，stderr 不再有 patch warning"
+    }
+  }
+}

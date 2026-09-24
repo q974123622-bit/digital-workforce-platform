@@ -12,7 +12,8 @@ from typing import Any
 from .. import models
 
 CONTRACT_VERSION = "1.0"
-PLUGIN_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http"}
+# skill 也是合法的 plugin.type：技能以 Plugin 为载体统一治理，但不是网关可执行能力。
+PLUGIN_TYPES = {"knowledge", "mcp", "workflow", "rpa", "http", "skill"}
 PLUGIN_ACTIONS = {
     "knowledge": ["read"],
     "mcp": ["execute"],
@@ -61,6 +62,22 @@ def _default_plugin_meta(plugin: models.Plugin) -> dict[str, Any]:
 
 
 def plugin_contract(plugin: models.Plugin) -> CapabilityContract:
+    if plugin.plugin_type == "skill":
+        # 技能是只读注入型能力：由 prompt 注入 / load_skill 按需加载，绝不进入网关执行。
+        return CapabilityContract(
+            contract_version=CONTRACT_VERSION,
+            id=plugin.id,
+            name=plugin.name,
+            source_type="plugin",
+            kind="skill",
+            description=plugin.description,
+            status=plugin.status,
+            executable=False,
+            actions=[],
+            input_schema={"type": "object", "properties": {}},
+            executor={"primary": "prompt", "max_chars": 4000},
+            owner_human_no=plugin.owner_human_no,
+        )
     meta = _default_plugin_meta(plugin)
     supplied = plugin.runtime_meta or {}
     for key in ("contract_version", "actions", "input_schema"):

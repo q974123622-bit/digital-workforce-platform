@@ -16,7 +16,7 @@ from . import config
 from .capability_contract import plugin_contract
 from .capability_executor import execute_capability
 from .identity import resolve_identity
-from .knowledge_adapter import select_adapter
+from .knowledge_adapter import KnowledgeSourceUnavailable, select_adapter
 from .knowledge_registry import resolve as resolve_knowledge_base
 from .policy import DECISION_ALLOW, DECISION_APPROVAL, DECISION_DENY, ResourceRef, evaluate
 from .runtime_adapter import HarnessExecutionContext, RuntimeAdapter
@@ -52,14 +52,24 @@ def write_audit(
 
 
 def _result_summary(data: object) -> str:
-    """Internal retrieval audits contain metadata only, never query or hit content."""
+    """Internal retrieval audits contain metadata only, never query or hit content.
+
+    命中标题（引擎的 docnm_kwd）是文档名而非正文，保留它是为了让前端能展示到
+    「文档级」来源；检索词与命中片段（snippet）一律丢弃。
+    """
     if isinstance(data, dict) and data.get("source") == "internal" and "knowledge_base_id" in data:
         hits = data.get("hits")
+        documents = [
+            {"title": str(hit.get("title"))}
+            for hit in (hits if isinstance(hits, list) else [])
+            if isinstance(hit, dict) and hit.get("title")
+        ][:5]
         return json.dumps(
             {
                 "source": data.get("source"),
                 "knowledge_base_id": data.get("knowledge_base_id"),
                 "hit_count": len(hits) if isinstance(hits, list) else 0,
+                "documents": documents,
             },
             ensure_ascii=False,
         )
@@ -81,7 +91,7 @@ def invoke_plugin(
 ) -> dict:
     subject = resolve_identity(db, employee_id)
     if subject is None:
-        raise HTTPException(status_code=404, detail="数字员工不存在")
+        raise HTTPException(status_code=404, detail="AI员工不存在")
     plugin = db.get(models.Plugin, plugin_id)
     if plugin is None:
         raise HTTPException(status_code=404, detail="插件不存在")
@@ -210,7 +220,7 @@ def invoke_plugin(
             task_id=str(context_data.get("task_id") or trace_id or "NO-TASK"),
             employee_id=employee_id,
             employee_name=employee.name if employee is not None else employee_id,
-            role_prompt=subject.role_prompt or "按数字员工岗位职责执行任务",
+            role_prompt=subject.role_prompt or "按AI员工岗位职责执行任务",
             responsibility=(
                 str(context_data.get("responsibility") or "").strip()
                 or subject.role_prompt
@@ -283,7 +293,7 @@ def search_knowledge(
         raise HTTPException(status_code=403, detail={"reason": "知识库当前未启用"})
     subject = resolve_identity(db, employee_id)
     if subject is None:
-        raise HTTPException(status_code=404, detail="数字员工不存在")
+        raise HTTPException(status_code=404, detail="AI员工不存在")
     if requester_human_no:
         requester = db.get(models.HumanEmployee, requester_human_no)
         if requester is None:
@@ -318,23 +328,42 @@ def search_knowledge(
         audit_id = write_audit(
             db, trace_id=trace_id, employee_id=employee_id, plugin_id=knowledge_base_id,
             action="read", decision=DECISION_DENY, knowledge_base_id=knowledge_base_id,
-            reason="该数字员工未获授权访问此知识库",
+            reason="该AI员工未获授权访问此知识库",
         )
         raise HTTPException(
             status_code=403,
             detail={
-                "reason": "该数字员工未获授权访问此知识库",
+                "reason": "该AI员工未获授权访问此知识库",
                 "policy_id": "AGENT-KB-GRANT", "audit_id": audit_id,
             },
         )
     # 直接走知识适配器检索（不再依赖 knowledge-lX 插件与 Plugin Gateway）
     try:
-        data = select_adapter(None, kb).search(
+        data = select_adapter(None, kb, db).search(
             employee_id=employee_id,
             knowledge_base_id=knowledge_base_id,
             query=query,
             trace_id=trace_id,
         )
+    except KnowledgeSourceUnavailable as exc:
+        # 数据源整体不可达：给业务可读提示（503 + retryable），不要裸 502 报错。
+        audit_id = write_audit(
+            db, trace_id=trace_id, employee_id=employee_id, plugin_id=knowledge_base_id,
+            action="read", decision=DECISION_DENY, knowledge_base_id=knowledge_base_id,
+            reason=str(exc), result_summary=json.dumps({
+                "source": "unavailable", "knowledge_base_id": knowledge_base_id,
+                "hit_count": 0, "status": "source_unavailable",
+            }, ensure_ascii=False),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": str(exc),
+                "reason": "knowledge_source_unavailable",
+                "retryable": True,
+                "audit_id": audit_id,
+            },
+        ) from exc
     except RuntimeError as exc:
         audit_id = write_audit(
             db, trace_id=trace_id, employee_id=employee_id, plugin_id=knowledge_base_id,

@@ -43,7 +43,7 @@
     {"id": "POLICY-002", "name": "实习生禁止内部知识", "effect": "deny", "description": "实习生数字分身（twin + intern）访问内部知识库（knowledge/L2）时拒绝", "enabled": true, "priority": 70},
     {"id": "POLICY-001", "name": "正式分身可读内部知识", "effect": "allow", "description": "正式员工数字分身（twin + formal）可访问内部知识库（knowledge/L2）", "enabled": true, "priority": 60},
     {"id": "POLICY-005", "name": "敏感操作需审批", "effect": "approval", "description": "resource.data_level=L3 且动作属 execute/export/delete/approve 时需人工审批", "enabled": true, "priority": 50},
-    {"id": "P-DEFAULT-001", "name": "默认 L1 可读", "effect": "allow", "description": "所有数字员工可读取 L1 知识", "enabled": true, "priority": 1}
+    {"id": "P-DEFAULT-001", "name": "默认 L1 可读", "effect": "allow", "description": "所有AI员工可读取 L1 知识", "enabled": true, "priority": 1}
   ],
   "audit_events": [],
   "teams": [],

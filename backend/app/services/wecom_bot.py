@@ -35,6 +35,7 @@ from .. import models
 from ..database import SessionLocal
 from . import config
 from .wecom_adapter import BotExecutionContext, handle_bot_message, run_execution, start_execution
+from .wecom_markdown import to_wecom_markdown
 
 logger = logging.getLogger(__name__)
 # 交由应用根日志器统一输出，避免模块私有 handler 造成重复日志，
@@ -318,9 +319,14 @@ class WeComBotClient:
             events = _poll_events(ctx.execution_id, seen_seq)
             _, _ = _ingest_events(events, seen_seq, steps)
 
+            # 企微 markdown 不支持表格与围栏代码块：在分块前对**完整**答案降级转换一次。
+            # 必须整段转换而不是放进 _render_markdown 逐帧转：打字机的中间帧是半截文本，
+            # 表格/围栏边界不完整，逐帧转会在企微侧闪出裸 `|` 与未闭合围栏。
+            wecom_answer = to_wecom_markdown(answer)
+
             # 答案流式：把最终答案按块逐步展开，覆盖刷新，模拟打字机效果。
             shown = ""
-            for chunk in _split_answer(answer):
+            for chunk in _split_answer(wecom_answer):
                 shown += chunk
                 await self._send_stream(
                     ws, req_id, stream_id, finish=False,
@@ -330,7 +336,7 @@ class WeComBotClient:
             # 最终帧 finish=true，带完整答案（分块中间帧被覆盖，保证最终完整无缺字）。
             await self._send_stream(
                 ws, req_id, stream_id, finish=True,
-                content=_render_markdown(ctx, steps, answer),
+                content=_render_markdown(ctx, steps, wecom_answer),
             )
         finally:
             # 连接中断时 agent 线程仍在跑，等待其结束，避免 task 泄漏/未捕获异常。

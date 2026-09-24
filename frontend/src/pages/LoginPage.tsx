@@ -35,7 +35,7 @@ export default function LoginPage() {
         <div className="max-w-[500px]">
           <div className="mb-8 flex items-center gap-3">
             <BrandMark size={48} />
-            <span className="text-base font-semibold">数字员工工作台</span>
+            <span className="text-base font-semibold">AI员工工作台</span>
           </div>
           <h1 className="m-0 text-[38px] font-semibold leading-[1.25] tracking-[-0.03em] text-white">让每一位同事，都有一个<br />可信赖的数字搭档</h1>
           <p className="mt-5 max-w-[440px] text-base leading-7 text-white/70">连接企业知识、岗位经验和工作工具，在统一权限与审计边界内完成日常问答与协作。</p>

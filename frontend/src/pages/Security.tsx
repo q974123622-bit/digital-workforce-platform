@@ -1,11 +1,19 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Badge, Button, Card, Col, message, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd';
+import { Badge, Button, Card, Col, message, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { AccessRequest, AuditEvent, Policy } from '@dwp/shared-schema';
+import type { AccessRequest, AuditEvent, KnowledgeBase, Policy } from '@dwp/shared-schema';
 import { api } from '../api/client';
+import type { UnifiedPlugin } from '../api/client';
 import { DecisionTag } from '../components/tags';
 import { EmptyState, ErrorState, LoadingState } from '../components/PageState';
+import { useAuth } from '../context/AuthContext';
 import { useAsyncData } from '../hooks/useAsyncData';
+import { formatServerTime } from '../utils/serverTime';
+
+const ADMIN_ROLES = ['agent_admin', 'security_admin', 'platform_admin'];
+const RESOURCE_TYPE_LABEL: Record<string, string> = { knowledge: '知识库', plugin: '插件' };
+/** 演示用的 L3 知识库申请人：管理后台没有员工分身，只能以固定分身触发一次演示申请。 */
+const DEMO_APPLICANT = 'DT-E10281';
 
 const EFFECT_HEX: Record<string, string> = {
   allow: 'var(--dwp-success)',
@@ -83,7 +91,7 @@ function AuditPanel() {
         title: '时间',
         dataIndex: 'ts',
         width: 170,
-        render: (value: string) => (value ? new Date(value).toLocaleString() : '—'),
+        render: (value: string) => formatServerTime(value),
       },
       { title: 'Trace', dataIndex: 'trace_id', render: (value: string) => <span className="mono">{value}</span> },
       { title: '主体', dataIndex: 'actor' },
@@ -148,14 +156,51 @@ function AuditPanel() {
 
 function AccessRequestsPanel() {
   const [messageApi, contextHolder] = message.useMessage();
+  const { account } = useAuth();
   const fetcher = useCallback(() => api.listAccessRequests(), []);
   const { data, loading, error, reload } = useAsyncData<AccessRequest[]>(fetcher);
+  const kbFetcher = useCallback(() => api.listKnowledgeBases(), []);
+  const { data: knowledgeBases } = useAsyncData<KnowledgeBase[]>(kbFetcher);
+  const pluginFetcher = useCallback(() => api.listAdminPlugins(), []);
+  const { data: plugins } = useAsyncData<UnifiedPlugin[]>(pluginFetcher);
   const [submitting, setSubmitting] = useState(false);
+  const [selectedKbId, setSelectedKbId] = useState<string>();
+  // 审批为不可逆操作，用原位内联确认（admin 壳内 antd 浮层不可靠）。
+  const [confirmingId, setConfirmingId] = useState<number | null>(null);
 
-  const createDemoRequest = async () => {
+  // 管理端审批走独立通道（管理员账号没有分身，老接口的「正式员工分身」校验会 403）。
+  const canUseAdminChannel = account?.roles.some((role) => ADMIN_ROLES.includes(role)) ?? false;
+  const actorNo = account ? `DT-${account.employee_no}` : '';
+
+  const pluginNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    (plugins ?? []).forEach((row) => {
+      const id = row.id ?? row.plugin_id;
+      if (id !== undefined) map[String(id)] = row.name;
+    });
+    return map;
+  }, [plugins]);
+
+  // 只有已登记的 L3 知识库需要白名单申请；没有 L3 资源时不提供申请入口。
+  const l3Bases = useMemo(
+    () => (knowledgeBases ?? []).filter((kb) => kb.data_level === 'L3' && kb.status === 'active'),
+    [knowledgeBases],
+  );
+  const targetKbId = selectedKbId && l3Bases.some((kb) => kb.id === selectedKbId)
+    ? selectedKbId
+    : l3Bases[0]?.id;
+  const targetKb = l3Bases.find((kb) => kb.id === targetKbId);
+
+  const submitAccessRequest = async () => {
+    if (!targetKbId) return;
     setSubmitting(true);
     try {
-      await api.createAccessRequest('DT-E10281', 'knowledge', 'KB-CUSTOMER-SENSITIVE', '内部演示：申请查看客户 KYC 示例');
+      await api.createAccessRequest(
+        DEMO_APPLICANT,
+        'knowledge',
+        targetKbId,
+        `申请读取「${targetKb?.name ?? targetKbId}」的 L3 敏感数据`,
+      );
       messageApi.success('L3 访问申请已提交');
       reload();
     } catch (err) {
@@ -165,10 +210,19 @@ function AccessRequestsPanel() {
     }
   };
 
-  const decide = async (id: number, approve: boolean) => {
+  const decide = async (record: AccessRequest, approve: boolean) => {
+    const isPlugin = record.resource_type === 'plugin';
     try {
-      await api.approveAccessRequest(id, approve, 'DT-E10281');
-      messageApi.success(approve ? '已批准并写入读取白名单' : '已拒绝申请');
+      if (canUseAdminChannel) {
+        await api.approveAdminAccessRequest(record.id, approve);
+      } else {
+        await api.approveAccessRequest(record.id, approve, actorNo);
+      }
+      messageApi.success(
+        approve
+          ? (isPlugin ? '已批准，该员工的插件授权即时生效' : '已批准并写入读取白名单')
+          : '已拒绝申请',
+      );
       reload();
     } catch (err) {
       messageApi.error(err instanceof Error ? err.message : '审批失败');
@@ -178,17 +232,49 @@ function AccessRequestsPanel() {
   const columns: ColumnsType<AccessRequest> = [
     { title: '申请单', dataIndex: 'id', width: 90, render: (id: number) => <span className="mono">ARQ-{id}</span> },
     { title: '申请人', dataIndex: 'applicant_no', render: (value: string) => <span className="mono">{value}</span> },
-    { title: '资源', dataIndex: 'resource_id', render: (value: string) => <span className="mono">{value}</span> },
+    {
+      title: '类型', dataIndex: 'resource_type', width: 88,
+      render: (value: string) => (
+        <Tag color={value === 'plugin' ? 'blue' : 'purple'}>{RESOURCE_TYPE_LABEL[value] ?? value}</Tag>
+      ),
+    },
+    {
+      title: '资源', dataIndex: 'resource_id',
+      render: (value: string, record: AccessRequest) => (
+        <span className="mono" title={value}>
+          {record.resource_type === 'plugin' ? pluginNames[value] ?? value : value}
+        </span>
+      ),
+    },
     { title: '理由', dataIndex: 'reason' },
     { title: '状态', dataIndex: 'status', render: (value: string) => <Tag color={value === 'granted' ? 'success' : value === 'rejected' ? 'error' : 'warning'}>{value === 'granted' ? '已授权' : value === 'rejected' ? '已拒绝' : '待审批'}</Tag> },
     {
-      title: '操作', key: 'actions', width: 170,
-      render: (_: unknown, record: AccessRequest) => record.status === 'pending' ? (
-        <Space>
-          <Popconfirm title="批准后将写入 L3 读取白名单" onConfirm={() => decide(record.id, true)}><Button size="small" type="primary">批准</Button></Popconfirm>
-          <Button size="small" danger onClick={() => decide(record.id, false)}>拒绝</Button>
-        </Space>
-      ) : <Typography.Text type="secondary">{record.decided_by ?? '—'}</Typography.Text>,
+      title: '操作', key: 'actions', width: 230,
+      render: (_: unknown, record: AccessRequest) => {
+        if (record.status !== 'pending') {
+          return <Typography.Text type="secondary">{record.decided_by ?? '—'}</Typography.Text>;
+        }
+        const isPlugin = record.resource_type === 'plugin';
+        if (confirmingId === record.id) {
+          return (
+            <div className="flex flex-col gap-1">
+              <Space size={4}>
+                <Button size="small" type="primary" onClick={() => void decide(record, true)}>确认批准</Button>
+                <Button size="small" onClick={() => setConfirmingId(null)}>取消</Button>
+              </Space>
+              <span className="text-xs text-ink-tertiary">
+                {isPlugin ? '批准后自动为该员工的分身建立插件授权' : '批准后写入 L3 读取白名单'}
+              </span>
+            </div>
+          );
+        }
+        return (
+          <Space size={4}>
+            <Button size="small" type="primary" onClick={() => setConfirmingId(record.id)}>批准</Button>
+            <Button size="small" danger onClick={() => void decide(record, false)}>拒绝</Button>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -198,8 +284,24 @@ function AccessRequestsPanel() {
       {contextHolder}
       <Card size="small" style={{ marginBottom: 16 }}>
         <Space wrap>
-          <Typography.Text>演示链路：正式员工申请 L3 客户敏感信息 → 正式员工数字分身审批 → 写入只读白名单。</Typography.Text>
-          <Button type="primary" loading={submitting} onClick={createDemoRequest}>发起演示申请</Button>
+          {l3Bases.length > 0 ? (
+            <>
+              <Typography.Text>演示：以分身 {DEMO_APPLICANT} 提交 L3 知识库读取申请，审批通过后写入只读白名单。插件使用申请由员工在「插件中心 → 插件市场」自助提交。</Typography.Text>
+              <Select
+                aria-label="选择 L3 知识库"
+                style={{ minWidth: 240 }}
+                value={targetKbId}
+                onChange={setSelectedKbId}
+                options={l3Bases.map((kb) => ({ value: kb.id, label: `${kb.name}（${kb.id}）` }))}
+              />
+              <Button type="primary" loading={submitting} onClick={submitAccessRequest}>提交访问申请</Button>
+            </>
+          ) : (
+            <>
+              <Typography.Text type="secondary">当前没有已登记的 L3 知识库，暂无需提交敏感数据访问申请。</Typography.Text>
+              <Button type="primary" disabled>提交访问申请</Button>
+            </>
+          )}
         </Space>
       </Card>
       <Table rowKey="id" size="small" loading={loading} columns={columns} dataSource={data ?? []} pagination={false} scroll={{ x: 900 }} />

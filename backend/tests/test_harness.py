@@ -25,7 +25,7 @@ def test_harness_execute_allow(client, db_session, monkeypatch):
 
 
 def test_harness_execute_policy_deny_local(client):
-    # 新建一个 local 运行的数字员工：POLICY-HARNESS-001 要求 remote 才 allow
+    # 新建一个 local 运行的AI员工：POLICY-HARNESS-001 要求 remote 才 allow
     resp = client.post(
         "/api/v1/employees",
         json={

@@ -29,7 +29,7 @@ const menuItems: MenuProps['items'] = [
     label: '管理后台',
     children: [
       { key: '/admin', icon: <DashboardOutlined />, label: <Link to="/admin">数据总览</Link> },
-      { key: '/employees', icon: <RobotOutlined />, label: <Link to="/employees">数字员工</Link> },
+      { key: '/employees', icon: <RobotOutlined />, label: <Link to="/employees">AI员工</Link> },
       { key: '/plugins', icon: <AppstoreOutlined />, label: <Link to="/plugins">能力中心</Link> },
       { key: '/security', icon: <SafetyCertificateOutlined />, label: <Link to="/security">安全中心</Link> },
       { key: '/teams', icon: <TeamOutlined />, label: <Link to="/teams">协作团队</Link> },
@@ -40,7 +40,7 @@ const menuItems: MenuProps['items'] = [
 const routeMeta: Record<string, string> = {
   '/workplace': '我的职场',
   '/admin': '数据总览',
-  '/employees': '数字员工',
+  '/employees': 'AI员工',
   '/plugins': '能力中心',
   '/security': '安全中心',
   '/teams': '协作团队',
@@ -61,7 +61,7 @@ export default function AppLayout() {
     flatKeys
       .filter((key) => location.pathname.startsWith(key))
       .sort((a, b) => b.length - a.length)[0] ?? '/workplace';
-  const title = routeMeta[selected] ?? '数字员工平台';
+  const title = routeMeta[selected] ?? 'AI员工平台';
 
   useEffect(() => {
     let active = true;
@@ -114,10 +114,10 @@ export default function AppLayout() {
           {!collapsed && (
             <div style={{ minWidth: 0 }}>
               <div style={{ color: '#fff', fontSize: 16, fontWeight: 600, lineHeight: '20px', whiteSpace: 'nowrap' }}>
-                数字员工平台
+                AI员工平台
               </div>
               <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 10, lineHeight: '14px', whiteSpace: 'nowrap' }}>
-                Digital Employee Platform
+                AI Employee Platform
               </div>
             </div>
           )}
@@ -202,7 +202,7 @@ export default function AppLayout() {
             fontSize: 12,
           }}
         >
-          数字员工平台 Demo · 所有数据均为虚构，仅供内部演示
+          AI员工平台 Demo · 所有数据均为虚构，仅供内部演示
         </Footer>
       </Layout>
     </Layout>

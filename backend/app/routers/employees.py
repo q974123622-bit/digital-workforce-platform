@@ -7,9 +7,10 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from .. import models, schemas
 from ..database import get_db
-from ..services.chat import ChatOrchestrator
+from ..services.chat import ChatOrchestrator, tool_card_dict
 from ..services.harness_agent import run_agent
 from ..services.identity import resolve_identity
+from ..services import knowledge_source_health
 from ..services.knowledge_registry import plugin_id_for_level
 from ..services.llm import DeepSeekProvider, LLMUnavailableError
 from ..services.policy import ResourceRef, evaluate
@@ -172,7 +173,7 @@ def delete_employee(employee_no: str, db: Session = Depends(get_db)):
         any(sub.get("worker_id") == employee_no for sub in (run.subtasks or []))
         for run in active_runs
     ):
-        raise HTTPException(status_code=409, detail="数字员工仍有运行中或待审批任务，不能删除")
+        raise HTTPException(status_code=409, detail="AI员工仍有运行中或待审批任务，不能删除")
     if emp.type == "twin":
         owned_conversation = db.scalar(
             select(models.Conversation.id).where(
@@ -200,7 +201,7 @@ def delete_employee(employee_no: str, db: Session = Depends(get_db)):
 
 @router.get("/{employee_no}/runtime", response_model=schemas.EmployeeRuntimeOut)
 def get_employee_runtime(employee_no: str, db: Session = Depends(get_db)):
-    """返回数字员工对应的运行实例状态（DeepSeek Harness）。"""
+    """返回AI员工对应的运行实例状态（DeepSeek Harness）。"""
     emp = db.get(models.DigitalEmployee, employee_no)
     if not emp:
         raise HTTPException(status_code=404, detail="员工不存在")
@@ -234,17 +235,7 @@ def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(g
     except LLMUnavailableError as exc:
         raise HTTPException(status_code=503, detail=f"LLM_UNAVAILABLE：{exc}") from exc
 
-    cards = [
-        {
-            "plugin_id": c.plugin_id,
-            "name": c.name,
-            "decision": c.decision,
-            "source": c.source,
-            "policy_id": c.policy_id,
-            "reason": c.reason,
-        }
-        for c in result.tool_cards
-    ]
+    cards = [tool_card_dict(c) for c in result.tool_cards]
     denied = None
     if result.policy_denied is not None:
         denied = {
@@ -296,6 +287,9 @@ def get_workspace(employee_no: str, db: Session = Depends(get_db)):
     for kb in db.scalars(select(models.KnowledgeBase).order_by(models.KnowledgeBase.id)).all():
         plugin_id = plugin_id_for_level(kb.data_level)
         result = evaluate(db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read")
+        # accessible=有权限；available=数据源现在真的能用。两者分开，避免把连通性问题
+        # 显示成「没权限」，员工侧也能看懂「这个库暂时用不了」。
+        availability = knowledge_source_health.kb_availability(db, kb)
         kbs.append(
             schemas.WorkspaceKbOut(
                 knowledge_base_id=kb.id,
@@ -304,6 +298,8 @@ def get_workspace(employee_no: str, db: Session = Depends(get_db)):
                 description=kb.description,
                 accessible=kb.id in explicit_kb_grants and result.decision in ("allow", "approval"),
                 decision=result.decision if kb.id in explicit_kb_grants else "deny",
+                available=availability["available"],
+                active_source=availability["active_source"],
             )
         )
 

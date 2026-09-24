@@ -7,4 +7,9 @@ COPY shared-schema ./shared-schema
 RUN pnpm --filter @dwp/frontend build
 
 FROM dwp-frontend:${DWP_IMAGE_TAG}
+# 先清空旧产物：COPY 到已有目录是合并语义，直接覆盖会残留上一版的 hash 分块
+# （旧分块仍可被浏览器缓存的 index.html 命中，导致改完仍看到旧页面）。
+RUN rm -rf /usr/share/nginx/html
 COPY --from=build /workspace/frontend/dist /usr/share/nginx/html
+# 同步仓库内的 nginx 配置：为 index.html 加 no-cache、为 /assets/ 加 immutable 强缓存。
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf

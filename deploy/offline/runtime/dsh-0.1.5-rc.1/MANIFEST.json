@@ -1,0 +1,15 @@
+{
+  "version": "0.1.5-rc.1",
+  "dir": "dsh-0.1.5-rc.1",
+  "layer": "L1-runtime",
+  "source": "registry:https://mirrors.huaweicloud.com/repository/npm/",
+  "base_image": "dwp-dsh:rc6",
+  "node_version": "v22.23.2",
+  "entrypoint": "bin/dsh -> ../lib/node_modules/@deepseek-ai/dsh/lib/bin.js",
+  "mount_target": "/opt/dsh-runtime",
+  "installed_at": "2026-09-17T06:14:32Z",
+  "installed_by": "ops/dsh-install-runtime.sh",
+  "tree_sha256": "8dff2e2b28ce87e507655aaab3fe44b4ec6819383718104b1027a27c4ed3d1a9",
+  "size_bytes": 247043714,
+  "gate": { "preflight": "pending" }
+}

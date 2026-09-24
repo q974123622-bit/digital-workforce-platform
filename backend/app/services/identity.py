@@ -18,7 +18,7 @@ class EmployeeIdentity:
     employment_type: str  # formal | intern（twin 取真人，virtual/rpa 取 Owner）
     department: str
     owner_id: str
-    role_prompt: str = ""  # 数字员工人设（问答 system prompt 注入）
+    role_prompt: str = ""  # AI员工人设（问答 system prompt 注入）
     # 环境绑定配置（Policy 读取，作为 environment 维度；Sandbox 不是权限来源）
     location: str = "remote"
     internet: str = "deny"
@@ -27,7 +27,7 @@ class EmployeeIdentity:
 
 
 def resolve_identity(db: Session, employee_id: str) -> EmployeeIdentity | None:
-    """按数字员工工号解析身份；找不到返回 None。"""
+    """按AI员工工号解析身份；找不到返回 None。"""
     emp = db.get(models.DigitalEmployee, employee_id)
     if not emp:
         return None

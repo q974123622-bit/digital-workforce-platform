@@ -26,7 +26,6 @@ import {
   Form,
   Input,
   Modal,
-  Popconfirm,
   Space,
   Switch,
   Tag,
@@ -38,6 +37,7 @@ import {
 import type {
   Conversation,
   ConversationAttachment,
+  ConversationSearchHit,
   AgentExecution,
   AgentExecutionDetail,
   ConversationSummary,
@@ -48,6 +48,7 @@ import type {
   WorkplaceHome,
 } from '@dwp/shared-schema';
 import { api } from '../../api/client';
+import type { ToolInputRequest } from '../../api/client';
 import { ErrorState, LoadingState } from '../../components/PageState';
 import { useCurrentUser } from '../../context/CurrentUserContext';
 import { useAsyncData } from '../../hooks/useAsyncData';
@@ -59,16 +60,21 @@ import BrandMark from '../../components/ui/BrandMark';
 import ExecutionSummary from '../../features/executions/ExecutionSummary';
 import ExecutionDetails from '../../features/executions/ExecutionDetails';
 import type { ExecutionStep } from '../../features/executions/ExecutionDetails';
+import InputRequestCard from '../../features/executions/InputRequestCard';
 import CitationPreview from '../../features/knowledge/CitationPreview';
+import type { KnowledgeSourceFallback } from '../../features/knowledge/CitationList';
 import ColleagueList from '../../features/agents/ColleagueList';
 import AgentAvatar from '../../components/ui/AgentAvatar';
+import { EMPLOYEE_TYPE_LABEL } from '../../components/tags';
+import { formatServerTime, parseServerTime } from '../../utils/serverTime';
 
 const { Text, Paragraph } = Typography;
 
 const GROUP_META: Record<string, ContactMeta> = {
-  twin: { label: '我的分身', emoji: '分', color: 'var(--dwp-brand)', bg: 'var(--dwp-brand-soft)' },
-  virtual: { label: '数字员工', emoji: '员', color: 'var(--dwp-brand)', bg: 'var(--dwp-brand-soft)' },
-  rpa: { label: '自动化小助手', emoji: '执', color: 'var(--dwp-warning)', bg: 'var(--dwp-warning-soft)' },
+  twin: { label: EMPLOYEE_TYPE_LABEL.twin, emoji: '分', color: 'var(--dwp-brand)', bg: 'var(--dwp-brand-soft)' },
+  virtual: { label: EMPLOYEE_TYPE_LABEL.virtual, emoji: '员', color: 'var(--dwp-brand)', bg: 'var(--dwp-brand-soft)' },
+  rpa: { label: EMPLOYEE_TYPE_LABEL.rpa, emoji: '执', color: 'var(--dwp-warning)', bg: 'var(--dwp-warning-soft)' },
+  group: { label: EMPLOYEE_TYPE_LABEL.group, emoji: '协', color: 'var(--dwp-text-secondary)', bg: 'var(--dwp-surface-subtle)' },
 };
 
 const TASK_STATUS: Record<string, { label: string; color: string; icon: ReactNode }> = {
@@ -85,8 +91,8 @@ interface LiveExecution {
   triggerSeq: number;
   employeeId: string;
   status: AgentExecution['status'];
+  /** 开始/结束时间一律用服务端时间戳解析后的 epoch，避免与服务端事件时间混算时差。 */
   startedAt: number;
-  lastStepAt: number;
   finishedAt?: number;
   expanded: boolean;
   steps: ExecutionStep[];
@@ -102,26 +108,24 @@ const executionIsActive = (status: AgentExecution['status']) =>
 function restoreExecution(detail: AgentExecutionDetail): LiveExecution {
   const { execution: run, events } = detail;
   const active = executionIsActive(run.status);
-  const startedAt = new Date(run.started_at).getTime();
+  const startedAt = parseServerTime(run.started_at) ?? Date.now();
   const stepEvents = events.filter(
     (event) => !['answer_chunk', 'answer_done', 'error'].includes(event.event_type) && event.title,
   );
-  let prevAt = startedAt;
-  const steps: ExecutionStep[] = stepEvents.map((event) => {
-    const at = new Date(event.created_at).getTime();
-    const durationMs = Math.max(0, at - prevAt);
-    prevAt = at;
-    return {
-      id: String(event.event_seq),
-      title: event.title,
-      detail: event.detail,
-      status: event.status,
-      durationMs,
-      knowledgeBaseId: event.knowledge_base_id ?? undefined,
-      targetAgentId: event.target_agent_id ?? undefined,
-      hitCount: event.hit_count ?? undefined,
-    };
-  });
+  // 每步耗时在渲染层按相邻步骤的开始时间差计算，这里只保留开始时间，
+  // 这样「进行中」的最后一步可以实时增长，而不是等下一个事件才跳一次。
+  const steps: ExecutionStep[] = stepEvents.map((event) => ({
+    id: String(event.event_seq),
+    title: event.title,
+    detail: event.detail,
+    status: event.status,
+    startedAt: parseServerTime(event.created_at) ?? startedAt,
+    knowledgeBaseId: event.knowledge_base_id ?? undefined,
+    knowledgeBaseName: typeof event.payload.knowledge_base_name === 'string' ? event.payload.knowledge_base_name : undefined,
+    actorEmployeeId: event.actor_employee_id || undefined,
+    targetAgentId: event.target_agent_id ?? undefined,
+    hitCount: event.hit_count ?? undefined,
+  }));
   const answers: Record<string, string> = {};
   if (active) {
     events.filter((event) => event.event_type === 'answer_chunk').forEach((event) => {
@@ -137,13 +141,14 @@ function restoreExecution(detail: AgentExecutionDetail): LiveExecution {
     employeeId: run.primary_employee_id,
     status: run.status,
     startedAt,
-    lastStepAt: prevAt,
-    finishedAt: run.completed_at ? new Date(run.completed_at).getTime() : undefined,
-    expanded: active || run.status === 'failed',
+    finishedAt: parseServerTime(run.completed_at),
+    // 默认折叠：摘要副标题已能体现当前进行到哪一步，完整轨迹按需展开。
+    expanded: run.status === 'failed',
     steps,
     answers,
     error: failure?.detail || run.error_message || undefined,
-    retryable: active ? run.retryable : false,
+    // 已停止的执行也允许重试：原消息虽在会话里，但输入框内容已清空，给个一键重跑更省事。
+    retryable: active ? run.retryable : run.status === 'cancelled',
     resumeAfter: active && lastEvent ? String(lastEvent.event_seq) : undefined,
   };
 }
@@ -232,6 +237,14 @@ export default function WorkplacePage() {
   useEffect(() => { void refreshConversations().catch(() => undefined); }, [refreshConversations]);
 
   const [keyword, setKeyword] = useState('');
+  // 会话检索（内容全文）：唯一权威在后端，前端只做防抖调用与渲染。
+  const [searchHits, setSearchHits] = useState<ConversationSearchHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string>();
+  // 命中定位：nonce 保证重复点击同一条命中仍能重新滚动（只比 seq 不会触发 effect 重跑）。
+  const [focusMessage, setFocusMessage] = useState<{ seq: number; nonce: number } | null>(null);
+  // 检索请求序号：丢弃过期响应，避免慢响应覆盖新结果。
+  const searchSeqRef = useRef(0);
   const [selectedId, setSelectedId] = useState<string | null>(() => searchParams.get('conversation'));
   const [sideView, setSideView] = useState<'messages' | 'directory'>(() => searchParams.get('view') === 'directory' ? 'directory' : 'messages');
   const [selected, setSelected] = useState<Conversation | null>(null);
@@ -239,6 +252,7 @@ export default function WorkplacePage() {
   const [attachmentOpenId, setAttachmentOpenId] = useState<string>();
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [pendingAfterSeq, setPendingAfterSeq] = useState<number | null>(null);
   const pendingReply = pendingAfterSeq !== null;
   const [chatError, setChatError] = useState<string>();
@@ -251,6 +265,12 @@ export default function WorkplacePage() {
   const [connectionIssue, setConnectionIssue] = useState<string>();
   const [reconnectNonce, setReconnectNonce] = useState(0);
   const [historyMayHaveMore, setHistoryMayHaveMore] = useState(false);
+  // 就地编辑最新一轮提问：编辑框与原位内联确认同理，不能用 antd 浮层。
+  const [editingSeq, setEditingSeq] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+  // 同一轮被重跑多次时，更早的执行折叠进「查看上一次执行」。
+  const [olderExecutionSeqs, setOlderExecutionSeqs] = useState<number[]>([]);
 
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [selectedNos, setSelectedNos] = useState<string[]>([]);
@@ -268,6 +288,17 @@ export default function WorkplacePage() {
 
   const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [memberNos, setMemberNos] = useState<string[]>([]);
+  // 清空二次确认走内联按钮：portal 壳里 antd 浮层不可靠（见 ConversationList 注释）。
+  const [clearConfirming, setClearConfirming] = useState(false);
+  // 技能删除同样走内联确认（Popconfirm 在这个壳里点不到确认按钮）。
+  const [skillConfirmingId, setSkillConfirmingId] = useState<string | null>(null);
+
+  // MCP 工具缺参/缺鉴权 → 执行轨迹里的「信息补全」气泡。
+  // 数据来自后端 tool_input_request（按会话拉全量，前端按 execution_id 分组渲染）。
+  const [inputRequests, setInputRequests] = useState<ToolInputRequest[]>([]);
+  const [inputSubmittingId, setInputSubmittingId] = useState<string | null>(null);
+  const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
+  const [ignoredInputIds, setIgnoredInputIds] = useState<string[]>([]);
 
   useEffect(() => {
     const nextConversation = searchParams.get('conversation');
@@ -287,6 +318,7 @@ export default function WorkplacePage() {
   }, [actorNo]);
 
   useEffect(() => {
+    setEditingSeq(null); setEditDraft(''); setOlderExecutionSeqs([]);
     if (!selectedId) { setSelected(null); return; }
     let active = true;
     api.getConversation(selectedId).then((conv) => { if (active) setSelected(conv); }).catch(() => { if (active) setSelected(null); });
@@ -302,6 +334,19 @@ export default function WorkplacePage() {
   useEffect(() => {
     void refreshAttachments().catch(() => setAttachments([]));
   }, [refreshAttachments]);
+
+  /** 拉取本会话的「待补全」记录；切换会话、收到 input_required 事件、续跑发起后都要刷。 */
+  const refreshInputRequests = useCallback(async () => {
+    if (!selectedId) { setInputRequests([]); return; }
+    const rows = await api.listConversationInputRequests(selectedId);
+    setInputRequests(rows);
+  }, [selectedId]);
+
+  useEffect(() => {
+    setInputErrors({});
+    setIgnoredInputIds([]);
+    void refreshInputRequests().catch(() => setInputRequests([]));
+  }, [refreshInputRequests]);
 
   const attachmentProcessing = attachments.some((item) => ['pending', 'processing'].includes(item.status));
   useEffect(() => {
@@ -343,20 +388,35 @@ export default function WorkplacePage() {
       if (event.lastEventId && executionEventIds.current.has(event.lastEventId)) return;
       if (event.lastEventId) executionEventIds.current.add(event.lastEventId);
       const data = JSON.parse(event.data) as Record<string, unknown>;
+      // 缺参/缺鉴权：后端已落「待补全」记录，立刻拉一次以便就地弹出补全气泡。
+      if (data.event_type === 'input_required') {
+        void refreshInputRequests().catch(() => undefined);
+      }
       setLiveExecution((current) => {
         if (!current || current.id !== executionId) return current;
-        const at = data.created_at ? new Date(String(data.created_at)).getTime() : Date.now();
+        const at = parseServerTime(typeof data.created_at === 'string' ? data.created_at : null) ?? Date.now();
         const step: ExecutionStep = {
           id: event.lastEventId || `${Date.now()}-${current.steps.length}`,
           title: String(data.title ?? '正在执行'),
           detail: String(data.detail ?? ''),
           status: String(data.status ?? 'running'),
-          durationMs: Math.max(0, at - current.lastStepAt),
+          startedAt: at,
           knowledgeBaseId: data.knowledge_base_id ? String(data.knowledge_base_id) : undefined,
+          knowledgeBaseName: typeof data.knowledge_base_name === 'string' ? data.knowledge_base_name : undefined,
+          actorEmployeeId: data.employee_id ? String(data.employee_id) : undefined,
           targetAgentId: data.target_agent_id ? String(data.target_agent_id) : undefined,
           hitCount: typeof data.hit_count === 'number' ? data.hit_count : undefined,
         };
-        return { ...current, status: 'running', expanded: true, lastStepAt: at, steps: [...current.steps, step], resumeAfter: event.lastEventId || current.resumeAfter };
+        // 不强制展开：用户手动收起后，后续事件不应再把卡片弹开。
+        // 也不把状态硬写成 running：迟到的 progress 事件（如已停止后仍在飞的工具回调）
+        // 一旦把终态翻回运行中，卡片会永远转圈、输入框会一直锁死。
+        const nextStatus = String(data.status ?? '') as AgentExecution['status'];
+        return {
+          ...current,
+          status: executionIsActive(nextStatus) ? nextStatus : current.status,
+          steps: [...current.steps, step],
+          resumeAfter: event.lastEventId || current.resumeAfter,
+        };
       });
     };
     const delta = (event: MessageEvent) => {
@@ -371,7 +431,8 @@ export default function WorkplacePage() {
     };
     const done = async () => {
       source.close();
-      setLiveExecution((current) => current?.id === executionId ? { ...current, status: 'completed', expanded: false, finishedAt: Date.now() } : current);
+      // 保留用户手动展开的选择，不在完成瞬间强行收起。
+      setLiveExecution((current) => current?.id === executionId ? { ...current, status: 'completed', finishedAt: Date.now() } : current);
       try {
         const conversation = await api.getConversation(selectedId);
         setSelected(conversation);
@@ -380,6 +441,21 @@ export default function WorkplacePage() {
       } catch {
         setConnectionIssue('答复已生成，但正式消息同步失败；可重新加载会话');
       }
+      void refreshConversations().catch(() => undefined);
+    };
+    // 服务端确认已停止：以服务端时间为准，收敛本地「点了停止但请求还没回来」的中间态。
+    const stopped = (event: MessageEvent) => {
+      if (event.lastEventId && executionEventIds.current.has(event.lastEventId)) return;
+      if (event.lastEventId) executionEventIds.current.add(event.lastEventId);
+      source.close();
+      let at: number | undefined;
+      try {
+        const data = JSON.parse(event.data) as Record<string, unknown>;
+        at = parseServerTime(typeof data.created_at === 'string' ? data.created_at : null);
+      } catch { at = undefined; }
+      setLiveExecution((current) => current?.id === executionId
+        ? { ...current, status: 'cancelled', finishedAt: at ?? current.finishedAt, retryable: true }
+        : current);
       void refreshConversations().catch(() => undefined);
     };
     const failed = (event: Event) => {
@@ -399,16 +475,129 @@ export default function WorkplacePage() {
     source.addEventListener('progress', progress);
     source.addEventListener('answer_delta', delta);
     source.addEventListener('answer_done', done);
+    source.addEventListener('cancelled', stopped);
     source.addEventListener('error', failed);
     return () => source.close();
-  }, [liveExecution?.id, reconnectNonce, refreshConversations, selectedId]);
+  }, [liveExecution?.id, reconnectNonce, refreshConversations, refreshInputRequests, selectedId]);
 
   useEffect(() => {
     if (!liveExecution || executionIsActive(liveExecution.status)) return;
     setSavedExecutions((current) => [...current.filter((run) => run.id !== liveExecution.id), liveExecution]);
-  }, [liveExecution]);
+    // 本轮结束后补全气泡的「提交」按钮才可用，此时把最新状态同步一次（含已过期/已提交）。
+    void refreshInputRequests().catch(() => undefined);
+  }, [liveExecution, refreshInputRequests]);
 
   const streamedLength = liveExecution ? Object.values(liveExecution.answers).reduce((t, a) => t + a.length, 0) : 0;
+  // 有执行在跑：输入区右侧按钮由「发送」换成「停止」（输入框仍可继续打字）。
+  const executionRunning = Boolean(liveExecution && executionIsActive(liveExecution.status));
+
+  // 「最新一条用户消息」始终可编辑/可重跑：已有回复也不拦。重跑会把旧回复软作废
+  // （superseded_at），模型上下文只保留新答案，界面把旧的折叠成「上一版回复」。
+  // 仍在执行中时不给入口，避免和正在跑的这轮抢同一 seq（后端同会话串行，否则 409）。
+  // 放在这里（早于下方 early return）是为了让 regenerateMessage 能用 useCallback 声明。
+  const lastUserMessage = selected ? selected.messages.filter((m) => m.role === 'user').slice(-1)[0] : undefined;
+  const editableSeq = selected && lastUserMessage && !executionRunning ? lastUserMessage.seq : null;
+
+  /**
+   * 「重新生成」：与「编辑后重跑」共用同一条后端链路（rerunConversationMessage），
+   * 区别只是提问原文不变、触发源从编辑框保存换成气泡上的按钮。
+   * 旧回复由后端软作废（superseded_at）并折叠成「上一版回复」，不会追加重复的用户消息。
+   */
+  const regenerateMessage = useCallback(async () => {
+    if (!selectedId || !lastUserMessage || executionRunning) return;
+    setSending(true); setChatError(undefined); setFocusMessage(null);
+    try {
+      const run = await api.rerunConversationMessage(selectedId, lastUserMessage.seq, actorNo, lastUserMessage.content);
+      setSelected(run.conversation);
+      executionEventIds.current.clear();
+      connectedExecutionId.current = run.execution_id;
+      const primary = run.conversation.participants[0]?.employee_no ?? '';
+      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {} });
+      await refreshConversations();
+    } catch (err) {
+      message.error(`重新生成失败：${(err as Error).message}`);
+      setChatError((err as Error).message);
+    } finally { setSending(false); }
+  }, [selectedId, lastUserMessage, executionRunning, actorNo, refreshConversations]);
+
+  /**
+   * 提交缺失信息并自动续跑：后端加密保存凭据（按人）后以「原提问 + 补充说明」开跑新一轮，
+   * 前端切到新的 live execution 并继续消费 SSE，用户不需要再发一句话。
+   * 上一轮仍在执行时后端回 409（retryable），这里原位提示、气泡保持可重试。
+   */
+  const submitInputRequest = useCallback(async (request: ToolInputRequest, values: Record<string, string>) => {
+    if (!selectedId || !request.execution_id) return;
+    setInputSubmittingId(request.id);
+    setInputErrors((current) => {
+      const next = { ...current };
+      delete next[request.id];
+      return next;
+    });
+    try {
+      const run = await api.submitRunInput(selectedId, request.execution_id, actorNo, request.id, values);
+      setSelected(run.conversation);
+      executionEventIds.current.clear();
+      connectedExecutionId.current = run.execution_id;
+      const primary = run.conversation.participants[0]?.employee_no ?? '';
+      setLiveExecution({
+        id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary,
+        status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {},
+      });
+      await refreshInputRequests().catch(() => undefined);
+      await refreshConversations().catch(() => undefined);
+    } catch (err) {
+      setInputErrors((current) => ({ ...current, [request.id]: (err as Error).message }));
+    } finally {
+      setInputSubmittingId(null);
+    }
+  }, [selectedId, actorNo, refreshConversations, refreshInputRequests]);
+
+  /**
+   * 忽略某条补全请求：后端标记 cancelled（刷新后不再重复弹出），前端同时本地收起。
+   * 本地先收起是为了点击立刻有反馈；后端失败也不回滚——用户已经表达了「不看这条」的意图。
+   */
+  const ignoreInputRequest = useCallback((requestId: string) => {
+    setIgnoredInputIds((current) => current.includes(requestId) ? current : [...current, requestId]);
+    const target = inputRequests.find((item) => item.id === requestId);
+    if (!selectedId || !target?.execution_id) return;
+    void api.ignoreRunInput(selectedId, target.execution_id, requestId, actorNo)
+      .then(() => refreshInputRequests())
+      .catch(() => undefined);
+  }, [selectedId, actorNo, inputRequests, refreshInputRequests]);
+
+  /**
+   * 会话检索：输入 250ms 防抖后调后端 /conversations/search（覆盖全部历史消息正文 + 会话名 + 成员名）。
+   * 失败时置 searchError，由 ConversationList 退回本地「会话名 + 最近一条消息」筛选。
+   */
+  useEffect(() => {
+    const text = keyword.trim();
+    if (!text) {
+      searchSeqRef.current += 1;
+      setSearchHits([]);
+      setSearching(false);
+      setSearchError(undefined);
+      return;
+    }
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      const seq = ++searchSeqRef.current;
+      api.searchConversations(actorNo, text)
+        .then((rows) => {
+          if (seq !== searchSeqRef.current) return;
+          setSearchHits(rows);
+          setSearchError(undefined);
+        })
+        .catch((err: Error) => {
+          if (seq !== searchSeqRef.current) return;
+          setSearchHits([]);
+          setSearchError(err.message);
+        })
+        .finally(() => {
+          if (seq === searchSeqRef.current) setSearching(false);
+        });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [keyword, actorNo]);
 
   const hasPollableTask = selected?.tasks.some((task) => ['pending', 'parsing', 'running'].includes(task.status));
   useEffect(() => {
@@ -487,8 +676,17 @@ export default function WorkplacePage() {
     setSelectedId(id);
     setSideView('messages');
     setMobileView('chat');
+    setClearConfirming(false);
+    // 切换会话即取消上一次的命中定位（否则新会话会被滚到不存在的 seq）。
+    setFocusMessage(null);
     updateLocationState({ conversation: id, view: 'messages' });
   }, [updateLocationState]);
+
+  /** 点击检索结果：打开会话，并把命中的那条消息交给消息列表滚动定位 + 高亮。 */
+  const openSearchHit = useCallback((hit: ConversationSearchHit) => {
+    selectConversation(hit.conversation.id);
+    setFocusMessage(hit.match_seq === null ? null : { seq: hit.match_seq, nonce: Date.now() });
+  }, [selectConversation]);
 
   const openDirect = async (employeeNo: string) => {
     let existing = conversations.find((conv) => conv.kind === 'direct' && conv.participants.some((p) => p.employee_no === employeeNo));
@@ -518,6 +716,8 @@ export default function WorkplacePage() {
     setInput('');
     setSending(true);
     setChatError(undefined);
+    // 发新消息后视口应回到最新消息，取消检索命中定位。
+    setFocusMessage(null);
     const attachmentIds = pendingAttachments.map((item) => item.attachment_id);
     setSelected((prev) => {
       if (!prev) return prev;
@@ -531,7 +731,7 @@ export default function WorkplacePage() {
       executionEventIds.current.clear();
       connectedExecutionId.current = run.execution_id;
       const primary = run.conversation.participants[0]?.employee_no ?? '';
-      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), lastStepAt: Date.now(), expanded: true, steps: [], answers: {} });
+      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {} });
       await refreshConversations();
       await refreshAttachments();
     } catch (err) {
@@ -581,11 +781,59 @@ export default function WorkplacePage() {
       executionEventIds.current.clear();
       connectedExecutionId.current = run.execution_id;
       const primary = run.conversation.participants[0]?.employee_no ?? '';
-      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), lastStepAt: Date.now(), expanded: true, steps: [], answers: {} });
+      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {} });
       await refreshConversations();
     } catch (err) {
       setChatError((err as Error).message);
     } finally { setSending(false); }
+  };
+
+  /**
+   * 停止本次执行。dsh 是一次性 CLI 调用、无法保存/恢复进程内状态，所以只能「停止」
+   * （终态 cancelled，不可续跑），不是「暂停」；已产生的轨迹与半截答复都会保留。
+   */
+  const stopExecution = async () => {
+    if (!selectedId || !liveExecution || !executionIsActive(liveExecution.status) || stopping) return;
+    const executionId = liveExecution.id;
+    setStopping(true);
+    try {
+      await api.cancelConversationRun(selectedId, executionId);
+      setLiveExecution((current) => current?.id === executionId
+        ? { ...current, status: 'cancelled', finishedAt: Date.now(), retryable: true }
+        : current);
+    } catch (err) {
+      message.error(`停止失败：${(err as Error).message}`);
+    } finally { setStopping(false); }
+  };
+
+  /** 就地编辑最新一轮提问：保存后重跑，不追加新的用户消息。 */
+  const startEditMessage = (message: { seq: number; content: string }) => {
+    setEditingSeq(message.seq);
+    setEditDraft(message.content);
+  };
+
+  const cancelEditMessage = () => {
+    setEditingSeq(null);
+    setEditDraft('');
+  };
+
+  const submitEditMessage = async () => {
+    if (!selectedId || editingSeq === null || editSaving) return;
+    const content = editDraft.trim();
+    if (!content) return;
+    setEditSaving(true); setChatError(undefined); setFocusMessage(null);
+    try {
+      const run = await api.rerunConversationMessage(selectedId, editingSeq, actorNo, content);
+      setSelected(run.conversation);
+      setEditingSeq(null); setEditDraft('');
+      executionEventIds.current.clear();
+      connectedExecutionId.current = run.execution_id;
+      const primary = run.conversation.participants[0]?.employee_no ?? '';
+      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {} });
+      await refreshConversations();
+    } catch (err) {
+      setChatError((err as Error).message);
+    } finally { setEditSaving(false); }
   };
 
   const loadOlderExecutions = async () => {
@@ -613,18 +861,52 @@ export default function WorkplacePage() {
     finally { setActing(false); }
   };
 
+  /** 清空/删除后复位聊天区状态，避免残留执行轨迹、断线提示与「加载更早记录」入口。 */
+  const resetChatState = useCallback(() => {
+    setPendingAfterSeq(null);
+    setLiveExecution(null);
+    setSavedExecutions([]);
+    setAttachments([]);
+    setAttachmentOpenId(undefined);
+    setHistoryMayHaveMore(false);
+    setConnectionIssue(undefined);
+    setStopping(false);
+    setEditingSeq(null);
+    setEditDraft('');
+    setEditSaving(false);
+    setOlderExecutionSeqs([]);
+    sseFailures.current = 0;
+    executionEventIds.current.clear();
+    connectedExecutionId.current = undefined;
+  }, []);
+
   const handleClear = async () => {
     if (!selectedId) return;
     try {
       await api.clearConversation(selectedId, actorNo);
-      setPendingAfterSeq(null); setLiveExecution(null); setSavedExecutions([]);
-      setAttachments([]); setAttachmentOpenId(undefined);
+      resetChatState();
       const conv = await api.getConversation(selectedId); setSelected(conv); await refreshConversations();
     } catch (err) { message.error(`清空失败：${(err as Error).message}`); }
   };
 
+  const handleDelete = async (id: string) => {
+    try {
+      await api.deleteConversation(id, actorNo);
+      if (id === selectedId) {
+        // 必须显式置空 selectedId，否则 showList 为 false 会渲染空白聊天区。
+        setSelectedId(null);
+        setSelected(null);
+        setMobileView('list');
+        resetChatState();
+        updateLocationState({ conversation: null, view: 'messages' });
+      }
+      await refreshConversations();
+      message.success('会话已删除');
+    } catch (err) { message.error(`删除失败：${(err as Error).message}`); }
+  };
+
   const submitNewChat = async () => {
-    if (selectedNos.length === 0) { message.warning('请至少选择 1 位数字员工'); return; }
+    if (selectedNos.length === 0) { message.warning('请至少选择 1 位AI员工'); return; }
     try {
       const conv = await api.createConversation({ actor_no: actorNo, kind: 'direct', title: undefined, participant_employee_nos: selectedNos });
       setNewChatOpen(false); setSelectedNos([]);
@@ -675,44 +957,129 @@ export default function WorkplacePage() {
     } else { unattachedTasks.push(task); }
   }
   const selectedTitle = selected && (selected.kind === 'group' ? selected.title || '协作空间' : selected.participants[0]?.name ?? '');
-  const selectedMeta = selected ? metaOf(selected.participants[0]?.employee_no ?? '') : GROUP_META.twin;
+  // 标题栏类型徽章：口径与会话列表分段一致，都读 participant.employee_type（群聊固定「协作空间」）。
+  const headerType = selected?.kind === 'group' ? 'group' : (selected?.participants[0]?.employee_type || 'virtual');
+  const headerMeta = GROUP_META[headerType] ?? GROUP_META.virtual;
   const addableMembers = employees.filter((emp) => !chatParticipants.some((p) => p.employee_no === emp.employee_no));
   const capabilityEmployee = [twin, ...employees].find((e) => e?.employee_no === capabilityEmployeeNo) ?? null;
-  const lastAssistantCards = selected ? (selected.messages.filter((m) => m.role === 'assistant' && m.tool_cards.length > 0).slice(-1)[0]?.tool_cards ?? []) : [];
+  /**
+   * 本轮执行事件里的知识检索来源（含委派检索）：工具卡片缺失时用它兜底。
+   * 事件表天然不过滤执行人，所以「分身无知识权限 → 委派岗位员工检索」这条链路
+   * 也能显示来源；卡片存在时由 CitationList 优先取卡片（信息更全）。
+   */
+  const knowledgeFallbackOf = (msg: { seq: number; participant_no: string }): KnowledgeSourceFallback[] => {
+    const executions = [
+      ...(liveExecution?.triggerSeq === msg.seq ? [liveExecution] : []),
+      ...savedExecutions.filter((run) => run.triggerSeq === msg.seq),
+    ];
+    const out: KnowledgeSourceFallback[] = [];
+    const seen = new Set<string>();
+    for (const run of executions) {
+      for (const step of run.steps) {
+        if (!step.knowledgeBaseId || seen.has(step.knowledgeBaseId)) continue;
+        seen.add(step.knowledgeBaseId);
+        // 仅当检索人不是本条回复的作者时才标注「由 XX 检索」。
+        const delegated = step.actorEmployeeId && step.actorEmployeeId !== msg.participant_no
+          ? step.actorEmployeeId
+          : undefined;
+        out.push({
+          knowledgeBaseId: step.knowledgeBaseId,
+          knowledgeBaseName: step.knowledgeBaseName,
+          hitCount: step.hitCount,
+          agentEmployeeId: delegated,
+          agentEmployeeName: delegated ? workerName(delegated) : undefined,
+        });
+      }
+    }
+    return out;
+  };
+
+  // 「来源与依据」抽屉取最近一条未作废的回复：卡片为空时同样吃执行事件兜底。
+  const lastAssistantMessage = selected
+    ? [...selected.messages].reverse().find((m) => m.role === 'assistant' && !m.superseded_at)
+    : undefined;
+  const lastAssistantCards = lastAssistantMessage?.tool_cards ?? [];
+  const lastAssistantFallback = lastAssistantMessage ? knowledgeFallbackOf(lastAssistantMessage) : [];
+
+  const renderExecutionCard = (run: LiveExecution) => {
+    // 补全气泡**不放进可折叠的轨迹里**：它是「需要你动手」的东西，藏进折叠区用户就看不到；
+    // 提交后还要原地留一行「已补充 · 已继续执行」，折叠会把它一起藏掉。
+    const runInputRequests = inputRequests.filter((request) => request.execution_id === run.id);
+    const runActive = executionIsActive(run.status);
+    return (
+      <div className="mt-1.5">
+        <ExecutionSummary
+          run={run}
+          employeeName={workerName(run.employeeId)}
+          expanded={run.expanded}
+          onToggle={() => {
+            if (liveExecution?.id === run.id) setLiveExecution((c) => c ? { ...c, expanded: !c.expanded } : c);
+            else setSavedExecutions((c) => c.map((r) => r.id === run.id ? { ...r, expanded: !r.expanded } : r));
+          }}
+          onRetry={() => void retryExecution(run.id)}
+        />
+        {runInputRequests.map((request) => (
+          <InputRequestCard
+            key={request.id}
+            request={request}
+            running={runActive}
+            submitting={inputSubmittingId === request.id}
+            error={inputErrors[request.id]}
+            ignored={ignoredInputIds.includes(request.id)}
+            onSubmit={(values) => void submitInputRequest(request, values)}
+            onIgnore={ignoreInputRequest}
+          />
+        ))}
+        {run.expanded && (
+          <ExecutionDetails
+            run={run}
+            steps={run.steps}
+            employeeName={workerName}
+            onRetry={() => void retryExecution(run.id)}
+          />
+        )}
+        {/* 流式答复不依赖展开状态：折叠时也要能实时看到正在生成的文字。 */}
+        {Object.entries(run.answers).map(([id, answer]) => answer ? (
+          <div key={id} className="mt-1.5 rounded-control bg-surface-subtle p-2.5 text-sm text-ink">{workerName(id)}：{answer}</div>
+        ) : null)}
+      </div>
+    );
+  };
 
   const renderMessageExtra = (msg: { seq: number }) => {
-    const messageExecution = (liveExecution?.triggerSeq === msg.seq ? liveExecution : undefined) ?? savedExecutions.find((run) => run.triggerSeq === msg.seq);
+    // 同一轮可能挂多条执行（改完重跑 / 停止后重跑），必须全部收齐：
+    // 只渲染最新一条，更早的折叠起来。否则旧代码的 `.find` 只会取到最早那条，
+    // 而 /runs/history 是旧→新排序，新卡片不显示，看起来像「点了重跑没反应」。
+    const executions = [
+      ...(liveExecution?.triggerSeq === msg.seq ? [liveExecution] : []),
+      ...savedExecutions.filter((run) => run.triggerSeq === msg.seq),
+    ].sort((a, b) => a.startedAt - b.startedAt);
+    const latestExecution = executions[executions.length - 1];
+    const olderExecutions = executions.slice(0, -1);
+    const olderOpen = olderExecutionSeqs.includes(msg.seq);
     const tasks = taskGroups.get(msg.seq) ?? [];
     return (
       <div className="ml-12 mt-1.5 max-w-[760px]">
         {tasks.map((task) => (
           <TaskCard key={task.id} task={task} workerName={workerName} metaOf={metaOf} onApprove={handleApprove} acting={acting} onOpenProfile={openProfile} />
         ))}
-        {messageExecution && (
+        {olderExecutions.length > 0 && (
           <div className="mt-1.5">
-            <ExecutionSummary
-              run={messageExecution}
-              employeeName={workerName(messageExecution.employeeId)}
-              expanded={messageExecution.expanded}
-              onToggle={() => {
-                if (liveExecution?.id === messageExecution.id) setLiveExecution((c) => c ? { ...c, expanded: !c.expanded } : c);
-                else setSavedExecutions((c) => c.map((r) => r.id === messageExecution.id ? { ...r, expanded: !r.expanded } : r));
-              }}
-              onRetry={() => void retryExecution(messageExecution.id)}
-            />
-            {messageExecution.expanded && (
-              <ExecutionDetails
-                run={messageExecution}
-                steps={messageExecution.steps}
-                employeeName={workerName}
-                onRetry={() => void retryExecution(messageExecution.id)}
-              />
-            )}
-            {messageExecution.expanded && Object.entries(messageExecution.answers).map(([id, answer]) => answer ? (
-              <div key={id} className="mt-1.5 rounded-control bg-surface-subtle p-2.5 text-sm text-ink">{workerName(id)}：{answer}</div>
-            ) : null)}
+            <Button
+              type="link"
+              size="small"
+              className="!px-0 text-xs"
+              icon={olderOpen ? <UpOutlined /> : <DownOutlined />}
+              onClick={() => setOlderExecutionSeqs((current) => current.includes(msg.seq)
+                ? current.filter((seq) => seq !== msg.seq)
+                : [...current, msg.seq])}
+            >
+              {olderOpen ? '收起上一次执行' : `查看上一次执行（${olderExecutions.length}）`}
+            </Button>
+            {olderOpen && olderExecutions.map((run) => <div key={run.id}>{renderExecutionCard(run)}</div>)}
           </div>
         )}
+        {latestExecution && renderExecutionCard(latestExecution)}
       </div>
     );
   };
@@ -735,11 +1102,16 @@ export default function WorkplacePage() {
             employees={employees}
             selectedId={selectedId}
             keyword={keyword}
+            hits={searchHits}
+            searching={searching}
+            searchError={searchError}
             onKeywordChange={setKeyword}
             onSelect={handleSelectConversation}
+            onSelectHit={openSearchHit}
             onOpenTwin={() => { setMobileView('chat'); void openDirect(twin!.employee_no); }}
-            onNewChat={() => setNewChatOpen(true)}
             onOpenProfile={openProfile}
+            onOpenDirectory={() => { setSideView('directory'); updateLocationState({ view: 'directory' }); }}
+            onDelete={(id) => void handleDelete(id)}
           />
         ) : (
           <ColleagueList twin={twin} employees={employees} onOpenChat={(no) => void openDirect(no)} onOpenProfile={openProfile} />
@@ -760,10 +1132,13 @@ export default function WorkplacePage() {
                 </button>
               )}
               <div className="min-w-0 flex-1">
-                <div className="truncate text-base font-semibold text-ink">{selectedTitle}</div>
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-base font-semibold text-ink">{selectedTitle}</span>
+                  <span className={`type-badge type-badge--header type-badge--${headerType}`}>{headerMeta.label}</span>
+                </div>
                 <div className="flex items-center gap-1.5 text-xs text-ink-secondary">
                   {!isGroup && <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />}
-                  <span>{isGroup ? `${selected.participants.length} 人 · ${selected.participants.map((p) => p.name).join('、')}` : `${selectedMeta.label} · 当前可用`}</span>
+                  <span>{isGroup ? `${selected.participants.length} 人 · ${selected.participants.map((p) => p.name).join('、')}` : '当前可用'}</span>
                 </div>
               </div>
               <Tooltip title="来源与依据">
@@ -775,9 +1150,16 @@ export default function WorkplacePage() {
                 </Button>
               )}
               {isGroup && addableMembers.length > 0 && <Button size="small" onClick={() => setAddMemberOpen(true)}>添加成员</Button>}
-              <Popconfirm title="清空本会话？将删除本会话的消息与任务。" onConfirm={() => void handleClear()}>
-                <Button size="small" danger>清空</Button>
-              </Popconfirm>
+              {clearConfirming ? (
+                <Space size={6}>
+                  <Button size="small" danger type="primary" aria-label="确认清空" onClick={() => { setClearConfirming(false); void handleClear(); }}>
+                    确认清空
+                  </Button>
+                  <Button size="small" aria-label="取消清空" onClick={() => setClearConfirming(false)}>取消</Button>
+                </Space>
+              ) : (
+                <Button size="small" danger onClick={() => setClearConfirming(true)}>清空</Button>
+              )}
             </div>
 
             {connectionIssue && (
@@ -795,16 +1177,28 @@ export default function WorkplacePage() {
             <MessageList
               conversation={selected}
               streamingLength={streamedLength}
+              focusMessage={focusMessage}
               renderMessageExtra={renderMessageExtra}
               employeeOf={(employeeNo) => [twin, ...employees].find((item) => item?.employee_no === employeeNo) ?? null}
               onOpenProfile={openProfile}
               attachmentOf={(attachmentId) => attachments.find((item) => item.attachment_id === attachmentId)}
               onOpenAttachment={setAttachmentOpenId}
+              knowledgeFallbackOf={knowledgeFallbackOf}
+              editableSeq={editableSeq}
+              editingSeq={editingSeq}
+              editDraft={editDraft}
+              editSaving={editSaving}
+              onStartEdit={startEditMessage}
+              onEditDraftChange={setEditDraft}
+              onSubmitEdit={() => void submitEditMessage()}
+              onCancelEdit={cancelEditMessage}
+              canRegenerate={editableSeq !== null}
+              onRegenerate={() => void regenerateMessage()}
               emptyState={
                 <div className="mx-auto flex h-full max-w-[520px] flex-col items-center justify-center px-6 text-center">
                   <div className="grid h-16 w-16 place-items-center rounded-[18px] border border-line bg-surface text-2xl text-brand shadow-sm">{isGroup ? <TeamOutlined /> : <RobotOutlined />}</div>
                   <Typography.Title level={4} className="!mb-1 !mt-4">和 {selectedTitle} 开始协作</Typography.Title>
-                  <Paragraph type="secondary" className="!mb-0">直接描述问题或工作目标。数字员工会按权限查阅知识，并保留可核验的执行记录。</Paragraph>
+                  <Paragraph type="secondary" className="!mb-0">直接描述问题或工作目标。AI员工会按权限查阅知识，并保留可核验的执行记录。</Paragraph>
                 </div>
               }
             />
@@ -815,7 +1209,10 @@ export default function WorkplacePage() {
                 onChange={setInput}
                 onSend={() => void send()}
                 sending={sending}
-                disabled={Boolean(liveExecution && executionIsActive(liveExecution.status))}
+                active={executionRunning}
+                stopping={stopping}
+                onStop={() => void stopExecution()}
+                disabled={executionRunning}
                 placeholder={isGroup ? '描述一个任务，我来拆解安排给同事们…' : '发消息…'}
                 attachments={attachments.filter((item) => item.message_seq === null && item.status !== 'deleted')}
                 onFiles={(files) => void uploadFiles(files)}
@@ -832,7 +1229,7 @@ export default function WorkplacePage() {
             <Paragraph type="secondary" className="max-w-[460px]">从一段对话开始今天的工作。你可以询问公司制度、IT 服务或投资研究相关问题。</Paragraph>
             <Space>
               {twin && <Button type="primary" icon={<RobotOutlined />} onClick={() => void openDirect(twin.employee_no)}>和我的分身聊聊</Button>}
-              <Button icon={<CommentOutlined />} onClick={() => setNewChatOpen(true)}>查找数字员工</Button>
+              <Button icon={<CommentOutlined />} onClick={() => setNewChatOpen(true)}>查找AI员工</Button>
             </Space>
           </div>
         )}
@@ -846,7 +1243,7 @@ export default function WorkplacePage() {
         onOk={() => void submitNewChat()}
         okText="创建"
       >
-        <Paragraph type="secondary">首版一次只与一位数字员工对话；你的数字分身会在需要时自主向专业数字员工求助。</Paragraph>
+        <Paragraph type="secondary">首版一次只与一位AI员工对话；你的分身会在需要时自主向专业AI员工求助。</Paragraph>
         <div className="max-h-80 overflow-y-auto">
           {([twin, ...employees].filter((e): e is Employee => e !== null)).map((emp) => {
             const checked = selectedNos.includes(emp.employee_no);
@@ -873,7 +1270,7 @@ export default function WorkplacePage() {
         okText="添加"
         okButtonProps={{ disabled: memberNos.length === 0 }}
       >
-        {addableMembers.length === 0 ? <Empty description="没有可添加的数字员工" /> : addableMembers.map((emp) => {
+        {addableMembers.length === 0 ? <Empty description="没有可添加的AI员工" /> : addableMembers.map((emp) => {
           return (
             <div key={emp.employee_no} className="flex cursor-pointer items-center gap-3 rounded-control px-2 py-2 hover:bg-surface-subtle" onClick={() => setMemberNos((prev) => prev.includes(emp.employee_no) ? prev.filter((n) => n !== emp.employee_no) : [...prev, emp.employee_no])}>
               <span className="avatar-button" role="button" tabIndex={0} onClick={(event) => { event.stopPropagation(); openProfile(emp.employee_no); }}><AgentAvatar employee={emp} size={34} /></span>
@@ -891,7 +1288,7 @@ export default function WorkplacePage() {
       <Drawer
         title="同事资料"
         open={profileOpen}
-        onClose={() => { setProfileOpen(false); setCapabilityEmployeeNo(undefined); updateLocationState({ profile: null }); }}
+        onClose={() => { setProfileOpen(false); setCapabilityEmployeeNo(undefined); setSkillConfirmingId(null); updateLocationState({ profile: null }); }}
         width={440}
         extra={capabilityEmployee?.type === 'twin' ? (
           <Button type="primary" size="small" icon={<UploadOutlined />} onClick={() => setSkillModalOpen(true)}>添加工作方法</Button>
@@ -949,9 +1346,14 @@ export default function WorkplacePage() {
                       <div className="truncate text-xs text-ink-secondary">{skill.description || skill.content.slice(0, 60)}</div>
                     </div>
                     <Switch size="small" checked={skill.status === 'active'} onChange={(checked) => void toggleSkill(skill, checked)} aria-label={`切换技能 ${skill.name}`} />
-                    <Popconfirm title="确定删除该技能？" onConfirm={() => void removeSkill(skill)}>
-                      <Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label={`删除技能 ${skill.name}`} />
-                    </Popconfirm>
+                    {skillConfirmingId === skill.id ? (
+                      <Space size={4}>
+                        <Button size="small" danger type="primary" aria-label={`确认删除技能 ${skill.name}`} onClick={() => { setSkillConfirmingId(null); void removeSkill(skill); }}>删除</Button>
+                        <Button size="small" aria-label={`取消删除技能 ${skill.name}`} onClick={() => setSkillConfirmingId(null)}>取消</Button>
+                      </Space>
+                    ) : (
+                      <Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label={`删除技能 ${skill.name}`} onClick={() => setSkillConfirmingId(skill.id)} />
+                    )}
                   </div>
                 ))}
               </div>
@@ -961,7 +1363,12 @@ export default function WorkplacePage() {
       </Drawer>
 
       {/* 引用预览侧栏 */}
-      <CitationPreview cards={lastAssistantCards} open={citationOpen} onClose={() => setCitationOpen(false)} />
+      <CitationPreview
+        cards={lastAssistantCards}
+        fallback={lastAssistantFallback}
+        open={citationOpen}
+        onClose={() => setCitationOpen(false)}
+      />
 
       <Drawer
         title="文件详情"
@@ -982,9 +1389,9 @@ export default function WorkplacePage() {
                 <div><div className="text-xs text-ink-tertiary">处理状态</div><div className="mt-1 text-ink">{item.status === 'ready' ? '解析完成' : item.processing_hint || item.status}</div></div>
                 <div><div className="text-xs text-ink-tertiary">内容规模</div><div className="mt-1 text-ink">{item.page_count != null ? `${item.page_count} 页` : item.sheet_count != null ? `${item.sheet_count} 个工作表` : `${item.chunk_count} 个片段`}</div></div>
                 <div><div className="text-xs text-ink-tertiary">会话关联</div><div className="mt-1 text-ink">{item.message_seq == null ? '待发送' : `第 ${item.message_seq} 条消息`}</div></div>
-                <div><div className="text-xs text-ink-tertiary">上传时间</div><div className="mt-1 text-ink">{new Date(item.created_at).toLocaleString()}</div></div>
+                <div><div className="text-xs text-ink-tertiary">上传时间</div><div className="mt-1 text-ink">{formatServerTime(item.created_at)}</div></div>
               </div>
-              <Alert type="info" showIcon message="按需读取" description="数字员工只会在回答当前问题时按需搜索和读取相关片段，文件全文不会一次性塞入模型上下文。" />
+              <Alert type="info" showIcon message="按需读取" description="AI员工只会在回答当前问题时按需搜索和读取相关片段，文件全文不会一次性塞入模型上下文。" />
             </div>
           );
         })()}

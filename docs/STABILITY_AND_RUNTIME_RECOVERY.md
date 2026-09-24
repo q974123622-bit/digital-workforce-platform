@@ -7,7 +7,7 @@
 ```text
 POST /api/v1/conversations/{id}/runs
   → ConversationRunService（统一创建用户消息与 AgentExecution）
-  → 对应数字员工 Harness 容器
+  → 对应AI员工 Harness 容器
   → 受控知识、插件与一次委派工具
   → AgentExecutionEvent
   → SSE /runs/{execution_id}/events

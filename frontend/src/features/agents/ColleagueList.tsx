@@ -19,12 +19,21 @@ export default function ColleagueList({
   const departments = useMemo(() => [...new Set(employees.map((item) => item.department).filter(Boolean))], [employees]);
   const [keyword, setKeyword] = useState('');
   const [department, setDepartment] = useState('all');
-  const visible = useMemo(() => entries.filter((item) => {
-    const departmentMatch = department === 'all' || item.department === department;
+  // 分身段只受搜索词影响：部门筛选面向AI员工，避免筛部门时分身莫名消失。
+  const twinVisible = useMemo(() => {
+    if (!twin) return false;
     const query = keyword.trim().toLocaleLowerCase();
-    return departmentMatch && (!query || [item.name, item.employee_no, item.department, item.role_prompt]
-      .some((value) => value.toLocaleLowerCase().includes(query)));
-  }), [department, entries, keyword]);
+    return !query || [twin.name, twin.employee_no, twin.department, twin.role_prompt]
+      .some((value) => value.toLocaleLowerCase().includes(query));
+  }, [keyword, twin]);
+  const visibleEmployees = useMemo(() => {
+    const query = keyword.trim().toLocaleLowerCase();
+    return employees.filter((item) => {
+      const departmentMatch = department === 'all' || item.department === department;
+      return departmentMatch && (!query || [item.name, item.employee_no, item.department, item.role_prompt]
+        .some((value) => value.toLocaleLowerCase().includes(query)));
+    });
+  }, [department, employees, keyword]);
 
   return (
     <section className="flex min-h-0 flex-1 flex-col" aria-label="同事目录">
@@ -39,33 +48,70 @@ export default function ColleagueList({
         />
       </div>
       <div className="colleague-list min-h-0 flex-1 overflow-y-auto px-3 py-2">
-        {!visible.length && <Empty className="mt-12" image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有找到相关同事" />}
-        {visible.map((employee) => (
-          <button
-            key={employee.employee_no}
-            type="button"
-            className={`colleague-row group flex w-full items-center gap-3 px-2.5 py-2.5 text-left ${employee.type === 'twin' ? 'is-twin' : ''}`}
-            onClick={() => onOpenChat(employee.employee_no)}
-          >
-            <span
-              role="button"
-              tabIndex={0}
-              aria-label={`查看${employee.name}的资料`}
-              className="avatar-button"
-              onClick={(event) => { event.stopPropagation(); onOpenProfile(employee.employee_no); }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onOpenProfile(employee.employee_no); }
-              }}
-            >
-              <AgentAvatar employee={employee} size={42} />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-medium text-ink">{employee.name}</span>
-              <span className="block truncate text-xs text-ink-secondary">{employee.type === 'twin' ? '我的数字分身' : employee.department} · {employee.employee_no}</span>
-            </span>
-            <span className={`address-book-presence ${employee.status === 'active' ? 'available' : ''}`} />
-          </button>
-        ))}
+        {!twinVisible && !visibleEmployees.length && <Empty className="mt-12" image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有找到相关同事" />}
+        {twin && twinVisible && (
+          <section className="list-section list-section--twin" aria-label="我的分身">
+            <div className="list-section-head" role="heading" aria-level={3}><span>我的分身</span><b>1</b></div>
+            <div className="list-section-body">
+              <button
+                type="button"
+                className="colleague-row group flex w-full items-center gap-3 px-2.5 py-2.5 text-left is-twin"
+                onClick={() => onOpenChat(twin.employee_no)}
+              >
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`查看${twin.name}的资料`}
+                  className="avatar-button"
+                  onClick={(event) => { event.stopPropagation(); onOpenProfile(twin.employee_no); }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onOpenProfile(twin.employee_no); }
+                  }}
+                >
+                  <AgentAvatar employee={twin} size={42} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-ink">{twin.name}</span>
+                  <span className="block truncate text-xs text-ink-secondary">我的分身 · {twin.employee_no}</span>
+                </span>
+                <span className={`address-book-presence ${twin.status === 'active' ? 'available' : ''}`} />
+              </button>
+            </div>
+          </section>
+        )}
+        {!!visibleEmployees.length && (
+          <section className="list-section list-section--employees" aria-label="AI员工">
+            <div className="list-section-head" role="heading" aria-level={3}><span>AI员工</span><b>{visibleEmployees.length}</b></div>
+            <div className="list-section-body">
+              {visibleEmployees.map((employee) => (
+                <button
+                  key={employee.employee_no}
+                  type="button"
+                  className="colleague-row group flex w-full items-center gap-3 px-2.5 py-2.5 text-left"
+                  onClick={() => onOpenChat(employee.employee_no)}
+                >
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`查看${employee.name}的资料`}
+                    className="avatar-button"
+                    onClick={(event) => { event.stopPropagation(); onOpenProfile(employee.employee_no); }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); onOpenProfile(employee.employee_no); }
+                    }}
+                  >
+                    <AgentAvatar employee={employee} size={42} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-ink">{employee.name}</span>
+                    <span className="block truncate text-xs text-ink-secondary">{employee.department} · {employee.employee_no}</span>
+                  </span>
+                  <span className={`address-book-presence ${employee.status === 'active' ? 'available' : ''}`} />
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </section>
   );

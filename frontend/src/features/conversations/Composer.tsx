@@ -1,4 +1,4 @@
-import { CloseOutlined, FileTextOutlined, PaperClipOutlined, ReloadOutlined, SendOutlined } from '@ant-design/icons';
+import { CloseOutlined, FileTextOutlined, PaperClipOutlined, ReloadOutlined, SendOutlined, StopOutlined } from '@ant-design/icons';
 import { Button, Input, Tooltip, Upload } from 'antd';
 import { useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
@@ -19,6 +19,9 @@ export default function Composer({
   onSend,
   disabled = false,
   sending = false,
+  active = false,
+  stopping = false,
+  onStop,
   placeholder = '发消息…',
   attachments = [],
   onFiles,
@@ -30,6 +33,10 @@ export default function Composer({
   onSend: () => void;
   disabled?: boolean;
   sending?: boolean;
+  /** 当前有执行在跑：右侧按钮由「发送」换成「停止」，输入框仍可继续打字准备下一条。 */
+  active?: boolean;
+  stopping?: boolean;
+  onStop?: () => void;
   placeholder?: string;
   attachments?: ConversationAttachment[];
   onFiles?: (files: File[]) => void;
@@ -90,7 +97,7 @@ export default function Composer({
         onCompositionEnd={() => setComposing(false)}
         placeholder={placeholder}
         autoSize={{ minRows: 1, maxRows: 4 }}
-        disabled={disabled}
+        disabled={disabled && !active}
         variant="borderless"
         className="w-full resize-none !px-2 !py-1.5"
       />
@@ -105,17 +112,31 @@ export default function Composer({
           </Upload>
           <span className="text-[11px] text-ink-tertiary">Enter 发送 · 支持文档、PDF 与表格</span>
         </div>
-        <Tooltip title={hasBlockingAttachment ? '等待附件解析完成后发送' : undefined}>
-          <Button
-            type="primary"
-            shape="circle"
-            icon={<SendOutlined />}
-            onClick={onSend}
-            loading={sending}
-            disabled={disabled || !value.trim() || hasBlockingAttachment}
-            aria-label="发送消息"
-          />
-        </Tooltip>
+        {active ? (
+          <Tooltip title="停止执行（已完成的步骤会保留，不可续跑）">
+            <Button
+              type="primary"
+              danger
+              shape="circle"
+              icon={<StopOutlined />}
+              onClick={onStop}
+              loading={stopping}
+              aria-label="停止执行"
+            />
+          </Tooltip>
+        ) : (
+          <Tooltip title={hasBlockingAttachment ? '等待附件解析完成后发送' : undefined}>
+            <Button
+              type="primary"
+              shape="circle"
+              icon={<SendOutlined />}
+              onClick={onSend}
+              loading={sending}
+              disabled={disabled || !value.trim() || hasBlockingAttachment}
+              aria-label="发送消息"
+            />
+          </Tooltip>
+        )}
       </div>
     </div>
   );

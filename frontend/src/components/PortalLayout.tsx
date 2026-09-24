@@ -1,7 +1,12 @@
-import { AppstoreOutlined, BulbOutlined, CommentOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
-import { Avatar, Dropdown, Tooltip } from 'antd';
+import { AppstoreOutlined, BulbOutlined, CommentOutlined, UserOutlined } from '@ant-design/icons';
+import { Tooltip } from 'antd';
+import { useEffect } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import GuideButton from '../features/guide/GuideButton';
+import GuideDrawer from '../features/guide/GuideDrawer';
+import { useGuideLauncher } from '../features/guide/useGuideLauncher';
+import AccountMenu from './ui/AccountMenu';
 import BrandMark from './ui/BrandMark';
 import ThemeSwitcher from './ui/ThemeSwitcher';
 
@@ -12,7 +17,20 @@ const NAV_ITEMS = [
 ];
 
 export default function PortalLayout() {
-  const { account, logout } = useAuth();
+  const { account } = useAuth();
+
+  // 工作台是「固定视口」布局（内容在 main 内部滚动）。
+  // 浮层挂载到 body 后可能撑高文档、导致出现/消失滚动条，从而引发整页抖动。
+  useEffect(() => {
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previous; };
+  }, []);
+
+  // 操作指南：竖轨入口与窄屏悬浮入口共享同一份开关状态与首次弹出逻辑。
+  // 必须早于下方 early return，否则登录态切换会打破 hooks 调用顺序。
+  const guide = useGuideLauncher('employee');
+
   if (!account) return null;
   const canAdmin = account.roles.some((role) => ['agent_admin', 'security_admin', 'platform_admin'].includes(role));
 
@@ -20,9 +38,9 @@ export default function PortalLayout() {
     <div className="portal-shell flex h-[100dvh] min-h-0 overflow-hidden bg-page">
       {/* 左侧 64px 垂直导航栏（移动端隐藏） */}
       <aside className="portal-rail hidden w-[72px] shrink-0 flex-col items-center border-r border-line bg-surface py-4 md:flex">
-        <NavLink to="/workplace" className="brand-home mb-6 flex flex-col items-center gap-1.5" title="数字员工工作台">
+        <NavLink to="/workplace" className="brand-home mb-6 flex flex-col items-center gap-1.5" title="AI员工工作台">
           <BrandMark size={40} />
-          <span className="text-[10px] font-semibold tracking-wide text-ink-secondary">数字员工</span>
+          <span className="text-[10px] font-semibold tracking-wide text-ink-secondary">AI员工</span>
         </NavLink>
         <nav className="flex flex-1 flex-col items-center gap-1">
           {NAV_ITEMS.map(({ to, icon, label }) => (
@@ -52,6 +70,7 @@ export default function PortalLayout() {
           ))}
         </nav>
         <div className="flex flex-col items-center gap-1">
+          <GuideButton variant="rail" expanded={guide.open} onOpen={guide.openGuide} />
           <ThemeSwitcher />
           {canAdmin && (
             <Tooltip title="管理后台" placement="right">
@@ -64,24 +83,7 @@ export default function PortalLayout() {
               </a>
             </Tooltip>
           )}
-          <Dropdown
-            placement="bottomRight"
-            menu={{
-              items: [
-                { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: () => void logout() },
-              ],
-            }}
-          >
-            <button
-              type="button"
-              className="grid h-11 w-11 cursor-pointer place-items-center rounded-control border-0 bg-transparent"
-              aria-label="账号菜单"
-            >
-              <Avatar size={32} style={{ background: 'var(--dwp-brand)' }}>
-                {account.name.slice(0, 1)}
-              </Avatar>
-            </button>
-          </Dropdown>
+          <AccountMenu />
         </div>
       </aside>
 
@@ -114,6 +116,19 @@ export default function PortalLayout() {
           </NavLink>
         ))}
       </nav>
+
+      {/* 窄屏竖轨整体隐藏 → 补一个左下角悬浮入口（位置抬升到底部导航之上） */}
+      <div className="md:hidden">
+        <GuideButton variant="floating" expanded={guide.open} onOpen={guide.openGuide} />
+      </div>
+
+      <GuideDrawer
+        open={guide.open}
+        onClose={guide.closeGuide}
+        audience="employee"
+        notAutoPrompt={guide.notAutoPrompt}
+        onNotAutoPromptChange={guide.setNotAutoPrompt}
+      />
     </div>
   );
 }

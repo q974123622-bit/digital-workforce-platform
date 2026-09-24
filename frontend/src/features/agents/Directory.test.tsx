@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { Employee } from '@dwp/shared-schema';
 import Directory from './Directory';
@@ -34,7 +34,7 @@ describe('Directory', () => {
     const openChat = vi.fn();
     render(<Directory twin={twin} employees={employees} onOpenChat={openChat} />);
 
-    expect(screen.getByRole('button', { name: /我的数字分身/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /我的分身/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /企业服务部/ }));
     await waitFor(() => expect(screen.getByRole('option', { name: /AI员工平台/ })).toBeInTheDocument());
     expect(screen.queryByRole('option', { name: /投资分析AI员工/ })).not.toBeInTheDocument();
@@ -50,5 +50,27 @@ describe('Directory', () => {
     fireEvent.change(screen.getByPlaceholderText('搜索姓名、工号、部门或职责'), { target: { value: '投行业务' } });
     expect(screen.getByRole('option', { name: /投资分析AI员工/ })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /AI员工平台/ })).not.toBeInTheDocument();
+  });
+
+  it('名单栏按「上：我的分身 / 下：AI员工」分区展示', () => {
+    render(<Directory twin={twin} employees={employees} onOpenChat={vi.fn()} />);
+
+    const twinSection = screen.getByRole('listbox', { name: '我的分身名单' });
+    expect(within(twinSection).getByRole('option', { name: /张三的数字分身/ })).toBeInTheDocument();
+
+    const employeeSection = screen.getByRole('listbox', { name: 'AI员工名单' });
+    expect(within(employeeSection).getByRole('option', { name: /AI员工平台/ })).toBeInTheDocument();
+    expect(within(employeeSection).queryByRole('option', { name: /张三的数字分身/ })).not.toBeInTheDocument();
+
+    expect(screen.getByRole('heading', { name: /我的分身/ })).toHaveTextContent('1');
+    expect(screen.getByRole('heading', { name: /AI员工/ })).toHaveTextContent('2');
+  });
+
+  it('搜索命中AI员工时分身段随关键词隐藏', () => {
+    render(<Directory twin={twin} employees={employees} onOpenChat={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText('搜索姓名、工号、部门或职责'), { target: { value: '投行业务' } });
+
+    expect(screen.getByRole('listbox', { name: 'AI员工名单' })).toBeInTheDocument();
+    expect(screen.queryByRole('listbox', { name: '我的分身名单' })).not.toBeInTheDocument();
   });
 });

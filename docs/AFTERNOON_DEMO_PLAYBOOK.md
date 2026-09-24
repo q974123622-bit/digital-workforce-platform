@@ -1,4 +1,4 @@
-# 数字员工平台下午演示手册
+# AI员工平台下午演示手册
 
 适用版本：Sprint 13，AgentTeams + DeepSeek Harness + Policy/Gateway + Plugin Adapter。
 
@@ -127,7 +127,7 @@ docker images dwp-dsh:rc6
 - 因采购插件为 L3 敏感操作，进入人工审批。
 - 批准后才执行采购 Adapter；拒绝则停止且不产生成功回执。
 
-讲解重点：数字员工按岗位配置，不是所有机器人共享一套工具权限。
+讲解重点：AI员工按岗位配置，不是所有机器人共享一套工具权限。
 
 ## 三、可选测试样例
 
@@ -196,7 +196,7 @@ docker images dwp-dsh:rc6
 建议始终使用下面四句话：
 
 1. AgentTeams 负责“谁来做、如何协作”，不直接产生业务副作用。
-2. 每个数字员工都有独立 Harness 上下文，Prompt 注入员工工号、人设、职责、Task ID 和协作结论。
+2. 每个AI员工都有独立 Harness 上下文，Prompt 注入员工工号、人设、职责、Task ID 和协作结论。
 3. Harness 负责理解和规划，Plugin Adapter 才负责真正调用 MCP、Workflow 或 RPA。
 4. 所有动作先过 Policy/Gateway；审批、拒绝、工具回执和最终汇总都可审计。
 
@@ -216,7 +216,7 @@ docker images dwp-dsh:rc6
 ## 六、演示通过标准
 
 - 同一 Task ID 贯穿 AgentTeams、Harness、审批、Adapter 和汇总。
-- 至少展示两个不同数字员工的独立 Harness 上下文。
+- 至少展示两个不同AI员工的独立 Harness 上下文。
 - 至少展示 MCP、Workflow、RPA 三类工具。
 - 至少展示一次 approval，并完成批准或拒绝分支。
 - 页面发送后自动轮询，不依赖手动刷新。

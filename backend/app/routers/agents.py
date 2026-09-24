@@ -6,18 +6,25 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
-from ..services import runtime_manager
+from ..services import runtime_manager, runtime_registry
 from ..services.auth import current_account, optional_account, require_roles
 from ..services.identity import resolve_identity
 from ..services.knowledge_registry import plugin_id_for_level
+from ..services.knowledge_source_health import is_kb_available
+from ..services.plugin_governance import skill_artifact_slug
 from ..services.policy import ResourceRef, evaluate
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
-def _profile_out(db: Session, employee: models.DigitalEmployee) -> schemas.AgentProfileOut:
+def _profile_out(
+    db: Session,
+    employee: models.DigitalEmployee,
+    environments: dict[str, runtime_registry.HarnessEnvironment] | None = None,
+) -> schemas.AgentProfileOut:
     profile = db.get(models.AgentProfile, employee.employee_no)
     runtime = runtime_manager.ensure_runtime(db, employee.employee_no)
+    environment = runtime_registry.environment_for(employee.employee_no, environments or {})
     grants = db.scalars(
         select(models.AgentKnowledgeGrant).where(
             models.AgentKnowledgeGrant.employee_id == employee.employee_no,
@@ -40,6 +47,9 @@ def _profile_out(db: Session, employee: models.DigitalEmployee) -> schemas.Agent
         runtime_engine=runtime.engine,
         runtime_state=runtime.state,
         container_name=runtime.container_name,
+        runtime_image=environment.image,
+        runtime_version=environment.runtime_version,
+        runtime_profile_rev=environment.profile_rev,
         knowledge_base_ids=[grant.knowledge_base_id for grant in grants],
     )
 
@@ -51,13 +61,22 @@ def list_agents(_: models.Account = Depends(current_account), db: Session = Depe
         .where(models.DigitalEmployee.status == "active")
         .order_by(models.DigitalEmployee.type, models.DigitalEmployee.employee_no)
     ).all()
-    return [_profile_out(db, employee) for employee in employees]
+    # 一次容器列表查询覆盖全部行（含按AI员工灰度的 dsh 版本），失败自动降级为声明值。
+    environments = runtime_registry.harness_environments()
+    return [_profile_out(db, employee, environments) for employee in employees]
+
+
+@router.get("/runtime-info", response_model=schemas.RuntimeInfoOut)
+def runtime_info(_: models.Account = Depends(current_account)):
+    """运维页顶部汇总：平台镜像（backend/frontend）与 Harness 底座镜像、dsh 版本。"""
+    return schemas.RuntimeInfoOut(
+        delivery_tag=runtime_registry.declared_delivery_tag(),
+        images=[schemas.RuntimeImageOut(**item) for item in runtime_registry.platform_images()],
+    )
 
 
 _KB_EXAMPLES = {
     "KB-IT-SERVICE": ["VPN 申请需要哪些步骤？", "企业邮箱无法登录应该怎么处理？"],
-    "KB-REG-INTERNAL": ["这项内部制度的执行要求是什么？"],
-    "KB-REG-EXTERNAL": ["相关外部监管规则有哪些要求？"],
     "KB-SECURITIES": ["这项证券业务规则如何理解？"],
     "KB-INVESTMENT-BANKING": ["投行项目尽调通常需要关注什么？"],
 }
@@ -72,10 +91,10 @@ def get_effective_capabilities(
     """Return what an agent can use now, not merely what exists in the catalog."""
     employee = db.get(models.DigitalEmployee, employee_id)
     if employee is None or employee.status != "active":
-        raise HTTPException(status_code=404, detail="数字员工不存在或未启用")
+        raise HTTPException(status_code=404, detail="AI员工不存在或未启用")
     subject = resolve_identity(db, employee_id)
     if subject is None:
-        raise HTTPException(status_code=409, detail="数字员工身份未配置")
+        raise HTTPException(status_code=409, detail="AI员工身份未配置")
     profile = db.get(models.AgentProfile, employee_id)
     runtime = runtime_manager.ensure_runtime(db, employee_id)
     runtime_healthy = runtime.state in {"ready", "busy"}
@@ -101,10 +120,15 @@ def get_effective_capabilities(
             reason = "知识库已停用"
         elif not explicitly_granted:
             status = "unauthorized"
-            reason = "未授予该数字员工具体知识库权限"
+            reason = "未授予该AI员工具体知识库权限"
         elif decision == "deny":
             status = "unauthorized"
             reason = policy.reason or "Policy 拒绝访问"
+        elif not is_kb_available(db, kb):
+            # 授权没问题、Policy 也放行，只是数据源暂时不可达：与「没权限」区分开，
+            # 让核验页能直接看出是连通性问题（管理端可一键重测）。
+            status = "source_unavailable"
+            reason = "该知识库对应的内部知识源当前不可达"
         elif not runtime_healthy:
             status = "runtime_unavailable"
             reason = "Harness 运行环境未就绪"
@@ -134,13 +158,93 @@ def get_effective_capabilities(
             "runtime_unavailable" if delegation_enabled else "unauthorized"
         )
         capabilities.append(schemas.EffectiveCapabilityItemOut(
-            id="platform:delegate", name="向数字员工求助", kind="delegation", source_type="platform_tool",
-            description="分身无法独立回答时，可向一名岗位数字员工委派一次。",
+            id="platform:delegate", name="向AI员工求助", kind="delegation", source_type="platform_tool",
+            description="分身无法独立回答时，可向一名岗位AI员工委派一次。",
             actions=["delegate"], status=status, decision="allow" if delegation_enabled else "deny",
             reason=("委派深度固定为 1，目标员工不能继续委派" if status == "available" else
                     "Harness 运行环境未就绪" if status == "runtime_unavailable" else "当前身份未启用委派"),
             authorized=delegation_enabled, installed=runtime_healthy, healthy=status == "available",
-            target_employee_ids=targets, example_prompts=["这道专业问题请帮我咨询合适的数字员工。"],
+            target_employee_ids=targets, example_prompts=["这道专业问题请帮我咨询合适的AI员工。"],
+        ))
+
+    # 插件与技能维度：与员工端目录、Harness 提示词、网关判定同源（AgentPluginBinding）。
+    # 这里逐条列出绑定状态，使「管理员关掉授权」在核验页立即可见，而不是只显示已生效的插件。
+    bindings = db.scalars(select(models.AgentPluginBinding).where(
+        models.AgentPluginBinding.target_agent_id == employee_id,
+    ).order_by(models.AgentPluginBinding.priority, models.AgentPluginBinding.id)).all()
+    # 技能投放态的真源是文件系统，整页只算一次（避免逐条技能各扫一遍目录）。
+    skill_deploy: dict[str, dict] | None = None
+    for binding in bindings:
+        plugin = db.get(models.Plugin, binding.plugin_id)
+        if plugin is None:
+            continue
+        is_skill = plugin.plugin_type == "skill"
+        version_no = binding.pinned_version or plugin.current_version
+        version = db.scalar(select(models.PluginVersion).where(
+            models.PluginVersion.plugin_id == plugin.id,
+            models.PluginVersion.version == version_no,
+            models.PluginVersion.publish_status == "published",
+        )) if version_no else None
+        published = version is not None
+        if plugin.status != "active":
+            status, reason = "disabled", "插件已下架或停用"
+        elif not binding.admin_enabled:
+            status, reason = "unauthorized", "管理员尚未授权该插件"
+        elif not binding.employee_enabled:
+            status, reason = "disabled", "AI员工尚未启用（可在插件中心添加）"
+        elif not published:
+            status, reason = "disabled", "没有已发布版本可供使用"
+        elif binding.decision_mode == "deny":
+            status, reason = "disabled", "插件授权决策为禁止"
+        elif binding.decision_mode == "approval":
+            status, reason = "approval", "使用时需要人工审批（当前没有插件审批流）"
+        elif not runtime_healthy:
+            status, reason = "runtime_unavailable", "Harness 运行环境未就绪"
+        else:
+            status, reason = "available", "授权、版本与运行环境均已就绪"
+
+        deploy_field: str | None = None
+        deploy_detail = ""
+        deployed_at: str | None = None
+        installed = published
+        if is_skill:
+            if skill_deploy is None:
+                skill_deploy = runtime_manager.deploy_state(db, employee_id)
+            slug = skill_artifact_slug(plugin, version) if version is not None else plugin.id
+            info = skill_deploy.get(slug)
+            if info is None:
+                # 未在授权范围内（未启用 / 未授权 / 已下架）：工作区里不该有包。
+                deploy_field, installed = ("missing" if published else None), False
+                if published:
+                    deploy_detail = "尚未投放到该AI员工的工作区"
+            else:
+                deploy_field = str(info.get("state") or "") or None
+                deploy_detail = str(info.get("detail") or "")
+                deployed_at = info.get("deployed_at")
+                installed = deploy_field in {"deployed", "stale"}
+            if deploy_field == "stale" and status == "available":
+                reason = f"{reason}；工作区内容为旧版本，待下一次投放刷新"
+            elif deploy_field in {"failed", "missing"} and status == "available":
+                # 授权没问题、但技能包没落到容器里 → 实际用不了，按运行环境问题呈现。
+                status = "runtime_unavailable"
+                reason = f"技能包{deploy_detail or '尚未投放'}"
+        capabilities.append(schemas.EffectiveCapabilityItemOut(
+            id=f"{'skill' if is_skill else 'plugin'}:{plugin.id}",
+            name=plugin.name,
+            kind="skill" if is_skill else "plugin",
+            source_type="skill" if is_skill else "platform_tool",
+            description=plugin.description or ("数字分身可用的工作方法技能" if is_skill else "经网关执行的受控工具"),
+            actions=["inject"] if is_skill else ["execute"],
+            status=status,
+            decision=binding.decision_mode if binding.decision_mode in {"allow", "approval", "deny"} else "deny",
+            reason=reason,
+            authorized=bool(binding.admin_enabled and binding.employee_enabled and published),
+            installed=installed,
+            healthy=runtime_healthy and status == "available",
+            data_level=plugin.data_level,
+            deploy_state=deploy_field,
+            deploy_detail=deploy_detail,
+            deployed_at=deployed_at,
         ))
 
     available_count = sum(item.status in {"available", "approval"} for item in capabilities)
@@ -156,7 +260,7 @@ def get_effective_capabilities(
 @router.get("/{employee_id}/runtime", response_model=schemas.AgentRuntimeOutV1)
 def get_runtime(employee_id: str, _: models.Account = Depends(current_account), db: Session = Depends(get_db)):
     if db.get(models.DigitalEmployee, employee_id) is None:
-        raise HTTPException(status_code=404, detail="数字员工不存在")
+        raise HTTPException(status_code=404, detail="AI员工不存在")
     return runtime_manager.ensure_runtime(db, employee_id)
 
 
@@ -167,7 +271,7 @@ def start_runtime(
     db: Session = Depends(get_db),
 ):
     if db.get(models.DigitalEmployee, employee_id) is None:
-        raise HTTPException(status_code=404, detail="数字员工不存在")
+        raise HTTPException(status_code=404, detail="AI员工不存在")
     try:
         return runtime_manager.start(db, employee_id)
     except RuntimeError as exc:
@@ -195,13 +299,13 @@ def create_persona_draft(
 ):
     employee = db.get(models.DigitalEmployee, employee_id)
     if employee is None:
-        raise HTTPException(status_code=404, detail="数字员工不存在")
+        raise HTTPException(status_code=404, detail="AI员工不存在")
     profile = db.get(models.AgentProfile, employee_id)
     responsibilities = payload.responsibilities or (profile.responsibilities if profile else [])
     version = (db.scalar(select(func.max(models.PersonaVersion.version)).where(models.PersonaVersion.employee_id == employee_id)) or 0) + 1
     responsibility_text = "；".join(responsibilities) or "按照已配置岗位职责提供知识服务"
     content = (
-        f"你是{employee.name}，是公司中的一位数字员工。\n"
+        f"你是{employee.name}，是公司中的一位AI员工。\n"
         f"你所在的部门是{employee.department or '公司共享服务部门'}。\n"
         f"你的主要职责是：{responsibility_text}。\n"
         f"{payload.project_context.strip()}\n"
@@ -234,7 +338,7 @@ def approve_persona_draft(
     employee = db.get(models.DigitalEmployee, row.employee_id)
     profile = db.get(models.AgentProfile, row.employee_id)
     if employee is None or profile is None:
-        raise HTTPException(status_code=409, detail="数字员工资料不完整")
+        raise HTTPException(status_code=409, detail="AI员工资料不完整")
     published = db.scalars(
         select(models.PersonaVersion).where(
             models.PersonaVersion.employee_id == row.employee_id,

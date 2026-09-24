@@ -78,6 +78,31 @@ def test_client_sends_api_key_header():
     assert "application/json, text/event-stream" in captured["headers"]["Accept"]
 
 
+def test_client_sends_custom_auth_header_name():
+    """自助接入的 MCP 可能要求自定义鉴权头名，默认行为必须仍是 x-api-key。"""
+    captured = {}
+
+    def handler(request):
+        captured["headers"] = request.headers
+        payload = json.loads(request.content)
+        if payload.get("method") == "initialize":
+            return _mcp_response(payload, {"capabilities": {}})
+        if payload.get("method") == "notifications/initialized":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "result": {}})
+        if payload.get("method") == "tools/list":
+            return _mcp_response(payload, {"tools": []})
+        return _mcp_response(payload, {})
+
+    http_client = _client(handler)
+    ExternalMcpClient(
+        url="https://mcp.invalid", api_key="secret-key",
+        auth_header_name="Authorization", client=http_client,
+    ).list_tools()
+    http_client.close()
+    assert captured["headers"]["Authorization"] == "secret-key"
+    assert "x-api-key" not in captured["headers"]
+
+
 def test_client_http_401_raises_without_leaking():
     def handler(_request):
         return httpx.Response(401, text="credential and secret body")
@@ -89,6 +114,20 @@ def test_client_http_401_raises_without_leaking():
     http_client.close()
     assert "认证失败" in str(caught.value)
     assert "credential" not in str(caught.value)
+
+
+def test_client_http_401_from_gateway_points_at_whitelist():
+    """通用 Web 服务器返回空体 401 时，不能只让人去改密钥（真实踩过）。"""
+    def handler(_request):
+        return httpx.Response(401, headers={"Server": "nginx/1.22.1"}, content=b"")
+
+    http_client = _client(handler)
+    mcp = ExternalMcpClient(url="https://mcp.invalid", api_key="secret-key", client=http_client)
+    with pytest.raises(ExternalMcpError) as caught:
+        mcp.list_tools()
+    http_client.close()
+    assert "认证失败" in str(caught.value)
+    assert "白名单" in str(caught.value)
 
 
 def test_client_jsonrpc_error_raises():

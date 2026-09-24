@@ -5,7 +5,10 @@
 这些由 ``external_mcp_adapter`` 负责。
 
 安全约定（与 InternalKnowledgeAdapter 一致）：
-- 凭据（``api_key``）仅通过 ``x-api-key`` 请求头发送，不写入日志；
+- 凭据（``api_key``）仅通过 ``auth_header_name``（默认 ``x-api-key``）请求头发送，
+  不写入日志；自助接入的 MCP 服务可自定义头名（如 ``Authorization``）；
+- 需要**多个**鉴权头的服务（如 VeRAG 的 ``Authorization`` + ``X-Tenant``）改传
+  ``auth_headers``，此时整体替换单头逻辑；两种写法都只走请求头，绝不落日志；
 - 异常只暴露错误类型与简要信息，不暴露凭据或响应大段内容；
 - 支持注入 ``httpx.Client``，便于使用 ``httpx.MockTransport`` 做离线单测。
 """
@@ -31,6 +34,9 @@ class ExternalMcpClient:
         url: str,
         api_key: str,
         timeout_seconds: float = 20.0,
+        auth_header_name: str = "x-api-key",
+        auth_headers: dict[str, str] | None = None,
+        protocol_version: str = "2024-11-05",
         client: httpx.Client | None = None,
     ) -> None:
         if not url:
@@ -38,9 +44,16 @@ class ExternalMcpClient:
         self._url = url.rstrip("/")
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
+        # 自助接入的服务可能用 Authorization / X-Auth-Token 等自定义头；默认保持 x-api-key。
+        self._auth_header_name = (auth_header_name or "x-api-key").strip() or "x-api-key"
+        # 多鉴权头场景（如 VeRAG 需要 Authorization + X-Tenant 两个头）：
+        # 传入 auth_headers 时整体替换单头逻辑，单头调用方行为不变。
+        self._auth_headers = {
+            str(name): str(value) for name, value in (auth_headers or {}).items() if value
+        }
         self._client = client
         self._next_id = 1
-        self._protocol_version = "2024-11-05"
+        self._protocol_version = (protocol_version or "2024-11-05").strip() or "2024-11-05"
         self._initialized = False
         self._session_id = ""
 
@@ -56,11 +69,26 @@ class ExternalMcpClient:
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
-        if self._api_key:
-            headers["x-api-key"] = self._api_key
+        if self._auth_headers:
+            headers.update(self._auth_headers)
+        elif self._api_key:
+            headers[self._auth_header_name] = self._api_key
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
         return headers
+
+    def _auth_error_message(self, response: httpx.Response) -> str:
+        """401 的可读原因。
+
+        空响应体 + 响应头是通用 Web 服务器（nginx 等）而不是 MCP 服务端时，通常不是
+        「密钥写错」，而是边缘网关在凭据校验之前就拒了请求 —— 最典型的是来源 IP 不在
+        白名单里。这时让运维去换密钥会白折腾，所以单独点出来。
+        """
+        server = (response.headers.get("server") or "").lower()
+        base = f"External MCP 认证失败（{self._auth_header_name} 无效）"
+        if server and not response.content and "mcp" not in server:
+            return f"{base}；响应来自 {server} 且无内容，网关可能在凭据校验前就拒绝了（优先核对来源 IP 白名单）"
+        return base
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -79,7 +107,7 @@ class ExternalMcpClient:
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             message = {
-                401: "External MCP 认证失败（x-api-key 无效）",
+                401: self._auth_error_message(exc.response),
                 403: "External MCP 拒绝访问",
                 404: "External MCP 端点不存在",
             }.get(status, f"External MCP HTTP {status}")

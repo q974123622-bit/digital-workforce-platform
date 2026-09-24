@@ -143,7 +143,7 @@
 - [x]
   - Owner Role：B（Policy 复用 A 的 Sprint 2 实现）
   - Input：SECURITY_BOUNDARY 权限模型
-  - Output：`/internal/knowledge/search` 链路：正式分身 KB-INTERNAL Allow；实习生 DENY；虚拟员工仅授权库
+  - Output：`/internal/knowledge/search` 链路：正式分身 KB-INTERNAL Allow；实习生 DENY；AI员工仅授权库
   - Dependency：S3-02、T1-02
   - Acceptance Criteria：测试覆盖 正式 ALLOW / 实习 DENY / 虚拟未授权 DENY
 
@@ -283,10 +283,10 @@
   - Dependency：S8-03
   - Acceptance Criteria：platform-bot → 团队房间 → Manager 受理回执 → 派发 kai；网关轮询 parse_completion 命中；后端 121 测试全绿
 
-### S8-05 AgentTeams Worker 对齐平台数字员工
+### S8-05 AgentTeams Worker 对齐平台AI员工
 - [x]（2026-08-20 实测通过）
   - Owner Role：A
-  - Input：S8-04、平台数字员工名册（VE-0001/0002/0003）
+  - Input：S8-04、平台AI员工名册（VE-0001/0002/0003）
   - Output：
     1. 新建 worker：onboard-assistant（新员工入职助手）/ hr-assistant（HR 助理）/ it-assistant（IT 助理），SOUL 注入人设（`tmp/soul-*.md`）
     2. 重建 team-onboard：组长 onboard-assistant + 组员 hr-assistant、it-assistant（`tmp/team-onboard.yaml`）；删除测试 worker kai/xiaoming
@@ -295,7 +295,7 @@
   - Dependency：S8-04
   - Acceptance Criteria：平台任务 → Manager → onboard-assistant 拆解 → hr/it-assistant 执行并产出交付物（MinIO 实测可见）；后端 121 测试全绿
 
-### S9-01 数字员工生命周期绑定（创建即建容器 + 命名规则）
+### S9-01 AI员工生命周期绑定（创建即建容器 + 命名规则）
 - [x]（2026-08-20 实测通过）
   - Owner Role：A
   - Input：employees 路由、AgentTeams controller（agt CLI）
@@ -327,7 +327,7 @@
 ### S10-01 关系理顺 + 统一执行链路 + 工作流角色化
 - [x]（2026-08-20 实测通过）
   - Owner Role：A
-  - Output：分身=demo 组织者（不建容器）；虚拟员工=agentteams；结构化任务消息（task_id/请求者/目标）；parse_completion 按 task_id 匹配；WORKFLOW_META owner_employee；Mock adapter/模板去硬编码；前端来源三态徽章 + 工作流负责人
+  - Output：分身=demo 组织者（不建容器）；AI员工=agentteams；结构化任务消息（task_id/请求者/目标）；parse_completion 按 task_id 匹配；WORKFLOW_META owner_employee；Mock adapter/模板去硬编码；前端来源三态徽章 + 工作流负责人
   - Dependency：S9-04
   - Acceptance Criteria：请假任务带 task_id 且 Manager 围绕 task_id 派单（实测）；内置降级显示"该员工"而非"王小明"；后端 135 + 前端 20 全绿
 
@@ -378,7 +378,7 @@
 ### S7-01 职场后端：模型 / 种子 / 接口
 - [x]
   - Owner Role：A
-  - Input：会议纪要（个人工作中心 / 数字分身 / 技能上传 / 数字员工目录）
+  - Input：会议纪要（个人工作中心 / 数字分身 / 技能上传 / AI员工目录）
   - Output：`Skill`（文本/Markdown，owner_human_no）、`Conversation`（kind=direct|group，participants JSON）、`ConversationMessage`（seq 有序）；`backend/app/routers/workplace.py`：职场聚合 + 技能 CRUD + 会话接口；种子 3 技能 + 2 会话（分身私聊欢迎语 + 入职协作群聊）
   - Dependency：T0-04（模型/种子基线）
   - Acceptance Criteria：direct 幂等复用、group 自动带头分身且拒绝重复/未知成员；聚合仅含 virtual/rpa；越权发消息 403
@@ -528,7 +528,7 @@
 - [x] `collaboration_status/messages` 与 `execution_mode` 暴露给任务卡片，展示协作过程和执行引擎。
 - [x] Matrix 不可用且尚未发送时安全降级；已发送后中断则失败停机，避免双执行。
 
-### S12-03 数字员工角色与生命周期
+### S12-03 AI员工角色与生命周期
 - [x] 数字分身固定为 `twin + demo`，只承担用户代理、任务组织和最终汇总。
 - [x] 入职任务按 HR 助理 + IT 助理分工；仅明确要求权限报表时加入 RPA 审批任务。
 - [x] 新增 `RPA-0001 自动化报表机器人`、`VE-0004 采购助理`，移除 IT 助理的报表/采购越界授权。

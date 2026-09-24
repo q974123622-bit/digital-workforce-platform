@@ -1,0 +1,906 @@
+{
+  "generated_at": "2026-09-21T08:31:42",
+  "rest": [
+    {
+      "id": 2919,
+      "name": "自动化搜索知识库与文件夹178921228529494c315f4",
+      "document_count": 2
+    },
+    {
+      "id": 2917,
+      "name": "自动化xlsx自定义分段解析1789212185946664fff2f",
+      "document_count": 1
+    },
+    {
+      "id": 2915,
+      "name": "自动化术语库检索17892120525853f9ea35a",
+      "document_count": 159
+    },
+    {
+      "id": 2913,
+      "name": "自动化导入csv文档编辑1789211983750f045655d",
+      "document_count": 2
+    },
+    {
+      "id": 2912,
+      "name": "自动化搜索知识库与文件夹17892119673166ab6a48e",
+      "document_count": 1
+    },
+    {
+      "id": 2911,
+      "name": "自动化xlsx规则起始行解析1789211871399e7277459",
+      "document_count": 1
+    },
+    {
+      "id": 2910,
+      "name": "自动化选择pptx文件导入和pptx文件召回测试17892117826719bf09483",
+      "document_count": 1
+    },
+    {
+      "id": 2909,
+      "name": "自动化术语库检索1789211743389480de8df",
+      "document_count": 159
+    },
+    {
+      "id": 2907,
+      "name": "自动化导入csv文档编辑1789211665226b717596d",
+      "document_count": 2
+    },
+    {
+      "id": 2906,
+      "name": "自动化docx自动分段OCR解析178921165150234694eb7",
+      "document_count": 1
+    },
+    {
+      "id": 2905,
+      "name": "自动化docx模型总结分段OCR解析1789211645174ac31a846",
+      "document_count": 1
+    },
+    {
+      "id": 2895,
+      "name": "自动化xlsx规则起始行解析1789211551456a4cb0401",
+      "document_count": 1
+    },
+    {
+      "id": 2889,
+      "name": "自动化1789211541031566e4688",
+      "document_count": 0
+    },
+    {
+      "id": 2877,
+      "name": "自动化解析1789211528892a3c34c2d",
+      "document_count": 1
+    },
+    {
+      "id": 2876,
+      "name": "自动化解析1789211528727ae320b38",
+      "document_count": 1
+    },
+    {
+      "id": 2875,
+      "name": "自动化解析1789211526014ca071404",
+      "document_count": 1
+    },
+    {
+      "id": 2874,
+      "name": "自动化解析1789211525674e9f4414f",
+      "document_count": 1
+    },
+    {
+      "id": 2873,
+      "name": "自动化解析1789211524492c10cc5c2",
+      "document_count": 1
+    },
+    {
+      "id": 2872,
+      "name": "自动化解析178921152240946713b7a",
+      "document_count": 1
+    },
+    {
+      "id": 2871,
+      "name": "自动化解析1789211521928a6ed758b",
+      "document_count": 1
+    },
+    {
+      "id": 2870,
+      "name": "自动化解析178921151814195922b45",
+      "document_count": 1
+    },
+    {
+      "id": 2869,
+      "name": "自动化解析17892115155908d840575",
+      "document_count": 1
+    },
+    {
+      "id": 2868,
+      "name": "自动化解析17892115141693b6e71dc",
+      "document_count": 1
+    },
+    {
+      "id": 2867,
+      "name": "自动化解析17892115126035794392a",
+      "document_count": 1
+    },
+    {
+      "id": 2866,
+      "name": "自动化17892115121873285da4a",
+      "document_count": 0
+    },
+    {
+      "id": 2862,
+      "name": "自动化1789211481893f637a1ec",
+      "document_count": 0
+    },
+    {
+      "id": 2860,
+      "name": "自动化pdf自动分段OCR解析1789211465581044b8c76",
+      "document_count": 1
+    },
+    {
+      "id": 2848,
+      "name": "自动化导入xlsx文档编辑178921134528176b7d170",
+      "document_count": 2
+    },
+    {
+      "id": 2847,
+      "name": "自动化docx自动分段OCR解析17892113313280c752b48",
+      "document_count": 1
+    },
+    {
+      "id": 2846,
+      "name": "自动化docx模型总结分段OCR解析1789211325862925e9f28",
+      "document_count": 1
+    },
+    {
+      "id": 2838,
+      "name": "自动化1789211143068cbcc33db",
+      "document_count": 0
+    },
+    {
+      "id": 2837,
+      "name": "自动化pdf自动分段OCR解析178921113870507c3ee57",
+      "document_count": 1
+    },
+    {
+      "id": 2832,
+      "name": "自动化导入xlsx文档编辑1789211018340b5cbe71d",
+      "document_count": 1
+    },
+    {
+      "id": 2795,
+      "name": "自动化1789210898505b7b90d7d",
+      "document_count": 0
+    },
+    {
+      "id": 2409,
+      "name": "P0知识库列表未授权对照-c4dcfe8e",
+      "document_count": 1
+    },
+    {
+      "id": 2406,
+      "name": "P0知识库列表目标知识库-9086fd55",
+      "document_count": 1
+    },
+    {
+      "id": 2400,
+      "name": "P0子账号未授权对照知识库-5aa7a798",
+      "document_count": 1
+    },
+    {
+      "id": 2399,
+      "name": "P0子账号已授权知识库-6aab74af",
+      "document_count": 1
+    },
+    {
+      "id": 2194,
+      "name": "test123",
+      "document_count": 1
+    },
+    {
+      "id": 2070,
+      "name": "P0知识库列表未授权对照-13bed6cd",
+      "document_count": 1
+    },
+    {
+      "id": 2069,
+      "name": "P0知识库列表目标知识库-fb1f1618",
+      "document_count": 1
+    },
+    {
+      "id": 2061,
+      "name": "P0子账号未授权对照知识库-0aebc95f",
+      "document_count": 1
+    },
+    {
+      "id": 2057,
+      "name": "P0子账号已授权知识库-c8cbe4ff",
+      "document_count": 1
+    },
+    {
+      "id": 1691,
+      "name": "PPT",
+      "document_count": 11
+    },
+    {
+      "id": 1690,
+      "name": "tp",
+      "document_count": 6
+    },
+    {
+      "id": 1689,
+      "name": "csv",
+      "document_count": 2
+    },
+    {
+      "id": 1688,
+      "name": "md",
+      "document_count": 7
+    },
+    {
+      "id": 1687,
+      "name": "doc",
+      "document_count": 4
+    },
+    {
+      "id": 1686,
+      "name": "et",
+      "document_count": 5
+    },
+    {
+      "id": 1685,
+      "name": "ofd",
+      "document_count": 2
+    },
+    {
+      "id": 1684,
+      "name": "qa",
+      "document_count": 1
+    },
+    {
+      "id": 1683,
+      "name": "wps1",
+      "document_count": 7
+    },
+    {
+      "id": 1682,
+      "name": "pdf",
+      "document_count": 7
+    },
+    {
+      "id": 1681,
+      "name": "gch",
+      "document_count": 0
+    },
+    {
+      "id": 1680,
+      "name": "test01t",
+      "document_count": 6
+    },
+    {
+      "id": 1677,
+      "name": "问答0823",
+      "document_count": 38
+    },
+    {
+      "id": 1673,
+      "name": "P0知识库列表未授权对照-987c0882",
+      "document_count": 1
+    },
+    {
+      "id": 1672,
+      "name": "P0知识库列表目标知识库-d7ce8787",
+      "document_count": 1
+    },
+    {
+      "id": 1669,
+      "name": "P0子账号未授权对照知识库-9eb571f3",
+      "document_count": 1
+    },
+    {
+      "id": 1666,
+      "name": "P0子账号已授权知识库-3a0deb3d",
+      "document_count": 1
+    },
+    {
+      "id": 1657,
+      "name": "P0知识库列表未授权对照-89656c99",
+      "document_count": 1
+    },
+    {
+      "id": 1656,
+      "name": "P0知识库列表目标知识库-23b4ca22",
+      "document_count": 1
+    },
+    {
+      "id": 1654,
+      "name": "P0子账号未授权对照知识库-0d018837",
+      "document_count": 1
+    },
+    {
+      "id": 1651,
+      "name": "P0子账号已授权知识库-4e0233f1",
+      "document_count": 1
+    },
+    {
+      "id": 1492,
+      "name": "test1212",
+      "document_count": 1
+    },
+    {
+      "id": 1487,
+      "name": "P0知识库列表未授权对照-628d02f4",
+      "document_count": 1
+    },
+    {
+      "id": 1486,
+      "name": "P0知识库列表目标知识库-738d2134",
+      "document_count": 1
+    },
+    {
+      "id": 1482,
+      "name": "P0子账号未授权对照知识库-78ed8f2c",
+      "document_count": 1
+    },
+    {
+      "id": 1481,
+      "name": "P0子账号已授权知识库-af4c227c",
+      "document_count": 1
+    },
+    {
+      "id": 1473,
+      "name": "pdf合并单元格",
+      "document_count": 1
+    },
+    {
+      "id": 1472,
+      "name": "文件夹测试",
+      "document_count": 5
+    },
+    {
+      "id": 1428,
+      "name": "通用11",
+      "document_count": 1
+    },
+    {
+      "id": 1427,
+      "name": "QA问答",
+      "document_count": 40
+    },
+    {
+      "id": 1273,
+      "name": "test-制度比对",
+      "document_count": 2
+    },
+    {
+      "id": 1196,
+      "name": "OA动态素材",
+      "document_count": 2
+    },
+    {
+      "id": 1082,
+      "name": "702wslPDF",
+      "document_count": 13
+    },
+    {
+      "id": 1078,
+      "name": "test1",
+      "document_count": 2
+    },
+    {
+      "id": 949,
+      "name": "702test",
+      "document_count": 1
+    },
+    {
+      "id": 902,
+      "name": "证券业务_验证库",
+      "document_count": 2
+    },
+    {
+      "id": 901,
+      "name": "投行资讯_验证库",
+      "document_count": 0
+    },
+    {
+      "id": 900,
+      "name": "数据治理_验证库",
+      "document_count": 0
+    },
+    {
+      "id": 899,
+      "name": "立项与采购_验证库",
+      "document_count": 0
+    },
+    {
+      "id": 898,
+      "name": "财务报账_验证库",
+      "document_count": 0
+    },
+    {
+      "id": 897,
+      "name": "IT服务_验证库",
+      "document_count": 13
+    },
+    {
+      "id": 767,
+      "name": "商密内规知识库",
+      "document_count": 0
+    },
+    {
+      "id": 766,
+      "name": "兴证国际知识库",
+      "document_count": 0
+    },
+    {
+      "id": 765,
+      "name": "智慧纪检知识库",
+      "document_count": 1
+    },
+    {
+      "id": 764,
+      "name": "兴证资管知识库",
+      "document_count": 0
+    },
+    {
+      "id": 763,
+      "name": "研发管理知识库",
+      "document_count": 0
+    },
+    {
+      "id": 762,
+      "name": "兴业期货知识库",
+      "document_count": 0
+    },
+    {
+      "id": 761,
+      "name": "人力指南知识库",
+      "document_count": 0
+    },
+    {
+      "id": 760,
+      "name": "运营管理知识库",
+      "document_count": 6
+    },
+    {
+      "id": 756,
+      "name": "证券业务知识库",
+      "document_count": 67
+    },
+    {
+      "id": 755,
+      "name": "投行资讯知识库",
+      "document_count": 6
+    },
+    {
+      "id": 754,
+      "name": "数据治理知识库",
+      "document_count": 4
+    },
+    {
+      "id": 753,
+      "name": "立项与采购知识库",
+      "document_count": 3
+    },
+    {
+      "id": 752,
+      "name": "财务报账知识库",
+      "document_count": 4
+    },
+    {
+      "id": 751,
+      "name": "IT服务知识库",
+      "document_count": 31
+    },
+    {
+      "id": 698,
+      "name": "test",
+      "document_count": 4
+    }
+  ],
+  "verag": [
+    {
+      "id": "3000673",
+      "name": "个人空间-3-知识库",
+      "document_count": 0,
+      "knowledge_base_type": "PERSONAL_SPACE"
+    },
+    {
+      "id": "3000267",
+      "name": "AI创新发展部-QA库-20260813161357",
+      "document_count": 2297,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "3000290",
+      "name": "集团内部制度库",
+      "document_count": 2335,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "583",
+      "name": "数智平台部-QA库-20260707112103",
+      "document_count": 872,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "659",
+      "name": "集团办公室（党群工作部）-QA库-20260707112134",
+      "document_count": 1863,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "3000266",
+      "name": "AI创新发展部-文档库-20260813161357",
+      "document_count": 147,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "698",
+      "name": "运营管理部-文档库-20260707112149",
+      "document_count": 85,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "3000281",
+      "name": "财富管理部-QA库-20260814174051",
+      "document_count": 1623,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "601",
+      "name": "金融产品部-QA库-20260707112111",
+      "document_count": 882,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "623",
+      "name": "信息技术部-QA库-20260707112119",
+      "document_count": 1598,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "699",
+      "name": "运营管理部-QA库-20260707112149",
+      "document_count": 1399,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "685",
+      "name": "人力资源部（党委组织部）-QA库-20260707112144",
+      "document_count": 422,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "687",
+      "name": "计划财务部-QA库-20260707112144",
+      "document_count": 636,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "711",
+      "name": "投资银行业务总部-QA库-20260707112154",
+      "document_count": 300,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "655",
+      "name": "证券投资部-QA库-20260707112132",
+      "document_count": 350,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "653",
+      "name": "经济与金融研究院-QA库-20260707112131",
+      "document_count": 1623,
+      "knowledge_base_type": "GENERAL"
+    },
+    {
+      "id": "619",
+      "name": "机构业务总部（绿色金融部）-QA库-20260707112118",
+      "document_count": 1285,
+      "knowledge_base_type": "GENERAL"
+    }
+  ],
+  "summary": {
+    "rest_total": 99,
+    "rest_business": 16,
+    "verag_total": 17,
+    "verag_business": 16,
+    "catalog_size": 16
+  },
+  "catalog": [
+    {
+      "platform_id": "KB-IT-SERVICE",
+      "name": "IT 服务知识库",
+      "domain": "IT服务",
+      "data_level": "L2",
+      "rest": {
+        "id": 751,
+        "found": true,
+        "remote_name": "IT服务知识库",
+        "document_count": 31
+      },
+      "verag": {
+        "id": 623,
+        "found": true,
+        "remote_name": "信息技术部-QA库-20260707112119",
+        "document_count": 1598
+      }
+    },
+    {
+      "platform_id": "KB-SECURITIES",
+      "name": "证券业务知识库",
+      "domain": "证券业务",
+      "data_level": "L2",
+      "rest": {
+        "id": 756,
+        "found": true,
+        "remote_name": "证券业务知识库",
+        "document_count": 67
+      },
+      "verag": {
+        "id": 655,
+        "found": true,
+        "remote_name": "证券投资部-QA库-20260707112132",
+        "document_count": 350
+      }
+    },
+    {
+      "platform_id": "KB-INVESTMENT-BANKING",
+      "name": "投行资讯知识库",
+      "domain": "投行业务",
+      "data_level": "L2",
+      "rest": {
+        "id": 755,
+        "found": true,
+        "remote_name": "投行资讯知识库",
+        "document_count": 6
+      },
+      "verag": {
+        "id": 711,
+        "found": true,
+        "remote_name": "投资银行业务总部-QA库-20260707112154",
+        "document_count": 300
+      }
+    },
+    {
+      "platform_id": "KB-FINANCE",
+      "name": "财务报账知识库",
+      "domain": "计划财务",
+      "data_level": "L2",
+      "rest": {
+        "id": 752,
+        "found": true,
+        "remote_name": "财务报账知识库",
+        "document_count": 4
+      },
+      "verag": {
+        "id": 687,
+        "found": true,
+        "remote_name": "计划财务部-QA库-20260707112144",
+        "document_count": 636
+      }
+    },
+    {
+      "platform_id": "KB-PROCUREMENT",
+      "name": "立项与采购知识库",
+      "domain": "立项采购",
+      "data_level": "L2",
+      "rest": {
+        "id": 753,
+        "found": true,
+        "remote_name": "立项与采购知识库",
+        "document_count": 3
+      },
+      "verag": null
+    },
+    {
+      "platform_id": "KB-DATA-GOVERNANCE",
+      "name": "数据治理知识库",
+      "domain": "数据治理",
+      "data_level": "L1",
+      "rest": {
+        "id": 754,
+        "found": true,
+        "remote_name": "数据治理知识库",
+        "document_count": 4
+      },
+      "verag": {
+        "id": 583,
+        "found": true,
+        "remote_name": "数智平台部-QA库-20260707112103",
+        "document_count": 872
+      }
+    },
+    {
+      "platform_id": "KB-OPS",
+      "name": "运营管理知识库",
+      "domain": "运营管理",
+      "data_level": "L1",
+      "rest": {
+        "id": 760,
+        "found": true,
+        "remote_name": "运营管理知识库",
+        "document_count": 6
+      },
+      "verag": {
+        "id": 699,
+        "found": true,
+        "remote_name": "运营管理部-QA库-20260707112149",
+        "document_count": 1399
+      }
+    },
+    {
+      "platform_id": "KB-HR",
+      "name": "人力指南知识库",
+      "domain": "人力资源",
+      "data_level": "L1",
+      "rest": {
+        "id": 761,
+        "found": true,
+        "remote_name": "人力指南知识库",
+        "document_count": 0
+      },
+      "verag": {
+        "id": 685,
+        "found": true,
+        "remote_name": "人力资源部（党委组织部）-QA库-20260707112144",
+        "document_count": 422
+      }
+    },
+    {
+      "platform_id": "KB-AUDIT",
+      "name": "智慧纪检知识库",
+      "domain": "纪检监督",
+      "data_level": "L2",
+      "rest": {
+        "id": 765,
+        "found": true,
+        "remote_name": "智慧纪检知识库",
+        "document_count": 1
+      },
+      "verag": null
+    },
+    {
+      "platform_id": "KB-INTERNAL-POLICY",
+      "name": "集团内部制度知识库",
+      "domain": "内部制度",
+      "data_level": "L2",
+      "rest": {
+        "id": 767,
+        "found": true,
+        "remote_name": "商密内规知识库",
+        "document_count": 0
+      },
+      "verag": {
+        "id": 3000290,
+        "found": true,
+        "remote_name": "集团内部制度库",
+        "document_count": 2335
+      }
+    },
+    {
+      "platform_id": "KB-GROUP-OFFICE",
+      "name": "集团办公室知识库",
+      "domain": "集团事务",
+      "data_level": "L1",
+      "rest": null,
+      "verag": {
+        "id": 659,
+        "found": true,
+        "remote_name": "集团办公室（党群工作部）-QA库-20260707112134",
+        "document_count": 1863
+      }
+    },
+    {
+      "platform_id": "KB-AI-INNOVATION",
+      "name": "AI 创新发展知识库",
+      "domain": "AI创新",
+      "data_level": "L1",
+      "rest": null,
+      "verag": {
+        "id": 3000267,
+        "found": true,
+        "remote_name": "AI创新发展部-QA库-20260813161357",
+        "document_count": 2297
+      }
+    },
+    {
+      "platform_id": "KB-WEALTH",
+      "name": "财富管理知识库",
+      "domain": "财富管理",
+      "data_level": "L2",
+      "rest": null,
+      "verag": {
+        "id": 3000281,
+        "found": true,
+        "remote_name": "财富管理部-QA库-20260814174051",
+        "document_count": 1623
+      }
+    },
+    {
+      "platform_id": "KB-FINANCIAL-PRODUCT",
+      "name": "金融产品知识库",
+      "domain": "金融产品",
+      "data_level": "L2",
+      "rest": null,
+      "verag": {
+        "id": 601,
+        "found": true,
+        "remote_name": "金融产品部-QA库-20260707112111",
+        "document_count": 882
+      }
+    },
+    {
+      "platform_id": "KB-RESEARCH-INSTITUTE",
+      "name": "经济与金融研究院知识库",
+      "domain": "研究",
+      "data_level": "L2",
+      "rest": null,
+      "verag": {
+        "id": 653,
+        "found": true,
+        "remote_name": "经济与金融研究院-QA库-20260707112131",
+        "document_count": 1623
+      }
+    },
+    {
+      "platform_id": "KB-INSTITUTIONAL",
+      "name": "机构业务知识库",
+      "domain": "机构业务",
+      "data_level": "L2",
+      "rest": null,
+      "verag": {
+        "id": 619,
+        "found": true,
+        "remote_name": "机构业务总部（绿色金融部）-QA库-20260707112118",
+        "document_count": 1285
+      }
+    }
+  ],
+  "missing_remote": [],
+  "unmapped_rest": [
+    {
+      "id": 1196,
+      "name": "OA动态素材",
+      "document_count": 2
+    },
+    {
+      "id": 1473,
+      "name": "pdf合并单元格",
+      "document_count": 1
+    },
+    {
+      "id": 762,
+      "name": "兴业期货知识库",
+      "document_count": 0
+    },
+    {
+      "id": 763,
+      "name": "研发管理知识库",
+      "document_count": 0
+    },
+    {
+      "id": 764,
+      "name": "兴证资管知识库",
+      "document_count": 0
+    },
+    {
+      "id": 766,
+      "name": "兴证国际知识库",
+      "document_count": 0
+    }
+  ],
+  "unmapped_verag": [
+    {
+      "id": "3000266",
+      "name": "AI创新发展部-文档库-20260813161357",
+      "document_count": 147
+    },
+    {
+      "id": "698",
+      "name": "运营管理部-文档库-20260707112149",
+      "document_count": 85
+    }
+  ]
+}

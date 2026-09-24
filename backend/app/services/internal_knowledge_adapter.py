@@ -115,3 +115,57 @@ class InternalKnowledgeAdapter(KnowledgeAdapter):
             "X-User": self._x_user,
             "Authorization": self._authorization,
         }
+
+    def probe(self, *, timeout_seconds: float | None = None) -> dict:
+        """轻量连通性探测：取知识库列表第一页，返回非敏感的连通摘要。
+
+        与 ``search()`` 一样不返回响应正文、不泄露凭据；失败统一转
+        ``InternalKnowledgeError``（可读原因），由上层探测服务落库为「不可用」。
+        """
+        params = {
+            "page": 1,
+            "page_size": 1,
+            "strict": "true",
+            "filter_system_created": "true",
+        }
+        try:
+            if self._client is not None:
+                response = self._client.get(config.internal_kb_list_path(), params=params)
+            else:
+                with httpx.Client(
+                    base_url=self._base_url,
+                    headers=self._headers(),
+                    timeout=timeout_seconds or self._timeout_seconds,
+                ) as client:
+                    response = client.get(config.internal_kb_list_path(), params=params)
+            response.raise_for_status()
+        except httpx.TimeoutException:
+            raise InternalKnowledgeError("内部知识引擎请求超时") from None
+        except httpx.HTTPStatusError as exc:
+            messages = {
+                401: "内部知识引擎认证失败",
+                403: "当前身份无权访问内部知识引擎",
+                404: "内部知识引擎知识库列表接口不存在",
+            }
+            raise InternalKnowledgeError(
+                messages.get(exc.response.status_code, "内部知识引擎请求失败")
+            ) from None
+        except httpx.RequestError:
+            raise InternalKnowledgeError("无法连接内部知识引擎") from None
+        try:
+            envelope: Any = response.json()
+        except ValueError:
+            raise InternalKnowledgeError("内部知识引擎返回了无效 JSON") from None
+        if not isinstance(envelope, dict):
+            raise InternalKnowledgeError("内部知识引擎返回了非预期响应")
+        if envelope.get("code") != 0:
+            raise InternalKnowledgeError(f"内部知识引擎业务错误：code={envelope.get('code')}")
+        data = envelope.get("data")
+        if not isinstance(data, dict):
+            raise InternalKnowledgeError("内部知识引擎响应缺少 data")
+        total = data.get("total")
+        try:
+            total_int = int(total)
+        except (TypeError, ValueError):
+            total_int = len(data.get("items") or [])
+        return {"visible_knowledge_bases": total_int}

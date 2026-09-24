@@ -1,17 +1,47 @@
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import select
 
 from . import models
 from .database import DATABASE_URL, Base, SessionLocal, engine, ensure_schema_compatibility
-from .services import config
+from .services import config, knowledge_catalog
 from .services.auth import hash_password, verify_password
-from .services.external_mcp_adapter import QIEMAN_PLUGIN_ID, XYZQ_PLUGIN_ID
+from .services.external_mcp_adapter import EHOME_PLUGIN_ID, QIEMAN_PLUGIN_ID, XYZQ_PLUGIN_ID
 
 SEED_PATH = Path(__file__).resolve().parents[2] / "mock-data" / "seed.json"
+
+# 历史演示/虚构知识库：9-14 之前的 seed.json 灌入，老库升级后不会自动消失，需按显式黑名单清理。
+# 只列虚构库，绝不用「只保留真实库」的白名单——老库里还有内部知识引擎的真实库
+# （数据治理/智慧纪检/财务报账/运营管理/立项采购），白名单会误删。
+LEGACY_MOCK_KNOWLEDGE_BASE_IDS: tuple[str, ...] = (
+    "KB-PUBLIC",
+    "KB-ONBOARD",
+    "KB-INTERNAL",
+    "KB-FINTECH",
+    "KB-REG-INTERNAL",
+    "KB-REG-EXTERNAL",
+    "KB-CUSTOMER-SENSITIVE",
+    # 更早版本的演示知识库
+    "KB-L1-PUB",
+    "KB-L2-HR",
+    "KB-L2-IT",
+    "KB-L2-FIN",
+)
+
+# 历史分级 mock 插件：知识访问已改为 Policy 按 data_level 分级，不再需要这些插件入口。
+LEGACY_KNOWLEDGE_PLUGIN_IDS: tuple[str, ...] = ("knowledge-l1", "knowledge-l2", "knowledge-l3")
+
+# 真实知识库的权威文案：仅当存量描述仍带演示字样时才纠正，避免覆盖人工编辑内容。
+# 文案与目录同源（app/services/knowledge_catalog.py），避免两处漂移。
+REAL_KB_CANONICAL_DESCRIPTIONS: dict[str, str] = {
+    entry["id"]: entry["description"] for entry in knowledge_catalog.KB_CATALOG
+}
+
+_DEMO_DESCRIPTION_MARKERS: tuple[str, ...] = ("虚构", "演示", "Demo", "VE-0001")
 
 
 def _secret_value(env_name: str, file_env_name: str, default_file: str, fallback: str) -> str:
@@ -36,6 +66,7 @@ def seed_data(db, data: dict) -> None:
         models.MemorySyncJob,
         models.MemoryRecord,
         models.ConversationMemoryState,
+        models.McpCredential,
         models.McpRuntimeInstance,
         models.PluginBuildJob,
         models.AgentPluginBinding,
@@ -101,6 +132,66 @@ def seed_data(db, data: dict) -> None:
     ensure_mvp_seed(db)
 
 
+def purge_legacy_mock_knowledge_bases(db) -> dict[str, int]:
+    """幂等清理历史 mock 知识库及其授权/访问申请，并纠正真实库描述里的演示字样。
+
+    老库（9-14 之前灌入）里的虚构知识库不会被 ensure_mvp_seed 删除，因此这里按显式黑名单清理；
+    新库为空跑。第二次启动影响行数为 0。审计事件保留（历史留痕）。
+    """
+    mock_kb_ids = list(LEGACY_MOCK_KNOWLEDGE_BASE_IDS)
+    removed_grants = db.query(models.AgentKnowledgeGrant).filter(
+        models.AgentKnowledgeGrant.knowledge_base_id.in_(mock_kb_ids),
+    ).delete(synchronize_session=False)
+    removed_requests = db.query(models.AccessRequest).filter(
+        models.AccessRequest.resource_type == "knowledge",
+        models.AccessRequest.resource_id.in_(mock_kb_ids),
+    ).delete(synchronize_session=False)
+    removed_kbs = db.query(models.KnowledgeBase).filter(
+        models.KnowledgeBase.id.in_(mock_kb_ids),
+    ).delete(synchronize_session=False)
+
+    # 历史 mock 知识库插件：先删派生记录（版本评审/构建任务/MCP 实例），再删版本与插件本体。
+    version_ids = list(db.scalars(select(models.PluginVersion.id).where(
+        models.PluginVersion.plugin_id.in_(LEGACY_KNOWLEDGE_PLUGIN_IDS),
+    )).all())
+    if version_ids:
+        for model in (models.PluginReview, models.PluginBuildJob, models.McpRuntimeInstance):
+            db.query(model).filter(model.plugin_version_id.in_(version_ids)).delete(synchronize_session=False)
+        db.query(models.PluginVersion).filter(
+            models.PluginVersion.id.in_(version_ids),
+        ).delete(synchronize_session=False)
+    db.query(models.AgentPluginBinding).filter(
+        models.AgentPluginBinding.plugin_id.in_(LEGACY_KNOWLEDGE_PLUGIN_IDS),
+    ).delete(synchronize_session=False)
+    # 自助接入 MCP 的鉴权凭据随插件本体一起清理，避免留下无主密钥。
+    db.query(models.McpCredential).filter(
+        models.McpCredential.plugin_id.in_(LEGACY_KNOWLEDGE_PLUGIN_IDS),
+    ).delete(synchronize_session=False)
+    db.query(models.EmployeePluginGrant).filter(
+        models.EmployeePluginGrant.plugin_id.in_(LEGACY_KNOWLEDGE_PLUGIN_IDS),
+    ).delete(synchronize_session=False)
+    removed_plugins = db.query(models.Plugin).filter(
+        models.Plugin.id.in_(LEGACY_KNOWLEDGE_PLUGIN_IDS),
+    ).delete(synchronize_session=False)
+
+    corrected_descriptions = 0
+    for kb_id, canonical in REAL_KB_CANONICAL_DESCRIPTIONS.items():
+        kb = db.get(models.KnowledgeBase, kb_id)
+        if kb is None or (kb.description or "") == canonical:
+            continue
+        if any(marker in (kb.description or "") for marker in _DEMO_DESCRIPTION_MARKERS):
+            kb.description = canonical
+            corrected_descriptions += 1
+
+    return {
+        "knowledge_bases": removed_kbs,
+        "knowledge_grants": removed_grants,
+        "access_requests": removed_requests,
+        "knowledge_plugins": removed_plugins,
+        "corrected_descriptions": corrected_descriptions,
+    }
+
+
 def ensure_mvp_seed(db) -> None:
     """Idempotently add the knowledge-first MVP identities to old and newly seeded databases."""
     employee_specs = {
@@ -149,7 +240,7 @@ def ensure_mvp_seed(db) -> None:
         "AI-FUND": "/avatars/ai-fund.webp",
         "AI-XYZQ": "/avatars/ai-xyzq.webp",
     }
-    # 知识问答 MVP 保留岗位型数字员工 + 真人分身；历史 VE/RPA 演示员工已从种子数据移除。
+    # 知识问答 MVP 保留岗位型AI员工 + 真人分身；历史 VE/RPA 演示员工已从种子数据移除。
     active_role_employee_ids = set(employee_specs)
     for existing in db.query(models.DigitalEmployee).all():
         if existing.employee_no in avatar_urls:
@@ -174,13 +265,31 @@ def ensure_mvp_seed(db) -> None:
             employee.status = "active"
             employee.runtime_type = "harness"
             employee.runtime_ref = f"dwp-harness-{employee_id.lower()}"
-    if db.get(models.KnowledgeBase, "KB-INVESTMENT-BANKING") is None:
-        db.add(models.KnowledgeBase(
-            id="KB-INVESTMENT-BANKING", name="投行咨询知识库", level="L2", data_level="L2",
-            resource_type="knowledge", allowed_employment_type=["formal"], department_scope=["*"],
-            domain="投行咨询", description="投行业务、尽调和项目咨询知识（内部知识引擎）",
-            status="active",
-        ))
+    # 知识库目录收敛：每个业务主题一个语义化英文 ID，行上带双后端映射
+    # （测试环境 REST / 生产环境 VeRAG MCP），授权只配一次、换环境不改。
+    # 幂等 upsert：已存在的库只更新名称/等级/映射/文案，不删除（历史授权留痕）。
+    knowledge_catalog.assert_exclusive()
+    for entry in knowledge_catalog.KB_CATALOG:
+        engine_map = knowledge_catalog.engine_map_of(entry)
+        kb = db.get(models.KnowledgeBase, entry["id"])
+        if kb is None:
+            db.add(models.KnowledgeBase(
+                id=entry["id"], name=entry["name"], level=entry["data_level"],
+                data_level=entry["data_level"], resource_type="knowledge",
+                allowed_employment_type=["formal"], department_scope=["*"],
+                domain=entry["domain"], description=entry["description"],
+                status="active", engine_map=engine_map,
+            ))
+            continue
+        kb.name = entry["name"]
+        kb.level = entry["data_level"]
+        kb.data_level = entry["data_level"]
+        kb.domain = entry["domain"]
+        kb.status = "active"
+        if engine_map:
+            kb.engine_map = engine_map
+        if kb.description and any(marker in kb.description for marker in _DEMO_DESCRIPTION_MARKERS):
+            kb.description = entry["description"]
     db.flush()
 
     for employee in db.query(models.DigitalEmployee).all():
@@ -202,19 +311,11 @@ def ensure_mvp_seed(db) -> None:
                 state="stopped", workspace_ref=f"backend/harness-workspaces/{employee.employee_no}",
             ))
 
-    grant_specs = {
-        "AI-GENERAL": [
-            # 内规（742）与外规（748）已从内部引擎下线，不再授予，避免检索报错。
-            "KB-IT-SERVICE",
-        ],
-        "AI-INVESTMENT": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
-        "AI-RESEARCH": ["KB-SECURITIES", "KB-INVESTMENT-BANKING"],
-        "AI-FUND": ["KB-SECURITIES"],
-        "AI-XYZQ": ["KB-SECURITIES"],
-        # 张三的分身不直接持有知识库；遇到知识问题必须委派给岗位数字员工。
-        "DT-E10281": [],
-        "DT-E20999": [],
-    }
+    # 独占分配：任意两个 AI 员工的知识库集合两两不相交（见 knowledge_catalog.GRANT_SPECS）。
+    # 每个员工的授权按「整体替换」收敛：先删掉不在目标集合里的旧授权，再补新增。
+    # 存量库升级时会留下旧口径的交叉授权（例如 AI-FUND/AI-XYZQ 曾共用 KB-SECURITIES），
+    # 这里必须显式删除，否则「两两不相交」在升级库上不成立。
+    grant_specs = knowledge_catalog.grant_specs()
     for employee_id, kb_ids in grant_specs.items():
         db.query(models.AgentKnowledgeGrant).filter(
             models.AgentKnowledgeGrant.employee_id == employee_id,
@@ -312,7 +413,7 @@ def ensure_mvp_seed(db) -> None:
         plugin = db.get(models.Plugin, plugin_id)
         if plugin is None:
             db.add(models.Plugin(
-                id=plugin_id, name=skill.name, type="mcp", plugin_type="skill", scope="personal",
+                id=plugin_id, name=skill.name, type="skill", plugin_type="skill", scope="personal",
                 owner_human_no=skill.owner_human_no, current_version="1.0.0", status="active",
                 endpoint_ref="mock://", data_level="L1", description=skill.description,
             ))
@@ -428,6 +529,12 @@ def ensure_mvp_seed(db) -> None:
                 existing.status = "active"
     ensure_qieman_skills(db)
     ensure_xyzq_mcp(db)
+    ensure_ehome_mcp(db)
+    converge_plugin_governance(db)
+    purge_result = purge_legacy_mock_knowledge_bases(db)
+    if any(purge_result.values()):
+        # 一次性升级清理，直接输出到 stdout，便于在 docker logs 确认生效。
+        print(f"[seed] 已清理历史 mock 知识库：{purge_result}", flush=True)
     db.commit()
 
 
@@ -480,7 +587,7 @@ def ensure_qieman_skills(db) -> None:
         plugin = db.get(models.Plugin, plugin_id)
         if plugin is None:
             db.add(models.Plugin(
-                id=plugin_id, name=display_name, type="mcp", plugin_type="skill",
+                id=plugin_id, name=display_name, type="skill", plugin_type="skill",
                 scope="shared", owner_human_no="SYS-ADMIN", status="active",
                 description=item["description"], current_version="1.0.0",
             ))
@@ -542,6 +649,141 @@ def ensure_xyzq_mcp(db) -> None:
             authorized_by="seed", employee_enabled=True, admin_enabled=True,
             decision_mode="allow",
         ))
+
+
+def ensure_ehome_mcp(db) -> None:
+    """接入兴证e家员工服务 External MCP：注册插件并授权 AI-XYZQ 与两个数字分身。
+
+    双鉴权头：应用级 ``X-MCP-API-KEY``（运维预置）+ 用户级 ``X-MCP-JWT``（按人签发、
+    会过期，由员工在会话内的「信息补全」气泡里粘贴一次、加密存到本人名下后复用）。
+    工具由 ExternalMcpClient 动态发现，Manifest 不静态声明 Schema。
+
+    ``runtime_meta`` 刻意**只放 ``mcp_url_ref``**：内置适配器已按 ``config`` 构造，
+    若这里同时写 ``url``/``tool_prefix``，``mcp_registry.external_plugins`` 会再构造一个
+    重复的动态适配器（与兴业证券现状保持一致）。
+    """
+    if not config.ehome_mcp_configured():
+        return
+    if db.get(models.Plugin, EHOME_PLUGIN_ID) is None:
+        db.add(models.Plugin(
+            id=EHOME_PLUGIN_ID, name="兴证e家员工服务 MCP", type="mcp",
+            plugin_type="mcp", endpoint_ref="external://xyzq-ehome", data_level="L2",
+            status="active",
+            description=(
+                "兴证e家员工服务（会议室、餐卡、考勤休假、通讯录、资讯、OA 送审等查询类工具，"
+                "External MCP，按人鉴权）"
+            ),
+            runtime_meta={"mcp_url_ref": config.EHOME_MCP_URL},
+            scope="shared", mcp_category="employee_service", current_version="1.0.0",
+        ))
+        db.add(models.PluginVersion(
+            plugin_id=EHOME_PLUGIN_ID, version="1.0.0",
+            deployment_mode="external", artifact_path="", sha256="seed",
+            manifest={"tools": [], "external_mcp": True, "user_credential": True},
+            data_level="L2", review_status="approved", publish_status="published",
+            submitted_by="seed", reviewed_by="seed",
+            reviewed_at=datetime.now(), published_at=datetime.now(),
+        ))
+    for target in ("AI-XYZQ", "DT-E10281", "DT-E20999"):
+        if db.scalar(select(models.AgentPluginBinding).where(
+            models.AgentPluginBinding.plugin_id == EHOME_PLUGIN_ID,
+            models.AgentPluginBinding.target_agent_id == target,
+        )) is None:
+            db.add(models.AgentPluginBinding(
+                plugin_id=EHOME_PLUGIN_ID, target_agent_id=target,
+                authorized_by="seed", employee_enabled=True, admin_enabled=True,
+                decision_mode="allow",
+            ))
+
+
+def converge_plugin_governance(db) -> dict[str, int]:
+    """幂等收敛插件治理历史数据（每次启动执行一次）。
+
+    技能可用性的唯一口径已收敛为「binding → ``Plugin(plugin_type='skill')`` → 已发布
+    ``PluginVersion.manifest['instruction']``」。老库里的技能有三处不合规：
+
+    1. 插件 ``type`` 仍是历史值 ``mcp``（新代码按 ``plugin_type`` 判定，但契约/前端仍读 ``type``）；
+    2. 版本 manifest 只写了 ``instruction_summary``（摘要），没有 ``instruction``（正文）
+       —— 直接切换口径会让盈米 10 个技能集体从提示词里消失；
+    3. 部分 ``Skill`` 行缺少对应插件/版本/绑定。
+
+    这里只做条件更新与缺失补齐，**绝不删除任何 plugin 行**；重复执行影响行数为 0。
+    输出仅含计数，不含正文或凭据。
+    """
+    stats = {
+        "type_fixed": 0, "instruction_backfilled": 0,
+        "plugin_created": 0, "version_created": 0, "binding_created": 0,
+    }
+    now = datetime.now()
+    # 本函数前序步骤（如 ensure_qieman_skills）可能刚 add 了 Skill/Plugin 行，
+    # 会话是 autoflush=False，不显式 flush 的话下面的查询看不到它们。
+    db.flush()
+
+    for skill in db.query(models.Skill).all():
+        plugin_id = f"SKILL-{skill.id}"
+        plugin = db.get(models.Plugin, plugin_id)
+        if plugin is None:
+            plugin = models.Plugin(
+                id=plugin_id, name=skill.name, type="skill", plugin_type="skill",
+                scope="personal", owner_human_no=skill.owner_human_no, status="active",
+                description=skill.description, current_version="1.0.0",
+                endpoint_ref="mock://", data_level="L1",
+            )
+            db.add(plugin)
+            db.flush()
+            stats["plugin_created"] += 1
+        else:
+            if plugin.plugin_type != "skill":
+                plugin.plugin_type = "skill"
+                stats["type_fixed"] += 1
+            if plugin.type != "skill":
+                plugin.type = "skill"
+                stats["type_fixed"] += 1
+            if not plugin.current_version:
+                plugin.current_version = "1.0.0"
+
+        version_no = plugin.current_version or "1.0.0"
+        version = db.scalar(select(models.PluginVersion).where(
+            models.PluginVersion.plugin_id == plugin_id,
+            models.PluginVersion.version == version_no,
+        ))
+        if version is None:
+            db.add(models.PluginVersion(
+                plugin_id=plugin_id, version=version_no, deployment_mode="instruction",
+                artifact_path="", sha256="convergence",
+                manifest={
+                    "instruction_summary": skill.description[:500],
+                    "instruction": skill.content[:8000],
+                },
+                data_level=plugin.data_level or "L1", review_status="approved",
+                publish_status="published", submitted_by=skill.owner_human_no,
+                reviewed_by="convergence", reviewed_at=now, published_at=now,
+            ))
+            stats["version_created"] += 1
+        elif not str((version.manifest or {}).get("instruction") or "").strip():
+            manifest = dict(version.manifest or {})
+            manifest["instruction"] = skill.content[:8000]
+            manifest.setdefault("instruction_summary", skill.description[:500])
+            version.manifest = manifest
+            stats["instruction_backfilled"] += 1
+
+        twin_id = f"DT-{skill.owner_human_no}" if skill.owner_human_no else ""
+        if twin_id and db.get(models.DigitalEmployee, twin_id) is not None:
+            binding = db.scalar(select(models.AgentPluginBinding).where(
+                models.AgentPluginBinding.plugin_id == plugin_id,
+                models.AgentPluginBinding.target_agent_id == twin_id,
+            ))
+            if binding is None:
+                db.add(models.AgentPluginBinding(
+                    plugin_id=plugin_id, target_agent_id=twin_id, authorized_by="convergence",
+                    admin_enabled=True, employee_enabled=skill.status == "active",
+                    decision_mode="allow",
+                ))
+                stats["binding_created"] += 1
+
+    if any(stats.values()):
+        print(f"[seed] 插件治理收敛：{stats}", flush=True)
+    return stats
 
 
 def seed_if_empty() -> None:

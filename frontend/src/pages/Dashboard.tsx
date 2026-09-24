@@ -13,8 +13,9 @@ import { api } from '../api/client';
 import { DecisionTag } from '../components/tags';
 import { ErrorState, LoadingState } from '../components/PageState';
 import { useAsyncData } from '../hooks/useAsyncData';
+import { formatServerTime } from '../utils/serverTime';
 
-const formatTime = (ts?: string | null) => (ts ? new Date(ts).toLocaleString() : '—');
+const formatTime = (ts?: string | null) => formatServerTime(ts);
 
 interface DashboardData {
   pendingPlugins: number;
@@ -37,7 +38,8 @@ export default function Dashboard() {
     return {
       pendingPlugins: submissions.filter((row) => row.review_status === 'pending').length,
       unavailableAgents: agents.filter((row) => !['ready', 'busy'].includes(row.runtime_state)).length,
-      knowledgeIssues: knowledgeBases.filter((row) => row.status !== 'active' && row.status !== 'connected').length,
+      // 口径与知识资源页一致：只统计「数据源不可达」的库（与「未授权」区分开）。
+      knowledgeIssues: knowledgeBases.filter((row) => row.available === false).length,
       memoryBacklog: (memory.pending_jobs ?? 0) + (memory.failed_jobs ?? 0),
       audit,
     };
@@ -49,8 +51,8 @@ export default function Dashboard() {
 
   const todos = [
     { key: '/plugins', label: '待审核插件', value: data?.pendingPlugins ?? 0, icon: <DatabaseOutlined />, color: 'var(--dwp-warning)', bg: 'var(--dwp-warning-soft)' },
-    { key: '/agents', label: '不可用数字员工', value: data?.unavailableAgents ?? 0, icon: <RobotOutlined />, color: 'var(--dwp-danger)', bg: 'var(--dwp-danger-soft)' },
-    { key: '/knowledge', label: '知识连接异常', value: data?.knowledgeIssues ?? 0, icon: <ExclamationCircleOutlined />, color: 'var(--dwp-warning)', bg: 'var(--dwp-warning-soft)' },
+    { key: '/agents', label: '不可用AI员工', value: data?.unavailableAgents ?? 0, icon: <RobotOutlined />, color: 'var(--dwp-danger)', bg: 'var(--dwp-danger-soft)' },
+    { key: '/knowledge', label: '知识源异常', value: data?.knowledgeIssues ?? 0, icon: <ExclamationCircleOutlined />, color: 'var(--dwp-warning)', bg: 'var(--dwp-warning-soft)' },
     { key: '/settings', label: '记忆同步积压', value: data?.memoryBacklog ?? 0, icon: <SafetyCertificateOutlined />, color: 'var(--dwp-brand)', bg: 'var(--dwp-brand-soft)' },
   ];
 

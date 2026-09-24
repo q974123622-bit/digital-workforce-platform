@@ -31,7 +31,13 @@ def plugin_id_for_level(data_level: str) -> str:
 
 
 def accessible_knowledge_bases(db: Session, subject, requester_human_no: str | None = None) -> list[dict]:
-    """返回当前主体实际可读的知识库，不泄露不可访问资源的名称。"""
+    """返回当前主体实际可读的知识库，不泄露不可访问资源的名称。
+
+    这里是「不可达即摘除」的统一落点：``routers/internal.py`` 的 ``tools/list``
+    枚举、提示词里的知识库描述、``chat.py`` 兜底链路都读这个函数，因此过滤一次即可
+    全链路生效；函数本身已保证不返回不可访问资源的名称。
+    """
+    from .knowledge_source_health import is_kb_available
     from .policy import DECISION_ALLOW, ResourceRef, evaluate
 
     explicit_grants = {
@@ -58,8 +64,24 @@ def accessible_knowledge_bases(db: Session, subject, requester_human_no: str | N
                 continue
             if kb.department_scope and "*" not in kb.department_scope and requester.department not in kb.department_scope:
                 continue
+        # 数据源不可达的知识库不进工具清单：调用必然失败，留给模型只会反复试错。
+        if not is_kb_available(db, kb):
+            continue
         plugin_id = plugin_id_for_level(kb.data_level)
         decision = evaluate(db, subject, ResourceRef(type="knowledge", id=plugin_id, data_level=kb.data_level), "read")
         if decision.decision == DECISION_ALLOW:
-            result.append({"id": kb.id, "name": kb.name, "data_level": kb.data_level, "domain": kb.domain})
+            result.append({
+                "id": kb.id,
+                "name": kb.name,
+                "data_level": kb.data_level,
+                "domain": kb.domain,
+                "active_source": active_source_for_kb(db, kb),
+            })
     return result
+
+
+def active_source_for_kb(db: Session, kb) -> str | None:
+    """该知识库当前生效的通道（rest / verag）；无映射或都不可达时返回 None。"""
+    from .knowledge_source_health import active_source_for_kb as _active
+
+    return _active(db, kb)

@@ -1,4 +1,4 @@
-# 数字员工平台 Demo — 系统架构
+# AI员工平台 Demo — 系统架构
 
 > 版本：v0.3（2026-08-17，Sprint 1.5 Architecture Freeze）
 > 状态：实现依据。Sprint 1 骨架已按本架构落地；未实现模块以「📋 契约预留」标注，后续 Sprint 按此基线开发。
@@ -24,7 +24,7 @@
   → 数字分身：识别任务、按授权名册生成角色计划
   → TaskRun(running)：先持久化任务与触发消息 seq
   → AgentTeams：只做讨论、认领、风险提示（所有事件携带 task_id）
-  → 数字员工：每人建立独立 Harness 上下文，注入身份、职责、Task ID 与协作结论
+  → AI员工：每人建立独立 Harness 上下文，注入身份、职责、Task ID 与协作结论
   → DeepSeek Harness：形成该员工的受控工具调用计划
   → Policy → Plugin Gateway → Plugin Adapter Tool：执行一次真实业务动作
   → Approval：批准后重新执行原子任务，不把批准当执行结果
@@ -97,9 +97,9 @@ flowchart TB
 
 | 层 | 组件 | 职责 | Sprint 1/1.5 状态 |
 |---|---|---|---|
-| 1 产品门户层 | React + FastAPI | 员工/数字分身/虚拟员工语义，聊天编排，团队任务入口，配置与展示 | ✅ 前端骨架 + 后端 CRUD + Chat 编排（Sprint 4）；Team 编排 📋 |
+| 1 产品门户层 | React + FastAPI | 员工/数字分身/AI员工语义，聊天编排，团队任务入口，配置与展示 | ✅ 前端骨架 + 后端 CRUD + Chat 编排（Sprint 4）；Team 编排 📋 |
 | 2 协作编排层 | TeamTaskOrchestrator；AgentTeams Matrix 通道 | 唯一任务状态机、角色拆解、讨论/认领反馈、审批流转 | ✅ Sprint 12 |
-| 3 Runtime 执行层 | DeepSeek Harness / Gateway Adapter | 数字员工的受控执行；外部工具一律经 Plugin Gateway | ✅ Sprint 12（Harness 可配置启用） |
+| 3 Runtime 执行层 | DeepSeek Harness / Gateway Adapter | AI员工的受控执行；外部工具一律经 Plugin Gateway | ✅ Sprint 12（Harness 可配置启用） |
 | 4 治理层 | Policy Engine / Plugin Gateway / Audit Store | 授权、插件执行入口、全链路审计 | ✅ Sprint 2 已实现（评估/执行/审计链路接通） |
 | 5 隔离与资源层 | Sandbox Policy + Mock Executor（Sprint 3）+ 插件 Mock 资源 | 网络/目录/位置隔离；虚构知识库与 Mock 系统 | Mock 资源 ✅；Sandbox Policy + Mock Executor ✅；Docker 真启动 📋 |
 
@@ -148,7 +148,7 @@ Enterprise Resource（Mock 或受控真实资源）
 | 表 | 说明 | 备注 |
 |---|---|---|
 | `human_employee` | 真实员工（正式/实习） | ✅ |
-| `digital_employee` | 数字员工统一表 | ✅ |
+| `digital_employee` | AI员工统一表 | ✅ |
 | `plugin` | 插件登记 | ✅ |
 | `employee_plugin_grant` | 员工 × 插件授权（allow/deny/approval） | ✅ |
 | `policy` | 策略定义 | ✅ |

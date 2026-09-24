@@ -5,7 +5,7 @@ import { DecisionTag, LevelTag, StatusBadge, TypeTag } from './tags';
 describe('tags', () => {
   it('渲染员工类型标签', () => {
     render(<TypeTag value="twin" />);
-    expect(screen.getByText('数字分身')).toBeInTheDocument();
+    expect(screen.getByText('我的分身')).toBeInTheDocument();
   });
 
   it('渲染决策标签', () => {

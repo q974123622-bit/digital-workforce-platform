@@ -1,4 +1,4 @@
-# 数字员工平台测试指南
+# AI员工平台测试指南
 
 本文面向开发、测试和演示人员，说明如何验证 AgentTeams、DeepSeek Harness、
 Policy/Gateway、Plugin Adapter、审批状态机及前端持续轮询。仓库只使用虚构演示数据。
@@ -86,7 +86,7 @@ cd backend
 
 预期任务卡：
 
-| 数字员工 | 运行时 | 工具 | 预期状态 |
+| AI员工 | 运行时 | 工具 | 预期状态 |
 |---|---|---|---|
 | VE-0002 HR 助理 | DeepSeek Harness | 员工查询 MCP | 已完成 |
 | VE-0003 IT 助理 | DeepSeek Harness | 入职流程 Workflow | 已完成 |
@@ -128,7 +128,7 @@ Leader 最终汇总必须基于三个 Adapter 工具回执生成。
 
 - 第一次尚无回复时继续轮询。
 - 出现 `pending / parsing / running` 任务时继续轮询。
-- 出现对应任务卡片或数字员工回复后解除“等待回复”。
+- 出现对应任务卡片或AI员工回复后解除“等待回复”。
 - 任务进入 `completed / approval / failed / denied` 后停止轮询。
 - 临时网络错误不会直接终止轮询。
 

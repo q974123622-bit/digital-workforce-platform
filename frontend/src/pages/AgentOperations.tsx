@@ -10,7 +10,11 @@ import { ErrorState, LoadingState } from '../components/PageState';
 const { Paragraph, Text, Title } = Typography;
 
 export default function AgentOperations() {
-  const fetcher = useCallback(() => api.listAgents(), []);
+  // 列表与「运行环境」汇总并发拉齐，共用同一份 loading / error 态。
+  const fetcher = useCallback(async () => {
+    const [rows, info] = await Promise.all([api.listAgents(), api.getRuntimeInfo()]);
+    return { rows, info };
+  }, []);
   const { data, loading, error, reload } = useAsyncData(fetcher);
   const [acting, setActing] = useState('');
 
@@ -30,7 +34,7 @@ export default function AgentOperations() {
 
   const columns: ColumnsType<AgentProfile> = [
     {
-      title: '数字员工 / 分身', key: 'identity', width: 220,
+      title: 'AI员工 / 分身', key: 'identity', width: 220,
       render: (_, row) => <div><Text strong>{row.display_name}</Text><div className="text-xs text-ink-tertiary">{row.employee_id} · {row.department}</div></div>,
     },
     {
@@ -42,8 +46,18 @@ export default function AgentOperations() {
       render: (_, row) => <div><Paragraph className="!mb-1 !text-sm" ellipsis={{ rows: 2 }}>{row.responsibilities.join('；') || '待配置职责'}</Paragraph><Space size={[4, 4]} wrap>{row.knowledge_domains.map((domain) => <Tag key={domain}>{domain}</Tag>)}</Space></div>,
     },
     {
-      title: 'Harness', key: 'runtime', width: 180,
-      render: (_, row) => <div><Tag color={row.runtime_state === 'ready' ? 'green' : row.runtime_state === 'failed' ? 'red' : 'default'}>{row.runtime_state}</Tag><div className="mt-1 text-xs text-ink-tertiary">{row.container_name}</div></div>,
+      title: 'Harness', key: 'runtime', width: 250,
+      render: (_, row) => (
+        <div>
+          <Tag color={row.runtime_state === 'ready' ? 'green' : row.runtime_state === 'failed' ? 'red' : 'default'}>{row.runtime_state}</Tag>
+          <div className="mt-1 font-mono text-xs text-ink-secondary">{row.container_name}</div>
+          {/* 底座镜像 + dsh 框架版本：取自容器标签，灰度切换后逐行不同；查不到时回落部署声明值。 */}
+          <div className="mt-0.5 font-mono text-[11px] text-ink-tertiary">
+            {row.runtime_image}
+            {row.runtime_version ? ` · dsh ${row.runtime_version}` : ''}
+          </div>
+        </div>
+      ),
     },
     {
       title: '人设', key: 'persona', width: 110,
@@ -57,15 +71,40 @@ export default function AgentOperations() {
 
   if (loading) return <LoadingState rows={8} />;
   if (error) return <ErrorState onRetry={reload} />;
-  const rows = data ?? [];
+  const rows = data?.rows ?? [];
+  const info = data?.info;
   return (
     <div>
       <div className="mb-4 flex items-start justify-between">
-        <div><Title level={2} className="!mb-1 !text-[26px]">数字员工</Title><Text type="secondary">统一查看数字分身、岗位员工及其独立运行环境</Text></div>
+        <div>
+          <Title level={2} className="!mb-1 !text-[26px]">AI员工</Title>
+          <Text type="secondary">统一查看我的分身、岗位员工及其独立运行环境</Text>
+          {/* 运行环境汇总：这一整套平台由哪几个镜像、哪个交付版本组成（含 Harness 底座与 dsh 版本）。 */}
+          {info && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {info.delivery_tag && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-line-light bg-brand-soft px-2.5 py-1 text-[11px] font-medium text-brand">
+                  交付版本
+                  <span className="font-mono">{info.delivery_tag}</span>
+                </span>
+              )}
+              {info.images.map((image) => (
+                <span
+                  key={image.role}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-line-light bg-surface px-2.5 py-1 text-[11px] text-ink-tertiary transition-colors hover:border-line hover:text-ink-secondary"
+                >
+                  {image.role}
+                  <span className="font-mono text-ink-secondary">{image.name}</span>
+                  {image.note && <span className="font-mono">· {image.note}</span>}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
         <Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>
       </div>
       <Card className="border-line" styles={{ body: { padding: 0 } }}>
-        {rows.length ? <Table rowKey="employee_id" columns={columns} dataSource={rows} pagination={false} scroll={{ x: 980 }} /> : <Empty className="py-12" />}
+        {rows.length ? <Table rowKey="employee_id" columns={columns} dataSource={rows} pagination={false} scroll={{ x: 1040 }} /> : <Empty className="py-12" />}
       </Card>
     </div>
   );

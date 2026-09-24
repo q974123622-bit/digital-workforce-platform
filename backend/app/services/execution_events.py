@@ -75,7 +75,7 @@ def create_execution(
     emit(
         db, row.id, event_type="progress", stage="queued", status="queued",
         actor_employee_id=primary_employee_id, title="任务已进入执行队列",
-        detail="等待数字员工运行实例接收任务",
+        detail="等待AI员工运行实例接收任务",
     )
     return row
 
@@ -92,9 +92,18 @@ def active_execution(db: Session, conversation_id: str) -> models.AgentExecution
     )
 
 
-def fail_orphaned_executions(db: Session, *, stale_after_seconds: int | None = None) -> int:
-    """Fail work that cannot have a live in-process worker after restart or timeout."""
+def fail_orphaned_executions(
+    db: Session, *, stale_after_seconds: int | None = None, conversation_id: str | None = None,
+) -> int:
+    """Fail work that cannot have a live in-process worker after restart or timeout.
+
+    ``conversation_id`` 非空时只处理该会话的活跃执行。调用方（用户每次发起新消息
+    前的清理）必须传它：不带过滤会把**其他会话**正在跑的长任务一并判成
+    ``AGENT_EXECUTION_STALE`` 失败。不传则保持原语义（启动恢复时清理全部孤儿）。
+    """
     query = select(models.AgentExecution).where(models.AgentExecution.status.in_(ACTIVE_STATUSES))
+    if conversation_id is not None:
+        query = query.where(models.AgentExecution.conversation_id == conversation_id)
     if stale_after_seconds is not None:
         query = query.where(
             models.AgentExecution.updated_at < datetime.now() - timedelta(seconds=stale_after_seconds)
@@ -119,6 +128,31 @@ def execution_for_trace(db: Session, trace_id: str) -> models.AgentExecution | N
     return db.scalar(select(models.AgentExecution).where(models.AgentExecution.trace_id == trace_id))
 
 
+def _next_event_seq(db: Session, execution_id: str) -> int:
+    return (db.scalar(
+        select(func.max(models.AgentExecutionEvent.event_seq)).where(
+            models.AgentExecutionEvent.execution_id == execution_id
+        )
+    ) or 0) + 1
+
+
+def _stored_status(db: Session, execution_id: str) -> str | None:
+    """直接读库里的执行状态，绕过 ORM identity map。
+
+    worker 会话是长期存活的，`db.get()` 会返回取消/完成**之前**加载的旧对象；
+    只看内存状态会让「取消」被下一次事件静默翻回 running、甚至翻回 completed
+    （实测：点停止后 worker 仍把答复落库并把状态改回 completed）。
+    """
+    return db.scalar(
+        select(models.AgentExecution.status).where(models.AgentExecution.id == execution_id)
+    )
+
+
+def is_cancelled(db: Session, execution_id: str) -> bool:
+    """以库里的状态为准判断执行是否已被取消（供 worker 写入前校验）。"""
+    return _stored_status(db, execution_id) == "cancelled"
+
+
 def emit(
     db: Session,
     execution_id: str,
@@ -136,16 +170,19 @@ def emit(
 ) -> models.AgentExecutionEvent:
     with _execution_lock(execution_id):
         execution = db.get(models.AgentExecution, execution_id)
-        if execution is None or execution.status == "cancelled":
+        if execution is None:
+            raise RuntimeError("执行记录不存在")
+        # 状态一律以库为准（见 _stored_status）：内存里的旧对象会把取消/终态翻回去。
+        current_status = _stored_status(db, execution_id) or execution.status
+        if current_status == "cancelled":
             raise RuntimeError("执行记录不存在或已取消")
-        next_seq = (db.scalar(
-            select(func.max(models.AgentExecutionEvent.event_seq)).where(
-                models.AgentExecutionEvent.execution_id == execution_id
-            )
-        ) or 0) + 1
+        # 终态锁定：已完成/已失败的执行，迟到的非终态事件只落轨迹、不改状态。
+        # 否则「完成/失败」瞬间仍在飞的工具回调（如 search_knowledge）会把终态翻回
+        # running，前端 SSE 的终态退出条件不再成立，输入框会一直锁死。
+        terminal_locked = current_status in TERMINAL_STATUSES
         row = models.AgentExecutionEvent(
             execution_id=execution_id,
-            event_seq=next_seq,
+            event_seq=_next_event_seq(db, execution_id),
             event_type=event_type,
             actor_employee_id=actor_employee_id,
             stage=stage,
@@ -157,15 +194,59 @@ def emit(
             hit_count=hit_count,
             payload=payload or {},
         )
-        execution.stage = stage
-        execution.status = status if status in (*ACTIVE_STATUSES, *TERMINAL_STATUSES) else execution.status
-        execution.updated_at = datetime.now()
-        if execution.status in TERMINAL_STATUSES:
-            execution.completed_at = datetime.now()
+        if not terminal_locked:
+            execution.stage = stage
+            execution.status = status if status in (*ACTIVE_STATUSES, *TERMINAL_STATUSES) else execution.status
+            execution.updated_at = datetime.now()
+            if execution.status in TERMINAL_STATUSES:
+                execution.completed_at = datetime.now()
         db.add_all([execution, row])
         db.commit()
         db.refresh(row)
         return row
+
+
+def cancel_execution(db: Session, execution_id: str) -> models.AgentExecution | None:
+    """停止单条执行（幂等）：置 cancelled 并终止容器内进程。
+
+    与 ``cancel_for_conversation``（清空/删除会话时批量取消）不同，这里只处理一条执行，
+    供前端「停止执行」按钮使用；已是终态时原样返回，不报错（重复点击安全）。
+    """
+    with _execution_lock(execution_id):
+        execution = db.get(models.AgentExecution, execution_id)
+        if execution is None:
+            return None
+        if execution.status not in ACTIVE_STATUSES:
+            return execution
+        now = datetime.now()
+        execution.status = "cancelled"
+        execution.stage = "cancelled"
+        execution.updated_at = now
+        execution.completed_at = now
+        # 取消事件必须绕开 emit 的「已取消不再写入」守卫，否则前端收不到终止信号。
+        db.add(models.AgentExecutionEvent(
+            execution_id=execution_id,
+            event_seq=_next_event_seq(db, execution_id),
+            event_type="cancelled",
+            actor_employee_id=execution.primary_employee_id,
+            stage="cancelled",
+            status="cancelled",
+            title="已停止执行",
+            detail="执行已按你的操作终止，未完成的步骤不会继续",
+            payload={},
+        ))
+        db.add(execution)
+        db.commit()
+    # 终止容器内仍在跑的 dsh 进程并释放运行时，否则取消后新任务会一直排队。
+    from . import runtime_manager
+    if execution.primary_employee_id:
+        try:
+            runtime_manager.terminate_task(execution.primary_employee_id)
+            runtime_manager.mark_ready(db, execution.primary_employee_id)
+        except Exception:  # noqa: BLE001 - 回收失败不应让取消操作报错
+            pass
+    db.refresh(execution)
+    return execution
 
 
 def emit_answer_chunks(
@@ -211,6 +292,9 @@ def complete(
     db: Session, execution_id: str, *, actor_employee_id: str,
     message_id: int | None, trace_id: str, tool_cards: list,
 ) -> None:
+    # 已停止的执行不得被 worker 收尾成 completed（否则用户看到「已停止」又自己变回完成）。
+    if is_cancelled(db, execution_id):
+        return
     emit(
         db, execution_id, event_type="answer_done", stage="completed", status="completed",
         actor_employee_id=actor_employee_id, title="执行完成", payload={
@@ -229,14 +313,17 @@ def fail(db: Session, execution_id: str, exc: Exception) -> None:
         except Exception:  # noqa: BLE001 - 回滚失败不应阻断补救写入
             pass
         execution = db.get(models.AgentExecution, execution_id)
-        if execution is None or execution.status == "cancelled":
+        if execution is None:
+            return
+        # 以库为准：worker 会话里可能还持有取消前的旧对象。
+        if (_stored_status(db, execution_id) or execution.status) == "cancelled":
             return
         name = exc.__class__.__name__
         detail = getattr(exc, "detail", "")
         detail_text = str(detail).lower()
         timed_out = name == "TimeoutExpired" or "timeout" in detail_text or "超时" in detail_text
         code = "HARNESS_TIMEOUT" if timed_out else "AGENT_EXECUTION_FAILED"
-        message = "数字员工响应超时，可重新尝试" if code == "HARNESS_TIMEOUT" else "数字员工执行失败，可稍后重试"
+        message = "AI员工响应超时，可重新尝试" if code == "HARNESS_TIMEOUT" else "AI员工执行失败，可稍后重试"
         execution.error_code = code
         execution.error_message = message
         execution.retryable = True

@@ -1,4 +1,4 @@
-"""Harness-first 能力执行：Harness 驱动数字员工，Adapter 是受控工具调用。"""
+"""Harness-first 能力执行：Harness 驱动AI员工，Adapter 是受控工具调用。"""
 
 from __future__ import annotations
 
@@ -26,8 +26,14 @@ def _harness_prompt(
     params: dict,
     context: HarnessExecutionContext,
 ) -> str:
+    """历史遗留 prompt（仅保留给已无调用的旧 workflow/rpa 插件路径）。
+
+    注意：其中「请求平台调用工具」的措辞与真实行为不符——平台是自行发起这一次
+    受控调用，并不依赖模型请求。当前非知识插件（外部 MCP）已改走
+    ExternalMcpClient（见文件末尾注释），本函数实际不再被生产链路调用。
+    """
     return (
-        "你是数字员工平台中的独立数字员工执行实例。"
+        "你是AI员工平台中的独立AI员工执行实例。"
         "平台已经完成身份解析和 Policy 授权。你负责理解任务、结合协作结论形成执行计划，"
         "然后请求平台调用下方唯一声明的受控工具。不要声称工具已经执行，不要调用其他资源。\n\n"
         f"【Task ID】{context.task_id}\n"

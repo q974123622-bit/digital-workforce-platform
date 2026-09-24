@@ -37,23 +37,30 @@ def _patch_internal(monkeypatch):
 
 
 def test_registry_resources(client):
+    from app.services.knowledge_catalog import KB_CATALOG
+
     resp = client.get("/api/v1/knowledge-bases")
     assert resp.status_code == 200
     kbs = {kb["id"]: kb for kb in resp.json()}
-    assert set(kbs) == {"KB-IT-SERVICE", "KB-SECURITIES", "KB-INVESTMENT-BANKING"}
+    # 目录 = 内部知识引擎真实库的语义化映射（测试 REST + 生产 VeRAG 双后端）。
+    assert set(kbs) == {entry["id"] for entry in KB_CATALOG}
+    assert kbs["KB-IT-SERVICE"]["sources"] == {"rest": 751, "verag": 623}
     assert kbs["KB-IT-SERVICE"]["data_level"] == "L2"
     assert kbs["KB-IT-SERVICE"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-SECURITIES"]["data_level"] == "L2"
     assert kbs["KB-SECURITIES"]["allowed_employment_type"] == ["formal"]
     assert kbs["KB-INVESTMENT-BANKING"]["data_level"] == "L2"
     assert kbs["KB-INVESTMENT-BANKING"]["allowed_employment_type"] == ["formal"]
+    # 只在生产 VeRAG 上有的库：rest 键缺失，仍可用（单边可达即可用）。
+    assert "rest" not in kbs["KB-WEALTH"]["sources"]
+    assert kbs["KB-WEALTH"]["sources"]["verag"] == 3000281
 
 
 def test_registry_kb_not_found(client):
     assert client.get("/api/v1/knowledge-bases/KB-NOPE").status_code == 404
 
 
-# ---- 安全资源边界：正式 / 实习 / 虚拟员工 ----
+# ---- 安全资源边界：正式 / 实习 / AI员工 ----
 
 
 def test_general_employee_read_un_granted_kb_deny(client):

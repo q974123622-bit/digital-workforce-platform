@@ -1,6 +1,7 @@
 import { DeleteOutlined, EditOutlined, PushpinOutlined } from '@ant-design/icons';
 import { Button, Empty, List, Popconfirm, Tag } from 'antd';
 import type { MemoryItem } from '../../api/client';
+import { formatServerTime } from '../../utils/serverTime';
 
 const TYPE_LABEL: Record<string, string> = {
   preference: '偏好',
@@ -16,7 +17,7 @@ const SYNC_LABEL: Record<string, string> = {
   failed: '同步失败',
 };
 
-const formatDate = (iso?: string) => (iso ? new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
+const formatDate = (iso?: string) => formatServerTime(iso, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 
 export default function MemoryList({
   memories,

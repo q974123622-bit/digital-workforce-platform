@@ -53,23 +53,23 @@
 - **已知限制**：Manager→Worker 的任务文件（MinIO `shared/tasks/...`）存在偶发未落盘/同步延迟（与旧测评一致：taskflow ack/submit 协议不匹配），Worker 侧执行可能重试或卡住；平台侧 `DWP_TEAM_BACKEND=auto` 超时自动降级内置编排，演示有兜底。
 - **测试**：后端 121 项全绿（含网关单元 3 + agentteams 路径 + 降级路径）。
 
-## 1.17 AgentTeams Worker 对齐数字员工（2026-08-20）
+## 1.17 AgentTeams Worker 对齐AI员工（2026-08-20）
 
-- **问题**：AgentTeams 执行实例此前是测试 worker（kai/xiaoming），与平台数字员工（VE-0001 新员工入职助手 / VE-0002 HR 助理 / VE-0003 IT 助理）不对应，演示语义错位。
+- **问题**：AgentTeams 执行实例此前是测试 worker（kai/xiaoming），与平台AI员工（VE-0001 新员工入职助手 / VE-0002 HR 助理 / VE-0003 IT 助理）不对应，演示语义错位。
 - **修复**：
-  1. 新建三个数字员工 worker（copaw + deepseek-v4-flash，SOUL 注入人设）：`onboard-assistant`（新员工入职助手）、`hr-assistant`（HR 助理）、`it-assistant`（IT 助理）；人设文件 `tmp/soul-*.md` 可复现。
+  1. 新建三个AI员工 worker（copaw + deepseek-v4-flash，SOUL 注入人设）：`onboard-assistant`（新员工入职助手）、`hr-assistant`（HR 助理）、`it-assistant`（IT 助理）；人设文件 `tmp/soul-*.md` 可复现。
   2. 重建团队 `team-onboard`（`tmp/team-onboard.yaml`）：组长 onboard-assistant，组员 hr-assistant + it-assistant，admin=platform-bot、manager 为 coordinator；团队房间 `!yoYNJCwHes3orszqGx` 五成员全部 joined。
   3. 删除旧测试 worker kai/xiaoming（`agt delete worker`，容器已清）；清空 Manager `state.json` 的旧活动任务与其 stale 会话，避免 Manager 继续派活给已删除 worker。
   4. Manager 群聊白名单（`groupAllowFrom`）补充 hr-assistant / it-assistant；平台网关任务消息附带"先 `agt get workers` 确认名册再按角色派活"的指令（`group_chat._try_agentteams_task`），演示路由稳定。
 - **端到端实测**：平台发"新员工岳灵珊入职" → Manager 受理并交组长 onboard-assistant → 组长 @mention hr-assistant（制度与材料）与 it-assistant（账号与权限）→ 两助手真实执行并产出交付物（MinIO `teams/team-onboard/shared/tasks/task-20260820-021701/`：it-part、HR 汇总、result.md）→ 房间内 TASK_COMPLETED。
 - **测试**：后端 121 项全绿；前端 20 项。
 
-## 1.18 Sprint 9：数字员工生命周期化 + Harness 执行引擎 + 群聊逐人反馈（2026-08-20）
+## 1.18 Sprint 9：AI员工生命周期化 + Harness 执行引擎 + 群聊逐人反馈（2026-08-20）
 
 - **生命周期绑定**：`backend/app/services/agentteams_lifecycle.py` 封装 `docker exec agentteams-controller agt ...`（create/delete/get worker、team apply）。命名规则 `dwp-{ve|twin|rpa}-{工号}`（VE-0001→dwp-ve-0001、DT-E10281→dwp-twin-e10281）。
 - **创建即建容器**：`POST /api/v1/employees` 默认 `runtime_type=agentteams`——生成工号 → 自动建 worker 容器（SOUL=role_prompt，deepseek-v4-flash/copaw）→ 加入 team-onboard → 回填 runtime_ref；`DELETE` 先从团队移除再删容器；`PUT` 同步 SOUL；`GET /api/v1/employees/{no}/runtime` 返回实例状态。
 - **DeepSeek Harness 执行引擎**：`POST /internal/harness/execute`——Policy（POLICY-HARNESS-001 远程允许）→ `DockerHarnessRuntimeAdapter`（dwp-dsh:rc6 真执行）→ 审计 `harness:execute`。实测 5.6s 返回真实 DeepSeek 结果。
-- **群聊逐人反馈**：团队任务轮询时把每个数字员工在房间的动态写入 `ConversationMessage`（按 sender MXID→员工映射），同步 `TaskRun.subtasks` 状态（completed/running）；`AgentTeamsGateway.parse_completion` 支持 `since_ts` 过滤旧消息，避免误匹配历史汇报。
+- **群聊逐人反馈**：团队任务轮询时把每个AI员工在房间的动态写入 `ConversationMessage`（按 sender MXID→员工映射），同步 `TaskRun.subtasks` 状态（completed/running）；`AgentTeamsGateway.parse_completion` 支持 `since_ts` 过滤旧消息，避免误匹配历史汇报。
 - **修正**：`TeamTaskOrchestrator._to_out` 补传 `source` 字段（此前 API 响应 source 恒为 builtin）。
 - **测试**：后端 129 项全绿（新增 8 项：lifecycle 4 + harness 3 + 群聊反馈 1）；前端 20 项全绿。
 
@@ -80,17 +80,17 @@
   1. 反馈轮询只回传**任务发送之后**的消息（`since_ts` 过滤），历史任务不再串会话。
   2. 新增 `agentteams_event_seen` 表做**持久化去重**（按 event_id），进程重启/重复轮询不重放。
   3. `agentteams_lifecycle.reset_agentteams_context()`：清空 Manager `state.json`（active_tasks）、memory/会话/缓存文件、MinIO 旧任务目录。
-  4. `DELETE /api/v1/conversations/{id}`（清空会话）联动调用重置，并清理该会话已回传事件记录；前端按钮提示"将重置数字员工记忆"。
+  4. `DELETE /api/v1/conversations/{id}`（清空会话）联动调用重置，并清理该会话已回传事件记录；前端按钮提示"将重置AI员工记忆"。
 - **验证**：清空后发"赵仁杰"任务，会话不含"宋青书"；Manager reset 后按新名册正常派单；后端 131 项、前端 20 项全绿。
 
 ## 1.20 关系理顺 + 统一执行链路 + 工作流角色化（2026-08-20）
 
-- **概念模型**：数字分身（twin）= 对话组织者（demo，不建容器，映射 AgentTeams Manager）；数字员工（virtual/rpa）= 执行者（agentteams，自动建容器）。`POST /api/v1/employees` 按 type 默认 runtime_type。
+- **概念模型**：数字分身（twin）= 对话组织者（demo，不建容器，映射 AgentTeams Manager）；AI员工（virtual/rpa）= 执行者（agentteams，自动建容器）。`POST /api/v1/employees` 按 type 默认 runtime_type。
 - **统一 AgentTeams 主链路**：群聊任务默认走 AgentTeams；内置 TeamTaskOrchestrator 仅降级，前端标注"内置降级（AgentTeams 不可用）"。
 - **结构化任务消息**：平台发 Manager 的消息带 `[平台任务 id={task_id}] 请求者={姓名}({工号}) 请求={内容} 目标={员工若有}`；`parse_completion` 优先按 task_id 精确匹配回执（Manager 回执实测引用 task_id，不再自由发挥/串任务）。
 - **工作流角色化 + 参数化**：`WORKFLOW_META` 增加 `owner_employee`（adp-onboarding→VE-0001；请假/报销/采购/报表→VE-0002；会议纪要→VE-0001），前端工作流卡片显示"由 XX 处理"；Mock adapter 与模板去掉硬编码"王小明"（默认"该员工"，请求中提取员工名注入）。
 - **验证**：实测"帮我申请请假2天"→ 消息 `id=T-20260820-02D4DA 请求者=张三(E10281)` → Manager 围绕 task_id 派单给 HR 助理；后端 135 项、前端 20 项全绿。
-- **修复（同日）**：`parse_completion` 曾把平台自身发送的任务消息（含 task_id）误当回执，导致任务汇总变成任务原文。已增加 `exclude_senders`（排除 platform-bot），回执只认 Manager/数字员工的消息；实测新任务汇总为 Manager 真实回执（受理+按角色派发），不再出现任务原文。后端 136 项全绿。
+- **修复（同日）**：`parse_completion` 曾把平台自身发送的任务消息（含 task_id）误当回执，导致任务汇总变成任务原文。已增加 `exclude_senders`（排除 platform-bot），回执只认 Manager/AI员工的消息；实测新任务汇总为 Manager 真实回执（受理+按角色派发），不再出现任务原文。后端 136 项全绿。
 
 ## 1.21 Sprint 11：任务交互异步化（消除卡死）
 
@@ -132,7 +132,7 @@
 
 - **Knowledge Adapter**：`backend/app/services/knowledge_adapter.py` 统一接口 `search(employee_id, knowledge_base_id, query, trace_id)`；`MockKnowledgeAdapter`（读 mock-data/kb/ 虚构文档）+ `InternalKnowledgeAdapterStub`（仅接口与配置结构，不接真实内容）。
 - **Knowledge Resource Registry**：knowledge_base 表扩展 resource_type / data_level / allowed_employment_type / department_scope；登记 KB-PUBLIC（L1 公共）、KB-INTERNAL（L2 正式内部）、KB-FINTECH（L2 金融科技部门）。
-- **安全资源边界**：`POST /internal/knowledge/search` 统一经 Policy → Gateway → Adapter；正式分身 KB-INTERNAL Allow（POLICY-001）、实习生 DENY（POLICY-002）、虚拟员工仅按单独授权。
+- **安全资源边界**：`POST /internal/knowledge/search` 统一经 Policy → Gateway → Adapter；正式分身 KB-INTERNAL Allow（POLICY-001）、实习生 DENY（POLICY-002）、AI员工仅按单独授权。
 - **Sandbox Policy**：`backend/app/services/sandbox_policy.py`（runtime_location / internet_access / filesystem_scope）+ MockExecutor + `POST /internal/sandbox/run`（先 Policy 后执行；remote_only 拒绝 local → POLICY-004；internet deny 拒绝非 none 网络 → POLICY-003）。
 - **Secret/Config**：`backend/app/services/config.py` 环境变量引用（DWP_*）；禁止入 Git/Prompt/日志。
 - **Audit**：AuditEvent 增加 `knowledge_base_id`，知识库访问完整记录 employee_id / knowledge_base_id / decision / trace_id。
@@ -153,7 +153,7 @@
 - 前端：React 18 + TypeScript + Vite + Ant Design 5，路由与页面（首页、员工列表、员工详情、插件中心、安全中心、Team 占位）。
 - 后端：FastAPI + SQLAlchemy + SQLite，`/health` + 员工/插件/策略/审计 CRUD + 团队/知识库只读接口，统一错误形状。
 - 共享契约：`shared-schema/types.ts` 与后端 Pydantic Schema 手动同步。
-- Mock 数据：正式员工 2、实习生 2、数字分身 2、虚拟员工 3、插件 5、策略 6、审计样例 3、团队 1（Leader + 3 成员）、虚构知识库 4。
+- Mock 数据：正式员工 2、实习生 2、数字分身 2、AI员工 3、插件 5、策略 6、审计样例 3、团队 1（Leader + 3 成员）、虚构知识库 4。
 - 仓库卫生：git 已初始化（2 次提交）；敏感 token 文件已移出工作区；`.gitignore` 覆盖外部依赖/密钥/DB/日志。
 
 ### 已冻结的接口（实现现状见 `docs/API_CONTRACT.md`）

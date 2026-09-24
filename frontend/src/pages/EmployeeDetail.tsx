@@ -107,7 +107,7 @@ export default function EmployeeDetail() {
                 <Descriptions column={{ xs: 1, sm: 2 }} size="small">
                   <Descriptions.Item label="类型">{emp.type}</Descriptions.Item>
                   <Descriptions.Item label="用工身份"><EmploymentTag value={emp.employment_type} /></Descriptions.Item>
-                  <Descriptions.Item label="数字员工工号"><span className="mono">{emp.employee_no}</span></Descriptions.Item>
+                  <Descriptions.Item label="AI员工工号"><span className="mono">{emp.employee_no}</span></Descriptions.Item>
                   <Descriptions.Item label="来源真人">{emp.source_human_no ?? '—'}</Descriptions.Item>
                   <Descriptions.Item label="负责人">
                     {emp.owner_name || emp.owner_human_no}（<span className="mono">{emp.owner_human_no}</span>）

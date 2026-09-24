@@ -19,11 +19,13 @@ from .. import models
 from .gateway import search_knowledge
 from .identity import resolve_identity
 from .knowledge_registry import accessible_knowledge_bases
-from .llm import LLMProvider, LLMUnavailableError
+from .llm import LLMProvider
+from .memory_service import history_window
+from .plugin_governance import effective_skills
+from .prompt_shared import CITATION_RULES, MAX_SKILL_CHARS, TONE_RULES
 from .session import add_message, get_or_create, history
 
 MAX_TOOL_ROUNDS = 3
-MAX_SKILL_CHARS = 4000
 
 QUERY_INTENT_KEYWORDS = ("查询", "知识库", "制度", "流程", "业务", "部门", "帮我查", "有没有")
 SAFE_NO_TOOL_FALLBACK = "我无法确认该内容，请通过正式渠道查询或联系有权限的同事。"
@@ -60,6 +62,36 @@ def retrieval_source(data: object) -> str:
     if not isinstance(data, dict) or not data.get("source"):
         return "demo"
     return str(data["source"])
+
+
+def knowledge_citation(
+    *,
+    knowledge_base_id: str,
+    knowledge_base_name: str,
+    source: str | None,
+    hit_count: int = 0,
+    document_titles: list[str] | None = None,
+    agent_employee_id: str | None = None,
+    agent_employee_name: str | None = None,
+    index: int = 0,
+) -> dict:
+    """构造 shared-schema 的 Citation：只含元数据（库名 + 命中文档标题），不含命中正文。"""
+    titles = [str(title) for title in (document_titles or []) if title]
+    return {
+        "citation_id": f"{knowledge_base_id}-{index}",
+        "document_title": titles[0] if titles else "",
+        "document_titles": titles,
+        "knowledge_base_name": knowledge_base_name or knowledge_base_id,
+        "source": source or "unknown",
+        "version": None,
+        "preview_available": False,
+        # 非空表示这条来源由被委派的岗位AI员工检索（分身自己查的留空）。
+        "agent_employee_id": agent_employee_id,
+        "agent_employee_name": agent_employee_name,
+        "hit_count": hit_count,
+    }
+
+
 @dataclass
 class ToolCard:
     plugin_id: str
@@ -68,6 +100,29 @@ class ToolCard:
     source: str | None = None
     policy_id: str | None = None
     reason: str | None = None
+    # 以下字段供「来源展示」使用：委派检索时标出执行人，并带上库/文档/命中数。
+    agent_employee_id: str | None = None
+    agent_employee_name: str | None = None
+    knowledge_base_id: str | None = None
+    hit_count: int = 0
+    citation: dict | None = None
+
+
+def tool_card_dict(card: ToolCard) -> dict:
+    """ToolCard → HTTP 响应 dict（唯一口径，避免各处手写漏字段）。"""
+    return {
+        "plugin_id": card.plugin_id,
+        "name": card.name,
+        "decision": card.decision,
+        "source": card.source,
+        "policy_id": card.policy_id,
+        "reason": card.reason,
+        "agent_employee_id": card.agent_employee_id,
+        "agent_employee_name": card.agent_employee_name,
+        "knowledge_base_id": card.knowledge_base_id,
+        "hit_count": card.hit_count,
+        "citation": card.citation,
+    }
 
 
 @dataclass
@@ -98,7 +153,7 @@ class ChatOrchestrator:
     ) -> ChatResult:
         subject = resolve_identity(db, employee_no)
         if subject is None:
-            raise HTTPException(status_code=404, detail="数字员工不存在")
+            raise HTTPException(status_code=404, detail="AI员工不存在")
 
         if persist:
             session, _ = get_or_create(db, session_id, employee_no)
@@ -116,13 +171,21 @@ class ChatOrchestrator:
         if system_context:
             messages.append({"role": "system", "content": system_context, "source": "demo"})
         if history_override is not None:
-            messages.extend(history_override)
-            if not messages or messages[-1].get("role") != "user":
-                messages.append({"role": "user", "content": message, "source": "demo"})
+            prior = history_override
         else:
-            for msg in history(db, active_session_id)[:-1]:
-                messages.append({"role": msg.role, "content": msg.content, "source": "demo"})
-            messages.append({"role": "user", "content": message, "source": "demo"})
+            prior = [
+                {"role": msg.role, "content": msg.content}
+                for msg in history(db, active_session_id)[:-1]
+            ]
+        # 全链路统一窗口：此前 history_override 分支全量注入、session 分支不截断，
+        # 造成「主力 Harness 员工只记几轮、边缘员工反而记全量」的反差。
+        for msg in history_window(prior, goal=message):
+            messages.append({
+                "role": msg.get("role", "user"),
+                "content": msg.get("content", ""),
+                "source": "demo",
+            })
+        messages.append({"role": "user", "content": message, "source": "demo"})
 
         tool_cards: list[ToolCard] = []
         policy_denied: ToolCard | None = None
@@ -199,14 +262,7 @@ class ChatOrchestrator:
 
     @staticmethod
     def _card_dict(card: ToolCard) -> dict:
-        return {
-            "plugin_id": card.plugin_id,
-            "name": card.name,
-            "decision": card.decision,
-            "source": card.source,
-            "policy_id": card.policy_id,
-            "reason": card.reason,
-        }
+        return tool_card_dict(card)
 
     @staticmethod
     def _is_query_intent(message: str) -> bool:
@@ -242,12 +298,28 @@ class ChatOrchestrator:
                 trace_id=trace_id,
                 requester_human_no=requester_human_no,
             )
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            hits = data.get("hits") if isinstance(data.get("hits"), list) else []
+            kb_name = knowledge_display_name(db, kb_id)
+            source = retrieval_source(result.get("data"))
             card = ToolCard(
                 plugin_id=f"knowledge:{kb_id}",
-                name=knowledge_display_name(db, kb_id),
+                name=kb_name,
                 decision="allow",
-                source=retrieval_source(result.get("data")),
+                source=source,
                 policy_id=result.get("policy_id"),
+                knowledge_base_id=kb_id,
+                hit_count=len(hits),
+                citation=knowledge_citation(
+                    knowledge_base_id=kb_id,
+                    knowledge_base_name=kb_name,
+                    source=source,
+                    hit_count=len(hits),
+                    document_titles=[
+                        str(hit.get("title")) for hit in hits
+                        if isinstance(hit, dict) and hit.get("title")
+                    ],
+                ),
             )
             return (
                 card,
@@ -265,6 +337,22 @@ class ChatOrchestrator:
                     reason=detail.get("reason"),
                 )
                 return card, "POLICY_DENIED：当前身份无权访问该知识库，请如实告知用户。"
+            # 数据源整体不可达：不把 503 抛给用户，让模型如实说明「暂时用不了」。
+            if exc.status_code == 503 and isinstance(exc.detail, dict) and (
+                exc.detail.get("reason") == "knowledge_source_unavailable"
+            ):
+                card = ToolCard(
+                    plugin_id=f"knowledge:{kb_id}",
+                    name=knowledge_display_name(db, kb_id),
+                    decision="deny",
+                    reason=str(exc.detail.get("message") or "知识源当前不可用"),
+                    knowledge_base_id=kb_id,
+                    hit_count=0,
+                )
+                return card, (
+                    "SOURCE_UNAVAILABLE：该知识库对应的数据源当前不可用。"
+                    "请如实告知用户该知识库暂时无法检索、稍后再试，不得编造内容。"
+                )
             raise
 
     def _system_prompt(self, db: Session, subject, requester_human_no: str | None = None) -> str:
@@ -275,33 +363,26 @@ class ChatOrchestrator:
             kb_access = f"你能访问的知识库只有：{kb_desc}。其余平台知识库无权限，不得声称可以访问，也不得凭记忆描述其内容。"
         else:
             kb_access = "你能访问的知识库只有：无。其余平台知识库无权限，不得声称可以访问，也不得凭记忆描述其内容。"
-        persona = subject.role_prompt or "你是数字员工平台的演示助手。"
+        persona = subject.role_prompt or "你是AI员工平台的演示助手。"
         prompt = (
             f"【人设】{persona}\n"
             "【身份】知识检索结果以工具返回的 source 标签为准；internal 表示真实知识库，demo 表示演示数据。"
-            f"当前数字员工：{subject.employee_id}（类型 {subject.employee_type}，身份 {role_label}，"
+            f"当前AI员工：{subject.employee_id}（类型 {subject.employee_type}，身份 {role_label}，"
             f"部门 {subject.department}，Owner {subject.owner_id}）。"
             f"【知识库】{kb_access}"
             "【规则】涉及公司知识库、内部制度、业务流程或系统使用的问题，必须直接调用 search_knowledge 工具后再回答；"
             "不得凭记忆列举知识库主题；工具返回拒绝时只能告知当前身份无权访问，不得输出具体内容或尝试绕过。"
-            "【语气】像真人同事用微信聊天一样自然、亲切、口语化，用「你」称呼用户；"
-            "回答简洁有温度，多用短句，不要机械罗列；绝对不要使用任何 Markdown 符号（**、*、-、#、数字编号点等），"
-            "不要以【名字】或任何前缀开头，直接说内容；需要分点时用自然段或「第一、第二」之类的口语表达。"
+            + CITATION_RULES + TONE_RULES
         )
-        # 数字分身：注入本人上传的已启用技能（仅员工本人可见）
+        # 数字分身：注入本人上传且仍启用的技能（仅员工本人可见）。
+        # 可用性口径与主链路一致（effective_skills 校验 SKILL- 绑定是否启用），
+        # 否则员工在工作台关掉技能后，这条兜底链路照样会注入。
         if subject.employee_type == "twin":
-            skills = db.scalars(
-                select(models.Skill)
-                .where(
-                    models.Skill.owner_human_no == subject.owner_id,
-                    models.Skill.status == "active",
-                )
-                .order_by(models.Skill.created_at)
-            ).all()
+            skills = effective_skills(db, subject.employee_id)
             parts: list[str] = []
             total = 0
             for skill in skills:
-                block = f"{skill.name}：{skill.description}\n使用说明：{skill.content}"
+                block = f"{skill['name']}：{skill['description']}\n使用说明：{skill['content']}"
                 if parts:
                     total += len(block)
                 else:

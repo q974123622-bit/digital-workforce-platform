@@ -44,8 +44,8 @@ function normalizeEmployee(employee: Employee): DirectoryEntry {
 }
 
 const KIND_LABEL: Record<DirectoryEntry['kind'], string> = {
-  twin: '我的数字分身',
-  digital_employee: '数字员工',
+  twin: '我的分身',
+  digital_employee: 'AI员工',
   automation: '自动化助手',
 };
 
@@ -88,6 +88,10 @@ export default function Directory({
     return filterMatch && searchMatch;
   }), [entries, filter, keyword]);
 
+  // 名单栏按「上：我的分身 / 下：AI员工」分区渲染；visibleEntries 保持扁平，选中态校正逻辑不受影响。
+  const twinEntries = useMemo(() => visibleEntries.filter((entry) => entry.kind === 'twin'), [visibleEntries]);
+  const employeeEntries = useMemo(() => visibleEntries.filter((entry) => entry.kind !== 'twin'), [visibleEntries]);
+
   useEffect(() => {
     if (!selectedNo || !entries.some((entry) => entry.employeeNo === selectedNo)) {
       setSelectedNo(entries[0]?.employeeNo ?? null);
@@ -110,6 +114,24 @@ export default function Directory({
     setMobilePane('detail');
   };
 
+  const renderPerson = (entry: DirectoryEntry) => (
+    <button
+      type="button"
+      role="option"
+      aria-selected={selectedNo === entry.employeeNo}
+      key={entry.employeeNo}
+      className={`address-book-person ${selectedNo === entry.employeeNo ? 'selected' : ''}`}
+      onClick={() => choosePerson(entry.employeeNo)}
+    >
+      <DirectoryAvatar entry={entry} />
+      <span className="min-w-0 flex-1">
+        <span className="address-book-person-name">{entry.name}</span>
+        <span className="address-book-person-meta">{entry.department} · {entry.employeeNo}</span>
+      </span>
+      <span className={`address-book-presence ${entry.status === 'active' ? 'available' : ''}`} aria-label={entry.status === 'active' ? '可联系' : '暂不可用'} />
+    </button>
+  );
+
   return (
     <div className="address-book" data-mobile-pane={mobilePane}>
       <aside className="address-book-departments" aria-label="通讯录分组">
@@ -126,7 +148,7 @@ export default function Directory({
           </button>
           {twin && (
             <button type="button" className={filter === 'twin' ? 'active' : ''} onClick={() => chooseFilter('twin')}>
-              <IdcardOutlined /><span>我的数字分身</span><b>1</b>
+              <IdcardOutlined /><span>我的分身</span><b>1</b>
             </button>
           )}
           <div className="address-book-tree-label">部门</div>
@@ -145,7 +167,7 @@ export default function Directory({
         <div className="address-book-list-head">
           <Button className="address-book-mobile-back" type="text" icon={<ArrowLeftOutlined />} onClick={() => setMobilePane('departments')}>分组</Button>
           <div className="flex items-end justify-between gap-3">
-            <div><strong>{filter === 'all' ? '全部同事' : filter === 'twin' ? '我的数字分身' : filter.slice('department:'.length)}</strong><span>{visibleEntries.length} 位</span></div>
+            <div><strong>{filter === 'all' ? '全部同事' : filter === 'twin' ? '我的分身' : filter.slice('department:'.length)}</strong><span>{visibleEntries.length} 位</span></div>
           </div>
           <Input
             allowClear
@@ -155,25 +177,20 @@ export default function Directory({
             onChange={(event) => setKeyword(event.target.value)}
           />
         </div>
-        <div className="address-book-list" role="listbox" aria-label="同事名单">
+        <div className="address-book-list">
           {!visibleEntries.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有找到相关同事" />}
-          {visibleEntries.map((entry) => (
-            <button
-              type="button"
-              role="option"
-              aria-selected={selectedNo === entry.employeeNo}
-              key={entry.employeeNo}
-              className={`address-book-person ${selectedNo === entry.employeeNo ? 'selected' : ''}`}
-              onClick={() => choosePerson(entry.employeeNo)}
-            >
-              <DirectoryAvatar entry={entry} />
-              <span className="min-w-0 flex-1">
-                <span className="address-book-person-name">{entry.name}</span>
-                <span className="address-book-person-meta">{entry.department} · {entry.employeeNo}</span>
-              </span>
-              <span className={`address-book-presence ${entry.status === 'active' ? 'available' : ''}`} aria-label={entry.status === 'active' ? '可联系' : '暂不可用'} />
-            </button>
-          ))}
+          {!!twinEntries.length && (
+            <section className="list-section list-section--twin" aria-label="我的分身">
+              <div className="list-section-head" role="heading" aria-level={3}><span>我的分身</span><b>{twinEntries.length}</b></div>
+              <div className="list-section-body" role="listbox" aria-label="我的分身名单">{twinEntries.map(renderPerson)}</div>
+            </section>
+          )}
+          {!!employeeEntries.length && (
+            <section className="list-section list-section--employees" aria-label="AI员工">
+              <div className="list-section-head" role="heading" aria-level={3}><span>AI员工</span><b>{employeeEntries.length}</b></div>
+              <div className="list-section-body" role="listbox" aria-label="AI员工名单">{employeeEntries.map(renderPerson)}</div>
+            </section>
+          )}
         </div>
       </section>
 

@@ -19,7 +19,7 @@
 
 | 等级 | 示例 | 规则 |
 |---|---|---|
-| L1 普通 | 公开制度、FAQ、培训材料 | 数字分身与虚拟员工默认可读 |
+| L1 普通 | 公开制度、FAQ、培训材料 | 数字分身与AI员工默认可读 |
 | L2 内部 | 部门流程、内部文档、脱敏员工信息 | 按部门/岗位授权；正式员工分身可读指定 L2，实习生分身 Deny；VE 仅按 grant 授权 |
 | L3 敏感 | 客户、交易、凭据、未脱敏数据 | 本仓库不存在真实 L3；读取一律 Deny。仅虚构 workflow/RPA 的特定执行动作可进入 Approval，批准后仍必须重新经过 Gateway 执行并留审计 |
 
@@ -53,7 +53,7 @@ Employee Identity
 - 权限 ⊆ 真人权限 ∩ 分身策略，永不超过真人。
 - 演示对账：DT-E10281（正式员工）可读 L2 内部制度；DT-E20999（实习生）访问 L2 被 Deny。
 
-### 虚拟员工（Virtual Employee）
+### AI员工（Virtual Employee）
 
 - 独立 VE 工号；必须绑定一名真人 Owner（无 Owner 不允许创建）。
 - 权限来自 Owner/HR 策略 + 插件授权 + 数据范围，不自动继承平台能力。
@@ -84,11 +84,85 @@ Employee Identity
 - 降级：Docker 不可用 → local 模式，仍写入 Sandbox 决策审计，UI 展示一致。
 - Sprint 3 落地：`SandboxPolicy`（runtime_location / internet_access / filesystem_scope）+ MockExecutor + `POST /internal/sandbox/run`；remote_only 请求 local → POLICY-004 DENY；internet=deny 请求非 none 网络 → POLICY-003 DENY。
 
+## 7.2 技能脚本执行边界（2026-09-22 变更，**需正式安全评审**）
+
+背景：接入内网 SkillHub 技能市场后，技能包里的 `scripts/*.py` 是技能的实际执行体
+（如 `python3 scripts/office/pack.py`）。为让「已授权技能」能真正跑起来，harness 容器
+的执行能力被有意放开，边界随之变化，逐条列明：
+
+- **放开了什么**：`profile/current/cordis.patch.yml` 中 5 项本地工具由禁用改为启用 ——
+  `tool-bash`、`tool-fs`（2026-09-22，技能脚本执行）、`tool-fs-search`、`tool-todo`、`tool-goal`
+  （2026-09-23，长任务自己找文件、自己记进度）；**其余 10 项工具保持禁用**。
+  `DSH_PERMISSION_MODE` 由 `read-only` 改为 `workspace-write`。
+  底座镜像由 `dwp-dsh:rc6` 换成 `dwp-dsh:rc6-py`（前者 + Python 3.11）。
+  这 5 项都是**纯本地能力、无外部副作用**：不发起网络请求、不触碰平台能力、不改动容器外任何东西。
+- **代价（必须知情）**：容器内**可以执行任意代码**。技能脚本来自内网 SkillHub 的第三方投稿，
+  平台只做结构校验（禁可执行二进制/`.sh`、禁 secret 键、禁网络声明），**不做代码审计**。
+- **仍然守住的红线**：
+  1. 沙箱根 = 容器工作目录 = `/workspace`（compose `working_dir`），容器内其他路径不可写；
+  2. 技能包只投放到 `/workspace/skills/<slug>/`，且只投放**已授权**（`agent_plugin_binding`
+     三态齐备）的技能，撤回授权即回收（`runtime_manager.deploy_skills`）；
+  3. 平台仍是唯一出网口：技能包内不得声明 `endpoint/url/network`，脚本对外发请求不改变
+     平台侧知识/模型调用仍需 Policy 放行的事实；
+  4. `ops/baseline/contract.json` 的 `enabled_tool_allowlist` 已登记这 5 项（+ 框架内部的
+     `tool-result-pruner`），任何新增的启用态 `tool-*` 都会被门禁 `ops/dsh-preflight.sh` 拦下。
+- **回退**：`DWP_DSH_IMAGE` 改回 `dwp-dsh:rc6`、profile 里 5 项工具改回 `disabled: true`、
+  `DSH_PERMISSION_MODE` 改回 `read-only`，重跑 `ops/dsh-preflight.sh` 并同步 MANIFEST 与基线。
+- **上线前必须完成**：①安全团队评审（重点是第三方技能脚本的准入与审计）；
+  ②技能导入的白名单/人工复核流程；③容器资源与执行超时限制的确认。
+
 ## 7.5 Secret / Config 边界（Sprint 3）
 
 - 所有内部 endpoint / Token / Credential 只能通过环境变量或 secure config 引用（`backend/app/services/config.py`，`DWP_*` 命名）。
 - 禁止：写入 Git、写入 Prompt、写入日志。
 - InternalKnowledgeAdapterStub 仅保留接口与配置结构；真实接入由正式员工在 Secure Overlay 受控环境完成。
+
+## 7.6 员工自助凭据（会话内补全，2026-09-22 变更，**需正式安全评审**）
+
+**背景**：部分外部 MCP 服务（如兴证e家员工服务）的鉴权是**按人签发、会过期**的用户级令牌
+（`X-MCP-JWT`），平台无法预置，只能由员工本人提供。为此新增「工具缺参 → 执行轨迹气泡补全 →
+提交后自动续跑」链路（`backend/app/services/tool_input.py` + `mcp_user_credential` 表 +
+前端 `features/executions/InputRequestCard.tsx`）。
+
+**边界约定**：
+
+- **存储**：用户级凭据按 `(plugin_id, human_no)` 加密存储（复用 `mcp_credentials` 的
+  HMAC-SHA256 流密码 + Encrypt-then-MAC），只存密文与末 4 位掩码；明文仅在调用瞬间于内存中
+  组装请求头。**明文永不落库、不入对话正文、不入执行事件 payload、不入审计、不入 Prompt。**
+- **隔离**：凭据按人隔离，只用于该员工自己发起的调用；他人不可读取、不可借用。
+- **回显**：接口只回掩码（`****abcd`）；前端输入框为密码框、默认遮蔽。
+- **续跑**：提交后以「原提问 + 补充说明」自动重跑一轮，补充说明只写「已提供并安全保存」，
+  不携带明文（`prompt_shared.guard_outbound_prompt` 的凭据包含性校验继续兜底）。
+- **过期**：平台解析 JWT 的 `exp` 判定过期；过期或缺失时重新弹气泡，不带着必然失败的令牌调用。
+- **到期提醒**（2026-09-24 新增）：员工侧插件中心常驻提醒——页头汇总「有几个服务的令牌需要更新」，
+  对应服务行内标注「x 天后过期」或「已过期」并给出到期时间；提前天数由
+  `DWP_MCP_CREDENTIAL_WARN_DAYS` 控制（默认 7 天，下限 1）。提醒接口
+  （`GET /my/mcp/credential-alerts`）**只回状态与到期时间，连掩码都不回**，
+  且按人反查（企业级共享 MCP 上的按人令牌同样会被提醒）。
+- **轮换 / 撤销**：员工重复提交即覆盖（轮换）；运维侧删除 `mcp_user_credential` 对应行即撤销。
+  轮换 `DWP_MCP_CREDENTIAL_KEY` 会让已存凭据不可解密，需要员工重新补全。
+- **审计**：`tool_input_request` 记录谁在什么时候为哪个工具补了哪些字段（只记掩码与字段名），
+  审计事件 `input_submit` 同步留痕。
+- **忽略**：员工可以忽略一条待补全（`POST .../input-requests/{id}/ignore`），记录落库为
+  `cancelled` 并记 `resolved_by`/`resolved_at`，刷新后不再重复提示。忽略**只表示不再提示**，
+  不删除任何已保存的凭据、也不改变执行事实。
+- **运维凭据**：应用级 `X-MCP-API-KEY` 仍走 secrets 文件（`secrets/ehome_mcp_api_key`，600），
+  绝不通过气泡向员工索要。
+- **上线前必须完成**：①安全团队评审（重点是「员工在会话里粘贴凭据」这条新路径）；
+  ②明确哪些 MCP 服务允许走该链路（白名单）；③令牌有效期与轮换策略的运维约定。
+
+## 7.7 Harness 工具令牌有效期（2026-09-23 变更）
+
+**背景**：dsh 调用平台 MCP（知识检索 / 附件 / 技能 / 委派）时携带一枚短期工具令牌
+（`backend/app/services/harness_token.py`，HMAC-SHA256 签名，绑定员工、请求人、trace、委派深度）。
+单轮执行上限从 300/360 秒提到 900/1200 秒后，原来 300 秒签发、600 秒硬上限的令牌会让
+长任务跑到第 10 分钟后所有平台 MCP 调用 401。
+
+- **改了什么**：令牌有效期改为按单轮上限推导（`max(role, twin) + 300` = 1500 秒），
+  硬上限由 600 提到 3600 秒；数字收在 `backend/app/services/config.py` 一处。
+- **边界不变**：令牌仍然是短期、带签名、按执行签发；不含任何明文凭据（凭据只在容器 entrypoint
+  注入，令牌只带员工标识与 trace）；执行结束即失去意义；验签失败或过期一律拒绝。
+- **回退**：改 `DWP_HARNESS_TOKEN_TTL_SECONDS`（下限自动取单轮上限），或恢复代码默认值。
 
 ## 8. 仓库卫生规则
 

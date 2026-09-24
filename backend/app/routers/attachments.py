@@ -17,7 +17,7 @@ router = APIRouter(prefix="/conversations/{conversation_id}/attachments", tags=[
 
 def _conversation(db: Session, conversation_id: str, account: models.Account) -> models.Conversation:
     conversation = db.get(models.Conversation, conversation_id)
-    if conversation is None:
+    if conversation is None or conversation.hidden_at is not None:
         raise HTTPException(status_code=404, detail="会话不存在")
     if conversation.owner_human_no != account.human_employee_no:
         raise HTTPException(status_code=403, detail="无权访问该会话附件")

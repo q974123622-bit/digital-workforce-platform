@@ -202,6 +202,18 @@ def process_job(job_id: str) -> None:
             chunks, pages, sheets = _parse(row, attachment_root() / row.storage_path)
             if not chunks:
                 raise ValueError("未提取到有效内容")
+            # 解析期间用户可能清空/删除会话：写回前复检附件行是否仍有效，避免留下孤儿解析片段。
+            db.expire_all()
+            fresh = db.get(models.ConversationAttachment, row.id)
+            if fresh is None or fresh.deleted:
+                fresh_job = db.get(models.AttachmentProcessingJob, job_id)
+                if fresh_job is not None:
+                    fresh_job.status = "failed"
+                    fresh_job.error_summary = "附件已被清除"
+                    fresh_job.updated_at = datetime.now()
+                    db.commit()
+                return
+            row = fresh
             db.execute(delete(models.AttachmentChunk).where(models.AttachmentChunk.attachment_id == row.id))
             for index, (content, location, metadata) in enumerate(chunks):
                 db.add(models.AttachmentChunk(

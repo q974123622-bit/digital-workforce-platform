@@ -26,11 +26,22 @@ export interface TypeMeta {
   bg: string;
 }
 
-/** 数字员工类型 */
+/**
+ * 员工类型中文口径（全站唯一来源）：
+ * 会话列表段头、聊天窗标题栏徽章、消息说话人徽章、员工类型徽章与筛选器共用这一份。
+ */
+export const EMPLOYEE_TYPE_LABEL: Record<string, string> = {
+  twin: '我的分身',
+  virtual: 'AI员工',
+  rpa: '自动化小助手',
+  group: '协作空间',
+};
+
+/** AI员工类型元信息；label 一律引用 EMPLOYEE_TYPE_LABEL，避免同一类型出现两套叫法 */
 export const TYPE_META: Record<string, TypeMeta> = {
-  twin: { label: '数字分身', color: 'blue', icon: <RobotOutlined />, hex: '#165dff', bg: '#e8f3ff' },
-  virtual: { label: '虚拟员工', color: 'green', icon: <UserOutlined />, hex: '#52c41a', bg: '#f6ffed' },
-  rpa: { label: 'RPA', color: 'orange', icon: <ThunderboltOutlined />, hex: '#fa8c16', bg: '#fff7e6' },
+  twin: { label: EMPLOYEE_TYPE_LABEL.twin, color: 'blue', icon: <RobotOutlined />, hex: '#165dff', bg: '#e8f3ff' },
+  virtual: { label: EMPLOYEE_TYPE_LABEL.virtual, color: 'green', icon: <UserOutlined />, hex: '#52c41a', bg: '#f6ffed' },
+  rpa: { label: EMPLOYEE_TYPE_LABEL.rpa, color: 'orange', icon: <ThunderboltOutlined />, hex: '#fa8c16', bg: '#fff7e6' },
 };
 
 export const EMPLOYMENT_META: Record<string, { label: string; color: string; icon: ReactNode }> = {
