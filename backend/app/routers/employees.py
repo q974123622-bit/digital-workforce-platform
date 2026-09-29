@@ -14,7 +14,7 @@ from ..services import knowledge_source_health
 from ..services.knowledge_registry import plugin_id_for_level
 from ..services.llm import DeepSeekProvider, LLMUnavailableError
 from ..services.policy import ResourceRef, evaluate
-from ..services import config
+from ..services import config, employee_registry
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
@@ -219,7 +219,7 @@ def chat(employee_no: str, payload: schemas.ChatRequest, db: Session = Depends(g
     """一对一问答（Sprint 4）：User → Employee → LLM → Policy → Gateway → Adapter → LLM → Answer。"""
     try:
         employee = db.get(models.DigitalEmployee, employee_no)
-        if employee and employee_no in {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ", "DT-E10281", "DT-E20999"} and (
+        if employee and employee_registry.is_harness_employee(employee_no) and (
             config.get("DWP_AGENT_EXECUTION_MODE", "harness") or "harness"
         ) == "harness":
             result = run_agent(

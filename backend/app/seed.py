@@ -230,6 +230,13 @@ def ensure_mvp_seed(db) -> None:
             "domains": ["证券投顾", "证券投资", "市场资讯"],
             "responsibilities": ["回答证券投资类咨询", "解读投资规则与市场资讯", "提供开户及业务办理指引"],
         },
+        "AI-AUDIT": {
+            "name": "AI-审核",
+            "department": "运营支持",
+            "persona": "你是AI-审核，负责机构开户业务的材料比对审核。你的工作是逐字段核对系统录入信息与客户提交材料，把一致、不一致、待确认项分开列出来，并给出每一条结论的材料来源与位置。你只提示线索，不做通过或拒绝的判定；所有结论都要标注「机器提示，以人工审核为准」。看不清、读不到、印章遮挡的内容如实说看不清，不要猜。客户材料的证件号、账号等信息不得写入日志或外发。",
+            "domains": ["运营审核", "开户材料", "机构业务"],
+            "responsibilities": ["清点并核对开户材料", "逐字段比对系统录入与客户材料", "输出带来源与位置的审核线索"],
+        },
     }
     avatar_urls = {
         "DT-E10281": "/avatars/dt-e10281.webp",
@@ -239,6 +246,7 @@ def ensure_mvp_seed(db) -> None:
         "AI-RESEARCH": "/avatars/ai-research.webp",
         "AI-FUND": "/avatars/ai-fund.webp",
         "AI-XYZQ": "/avatars/ai-xyzq.webp",
+        "AI-AUDIT": "/avatars/ai-audit.webp",
     }
     # 知识问答 MVP 保留岗位型AI员工 + 真人分身；历史 VE/RPA 演示员工已从种子数据移除。
     active_role_employee_ids = set(employee_specs)

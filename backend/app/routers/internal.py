@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
+from ..services import execution_events
 from ..services.gateway import invoke_plugin, search_knowledge, write_audit
 from ..services.harness_token import HarnessClaims, verify_token
 from ..services.identity import resolve_identity
@@ -410,6 +412,77 @@ def agent_delegate(
     payload: AgentDelegateToolIn, claims: HarnessClaims = Depends(_claims), db: Session = Depends(get_db),
 ):
     return _agent_delegate(db, claims, payload)
+
+
+class SkillEventIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    event_type: str = "skill_step"
+    stage: str = "material_review"
+    status: str = "running"
+    title: str
+    detail: str = ""
+    trace_id: str | None = None
+    payload: dict | None = None
+
+
+# 脚本上报只收固定枚举与白名单键：这是观测通道，不能变成任意写轨迹的入口。
+_SKILL_EVENT_TYPES = {"skill_step"}
+_SKILL_EVENT_STATUS = {"running", "completed", "failed"}
+_SKILL_EVENT_STAGES = {"material_review", "material_pack", "skill"}
+_SKILL_PAYLOAD_KEYS = {
+    "business_no", "material_count", "field_count", "checked", "unchecked",
+    "level", "command", "materials", "coverage",
+}
+_EVENT_LONG_DIGITS = re.compile(r"\d{15,}")
+_EVENT_SECRETS = re.compile(r"\b(sk-[A-Za-z0-9_\-]{8,}|Bearer\s+\S+)")
+
+
+def _scrub_event_text(value: str) -> str:
+    """证件号 / 账号 / 密钥不进轨迹。脚本侧已打码一次，服务端不信任它，再过滤一次。"""
+    text = _EVENT_LONG_DIGITS.sub(
+        lambda m: m.group(0)[:4] + "*" * (len(m.group(0)) - 8) + m.group(0)[-4:],
+        str(value or ""))
+    return _EVENT_SECRETS.sub("***", text)
+
+
+@router.post("/execution/events")
+def execution_event_report(
+    payload: SkillEventIn, claims: HarnessClaims = Depends(_claims), db: Session = Depends(get_db),
+):
+    """技能脚本上报执行事件：让容器内跑脚本、读文件这些动作进执行轨迹。
+
+    dsh 是一次性 CLI 调用，除最终答复什么都不外露（stdout 契约不允许结构化输出），
+    所以「模型自己规划的步骤」只能由技能脚本主动上报。三条防线：
+    令牌鉴权 + trace 必须与令牌一致 + 字段走枚举/白名单并截断打码。
+    """
+    if payload.event_type not in _SKILL_EVENT_TYPES:
+        raise HTTPException(status_code=422, detail="不支持的事件类型")
+    if payload.status not in _SKILL_EVENT_STATUS:
+        raise HTTPException(status_code=422, detail="不支持的状态")
+    if payload.stage not in _SKILL_EVENT_STAGES:
+        raise HTTPException(status_code=422, detail="不支持的阶段")
+    if not (payload.title or "").strip():
+        raise HTTPException(status_code=422, detail="title 不能为空")
+    trace_id = (payload.trace_id or claims.trace_id or "").strip()
+    if not trace_id or trace_id != claims.trace_id:
+        raise HTTPException(status_code=403, detail="事件与令牌的 trace 不一致")
+    execution = execution_events.execution_for_trace(db, trace_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="执行不存在")
+    extra = {key: value for key, value in (payload.payload or {}).items()
+             if key in _SKILL_PAYLOAD_KEYS}
+    try:
+        row = execution_events.emit(
+            db, execution.id, event_type=payload.event_type, stage=payload.stage,
+            status=payload.status, title=_scrub_event_text(payload.title),
+            detail=_scrub_event_text(payload.detail), actor_employee_id=claims.employee_id,
+            payload=extra or None,
+        )
+    except RuntimeError as exc:
+        # 执行已取消/终态：上报是观测，不该把 5xx 抛回容器里的脚本
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"event_seq": row.event_seq}
 
 
 @router.post("/agent-tools/mcp")

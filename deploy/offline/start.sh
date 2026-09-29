@@ -56,7 +56,7 @@ global_runtime_dir="$(runtime_dir_of "$global_runtime_rel")"
 profile_rel="$(resolve_under_offline "$(versions_value DWP_PROFILE './profile/current')")"
 [ -f "$(abs_from_offline "$profile_rel")/cordis.patch.yml" ] || fail \
   "dsh profile 缺失：$profile_rel（应包含 cordis.yml / cordis.patch.yml / package.json）"
-for employee_id in AI-GENERAL AI-INVESTMENT AI-RESEARCH AI-FUND AI-XYZQ DT-E10281 DT-E20999; do
+for employee_id in "${DWP_EMPLOYEE_IDS[@]}"; do
   override_rel="$(versions_value "$(runtime_key_for "$employee_id")" '')"
   [ -n "$override_rel" ] || continue
   [ -x "$(runtime_dir_of "$override_rel")/bin/dsh" ] || fail \
@@ -70,7 +70,7 @@ umask 077
 # data/artifacts/skills 是技能包的展开目录（SkillHub 导入的技能落在这里，再投放到
 # harness/<员工>/workspace/skills/<slug>/）。预先建好，避免 Docker 把不存在的 bind 源建成 root 属主目录。
 mkdir -p secrets data/artifacts data/artifacts/skills data/attachments backups
-for employee_id in AI-GENERAL AI-INVESTMENT AI-RESEARCH AI-FUND AI-XYZQ DT-E10281 DT-E20999; do
+for employee_id in "${DWP_EMPLOYEE_IDS[@]}"; do
   mkdir -p "harness/$employee_id/dsh-home" "harness/$employee_id/workspace"
 done
 # compose 声明了 secrets/qieman_api_key；文件缺失时 Docker 会把 bind 源建成 root 属主目录
@@ -218,7 +218,8 @@ done
 [ "$healthy" -eq 1 ] || fail "后端健康检查超时，请运行 ./status.sh"
 
 echo "[5/5] 自检 Harness 实例……"
-for container in dwp-harness-ai-general dwp-harness-ai-investment dwp-harness-ai-research dwp-harness-ai-fund dwp-harness-ai-xyzq dwp-harness-dt-e10281 dwp-harness-dt-e20999; do
+for employee_id in "${DWP_EMPLOYEE_IDS[@]}"; do
+  container="$(container_for "$employee_id")"
   running="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null || true)"
   [ "$running" = "true" ] || fail "$container 未运行"
   docker exec "$container" sh -c \
@@ -233,7 +234,7 @@ done
 
 host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
-echo "启动完成：前端、后端和 7 个 Harness 实例均已运行"
+echo "启动完成：前端、后端和 ${#DWP_EMPLOYEE_IDS[@]} 个 Harness 实例均已运行"
 echo "本机访问: http://127.0.0.1:${port}"
 if [ -n "$host_ip" ]; then
   echo "局域网访问: http://${host_ip}:${port}"

@@ -1,0 +1,1591 @@
+{
+  "note": "93 个核对字段。key 全局唯一；system_group 是系统录入侧归属；sources 是客户提交侧的对照来源（material + path，path 见 materials.json 的 extract）；normalize / judge 是规则编号；required=true 的字段计入一致率分母。sources 为空表示系统独有（J-08 / L5）。",
+  "total": 93,
+  "fields": [
+    {
+      "key": "sys01.cert_type",
+      "name": "证件类别",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-04"
+      ],
+      "judge": "J-04",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "cert_type"
+        },
+        {
+          "material": "M-CUST-03",
+          "path": "cert_type"
+        }
+      ]
+    },
+    {
+      "key": "sys01.cert_no",
+      "name": "证件编号",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-01",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "cert_no"
+        },
+        {
+          "material": "M-CUST-03",
+          "path": "cert_no"
+        }
+      ]
+    },
+    {
+      "key": "sys01.special_institution_category",
+      "name": "特殊机构类别",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-12"
+      ],
+      "judge": "J-04",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "special_institution_category"
+        }
+      ]
+    },
+    {
+      "key": "sys01.cert_start_date",
+      "name": "证件起始日期",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_validity"
+        }
+      ]
+    },
+    {
+      "key": "sys01.cert_end_date",
+      "name": "证件截止日期",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-01",
+        "N-02"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_validity"
+        }
+      ]
+    },
+    {
+      "key": "sys01.nationality",
+      "name": "国籍",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "nationality"
+        }
+      ]
+    },
+    {
+      "key": "sys01.gender",
+      "name": "性别",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "gender"
+        },
+        {
+          "material": "M-CUST-03",
+          "path": "gender"
+        }
+      ]
+    },
+    {
+      "key": "sys01.birth_date",
+      "name": "出生日期",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "birth_date"
+        },
+        {
+          "material": "M-CUST-03",
+          "path": "birth_date"
+        }
+      ]
+    },
+    {
+      "key": "sys01.phone",
+      "name": "联系电话",
+      "system_group": "M-SYS-01",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys01.fixed_phone",
+      "name": "固定电话",
+      "system_group": "M-SYS-01",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys01.contact_address",
+      "name": "联系地址",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-05"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "address"
+        }
+      ]
+    },
+    {
+      "key": "sys01.beneficiary_type",
+      "name": "受益人类型",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-12"
+      ],
+      "judge": "J-09",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "beneficiary_type"
+        }
+      ]
+    },
+    {
+      "key": "sys01.ownership_start_date",
+      "name": "受益所有权形成日期",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "ownership_start_date"
+        }
+      ]
+    },
+    {
+      "key": "sys01.ownership_end_date",
+      "name": "受益所有权终止日期",
+      "system_group": "M-SYS-01",
+      "required": false,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-06",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "ownership_end_date"
+        }
+      ]
+    },
+    {
+      "key": "sys01.control_form",
+      "name": "实际控制形式",
+      "system_group": "M-SYS-01",
+      "required": true,
+      "normalize": [
+        "N-12"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "control_form"
+        }
+      ]
+    },
+    {
+      "key": "sys01.control_content",
+      "name": "实施实际控制的内容/方式",
+      "system_group": "M-SYS-01",
+      "required": false,
+      "normalize": [
+        "N-12"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-07",
+          "path": "control_content"
+        }
+      ]
+    },
+    {
+      "key": "sys01.upper_filing_exist",
+      "name": "是否存在上一层备案主体",
+      "system_group": "M-SYS-01",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys01.upper_filing_name",
+      "name": "实际控制备案主体的上一层",
+      "system_group": "M-SYS-01",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys01.upper_filing_credit_code",
+      "name": "实际控制备案主体的统一社会信用代码",
+      "system_group": "M-SYS-01",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys02.customer_name",
+      "name": "客户名称",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "name"
+        },
+        {
+          "material": "M-CUST-02",
+          "path": "enterprise_name"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "institution_name"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "full_name"
+        }
+      ]
+    },
+    {
+      "key": "sys02.institution_short",
+      "name": "机构简称",
+      "system_group": "M-SYS-02",
+      "required": false,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "institution_short"
+        }
+      ]
+    },
+    {
+      "key": "sys02.customer_category",
+      "name": "客户类别",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-07"
+      ],
+      "judge": "J-09",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "type"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "institution_category"
+        }
+      ]
+    },
+    {
+      "key": "sys02.customer_branch",
+      "name": "客户营业部",
+      "system_group": "M-SYS-02",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys02.business_branch",
+      "name": "发生营业部",
+      "system_group": "M-SYS-02",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys02.cert_type",
+      "name": "证件类别",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-04"
+      ],
+      "judge": "J-04",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "cert_type"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "cert_type"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "cert_type"
+        }
+      ]
+    },
+    {
+      "key": "sys02.cert_no",
+      "name": "证件编号",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-01",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "credit_code"
+        },
+        {
+          "material": "M-CUST-02",
+          "path": "credit_code"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "cert_no"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "cert_no"
+        }
+      ]
+    },
+    {
+      "key": "sys02.cert_valid_from",
+      "name": "证件有效期（起始日）",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-06",
+      "sources": [
+        {
+          "material": "M-CUST-06",
+          "path": "cert_validity"
+        },
+        {
+          "material": "M-CUST-01",
+          "path": "registration_date"
+        }
+      ]
+    },
+    {
+      "key": "sys02.cert_valid_to",
+      "name": "证件有效期（截止日）",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-02"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-02",
+          "path": "business_term_end"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "cert_validity"
+        }
+      ]
+    },
+    {
+      "key": "sys02.issuing_authority",
+      "name": "发证机关",
+      "system_group": "M-SYS-02",
+      "required": false,
+      "normalize": [],
+      "judge": "J-07",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "seal_text"
+        }
+      ]
+    },
+    {
+      "key": "sys02.mobile",
+      "name": "手机",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-11"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "mobile"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "mobile"
+        }
+      ]
+    },
+    {
+      "key": "sys02.phone",
+      "name": "联系电话",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-11"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "phone"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "phone"
+        }
+      ]
+    },
+    {
+      "key": "sys02.risk_level",
+      "name": "风险测评等级",
+      "system_group": "M-SYS-02",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys02.risk_score",
+      "name": "风险测评得分",
+      "system_group": "M-SYS-02",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys02.cert_address",
+      "name": "证件地址",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-05"
+      ],
+      "judge": "J-05",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "address"
+        },
+        {
+          "material": "M-CUST-02",
+          "path": "address"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "reg_address"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "reg_address"
+        }
+      ]
+    },
+    {
+      "key": "sys02.contact_address",
+      "name": "联系地址",
+      "system_group": "M-SYS-02",
+      "required": true,
+      "normalize": [
+        "N-05"
+      ],
+      "judge": "J-05",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "contact_address"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "contact_address"
+        }
+      ]
+    },
+    {
+      "key": "sys02.remark",
+      "name": "备注",
+      "system_group": "M-SYS-02",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys02.common_link",
+      "name": "常用链接",
+      "system_group": "M-SYS-02",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys03.nationality",
+      "name": "国籍/地区",
+      "system_group": "M-SYS-03",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "nationality"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "nationality"
+        }
+      ]
+    },
+    {
+      "key": "sys03.english_name",
+      "name": "英文名称",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "english_name"
+        }
+      ]
+    },
+    {
+      "key": "sys03.website",
+      "name": "网站地址",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "website"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "website"
+        }
+      ]
+    },
+    {
+      "key": "sys03.institution_category",
+      "name": "机构类别",
+      "system_group": "M-SYS-03",
+      "required": true,
+      "normalize": [
+        "N-07"
+      ],
+      "judge": "J-09",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "type"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "institution_category"
+        }
+      ]
+    },
+    {
+      "key": "sys03.capital_nature",
+      "name": "资本属性",
+      "system_group": "M-SYS-03",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "capital_nature"
+        }
+      ]
+    },
+    {
+      "key": "sys03.state_owned",
+      "name": "国有属性",
+      "system_group": "M-SYS-03",
+      "required": true,
+      "normalize": [
+        "N-12"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "state_owned"
+        }
+      ]
+    },
+    {
+      "key": "sys03.listed",
+      "name": "上市属性",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys03.registered_capital",
+      "name": "注册资本(万)",
+      "system_group": "M-SYS-03",
+      "required": true,
+      "normalize": [
+        "N-03"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "registered_capital"
+        },
+        {
+          "material": "M-CUST-02",
+          "path": "registered_capital"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "registered_capital"
+        }
+      ]
+    },
+    {
+      "key": "sys03.currency",
+      "name": "注册币种",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "currency"
+        },
+        {
+          "material": "M-CUST-02",
+          "path": "currency"
+        }
+      ]
+    },
+    {
+      "key": "sys03.establish_date",
+      "name": "成立日期",
+      "system_group": "M-SYS-03",
+      "required": true,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "establish_date"
+        },
+        {
+          "material": "M-CUST-02",
+          "path": "establish_date"
+        }
+      ]
+    },
+    {
+      "key": "sys03.reg_address_country",
+      "name": "注册地址国籍/地区",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys03.reg_address",
+      "name": "注册地址",
+      "system_group": "M-SYS-03",
+      "required": true,
+      "normalize": [
+        "N-05"
+      ],
+      "judge": "J-05",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "address"
+        },
+        {
+          "material": "M-CUST-02",
+          "path": "address"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "reg_address"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "reg_address"
+        }
+      ]
+    },
+    {
+      "key": "sys03.enterprise_category",
+      "name": "企业类别",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [
+        "N-07"
+      ],
+      "judge": "J-09",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "type"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "institution_category"
+        }
+      ]
+    },
+    {
+      "key": "sys03.industry_code",
+      "name": "行业代码",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [],
+      "judge": "J-09",
+      "sources": [
+        {
+          "material": "M-CUST-02",
+          "path": "business_scope"
+        }
+      ]
+    },
+    {
+      "key": "sys03.business_scope",
+      "name": "经营范围",
+      "system_group": "M-SYS-03",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-01",
+          "path": "business_scope"
+        },
+        {
+          "material": "M-CUST-02",
+          "path": "business_scope"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "business_scope"
+        }
+      ]
+    },
+    {
+      "key": "sys03.qualification_note",
+      "name": "资质说明",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys03.integrity_record",
+      "name": "不良诚信记录",
+      "system_group": "M-SYS-03",
+      "required": true,
+      "normalize": [
+        "N-12"
+      ],
+      "judge": "J-04",
+      "sources": [
+        {
+          "material": "M-CUST-06",
+          "path": "integrity_record"
+        }
+      ]
+    },
+    {
+      "key": "sys03.office_address",
+      "name": "办公地址",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [
+        "N-05"
+      ],
+      "judge": "J-05",
+      "sources": [
+        {
+          "material": "M-CUST-06",
+          "path": "office_address"
+        }
+      ]
+    },
+    {
+      "key": "sys03.listed_code",
+      "name": "上市代码",
+      "system_group": "M-SYS-03",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys04.mail_method",
+      "name": "邮寄方式",
+      "system_group": "M-SYS-04",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys04.contact_name",
+      "name": "联系人姓名",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-09"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "name"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "contact_name"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "contact_name"
+        }
+      ]
+    },
+    {
+      "key": "sys04.contact_cert_type",
+      "name": "联系人证件类别",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-04"
+      ],
+      "judge": "J-04",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_type"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "contact_cert_type"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "contact_cert_type"
+        }
+      ]
+    },
+    {
+      "key": "sys04.contact_cert_no",
+      "name": "联系人证件编号",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-01",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_no"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "contact_cert_no"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "contact_cert_no"
+        }
+      ]
+    },
+    {
+      "key": "sys04.contact_cert_validity",
+      "name": "联系人证件有效期",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_validity"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "contact_cert_validity"
+        }
+      ]
+    },
+    {
+      "key": "sys04.contact_address",
+      "name": "联系地址",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-05"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "address"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "contact_address"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "contact_address"
+        }
+      ]
+    },
+    {
+      "key": "sys04.postal_code",
+      "name": "邮政编码",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "postal_code"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "postal_code"
+        }
+      ]
+    },
+    {
+      "key": "sys04.phone",
+      "name": "联系电话",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-11"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "phone"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "phone"
+        }
+      ]
+    },
+    {
+      "key": "sys04.mobile",
+      "name": "手机",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-11"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "mobile"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "mobile"
+        }
+      ]
+    },
+    {
+      "key": "sys04.fax",
+      "name": "传真",
+      "system_group": "M-SYS-04",
+      "required": false,
+      "normalize": [
+        "N-11"
+      ],
+      "judge": "J-06",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "fax"
+        }
+      ]
+    },
+    {
+      "key": "sys04.email",
+      "name": "EMAIL",
+      "system_group": "M-SYS-04",
+      "required": false,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-06",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "email"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "email"
+        }
+      ]
+    },
+    {
+      "key": "sys04.office_phone",
+      "name": "单位电话",
+      "system_group": "M-SYS-04",
+      "required": false,
+      "normalize": [
+        "N-11"
+      ],
+      "judge": "J-06",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "office_phone"
+        }
+      ]
+    },
+    {
+      "key": "sys04.operator_name",
+      "name": "经办人姓名",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-09"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "operator_name"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "operator_name"
+        }
+      ]
+    },
+    {
+      "key": "sys04.operator_cert_type",
+      "name": "经办人证件类别",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-04"
+      ],
+      "judge": "J-04",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "operator_cert_type"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "operator_cert_type"
+        }
+      ]
+    },
+    {
+      "key": "sys04.operator_cert_no",
+      "name": "经办人证件编号",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-01",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_no"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "operator_cert_no"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "operator_cert_no"
+        }
+      ]
+    },
+    {
+      "key": "sys04.operator_cert_validity",
+      "name": "经办人证件有效期",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_validity"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "operator_cert_validity"
+        }
+      ]
+    },
+    {
+      "key": "sys04.operator_gender",
+      "name": "经办人性别",
+      "system_group": "M-SYS-04",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "gender"
+        }
+      ]
+    },
+    {
+      "key": "sys04.org_flag",
+      "name": "机构标志",
+      "system_group": "M-SYS-04",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys05.legal_rep_name",
+      "name": "法定代表人姓名",
+      "system_group": "M-SYS-05",
+      "required": true,
+      "normalize": [
+        "N-09"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "name"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "legal_rep_name"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "legal_rep_name"
+        }
+      ]
+    },
+    {
+      "key": "sys05.legal_rep_cert_type",
+      "name": "法定代表人证件类别",
+      "system_group": "M-SYS-05",
+      "required": true,
+      "normalize": [
+        "N-04"
+      ],
+      "judge": "J-04",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_type"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "legal_rep_cert_type"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "legal_rep_cert_type"
+        }
+      ]
+    },
+    {
+      "key": "sys05.legal_rep_cert_no",
+      "name": "法定代表人证件编号",
+      "system_group": "M-SYS-05",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-01",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_no"
+        },
+        {
+          "material": "M-CUST-05",
+          "path": "legal_rep_cert_no"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "legal_rep_cert_no"
+        }
+      ]
+    },
+    {
+      "key": "sys05.legal_rep_cert_validity",
+      "name": "法定代表人证件有效期",
+      "system_group": "M-SYS-05",
+      "required": true,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_validity"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "legal_rep_cert_validity"
+        }
+      ]
+    },
+    {
+      "key": "sys05.legal_rep_phone",
+      "name": "法定代表人联系电话",
+      "system_group": "M-SYS-05",
+      "required": true,
+      "normalize": [
+        "N-11"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "phone"
+        },
+        {
+          "material": "M-CUST-06",
+          "path": "legal_rep_phone"
+        }
+      ]
+    },
+    {
+      "key": "sys05.legal_rep_org_flag",
+      "name": "法定代表人机构标志",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys05.legal_rep_email",
+      "name": "法定代表人 EMAIL",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-06",
+      "sources": [
+        {
+          "material": "M-CUST-05",
+          "path": "email"
+        }
+      ]
+    },
+    {
+      "key": "sys05.controller_name",
+      "name": "控股股东姓名",
+      "system_group": "M-SYS-05",
+      "required": true,
+      "normalize": [
+        "N-09"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-06",
+          "path": "controller_name"
+        }
+      ]
+    },
+    {
+      "key": "sys05.controller_cert_type",
+      "name": "控股股东证件类别",
+      "system_group": "M-SYS-05",
+      "required": true,
+      "normalize": [
+        "N-04"
+      ],
+      "judge": "J-04",
+      "sources": [
+        {
+          "material": "M-CUST-06",
+          "path": "controller_cert_type"
+        }
+      ]
+    },
+    {
+      "key": "sys05.controller_cert_no",
+      "name": "控股股东证件编号",
+      "system_group": "M-SYS-05",
+      "required": true,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-01",
+      "sources": [
+        {
+          "material": "M-CUST-06",
+          "path": "controller_cert_no"
+        }
+      ]
+    },
+    {
+      "key": "sys05.controller_cert_validity",
+      "name": "控股股东证件有效期",
+      "system_group": "M-SYS-05",
+      "required": true,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-06",
+          "path": "controller_cert_validity"
+        }
+      ]
+    },
+    {
+      "key": "sys05.controller_phone",
+      "name": "控股股东联系电话",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [
+        "N-11"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-06",
+          "path": "controller_phone"
+        }
+      ]
+    },
+    {
+      "key": "sys05.controller_org_flag",
+      "name": "控股股东机构标志",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    },
+    {
+      "key": "sys05.controller_email",
+      "name": "控股股东 EMAIL",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-06",
+      "sources": [
+        {
+          "material": "M-CUST-06",
+          "path": "email"
+        }
+      ]
+    },
+    {
+      "key": "sys05.principal_name",
+      "name": "负责人姓名",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [
+        "N-09"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "name"
+        }
+      ]
+    },
+    {
+      "key": "sys05.principal_cert_type",
+      "name": "负责人证件类别",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [
+        "N-04"
+      ],
+      "judge": "J-04",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_type"
+        }
+      ]
+    },
+    {
+      "key": "sys05.principal_cert_no",
+      "name": "负责人证件编号",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [
+        "N-08"
+      ],
+      "judge": "J-01",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_no"
+        }
+      ]
+    },
+    {
+      "key": "sys05.principal_cert_validity",
+      "name": "负责人证件有效期",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [
+        "N-01"
+      ],
+      "judge": "J-02",
+      "sources": [
+        {
+          "material": "M-CUST-03",
+          "path": "cert_validity"
+        }
+      ]
+    },
+    {
+      "key": "sys05.principal_phone",
+      "name": "负责人联系电话",
+      "system_group": "M-SYS-05",
+      "required": false,
+      "normalize": [],
+      "judge": "J-08",
+      "sources": []
+    }
+  ]
+}

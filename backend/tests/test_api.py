@@ -8,10 +8,10 @@ def test_seed_counts(client):
     from app.services.knowledge_catalog import catalog_ids
 
     employees = client.get("/api/v1/employees").json()
-    assert len(employees) == 7
+    assert len(employees) == 8      # 6 个岗位AI员工 + 2 个数字分身
     assert {employee["employee_no"] for employee in employees} >= {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ"}
     assert len([e for e in employees if e["type"] == "twin"]) == 2
-    assert len([e for e in employees if e["type"] == "virtual"]) == 5
+    assert len([e for e in employees if e["type"] == "virtual"]) == 6
     assert len(client.get("/api/v1/policies").json()) == 8
     assert len(client.get("/api/v1/knowledge-bases").json()) == len(catalog_ids())
     teams = client.get("/api/v1/teams").json()

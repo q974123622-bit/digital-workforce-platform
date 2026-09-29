@@ -347,6 +347,15 @@ export interface ConversationAttachment {
   sheet_count: number | null;
   chunk_count: number;
   message_seq: number | null;
+  /** 材料包：同一 zip 上传的附件共享 pack_id，business_no 是包内业务号 */
+  pack_id?: string | null;
+  business_no?: string | null;
+  /**
+   * 可预览类型：'image'（图片缩略图 + 灯箱看大图）/ 'pdf'（首页缩略图 + 内嵌预览）/ 'none'。
+   * 后端唯一判定来源，前端只读这个字段，不要按 file_type 字符串到处判断。
+   * 可选：兼容既有 fixture 与尚未升级的旧后端（缺省视为 'none'）。
+   */
+  preview_kind?: 'image' | 'pdf' | 'none';
   created_at: string;
 }
 
@@ -426,9 +435,32 @@ export interface AgentExecutionEvent {
   created_at: string;
 }
 
+/**
+ * AI员工本轮在工作区写下的产物（核对表、导出数据）。
+ *
+ * 模型在答复里只会说「完整核对表已保存至 /workspace/output/核对表.md」——
+ * 用户看不到也拿不到那个文件。平台每轮结束时把产物快照下来，前端据此渲染
+ * 「预览 / 下载」卡片。`kind` 是前端判定预览方式的唯一来源（后端给出）。
+ */
+export interface ExecutionArtifact {
+  artifact_id: string;
+  execution_id: string;
+  /** 工作区内的相对路径，如 output/核对表.md（与模型答复里的路径一致） */
+  name: string;
+  /** 展示与下载用的文件名，如 核对表.md */
+  filename: string;
+  /** markdown | html | csv | text */
+  kind: string;
+  mime_type: string;
+  size: number;
+  created_at: string;
+}
+
 export interface AgentExecutionDetail {
   execution: AgentExecution;
   events: AgentExecutionEvent[];
+  /** 本轮产物；可选以兼容旧后端与既有测试 fixture */
+  artifacts?: ExecutionArtifact[];
 }
 
 export interface WorkplaceHome {

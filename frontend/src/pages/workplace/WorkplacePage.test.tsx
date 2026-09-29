@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type {
   Conversation,
+  ConversationAttachment,
   ConversationSearchHit,
   ConversationSummary,
   Employee,
+  ExecutionArtifact,
   Skill,
   TaskRun,
   WorkplaceHome,
@@ -29,7 +31,8 @@ function stubFetch(routes: Record<string, unknown | ((init?: RequestInit) => unk
       });
     }
     const body = typeof route[1] === 'function' ? (route[1] as (init?: RequestInit) => unknown)(init) : route[1];
-    return json(body);
+    // 直接给 Response 时原样返回：产物内容接口要的是纯文本，不能包成 JSON
+    return body instanceof Response ? body : json(body);
   });
   vi.stubGlobal('fetch', fn);
   return fn;
@@ -864,6 +867,162 @@ describe('WorkplacePage', () => {
     });
     expect(await screen.findByText('打个招呼，开始今天的协作吧。')).toBeInTheDocument();
     expect(screen.queryByText('整理新员工入职准备清单')).not.toBeInTheDocument();
+  });
+
+  it('一次拖入多个文件走材料通道（落到 /attachments/pack/files）', async () => {
+    const material = (id: string, filename: string): ConversationAttachment => ({
+      attachment_id: id, conversation_id: 'CONV-1', filename, file_type: 'png',
+      mime_type: 'image/png', size: 2048, status: 'ready', processing_hint: null, error_code: '',
+      page_count: null, sheet_count: null, chunk_count: 1, message_seq: null, preview_kind: 'image',
+      created_at: '2026-09-29T09:00:00',
+    });
+    const rows = [material('ATT-P1', '营业执照.png'), material('ATT-P2', '法人证件信息.png')];
+    const fetchMock = stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [conv1Summary],
+      '/api/v1/conversations/CONV-1': conv1,
+      '/api/v1/conversations/CONV-1/runs/active': null,
+      '/api/v1/conversations/CONV-1/attachments': rows,
+      '/api/v1/conversations/CONV-1/attachments/pack/files': rows,
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText('新员工入职助手'));
+
+    const dropZone = (await screen.findByPlaceholderText('发消息…')).closest('.composer-box');
+    fireEvent.drop(dropZone!, {
+      dataTransfer: {
+        files: [
+          new File(['a'], '营业执照.png', { type: 'image/png' }),
+          new File(['b'], '法人证件信息.png', { type: 'image/png' }),
+        ],
+      },
+    });
+
+    // 接线漏掉 onPack 时这里会静默什么都不做（真机就是这个问题），所以必须断言请求真的发出去了
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith('/api/v1/conversations/CONV-1/attachments/pack/files'))).toBe(true);
+    });
+    expect(await screen.findByText('营业执照.png')).toBeInTheDocument();
+  });
+
+  it('附件缩略图打开全屏预览：翻页与 Esc 关闭', async () => {
+    const attachment = (
+      id: string, filename: string, fileType: string, previewKind: 'image' | 'pdf',
+    ): ConversationAttachment => ({
+      attachment_id: id, conversation_id: 'CONV-1', filename, file_type: fileType,
+      mime_type: fileType === 'pdf' ? 'application/pdf' : 'image/png', size: 2048,
+      status: 'ready', processing_hint: null, error_code: '', page_count: null,
+      sheet_count: null, chunk_count: 0, message_seq: null, preview_kind: previewKind,
+      created_at: '2026-09-15T09:00:00',
+    });
+    stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [conv1Summary],
+      '/api/v1/conversations/CONV-1/runs/active': null,
+      '/api/v1/conversations/CONV-1/attachments': [
+        attachment('ATT-1', '开户截图.png', 'png', 'image'),
+        attachment('ATT-2', '开户合同.pdf', 'pdf', 'pdf'),
+      ],
+      '/api/v1/conversations/CONV-1': conv1,
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText('新员工入职助手'));
+
+    // 待发送区渲染缩略图；点开全屏灯箱。
+    fireEvent.click(await screen.findByRole('button', { name: '预览 开户截图.png' }));
+    expect(await screen.findByRole('dialog', { name: '预览 开户截图.png' })).toBeInTheDocument();
+    expect(screen.getByText('第 1 / 2 张')).toBeInTheDocument();
+
+    // 翻页：同一集合内的第二项。
+    fireEvent.click(screen.getByRole('button', { name: '下一张' }));
+    expect(await screen.findByRole('dialog', { name: '预览 开户合同.pdf' })).toBeInTheDocument();
+    expect(screen.getByText('若浏览器未内置 PDF 阅读器，请用以下入口打开或下载')).toBeInTheDocument();
+
+    // Esc 关闭。
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('附件预览：点暗色区域退出、点图片本身不退出、可缩放', async () => {
+    const image: ConversationAttachment = {
+      attachment_id: 'ATT-1', conversation_id: 'CONV-1', filename: '开户截图.png', file_type: 'png',
+      mime_type: 'image/png', size: 2048, status: 'ready', processing_hint: null, error_code: '',
+      page_count: null, sheet_count: null, chunk_count: 0, message_seq: null, preview_kind: 'image',
+      created_at: '2026-09-15T09:00:00',
+    };
+    stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [conv1Summary],
+      '/api/v1/conversations/CONV-1/runs/active': null,
+      '/api/v1/conversations/CONV-1/attachments': [image],
+      '/api/v1/conversations/CONV-1': conv1,
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText('新员工入职助手'));
+    fireEvent.click(await screen.findByRole('button', { name: '预览 开户截图.png' }));
+
+    const dialog = await screen.findByRole('dialog', { name: '预览 开户截图.png' });
+
+    // 点图片本身不该退出（否则双击放大 / 拖动都会顺手把预览关掉）。
+    fireEvent.click(within(dialog).getByRole('img', { name: '开户截图.png' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    // 缩放：放大 → 150%，还原 → 100%。
+    expect(screen.getByText('100%')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '放大' }));
+    expect(screen.getByText('150%')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '还原缩放' }));
+    expect(screen.getByText('100%')).toBeInTheDocument();
+
+    // 点图片以外的暗色区域退出。
+    fireEvent.click(screen.getByRole('dialog'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('AI员工产物：卡片可预览可下载，预览抽屉渲染核对表正文', async () => {
+    const artifact: ExecutionArtifact = {
+      artifact_id: 'ART-1', execution_id: 'EX-ART', name: 'output/核对表.md',
+      filename: '核对表.md', kind: 'markdown', mime_type: 'text/markdown; charset=utf-8',
+      size: 4096, created_at: '2026-09-29T15:00:00',
+    };
+    stubFetch({
+      '/api/v1/workplace?actor_no=E10281': home,
+      '/api/v1/conversations?actor_no=E10281': [conv1Summary],
+      '/api/v1/conversations/CONV-1/runs/active': null,
+      '/api/v1/conversations/CONV-1/attachments': [],
+      '/api/v1/conversations/CONV-1/runs/history': [{
+        execution: {
+          id: 'EX-ART', conversation_id: 'CONV-1', trigger_message_seq: 1,
+          trace_id: 'T-ART', primary_employee_id: 'VE-0001', status: 'completed',
+          stage: 'completed', error_code: '', error_message: '', retryable: false,
+          started_at: '2026-09-29T15:00:00', updated_at: '2026-09-29T15:00:03',
+          completed_at: '2026-09-29T15:00:03',
+        },
+        events: [{
+          event_seq: 1, event_type: 'answer_done', actor_employee_id: 'VE-0001',
+          stage: 'completed', status: 'completed', title: '执行完成', detail: '',
+          knowledge_base_id: null, target_agent_id: null, hit_count: null, payload: {},
+          created_at: '2026-09-29T15:00:03',
+        }],
+        artifacts: [artifact],
+      }],
+      // 产物内容走纯文本响应
+      '/api/v1/conversations/CONV-1/artifacts/ART-1/content': new Response(
+        '# 核对表\n\n企业名称 一致 12 项', { status: 200, headers: { 'Content-Type': 'text/markdown' } }),
+      '/api/v1/conversations/CONV-1': conv1,
+    });
+    renderPage();
+    fireEvent.click(await screen.findByText('新员工入职助手'));
+
+    // 卡片：模型答复里只写「已保存至 /workspace/...」，这里必须给出可点的入口
+    expect(await screen.findByText('核对表.md')).toBeInTheDocument();
+    expect(screen.getByText(/核对表 · 4\.0 KB/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '下载 核对表.md' }))
+      .toHaveAttribute('href', expect.stringContaining('/artifacts/ART-1/content?download=1'));
+
+    fireEvent.click(screen.getByRole('button', { name: '预览 核对表.md' }));
+    expect(await screen.findByText(/企业名称 一致 12 项/)).toBeInTheDocument();
   });
 
   it('按消息正文搜索：命中片段 → 点击 → 打开会话并高亮那条消息', async () => {

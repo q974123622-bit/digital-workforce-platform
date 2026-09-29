@@ -134,6 +134,45 @@ def test_admin_revocation_propagates_to_every_consumer(client, db_session):
     assert item["status"] == "unauthorized" and item["authorized"] is False
 
 
+def test_binding_change_triggers_skill_deploy(client, db_session, monkeypatch):
+    """管理员改绑技能后必须触发投放。
+
+    岗位员工（AI-AUDIT 这类）的容器由 compose 预建，员工侧 enable 只允许绑自己的分身，
+    `ensure_container` 也不补投 —— 所以「管理员绑定成功」是它们唯一的投放时机。
+    少了这一步，技能绑上了、容器里却永远没有，模型看不到工具也拿不到红线。
+    """
+    from app.services import runtime_manager
+
+    calls = []
+    monkeypatch.setattr(
+        runtime_manager, "deploy_skills",
+        lambda db, employee_id: calls.append(employee_id) or {
+            "deployed": [], "skipped": [], "removed": [], "failed": []})
+
+    _login(client, "E10281")
+    plugin_id = _submit_skill(client, scope="shared").json()["plugin_id"]
+
+    _login(client, "admin")
+    created = client.post("/api/v1/admin/agent-plugin-bindings",
+                          json={"plugin_id": plugin_id, "target_agent_id": "AI-AUDIT"})
+    assert created.status_code == 201, created.text
+    assert calls == ["AI-AUDIT"], calls
+
+    # 改绑到另一个岗位员工：新员工要拿到包，旧员工要回收
+    calls.clear()
+    moved = client.put(f"/api/v1/admin/agent-plugin-bindings/{created.json()['id']}",
+                       json={"target_agent_id": "AI-GENERAL"})
+    assert moved.status_code == 200, moved.text
+    assert sorted(calls) == ["AI-AUDIT", "AI-GENERAL"], calls
+
+    # 分身也有自己的 harness 容器，同样要投放
+    calls.clear()
+    twin = client.post("/api/v1/admin/agent-plugin-bindings",
+                       json={"plugin_id": plugin_id, "target_agent_id": "DT-E20999"})
+    assert twin.status_code == 201, twin.text
+    assert calls == ["DT-E20999"], calls
+
+
 def test_available_and_effective_are_mutually_exclusive(client, db_session):
     _login(client, "E10281")
     plugin_id = _submit_skill(client).json()["plugin_id"]

@@ -22,7 +22,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .. import models
-from . import attachments, execution_events
+from . import attachment_preview, attachments, execution_events, run_outputs
 
 
 def _collect_attachment_ids(db: Session, conversation_id: str) -> list[str]:
@@ -87,6 +87,27 @@ def _remove_disk_files(conversation_id: str, owner_human_no: str, storage_paths:
         pass
 
 
+def _remove_thumbs(attachment_ids: list[str]) -> None:
+    """删除这些附件的缩略图缓存目录（``_thumbs/<attachment_id>/``）。
+
+    缩略图放在独立根目录（见 ``attachment_preview``），不在附件目录内，所以要单独清；
+    否则会残留孤儿文件。失败仅静默，最坏只多占一点磁盘。
+    """
+    if not attachment_ids:
+        return
+    try:
+        root = (attachments.attachment_root() / attachment_preview.THUMB_DIRNAME).resolve()
+    except Exception:  # noqa: BLE001 - 目录不可用时静默跳过
+        return
+    for attachment_id in attachment_ids:
+        try:
+            target = (root / attachment_id).resolve()
+            if target != root and root in target.parents and target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+        except Exception:  # noqa: BLE001 - 单个失败不影响其余清理
+            continue
+
+
 def purge_conversation_content(db: Session, conv: models.Conversation) -> None:
     """物理清除会话全部内容，保留 conversation 行并自增 generation。"""
     conversation_id = conv.id
@@ -121,6 +142,9 @@ def purge_conversation_content(db: Session, conv: models.Conversation) -> None:
         models.AgentExecution.conversation_id == conversation_id,
     ))
 
+    # 4b. AI员工产物快照（核对表等）：行 + 磁盘文件。文件清理失败只残留孤儿文件。
+    run_outputs.delete_for_conversation(db, conversation_id)
+
     # 5. 消息、协作任务、会话记忆摘要。
     db.execute(delete(models.ConversationMessage).where(
         models.ConversationMessage.conversation_id == conversation_id,
@@ -140,3 +164,6 @@ def purge_conversation_content(db: Session, conv: models.Conversation) -> None:
 
     # 7. 磁盘文件在 DB 提交之后清理，失败仅残留孤儿文件。
     _remove_disk_files(conversation_id, owner_human_no, storage_paths)
+
+    # 8. 缩略图缓存在独立根目录，单独清（不在附件目录内，_remove_disk_files 覆盖不到）。
+    _remove_thumbs(attachment_ids)

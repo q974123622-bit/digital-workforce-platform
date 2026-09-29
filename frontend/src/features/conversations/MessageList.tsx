@@ -9,6 +9,7 @@ import type { KnowledgeSourceFallback } from '../knowledge/CitationList';
 import AgentAvatar from '../../components/ui/AgentAvatar';
 import { EMPLOYEE_TYPE_LABEL } from '../../components/tags';
 import { copyText } from '../../utils/clipboard';
+import { attachmentThumbnailUrl, previewKindOf } from './attachmentPreview';
 
 /**
  * 消息列表：单独滚动、自动滚动仅在贴近底部时跟随，上滚后显示「回到底部」。
@@ -24,6 +25,7 @@ export default function MessageList({
   onOpenProfile,
   attachmentOf,
   onOpenAttachment,
+  onPreviewAttachment,
   knowledgeFallbackOf,
   editableSeq = null,
   editingSeq = null,
@@ -49,6 +51,11 @@ export default function MessageList({
   onOpenProfile: (employeeNo: string) => void;
   attachmentOf: (attachmentId: string) => ConversationAttachment | undefined;
   onOpenAttachment: (attachmentId: string) => void;
+  /**
+   * 点击图片/PDF 缩略图时打开预览灯箱。未传时回落到 `onOpenAttachment`，
+   * 保证既有调用方与测试零改动。
+   */
+  onPreviewAttachment?: (attachmentId: string) => void;
   /**
    * 本轮执行事件里的知识检索来源（含委派）：工具卡片缺失时兜底，
    * 保证「只要本轮查过知识库就一定有来源展示」。
@@ -82,6 +89,8 @@ export default function MessageList({
   // 「已复制」原地回显：只可能同时存在一条，用消息 id 记录当前回显项。
   const [copiedMsgId, setCopiedMsgId] = useState<number | null>(null);
   const copyTimer = useRef<number | null>(null);
+  // 缩略图加载失败（文件缺失/损坏）的附件：退回原来的「图标 + 文件名」卡片，不整块崩。
+  const [failedThumbs, setFailedThumbs] = useState<string[]>([]);
 
   useEffect(() => () => {
     if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
@@ -184,6 +193,31 @@ export default function MessageList({
                     <div className={`mb-2 flex flex-wrap gap-2 ${mine ? 'justify-end' : 'justify-start'}`}>
                       {(msg.attachment_ids ?? []).map((attachmentId) => {
                         const attachment = attachmentOf(attachmentId);
+                        const thumbable = Boolean(attachment)
+                          && previewKindOf(attachment) !== 'none'
+                          && !failedThumbs.includes(attachmentId);
+                        if (thumbable && attachment) {
+                          return (
+                            <button
+                              key={attachmentId}
+                              type="button"
+                              title={attachment.filename}
+                              aria-label={`预览 ${attachment.filename}`}
+                              className="h-[72px] w-[72px] shrink-0 overflow-hidden rounded-control border border-line bg-surface-subtle transition-colors hover:border-brand"
+                              onClick={() => (onPreviewAttachment ?? onOpenAttachment)(attachmentId)}
+                            >
+                              <img
+                                src={attachmentThumbnailUrl(conversation.id, attachmentId)}
+                                alt={attachment.filename}
+                                loading="lazy"
+                                className="h-full w-full object-cover"
+                                onError={() => setFailedThumbs((current) => (
+                                  current.includes(attachmentId) ? current : [...current, attachmentId]
+                                ))}
+                              />
+                            </button>
+                          );
+                        }
                         return (
                           <button
                             key={attachmentId}

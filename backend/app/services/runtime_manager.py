@@ -72,6 +72,17 @@ def skills_root(employee_id: str) -> Path:
     return Path(workspace_ref(employee_id)) / "workspace" / SKILLS_DIRNAME
 
 
+MATERIALS_DIRNAME = "materials"
+
+
+def materials_root(employee_id: str) -> Path:
+    """容器内 ``/workspace/materials`` 对应的宿主/backend 侧目录。
+
+    与 skills 同一个 bind mount：写这个目录就等于写进容器的 /workspace，不需要 docker exec。
+    """
+    return Path(workspace_ref(employee_id)) / "workspace" / MATERIALS_DIRNAME
+
+
 def _load_deploy_manifest(root: Path) -> dict[str, str]:
     path = root / _DEPLOY_MANIFEST
     try:

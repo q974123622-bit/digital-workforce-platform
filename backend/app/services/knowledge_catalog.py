@@ -174,6 +174,9 @@ GRANT_SPECS: dict[str, list[str]] = {
     "AI-RESEARCH": ["KB-RESEARCH-INSTITUTE", "KB-WEALTH"],
     "AI-FUND": ["KB-FINANCIAL-PRODUCT", "KB-INSTITUTIONAL"],
     "AI-XYZQ": ["KB-HR", "KB-FINANCE", "KB-OPS", "KB-AUDIT", "KB-PROCUREMENT", "KB-AI-INNOVATION"],
+    # AI-审核 不分配知识库：审核规则在技能包里，口径是「按材料核」不是「按资料答」。
+    # 空集合天然满足「任意两个 AI 员工集合两两不相交」的独占约束。
+    "AI-AUDIT": [],
     "DT-E10281": [],
     "DT-E20999": [],
 }

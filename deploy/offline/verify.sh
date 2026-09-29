@@ -2,7 +2,7 @@
 # dwp AI员工平台 —— 基础自检
 #
 # 用法:
-#   ./verify.sh            基础自检（compose 配置 / 后端 / 前端 / 7 个 harness 的 runtime+profile
+#   ./verify.sh            基础自检（compose 配置 / 后端 / 前端 / 全部 harness 的 runtime+profile
 #                          + harness 的 python3 与 /workspace 可写 + SkillHub 目录可达）
 #   ./verify.sh --deep     额外在每个 harness 容器内合成配置树并跑契约校验（较慢）
 set -Eeuo pipefail

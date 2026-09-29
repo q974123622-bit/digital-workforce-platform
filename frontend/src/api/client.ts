@@ -335,6 +335,21 @@ export const api = {
       method: 'POST', body: form,
     });
   },
+  uploadConversationAttachmentPack: (conversationId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<ConversationAttachment[]>(`/conversations/${encodeURIComponent(conversationId)}/attachments/pack`, {
+      method: 'POST', body: form,
+    });
+  },
+  /** 一批文件直接上传（不打包）：与 zip 通道落库/物化完全同路，只是不用先自己压包 */
+  uploadConversationAttachmentPackFiles: (conversationId: string, files: File[]) => {
+    const form = new FormData();
+    for (const file of files) form.append('files', file);
+    return request<ConversationAttachment[]>(`/conversations/${encodeURIComponent(conversationId)}/attachments/pack/files`, {
+      method: 'POST', body: form,
+    });
+  },
   listConversationAttachments: (conversationId: string) =>
     request<ConversationAttachment[]>(`/conversations/${encodeURIComponent(conversationId)}/attachments`),
   getConversationAttachment: (conversationId: string, attachmentId: string) =>

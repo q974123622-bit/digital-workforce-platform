@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -12,7 +13,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
-from . import attachments as attachment_service, config, execution_events, runtime_manager
+from . import (
+    attachments as attachment_service,
+    config,
+    execution_events,
+    run_outputs,
+    runtime_manager,
+    workspace_readback,
+)
 from .chat import ChatResult, ToolCard, knowledge_citation, knowledge_display_name
 from .harness_token import issue_token
 from .identity import resolve_identity
@@ -55,6 +63,13 @@ SKILL_ROUTE_KEYWORDS: dict[str, list[str]] = {
     "财富报告": ["财富报告", "资产报告", "持仓报告"],
     "投顾内容": ["投顾", "观点", "文案", "营销", "选题"],
     "数据可视化": ["图表", "可视化", "画图", "数据图", "长图"],
+    # 审核类技能：命中「材料/开户/核对」这类词时只做弱提示，核对范围仍由模型自己规划
+    # 用户的口语常常一个业务词都没有（「审核一下这些材料」「信息是否准确」），
+    # 所以除了业务词还要收裸词；真正的兜底是下面「有附件 + 只有一个技能」那条分支。
+    "机构开户材料交叉核对": ["开户材料", "材料核对", "材料审核", "开户审核", "机构开户",
+                            "营业执照", "开户资料",
+                            "审核", "核对", "材料是否准确", "信息是否准确",
+                            "是否一致", "是否出错", "材料信息"],
     # 内部 Skill（真人分身沉淀的个人 SOP）
     "报销制度速答": ["报销", "差旅", "住宿", "出差", "发票"],
     "券商术语速查": ["融资融券", "期权", "科创板", "术语"],
@@ -91,6 +106,10 @@ def _route_skill_content(
         if score > best_score:
             best, best_score = skill, score
     if best is None or best_score <= 0:
+        # 兜底：有附件且该员工只有一个技能时直接注入 —— 只有一个技能就没有「选错技能」
+        # 的风险，而用户口语（「审核一下这些材料」）经常一个关键词都命中不到。
+        if attachment_catalog and len(skills) == 1:
+            return {**skills[0], "score": 0, "reason": "sole_skill_with_attachment"}
         return None
     return {**best, "score": best_score}
 
@@ -124,7 +143,7 @@ def _prompt(
     message: str, history: list[dict], knowledge: list[dict], depth: int,
     plugins: list[dict], routed_skill: dict | None = None,
     attachments: list[dict] | None = None, parent_goal: str = "",
-    skills: list[dict] | None = None,
+    skills: list[dict] | None = None, materials: dict | None = None,
 ) -> str:
     can_delegate = profile.identity_kind == "human_twin" and depth == 0
     # 知识库目录带上领域与分级：信息越少越容易选错库。
@@ -149,6 +168,19 @@ def _prompt(
         f"{transcript}\n\n"
         if transcript else ""
     )
+    # 材料清单直给：物化发生在构造 prompt 之前，代号 / 来源文件 / 提示业务号 / 转写行数
+    # 服务端都已经算出来了，塞进信封模型就不必先跑一次 inspect 或 ls 清点 ——
+    # 每省一次往返就省一次完整模型调用 + 全量上下文回灌。给信息，不是定流程。
+    material_block = None
+    if materials and materials.get("materials"):
+        material_block = {
+            "pack_id": materials.get("pack_id"),
+            "layout": materials.get("layout") or "flat",
+            "count": materials.get("materials"),
+            "hint_note": ("hint_business_no 仅由文件名/目录名推测，仅供参考，可能与实际业务不符；"
+                          "哪些材料属于同一笔业务请按材料内容自行判断。"),
+            "catalog": materials.get("catalog") or [],
+        }
     envelope = {
         "identity": {
             "employee_id": employee.employee_no,
@@ -170,6 +202,8 @@ def _prompt(
             "delegate_only_to_role_employee": True,
         },
     }
+    if material_block:
+        envelope["materials"] = material_block
     if parent_goal:
         # 被委派方需要原始任务背景，否则只能看到一句被转述的问题，多跳语义会衰减。
         envelope["parent_task"] = parent_goal
@@ -198,24 +232,70 @@ def _prompt(
             envelope["task_playbook"]["sop_truncated"] = True
         if routed_skill.get("package_dir"):
             envelope["task_playbook"]["package_dir"] = routed_skill["package_dir"]
+        # 技能说明给的是「目标 + 铁律 + 工具清单」，不是流水线：核什么、按什么顺序核、
+        # 要不要深挖由模型按实际材料决定。这里刻意不写「按 SOP 执行、不要偏离」，
+        # 那会把自主规划压回固定流程，技能包里的参考路径也只是参考。
         if routed_skill.get("score", 0) >= 2:
             playbook_lead = (
-                f"本任务已匹配技能「{routed_skill['name']}」，其完整 SOP 见 TASK_ENVELOPE.task_playbook.sop，"
-                "请按其步骤、工具编排与输出规范执行，不要偏离 SOP 自行发挥。"
+                f"本任务已匹配技能「{routed_skill['name']}」，其完整说明见 TASK_ENVELOPE.task_playbook.sop。"
+                "这份说明给的是目标、合规铁律与可用工具；**具体怎么做、先看哪份材料、按什么顺序、"
+                "发现异常往哪追，由你按实际情况自行规划**。说明里标注为「参考路径」的部分仅供参考，"
+                "不必照搬；但铁律（只提示不决策、不猜、判定走脚本、敏感信息不外发）必须遵守。"
             )
         else:
             playbook_lead = (
-                f"本任务可能匹配技能「{routed_skill['name']}」（仅弱关键词命中），其 SOP 见 "
-                "TASK_ENVELOPE.task_playbook.sop；仅当它与用户问题确实相关时才参考其步骤，"
-                "若无关请忽略该 SOP，直接按问题本身作答。"
+                f"本任务可能匹配技能「{routed_skill['name']}」（仅弱关键词命中），其说明见 "
+                "TASK_ENVELOPE.task_playbook.sop；仅当它与用户问题确实相关时才参考，"
+                "若无关请忽略，直接按问题本身作答。"
             )
     else:
         playbook_lead = ""
-    attachment_lead = (
-        "本任务包含会话附件。先调用 list_attachments 查看目录，再按需使用 search_attachment、"
-        "read_attachment 或 read_spreadsheet_range；不得假装已经读取，也不要要求用户把全文粘贴进消息。"
-        if attachments else ""
-    )
+    # 材料包附件已物化到 /workspace：图片与扫描页在上传阶段就转成了文本，
+    # 这里要明确告诉模型「去哪里读、材料类型要自己判」，否则它会去调 read_attachment 逐个翻。
+    pack_items = [item for item in (attachments or []) if item.get("pack_id")]
+    materials_ready = bool(pack_items and (materials or {}).get("materials"))
+    if materials_ready:
+        # 已物化就别再让它逐个翻附件：每多一次往返就是一次完整模型调用 + 全量上下文回灌。
+        attachment_lead = (
+            "本任务包含会话附件，附件已在上传阶段完成转写并物化到工作区（见下文），"
+            "**不要再调用 list_attachments / read_attachment 逐个翻附件**。"
+        )
+    else:
+        attachment_lead = (
+            "本任务包含会话附件。先调用 list_attachments 查看目录，再按需使用 search_attachment、"
+            "read_attachment 或 read_spreadsheet_range；不得假装已经读取，也不要要求用户把全文粘贴进消息。"
+            if attachments else ""
+        )
+    if pack_items:
+        layout = (materials or {}).get("layout") or "flat"
+        where = ("/workspace/materials/<材料包>/（平铺，一层目录）" if layout == "flat"
+                 else "/workspace/materials/<材料包>/<业务号>/")
+        materials_lead = (
+            f"本次上传的是材料包，已物化到容器内 {where}：每份材料一个 JSON，"
+            "事实层是 text_lines（上传阶段已完成转写），materials.json 是材料清单。"
+            "**材料类型没有预设**：技能脚本会按文件名/转写文本先给一个判断并写回材料文件，"
+            "你只需在明显判错时纠正（不要为了判类型逐份读材料）。"
+            "**字段取值也已在物化时自动抽好**（含系统录入侧截图的基准方取值）——"
+            "不要再为「先跑一遍 extract」花往返；发现某份材料抽错了，用技能脚本的 "
+            "extract 子命令针对那一份重抽即可。"
+            "材料清单（材料代号 / 来源文件 / 提示业务号 / 转写行数）已随任务给出，"
+            "见 TASK_ENVELOPE.materials.catalog —— 直接开始核对，不要再花往返去清点目录；"
+            "核对范围与顺序仍由你决定。不要在容器外重复做转写。"
+        )
+        if routed_skill:
+            # 技能脚本的一条式命令就是完整流水线；模型若再逐份读材料、重写比对脚本，
+            # 只是把一轮拖成几十次往返（真机实测 39 次工具调用 / 310 秒）。
+            materials_lead += (
+                "已匹配技能时，技能脚本的一条式命令（见 SKILL.md「参考路径」）本身就是完整流水线："
+                "跑一次即可拿到结论与核对表，**不要逐份读材料 JSON、不要自己重写比对脚本、"
+                "不要重复跑同一个子命令**；产物写到独立输出目录，不要写回材料包目录（会覆盖材料清单）。"
+                "脚本退出码为 0 时，本轮剩下的工作只有「读核对表 + 写答复」；"
+                "核对表默认同时产出 Markdown 与可打印的 HTML 两份，都要留在输出目录"
+                "（平台会把它们一并收成可预览 / 可下载的产物卡片），答复末尾用一句话交代这一点。"
+                "答复控制在 800 字以内 —— 逐条抄表既拖慢这一轮，也没人读得完。"
+            )
+    else:
+        materials_lead = ""
     skill_catalog_lead = (
         "TASK_ENVELOPE.available_skills 列出了你可用的个人技能（只有名称与说明，没有正文）。"
         "先自行判断：其中某项确实与当前任务相关时，调用 load_skill 取回它的完整 SOP 再按其执行；"
@@ -243,12 +323,40 @@ def _prompt(
         "检索知识库必须调用工具目录中名为 search_knowledge 的工具；"
         "knowledge_base_id 参数必须原样复制 authorized_knowledge_bases 中某一项的 id 值，"
         "禁止自行编造、猜测，或用知识库名称代替 id。"
-        + playbook_lead + attachment_lead + skill_catalog_lead + skill_package_lead +
+        + playbook_lead + attachment_lead + materials_lead + skill_catalog_lead + skill_package_lead +
         CITATION_RULES + INPUT_RULES + TONE_RULES +
         conversation_lead +
-        "最终直接给用户一份简洁、可核验的中文答复，不要输出内部思考过程、令牌或配置。\n\nTASK_ENVELOPE:\n"
+        "最终直接给用户一份简洁、可核验的中文答复，不要输出内部思考过程、令牌或配置。"
+        "如果你把产物写进了文件，结论也要在答复正文里给出 —— 用户只看得到答复，"
+        "看不到工作区文件；只写文件不给答复等于没交付。\n\nTASK_ENVELOPE:\n"
         + json.dumps(envelope, ensure_ascii=False)
     )
+
+
+def _format_stage_timing(started: float, prepared: float, harness_done: float) -> tuple[str, str, dict]:
+    """把三段单调时钟差值压成一条轨迹事件的 (title, detail, payload)。
+
+    只记秒数与毫秒数，不落任何材料内容或凭据。材料解析发生在**上传阶段**，
+    不在这一轮里（附件转写完成才允许发起执行），所以这里只量三段：
+    物化 + 构造任务、Harness 执行、答复整理。
+    """
+    now = time.monotonic()
+    plan_ms = int(max(0.0, prepared - started) * 1000)
+    harness_ms = int(max(0.0, harness_done - prepared) * 1000)
+    answer_ms = int(max(0.0, now - harness_done) * 1000)
+    total_ms = int(max(0.0, now - started) * 1000)
+    total_seconds = total_ms / 1000.0
+    if total_seconds >= 60:
+        title = "本轮耗时 %d 分 %d 秒" % (total_seconds // 60, round(total_seconds % 60))
+    else:
+        title = "本轮耗时 %d 秒" % round(total_seconds)
+    detail = ("材料准备 %.1f 秒 · 规划执行 %.1f 秒 · 答复整理 %.1f 秒"
+              % (plan_ms / 1000.0, harness_ms / 1000.0, answer_ms / 1000.0))
+    payload = {
+        "plan_ms": plan_ms, "harness_ms": harness_ms,
+        "answer_ms": answer_ms, "total_ms": total_ms,
+    }
+    return title, detail, payload
 
 
 def run_agent(
@@ -264,6 +372,8 @@ def run_agent(
     conversation_id: str = "",
     slot_wait_seconds: int = 0,
 ) -> ChatResult:
+    # 分段打点的起点：从这里到「任务构造完成」= 材料准备段。
+    stage_started = time.monotonic()
     employee = db.get(models.DigitalEmployee, employee_id)
     profile = db.get(models.AgentProfile, employee_id)
     subject = resolve_identity(db, employee_id)
@@ -285,21 +395,48 @@ def run_agent(
     plugins = effective_plugins(db, employee_id, requester_human_no)
     skills = effective_skills(db, employee_id)
     attachment_catalog = attachment_service.attachment_catalog(db, task_trace)
+    # 材料包：把每份材料的转写文本物化进目标员工的 /workspace/materials/<包>/<业务号>/。
+    # 物化放在发起执行时（不是上传时）：上传时还不知道目标员工是谁，而 workspace 是按员工分的。
+    # 有附件就物化（不限材料包）：零散上传的文件同样要进 /workspace/materials，
+    # 否则技能脚本 --materials 无处可指，模型只能回到逐个 read_attachment。
+    materialized: dict = {}
+    if attachment_catalog:
+        try:
+            materialized = attachment_service.materialize_materials(
+                db, employee_id=employee_id, trace_id=task_trace)
+        except (OSError, ValueError) as exc:  # noqa: BLE001 - 物化失败不阻断执行，让模型按附件工具走
+            materialized = {}
+            logger.warning("材料物化失败 employee=%s trace=%s: %s", employee_id, task_trace, exc)
+        if execution is not None and materialized.get("materials"):
+            extracted = sum(item.get("extracted") or 0
+                            for report in (materialized.get("extraction") or {}).values()
+                            for item in (report.get("by_material") or {}).values())
+            detail = ("提示业务号：%s；材料已平铺到 /workspace/materials（分笔由 AI 员工判断）"
+                      % "、".join(materialized.get("businesses") or []))
+            if extracted:
+                detail += "；已自动抽取 %d 个字段取值（含系统录入侧基准方）" % extracted
+            execution_events.emit(
+                db, execution.id, event_type="materials_ready", stage="harness_started",
+                status="running", actor_employee_id=employee_id,
+                title="材料已就绪 %d 份" % materialized["materials"],
+                detail=detail,
+            )
     routed_skill = _route_skill_content(db, employee_id, message, attachment_catalog, skills)
     if routed_skill is not None and execution is not None:
-        # 前置路由命中：在轨迹中显式记录技能来源，保证可审计（SOP 已注入任务上下文）。
+        # 前置路由命中：在轨迹中显式记录技能来源，保证可审计（说明已注入任务上下文）。
         execution_events.emit(
             db, execution.id, event_type="skill_routed", stage="harness_started",
             status="running", actor_employee_id=employee_id,
             title=f"已匹配技能「{routed_skill['name']}」",
-            detail="SOP 已注入任务上下文，正在按其步骤与工具编排执行",
+            detail="技能说明已注入任务上下文，核对范围与顺序由 AI 员工自行规划",
         )
     task = _prompt(
         employee=employee, profile=profile, requester=requester_human_no,
         message=message, history=history or [], knowledge=knowledge, depth=depth,
         plugins=plugins, routed_skill=routed_skill, attachments=attachment_catalog,
-        parent_goal=parent_goal, skills=skills,
+        parent_goal=parent_goal, skills=skills, materials=materialized,
     )
+    stage_prepared = time.monotonic()
     # Harness 主链路不经过 llm.py，SAFEMODE 必须在这里显式兜一次：
     # prompt 会作为命令行参数交给容器内 dsh，来源与凭据都不能失控。
     try:
@@ -347,6 +484,8 @@ def run_agent(
         )
     try:
         runtime_manager.mark_busy(db, employee_id)
+        # 记下发起时刻：读回兜底只认这之后动过的文件，避免把上一轮的旧表当成本轮结论。
+        started_at = workspace_readback.run_started_at()
         result = DockerHarnessRuntimeAdapter(timeout=timeout).run(
             employee_id=employee_id,
             task_prompt=task,
@@ -354,7 +493,15 @@ def run_agent(
             tool_token=token,
             tool_base_url=base_url,
         )
-        if not result.ok:
+        stage_harness_done = time.monotonic()
+        answer = (result.result or "").strip()
+        if result.empty_output:
+            # `empty_output` 时 result 里放的是占位诊断文案（"Harness 未返回内容"），
+            # 它不是答复：清掉才会走到下面的读回兜底。
+            answer = ""
+        # 只有「跑完了但没输出」才读回兜底（empty_output）：容器起不来、密钥缺失这类
+        # 真失败不兜底，照旧把原因抛给用户。
+        if not result.ok and not result.empty_output:
             # Harness 失败详情默认会被折叠成一句通用提示；这里补一条服务端日志，
             # 否则排障时只能看到 503 而拿不到 dsh 的原始输出（容器内 stdout/stderr 不会外泄到前端）。
             logger.warning(
@@ -366,13 +513,73 @@ def run_agent(
                 status_code=503,
                 detail={"message": result.result or "Harness 执行失败", "retryable": True},
             )
+        # 没拿到答复时读回工作区产物：模型可能把预算花在工具调用上、或者进程被终止，
+        # 但它在 /workspace 里写出的核对表是产物，读回来比报「没有内容」有用。
+        if not answer:
+            artifacts = workspace_readback.collect(employee_id, since=started_at)
+            readback = workspace_readback.render_artifacts(
+                artifacts, reason="进程没有输出" if result.empty_output else "")
+            if readback:
+                answer = readback
+                logger.warning(
+                    "harness returned no answer, read back workspace artifacts "
+                    "employee=%s trace=%s files=%s",
+                    employee_id, task_trace, [item["name"] for item in artifacts],
+                )
+                if execution is not None:
+                    execution_events.emit(
+                        db, execution.id, event_type="answer_from_workspace",
+                        stage="answer_preparing", status="running",
+                        actor_employee_id=employee_id,
+                        title="未收到最终答复，已读回工作区产物",
+                        detail=workspace_readback.summarize(artifacts),
+                    )
+        if not answer:
+            detail_text = result.result or "Harness 未返回内容，工作区也没有可读回的产物"
+            logger.warning(
+                "harness execution failed employee=%s trace=%s mode=%s detail=%s",
+                employee_id, task_trace, result.mode, detail_text[:1000],
+            )
+            runtime_manager.mark_ready(db, employee_id, detail_text)
+            raise HTTPException(
+                status_code=503,
+                detail={"message": detail_text, "retryable": True},
+            )
         runtime_manager.mark_ready(db, employee_id)
         if execution is not None:
+            # 快照本轮工作区产物（核对表等）。模型在答复里只会写「已保存至
+            # /workspace/output/核对表.md」，用户看不到也拿不到那个文件 ——
+            # 快照下来 + 一条带 payload 的事件，前端就能渲染成可预览/可下载的卡片。
+            # 失败不影响执行链路（答复照常返回，只是少一个下载入口）。
+            try:
+                artifacts = run_outputs.snapshot_run(
+                    db, execution, employee_id, since=started_at)
+            except Exception as exc:  # noqa: BLE001
+                artifacts = []
+                logger.warning("产物快照失败 employee=%s trace=%s: %s",
+                               employee_id, task_trace, exc)
+            if artifacts:
+                execution_events.emit(
+                    db, execution.id, event_type="artifact", stage="answer_preparing",
+                    status="running", actor_employee_id=employee_id,
+                    title="已生成 %d 份产物" % len(artifacts),
+                    detail="、".join(item.filename for item in artifacts[:3]),
+                    payload={"artifacts": [run_outputs.payload(item) for item in artifacts]},
+                )
             execution_events.emit(
                 db, execution.id, event_type="progress", stage="answer_preparing",
                 status="running", actor_employee_id=employee_id,
                 title="资料已整理，准备生成答复",
                 detail="正在核对执行结果并整理为可读答案",
+            )
+            # 分段耗时小结：带 title 的新事件会被前端自动渲染成轨迹里的一步，
+            # 无需改前端结构。只记秒数，不落任何材料内容。
+            timing_title, timing_detail, timing_payload = _format_stage_timing(
+                stage_started, stage_prepared, stage_harness_done)
+            execution_events.emit(
+                db, execution.id, event_type="stage_timing", stage="answer_preparing",
+                status="running", actor_employee_id=employee_id,
+                title=timing_title, detail=timing_detail, payload=timing_payload,
             )
     finally:
         employee_lock.release()
@@ -446,5 +653,6 @@ def run_agent(
         )
     return ChatResult(
         session_id=f"H-{task_trace}", trace_id=task_trace,
-        message=result.result, tool_cards=cards,
+        # 用 answer 而不是 result.result：没拿到答复时 answer 已被读回的工作区产物替换
+        message=answer, tool_cards=cards,
     )

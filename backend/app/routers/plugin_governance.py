@@ -657,6 +657,24 @@ def list_bindings(_: models.Account = Depends(admin_required), db: Session = Dep
         models.AgentPluginBinding.target_agent_id, models.AgentPluginBinding.priority)).all()]
 
 
+def _deploy_skills_after_binding(db: Session, *targets: str) -> None:
+    """管理员改绑后立刻投放技能。
+
+    少了这一步，绑给「容器由 compose 预建」的 AI 员工（岗位员工）的技能永远投不进去：
+    员工侧 enable 只允许绑自己的分身，岗位员工没有那个入口，`ensure_container` 也不补投。
+    投放本身是幂等且尽力而为的，失败只记日志。
+    """
+    from ..services import employee_registry, runtime_manager
+
+    for target in {t for t in targets if t}:
+        if not employee_registry.is_harness_employee(target):
+            continue
+        try:
+            runtime_manager.deploy_skills(db, target)
+        except Exception as exc:  # noqa: BLE001 - 投放失败不阻断绑定
+            logger.warning("技能包投放触发失败 target=%s: %s", target, exc)
+
+
 @admin_router.post("/agent-plugin-bindings", status_code=201)
 def create_binding(payload: BindingIn, account=Depends(admin_required), db=Depends(get_db)):
     if not db.get(models.Plugin, payload.plugin_id) or not db.get(models.DigitalEmployee, payload.target_agent_id):
@@ -673,6 +691,7 @@ def create_binding(payload: BindingIn, account=Depends(admin_required), db=Depen
     row = models.AgentPluginBinding(**payload.model_dump(), authorized_by=account.username,
                                     employee_enabled=True)
     db.add(row); db.commit(); db.refresh(row)
+    _deploy_skills_after_binding(db, row.target_agent_id)
     return _binding_out(row)
 
 
@@ -700,10 +719,13 @@ def update_binding(binding_id: int, payload: BindingPatchIn, account=Depends(adm
         _validate_personal_binding(db, next_plugin, next_target)
     if "pinned_version" in changes:
         _validate_pinned_version(db, next_plugin, changes["pinned_version"])
+    previous_target = row.target_agent_id
     for key, value in changes.items():
         setattr(row, key, value)
     row.authorized_by = account.username
     db.commit(); db.refresh(row)
+    # 改绑到别的员工时两边都要重投：新员工要拿到包，旧员工要回收掉
+    _deploy_skills_after_binding(db, previous_target, row.target_agent_id)
     return _binding_out(row)
 
 

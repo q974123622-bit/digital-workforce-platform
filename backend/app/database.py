@@ -140,6 +140,12 @@ def ensure_schema_compatibility() -> None:
         "skillhub_import": {
             "batch_id": "VARCHAR",
         },
+        # 材料包：同一 zip 上传的附件共享 pack_id，business_no 决定物化目录名。
+        # 老库不会自动加列（create_all 只管新表），漏了这里启动即报错。
+        "conversation_attachment": {
+            "pack_id": "VARCHAR",
+            "business_no": "VARCHAR",
+        },
     }
     with engine.begin() as connection:
         for table_name, columns in additions.items():

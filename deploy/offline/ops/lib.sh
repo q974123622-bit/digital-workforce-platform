@@ -24,8 +24,10 @@ PROFILE_MOUNT="/opt/dwp/profile"
 CONTAINER_PATH="/opt/dsh-runtime/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 DSH_PROFILE_NAME="dwp-knowledge-agent-v2"
 
-# 7 个AI员工（与 compose.yaml 服务名一一对应）
-DWP_EMPLOYEE_IDS=(AI-GENERAL AI-INVESTMENT AI-RESEARCH AI-FUND AI-XYZQ DT-E10281 DT-E20999)
+# AI员工白名单唯一来源（与 compose.yaml 服务名一一对应）。
+# Python 侧对应 backend/app/services/employee_registry.py；两边必须一致，
+# backend/tests/test_employee_registry.py 会断言 compose 服务名与本数组一一对应。
+DWP_EMPLOYEE_IDS=(AI-GENERAL AI-INVESTMENT AI-RESEARCH AI-FUND AI-XYZQ AI-AUDIT DT-E10281 DT-E20999)
 
 ok()   { printf '  [ OK ] %s\n' "$*"; }
 info() { printf '  [INFO] %s\n' "$*"; }

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class GrantOut(BaseModel):
@@ -611,7 +611,20 @@ class ConversationAttachmentOut(BaseModel):
     sheet_count: int | None = None
     chunk_count: int = 0
     message_seq: int | None = None
+    pack_id: str | None = None
+    business_no: str | None = None
     created_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def preview_kind(self) -> str:
+        """可预览类型：``"image"`` / ``"pdf"`` / ``"none"``（全链路唯一判定来源）。
+
+        惰性 import 服务层，避免 ``schemas`` 与 ``services`` 的循环依赖。
+        """
+        from .services.attachment_preview import preview_kind
+
+        return preview_kind(self.file_type)
 
 
 class AgentExecutionOut(BaseModel):
@@ -657,9 +670,28 @@ class AgentExecutionEventOut(BaseModel):
     created_at: datetime
 
 
+class ExecutionArtifactOut(BaseModel):
+    """AI员工本轮在工作区写下的产物（核对表等），前端据此渲染预览/下载卡片。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    artifact_id: str = Field(validation_alias="id")
+    execution_id: str
+    # 工作区内的相对路径（output/核对表.md），与模型答复里的路径对得上
+    name: str
+    filename: str
+    # 可预览类型：markdown | html | csv | text —— 前端只读这个字段
+    kind: str
+    mime_type: str
+    size: int
+    created_at: datetime
+
+
 class AgentExecutionDetailOut(BaseModel):
     execution: AgentExecutionOut
     events: list[AgentExecutionEventOut] = Field(default_factory=list)
+    # 本轮产物随执行一起返回：前端按 execution 归属渲染，不需要额外请求，也不会挂错消息
+    artifacts: list[ExecutionArtifactOut] = Field(default_factory=list)
 
 
 class ToolInputFieldOut(BaseModel):

@@ -25,6 +25,7 @@ from ..services import (
     conversation_search,
     execution_events,
     mcp_credentials,
+    run_outputs,
     tool_input,
 )
 from ..services.gateway import write_audit
@@ -1100,7 +1101,9 @@ def get_latest_conversation_run(
             models.AgentExecutionEvent.execution_id == execution.id,
         ).order_by(models.AgentExecutionEvent.event_seq)
     ).all()
-    return schemas.AgentExecutionDetailOut(execution=execution, events=events)
+    artifacts = run_outputs.grouped_by_execution(db, [execution.id]).get(execution.id, [])
+    return schemas.AgentExecutionDetailOut(execution=execution, events=events,
+                                          artifacts=artifacts)
 
 
 @conversations_router.get("/{conversation_id}/runs/history", response_model=list[schemas.AgentExecutionDetailOut])
@@ -1146,8 +1149,10 @@ def get_conversation_run_history(
     grouped: dict[str, list[models.AgentExecutionEvent]] = {execution_id: [] for execution_id in execution_ids}
     for event in event_rows:
         grouped[event.execution_id].append(event)
+    artifacts = run_outputs.grouped_by_execution(db, execution_ids)
     return [
-        schemas.AgentExecutionDetailOut(execution=execution, events=grouped[execution.id])
+        schemas.AgentExecutionDetailOut(execution=execution, events=grouped[execution.id],
+                                        artifacts=artifacts.get(execution.id, []))
         for execution in executions
     ]
 

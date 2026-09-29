@@ -148,15 +148,16 @@ def test_harness_prompt_truncates_long_playbook(db_session):
     playbook = _envelope(text)["task_playbook"]
     assert playbook["sop_truncated"] is True
     assert len(playbook["sop"]) < len(routed["content"])
-    # 强命中才要求严格遵循 SOP
-    assert "不要偏离 SOP" in text
+    # 强命中也只是把技能说明前置：核对范围与顺序仍由模型规划，不写「严格遵循 SOP」
+    assert "自行规划" in text
+    assert "不要偏离 SOP" not in text
 
 
 def test_harness_prompt_weak_skill_hit_is_advisory_only(db_session):
     routed = {"name": "基金分析", "content": "步骤一：先取业绩。", "score": 1}
     text = _harness_prompt(db_session, routed_skill=routed)
     assert "仅弱关键词命中" in text
-    assert "不要偏离 SOP" not in text
+    assert "自行规划" not in text
     assert "sop_truncated" not in _envelope(text)["task_playbook"]
 
 

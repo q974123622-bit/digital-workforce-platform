@@ -126,9 +126,10 @@ DWP_MCP_RUNTIME_MODE=mock
 - `dwp-harness-ai-research` 正常；
 - `dwp-harness-ai-fund` 正常；
 - `dwp-harness-ai-xyzq` 正常；
+- `dwp-harness-ai-audit` 正常；
 - `dwp-harness-dt-e10281` 正常；
 - `dwp-harness-dt-e20999` 正常；
-- 七个 Harness 都加载 `dwp-knowledge-agent-v2` Profile。
+- 八个 Harness 都加载 `dwp-knowledge-agent-v2` Profile。
 
 页面测试：
 

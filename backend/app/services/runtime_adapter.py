@@ -22,6 +22,10 @@ class RuntimeResult:
     mode: str  # harness | demo
     ok: bool
     result: str = ""
+    # dsh 跑完了但 stdout 是空的（模型把预算花在工具调用上、或进程被终止）。
+    # 这种情况可以读回工作区产物兜底，所以要和「容器起不来」区分开，
+    # 不能只靠 result 里的中文文案判断。
+    empty_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -184,6 +188,11 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
                     "DEEPSEEK_MODEL": config.get("DEEPSEEK_MODEL", "deepseek-v4-flash") or "deepseek-v4-flash",
                     "DWP_AGENT_TOOL_TOKEN": tool_token,
                     "DWP_PLATFORM_TOOL_URL": f"{tool_base_url.rstrip('/')}/internal/agent-tools/mcp",
+                    # 技能脚本上报执行轨迹的通道：dsh 只外露最终答复，容器内动作靠脚本主动上报。
+                    # 注意：容器内进程拿环境变量只有这一条路（docker exec 不继承 entrypoint 的 export），
+                    # 新增上报地址必须加在这里，否则脚本上报在真机上静默失效。
+                    "DWP_EXECUTION_EVENT_URL": f"{tool_base_url.rstrip('/')}/internal/execution/events",
+                    "DWP_TRACE_ID": trace_id,
                 },
                 workdir="/workspace",
                 timeout=self.timeout,
@@ -200,5 +209,6 @@ class DockerHarnessRuntimeAdapter(RuntimeAdapter):
             return RuntimeResult(mode="harness", ok=False, result=detail)
         output = proc.stdout.strip()
         if not output:
-            return RuntimeResult(mode="harness", ok=False, result="Harness 未返回内容")
+            return RuntimeResult(mode="harness", ok=False, result="Harness 未返回内容",
+                                 empty_output=True)
         return RuntimeResult(mode="harness", ok=True, result=output)

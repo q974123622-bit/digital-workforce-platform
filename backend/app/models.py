@@ -419,6 +419,9 @@ class ConversationAttachment(Base):
     page_count: Mapped[int | None] = mapped_column(nullable=True)
     sheet_count: Mapped[int | None] = mapped_column(nullable=True)
     chunk_count: Mapped[int] = mapped_column(default=0)
+    # 材料包：同一 zip 上传的附件共享 pack_id，business_no 是包内业务号（物化目录名）
+    pack_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    business_no: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     deleted: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
@@ -547,6 +550,36 @@ class AgentExecutionEvent(Base):
     target_agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
     hit_count: Mapped[int | None] = mapped_column(nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class ExecutionArtifact(Base):
+    """AI员工在 /workspace 里产出的文件（核对表、导出数据等）的快照。
+
+    为什么要快照而不是按需读工作区：工作区是按**员工**共享的
+    （``harness/<EMP>/workspace`` 绑定到容器 ``/workspace``），同一个 AI 员工跑第二次
+    审计会把 ``output/核对表.md`` 覆盖掉。若按需实时读，用户在旧会话里点「预览」
+    看到的会是新一轮的内容 —— 对审计场景这是结论错位，比看不到更糟。
+    所以每轮执行结束时把产物复制到 ``DWP_RUN_OUTPUT_ROOT`` 下，之后只读快照。
+    """
+
+    __tablename__ = "execution_artifact"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    execution_id: Mapped[str] = mapped_column(String, index=True)
+    conversation_id: Mapped[str] = mapped_column(String, index=True)
+    employee_id: Mapped[str] = mapped_column(String, default="")
+    # 工作区内的相对路径（output/核对表.md）——展示时保留，便于对上模型的答复
+    name: Mapped[str] = mapped_column(String)
+    # 展示与下载用的文件名（核对表.md）
+    filename: Mapped[str] = mapped_column(String)
+    suffix: Mapped[str] = mapped_column(String, default="")
+    mime_type: Mapped[str] = mapped_column(String, default="application/octet-stream")
+    # 可预览类型：markdown | html | csv | text —— 前端只读这个字段，不按后缀到处判断
+    kind: Mapped[str] = mapped_column(String, default="text")
+    size: Mapped[int] = mapped_column(default=0)
+    sha256: Mapped[str] = mapped_column(String, default="")
+    storage_path: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 

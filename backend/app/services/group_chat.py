@@ -10,6 +10,7 @@
 单成员失败降级为提示消息并继续，全部失败才返回 503。
 """
 
+import logging
 import threading
 from datetime import datetime, timedelta
 from typing import Callable
@@ -20,7 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models
-from . import config, execution_events
+from . import config, employee_registry, execution_events
 from .chat import ChatOrchestrator, tool_card_dict
 from .harness_agent import run_agent
 from .identity import resolve_identity
@@ -28,6 +29,8 @@ from .llm import DeepSeekProvider, LLMProvider, LLMUnavailableError
 from .memory_service import conversation_history, conversation_transcript
 from .team_orchestrator import TeamTaskOrchestrator
 from .runtime_adapter import DockerHarnessRuntimeAdapter, NoopRuntimeAdapter
+
+logger = logging.getLogger(__name__)
 
 _TASK_STATUS_LABEL = {
     "pending": "待执行",
@@ -211,7 +214,7 @@ def member_replies(
             )
         try:
             employee = db.get(models.DigitalEmployee, employee_no)
-            if use_harness and employee_no in {"AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ", "DT-E10281", "DT-E20999"}:
+            if use_harness and employee_registry.is_harness_employee(employee_no):
                 result = run_agent(
                     db,
                     employee_id=employee_no,
@@ -535,6 +538,17 @@ def process_conversation_async(
                         models.ConversationMessage.generation == run_generation,
                     ).order_by(models.ConversationMessage.seq)
                 ).all()
+                if not answers:
+                    # 一条答复都没有就不是「完成」：直接 complete 会让前端弹一个空气泡、
+                    # 轨迹里也看不出发生过什么（2026-09-28 真机排查时就被这个状态误导过）。
+                    # 正常路径下 run_agent 已用工作区产物兜底，走到这里说明连兜底都没有。
+                    logger.warning(
+                        "execution produced no answer conversation=%s execution=%s",
+                        conversation_id, execution_id,
+                    )
+                    execution_events.fail(
+                        db, execution_id, RuntimeError("本轮没有产出任何答复"))
+                    return
                 for answer in answers:
                     execution_events.emit_answer_chunks(
                         db, execution_id,

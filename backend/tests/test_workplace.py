@@ -113,7 +113,7 @@ def test_workplace_aggregate(client):
     assert body["actor"]["employee_no"] == "E10281"
     assert body["twin"]["employee_no"] == "DT-E10281"
     assert {e["employee_no"] for e in body["available_employees"]} == {
-        "AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ"
+        "AI-GENERAL", "AI-INVESTMENT", "AI-RESEARCH", "AI-FUND", "AI-XYZQ", "AI-AUDIT"
     }
     assert isinstance(body["skills"], list)
     assert isinstance(body["recent_conversations"], list)

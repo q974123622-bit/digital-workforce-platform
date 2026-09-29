@@ -43,6 +43,7 @@ import type {
   ConversationSummary,
   EffectiveCapabilities,
   Employee,
+  ExecutionArtifact,
   Skill,
   TaskRun,
   WorkplaceHome,
@@ -56,6 +57,11 @@ import ConversationList from '../../features/conversations/ConversationList';
 import type { ContactMeta } from '../../features/conversations/ConversationList';
 import Composer from '../../features/conversations/Composer';
 import MessageList from '../../features/conversations/MessageList';
+import AttachmentLightbox from '../../features/conversations/AttachmentLightbox';
+import { previewKindOf } from '../../features/conversations/attachmentPreview';
+import ArtifactCards from '../../features/conversations/ArtifactCards';
+import ArtifactPreviewDrawer from '../../features/conversations/ArtifactPreviewDrawer';
+import { artifactsFromEvent } from '../../features/conversations/artifacts';
 import BrandMark from '../../components/ui/BrandMark';
 import ExecutionSummary from '../../features/executions/ExecutionSummary';
 import ExecutionDetails from '../../features/executions/ExecutionDetails';
@@ -97,6 +103,8 @@ interface LiveExecution {
   expanded: boolean;
   steps: ExecutionStep[];
   answers: Record<string, string>;
+  /** 本轮工作区产物（核对表等）：渲染成「预览 / 下载」卡片，与轨迹折叠无关。 */
+  artifacts: ExecutionArtifact[];
   error?: string;
   retryable?: boolean;
   resumeAfter?: string;
@@ -146,6 +154,7 @@ function restoreExecution(detail: AgentExecutionDetail): LiveExecution {
     expanded: run.status === 'failed',
     steps,
     answers,
+    artifacts: detail.artifacts ?? [],
     error: failure?.detail || run.error_message || undefined,
     // 已停止的执行也允许重试：原消息虽在会话里，但输入框内容已清空，给个一键重跑更省事。
     retryable: active ? run.retryable : run.status === 'cancelled',
@@ -250,6 +259,10 @@ export default function WorkplacePage() {
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [attachments, setAttachments] = useState<ConversationAttachment[]>([]);
   const [attachmentOpenId, setAttachmentOpenId] = useState<string>();
+  // 附件预览灯箱：全页只挂一个实例；previewIndex 为当前展示项下标（null 表示关闭）。
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  // AI员工产物（核对表等）的预览抽屉：全页只挂一个实例。
+  const [artifactPreview, setArtifactPreview] = useState<ExecutionArtifact | null>(null);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -411,10 +424,17 @@ export default function WorkplacePage() {
         // 也不把状态硬写成 running：迟到的 progress 事件（如已停止后仍在飞的工具回调）
         // 一旦把终态翻回运行中，卡片会永远转圈、输入框会一直锁死。
         const nextStatus = String(data.status ?? '') as AgentExecution['status'];
+        // 产物事件（event_type=artifact）：实时把卡片挂上去，用户不用等整轮结束才看到下载入口。
+        const incoming = artifactsFromEvent(data);
+        const artifacts = incoming.length === 0 ? current.artifacts : [
+          ...current.artifacts.filter((item) => !incoming.some((row) => row.artifact_id === item.artifact_id)),
+          ...incoming,
+        ];
         return {
           ...current,
           status: executionIsActive(nextStatus) ? nextStatus : current.status,
           steps: [...current.steps, step],
+          artifacts,
           resumeAfter: event.lastEventId || current.resumeAfter,
         };
       });
@@ -512,7 +532,7 @@ export default function WorkplacePage() {
       executionEventIds.current.clear();
       connectedExecutionId.current = run.execution_id;
       const primary = run.conversation.participants[0]?.employee_no ?? '';
-      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {} });
+      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {}, artifacts: [] });
       await refreshConversations();
     } catch (err) {
       message.error(`重新生成失败：${(err as Error).message}`);
@@ -542,6 +562,7 @@ export default function WorkplacePage() {
       setLiveExecution({
         id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary,
         status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {},
+        artifacts: [],
       });
       await refreshInputRequests().catch(() => undefined);
       await refreshConversations().catch(() => undefined);
@@ -731,7 +752,7 @@ export default function WorkplacePage() {
       executionEventIds.current.clear();
       connectedExecutionId.current = run.execution_id;
       const primary = run.conversation.participants[0]?.employee_no ?? '';
-      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {} });
+      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {}, artifacts: [] });
       await refreshConversations();
       await refreshAttachments();
     } catch (err) {
@@ -754,6 +775,30 @@ export default function WorkplacePage() {
       }
     }
     await refreshAttachments().catch(() => undefined);
+  };
+
+  /**
+   * 材料通道：一个 zip，或一次多个文件 → 与 zip 通道同路，落库后物化到 /workspace/materials。
+   *
+   * 与 `uploadFiles` 的区别：不走「单次 5 个」的普通附件上限（材料包本来就是一堆文件），
+   * 分笔由 AI 员工按材料内容判断，不需要用户先压包或规范命名。
+   */
+  const uploadPackFiles = async (files: File[]) => {
+    if (!selectedId) { message.warning('请先打开一个会话'); return; }
+    if (!files.length) return;
+    try {
+      const singleZip = files.length === 1 && files[0].name.toLowerCase().endsWith('.zip');
+      const rows = singleZip
+        ? await api.uploadConversationAttachmentPack(selectedId, files[0])
+        : await api.uploadConversationAttachmentPackFiles(selectedId, files);
+      setAttachments((current) => [
+        ...current.filter((item) => !rows.some((row) => row.attachment_id === item.attachment_id)),
+        ...rows,
+      ]);
+      await refreshAttachments().catch(() => undefined);
+    } catch (err) {
+      message.error(`材料上传失败：${(err as Error).message}`);
+    }
   };
 
   const removeAttachment = async (attachment: ConversationAttachment) => {
@@ -781,7 +826,7 @@ export default function WorkplacePage() {
       executionEventIds.current.clear();
       connectedExecutionId.current = run.execution_id;
       const primary = run.conversation.participants[0]?.employee_no ?? '';
-      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {} });
+      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {}, artifacts: [] });
       await refreshConversations();
     } catch (err) {
       setChatError((err as Error).message);
@@ -829,7 +874,7 @@ export default function WorkplacePage() {
       executionEventIds.current.clear();
       connectedExecutionId.current = run.execution_id;
       const primary = run.conversation.participants[0]?.employee_no ?? '';
-      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {} });
+      setLiveExecution({ id: run.execution_id, triggerSeq: run.trigger_message_seq, employeeId: primary, status: 'queued', startedAt: Date.now(), expanded: false, steps: [], answers: {}, artifacts: [] });
       await refreshConversations();
     } catch (err) {
       setChatError((err as Error).message);
@@ -868,6 +913,8 @@ export default function WorkplacePage() {
     setSavedExecutions([]);
     setAttachments([]);
     setAttachmentOpenId(undefined);
+    setPreviewIndex(null);
+    setArtifactPreview(null);
     setHistoryMayHaveMore(false);
     setConnectionIssue(undefined);
     setStopping(false);
@@ -879,6 +926,23 @@ export default function WorkplacePage() {
     executionEventIds.current.clear();
     connectedExecutionId.current = undefined;
   }, []);
+
+  /**
+   * 可预览附件（图片/PDF）按当前 `attachments` 顺序排列 —— 灯箱翻页的范围。
+   * 消息气泡与待发送区同源于 `attachments`，所以两边下标一致。
+   */
+  const previewItems = attachments
+    .map((item) => ({ item, kind: previewKindOf(item) }))
+    .filter((entry): entry is { item: ConversationAttachment; kind: 'image' | 'pdf' } => (
+      entry.kind !== 'none' && entry.item.status !== 'deleted'
+    ))
+    .map((entry) => ({ id: entry.item.attachment_id, filename: entry.item.filename, kind: entry.kind }));
+
+  /** 打开灯箱：按附件 id 在当前可预览集合里定位下标。 */
+  const openPreview = (attachmentId: string) => {
+    const index = previewItems.findIndex((item) => item.id === attachmentId);
+    if (index >= 0) setPreviewIndex(index);
+  };
 
   const handleClear = async () => {
     if (!selectedId) return;
@@ -1038,6 +1102,15 @@ export default function WorkplacePage() {
             onRetry={() => void retryExecution(run.id)}
           />
         )}
+        {/* 产物卡片与轨迹折叠无关：模型在答复里只会写「已保存至 /workspace/...」，
+            那个路径用户既看不到也拿不到；卡片才是这一轮真正的交付物。 */}
+        {selectedId && (
+          <ArtifactCards
+            conversationId={selectedId}
+            artifacts={run.artifacts}
+            onPreview={setArtifactPreview}
+          />
+        )}
         {/* 流式答复不依赖展开状态：折叠时也要能实时看到正在生成的文字。 */}
         {Object.entries(run.answers).map(([id, answer]) => answer ? (
           <div key={id} className="mt-1.5 rounded-control bg-surface-subtle p-2.5 text-sm text-ink">{workerName(id)}：{answer}</div>
@@ -1183,6 +1256,7 @@ export default function WorkplacePage() {
               onOpenProfile={openProfile}
               attachmentOf={(attachmentId) => attachments.find((item) => item.attachment_id === attachmentId)}
               onOpenAttachment={setAttachmentOpenId}
+              onPreviewAttachment={openPreview}
               knowledgeFallbackOf={knowledgeFallbackOf}
               editableSeq={editableSeq}
               editingSeq={editingSeq}
@@ -1216,8 +1290,10 @@ export default function WorkplacePage() {
                 placeholder={isGroup ? '描述一个任务，我来拆解安排给同事们…' : '发消息…'}
                 attachments={attachments.filter((item) => item.message_seq === null && item.status !== 'deleted')}
                 onFiles={(files) => void uploadFiles(files)}
+                onPack={(files) => void uploadPackFiles(files)}
                 onRemoveAttachment={(item) => void removeAttachment(item)}
                 onRetryAttachment={(item) => void retryAttachment(item)}
+                onPreviewAttachment={openPreview}
               />
               {chatError && <div className="mt-1.5 text-xs text-danger">发送失败：{chatError}，消息已保留在输入框</div>}
             </div>
@@ -1369,6 +1445,26 @@ export default function WorkplacePage() {
         open={citationOpen}
         onClose={() => setCitationOpen(false)}
       />
+
+      {/* 附件全屏预览灯箱：全页唯一实例，消息气泡与待发送区共用（自研 + createPortal）。 */}
+      {selectedId && previewIndex !== null && (
+        <AttachmentLightbox
+          conversationId={selectedId}
+          items={previewItems}
+          index={previewIndex}
+          onIndexChange={setPreviewIndex}
+          onClose={() => setPreviewIndex(null)}
+        />
+      )}
+
+      {/* AI员工产物预览：核对表/HTML/文本，带下载入口。 */}
+      {selectedId && (
+        <ArtifactPreviewDrawer
+          conversationId={selectedId}
+          artifact={artifactPreview}
+          onClose={() => setArtifactPreview(null)}
+        />
+      )}
 
       <Drawer
         title="文件详情"

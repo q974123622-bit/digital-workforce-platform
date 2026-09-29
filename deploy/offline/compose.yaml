@@ -125,6 +125,20 @@ services:
       - ./harness/AI-XYZQ/dsh-home:/dsh-home
       - ./harness/AI-XYZQ/workspace:/workspace
 
+  harness-ai-audit:
+    <<: *harness-common
+    container_name: dwp-harness-ai-audit
+    labels:
+      dwp.managed: "true"
+      dwp.employee_id: AI-AUDIT
+      dwp.dsh.runtime: "${DWP_DSH_RUNTIME_AI_AUDIT:-./runtime/current}"
+      dwp.dsh.profile: "${DWP_PROFILE_REV:-unknown}"
+    volumes:
+      - ${DWP_DSH_RUNTIME_AI_AUDIT:-./runtime/current}:/opt/dsh-runtime:ro
+      - ./profile/current:/opt/dwp/profile:ro
+      - ./harness/AI-AUDIT/dsh-home:/dsh-home
+      - ./harness/AI-AUDIT/workspace:/workspace
+
   harness-dt-e10281:
     <<: *harness-common
     container_name: dwp-harness-dt-e10281
@@ -181,6 +195,8 @@ services:
       DWP_REQUIRE_AUTH: "1"
       DWP_ARTIFACT_ROOT: /data/artifacts
       DWP_ATTACHMENT_ROOT: /data/attachments
+      # AI员工工作区产物（核对表等）的快照目录：会话内可预览/可下载的那一份
+      DWP_RUN_OUTPUT_ROOT: /data/run-outputs
     secrets:
       - llm_api_key
       - harness_signing_secret

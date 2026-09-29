@@ -82,6 +82,13 @@ class LLMProvider(ABC):
     def structured_output(self, messages: list[dict], schema: dict) -> dict:
         """要求 JSON 结构化输出。"""
 
+    def vision(self, messages: list[dict], **kwargs) -> LLMResponse:
+        """多模态调用：messages 的 content 可以是 OpenAI 多模态数组。
+
+        默认实现不支持，由具体 provider 覆盖（当前只有 DeepSeekProvider 覆盖）。
+        """
+        raise NotImplementedError("当前 LLM 实现不支持视觉调用")
+
 
 def _assert_safemode(messages: list[dict]) -> None:
     """SAFEMODE：所有消息必须带 source=demo，否则拒发。
@@ -110,7 +117,7 @@ class DeepSeekProvider(LLMProvider):
         raw_path = (os.environ.get(DEEPSEEK_CHAT_COMPLETIONS_PATH) or "/chat/completions").strip()
         self.chat_completions_path = raw_path if raw_path.startswith("/") and "://" not in raw_path else "/chat/completions"
 
-    def _post(self, payload: dict) -> dict:
+    def _post(self, payload: dict, timeout: float = 60.0) -> dict:
         if not self.api_key:
             raise LLMUnavailableError("DEEPSEEK_API_KEY 未配置（环境变量）")
         try:
@@ -118,7 +125,7 @@ class DeepSeekProvider(LLMProvider):
                 f"{self.base_url}{self.chat_completions_path}",
                 headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
                 json=payload,
-                timeout=60.0,
+                timeout=timeout,
             )
         except httpx.HTTPError as exc:
             raise LLMUnavailableError(f"DeepSeek 请求失败：{exc.__class__.__name__}") from exc
@@ -169,3 +176,26 @@ class DeepSeekProvider(LLMProvider):
             return json.loads(content)
         except json.JSONDecodeError as exc:
             raise LLMUnavailableError("模型返回非 JSON 结构化输出") from exc
+
+    def vision(self, messages: list[dict], *, model: str | None = None,
+               max_tokens: int = 4096, temperature: float = 0.1,
+               timeout: float = 120.0) -> LLMResponse:
+        """视觉调用：content 里的多模态数组原样透传，平台不做图片转码。
+
+        两个约束写在这里，避免调用方踩坑：
+        - 视觉（真读图）当前只有 `ascend-qwen3.6-27b` 可用，所以默认模型取
+          `DWP_VISION_MODEL`，没配才回落文本模型；
+        - 单次视觉请求实测可到 79s，超时必须比文本调用宽。默认 120s 是「能覆盖
+          慢请求、又不至于让单张图卡死整轮」的折中；调用方（attachment_vision）
+          按 `DWP_VISION_TIMEOUT_SECONDS` 显式传入。
+        """
+        _assert_safemode(messages)
+        payload: dict = {
+            "model": model or os.environ.get("DWP_VISION_MODEL") or self.model,
+            "messages": [{k: v for k, v in m.items() if k != "source"} for m in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        data = self._post(payload, timeout=timeout)
+        msg = data["choices"][0]["message"]
+        return LLMResponse(content=msg.get("content") or "")
